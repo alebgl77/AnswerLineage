@@ -236,6 +236,45 @@
         "title": "BatchResult",
         "type": "object"
       },
+      "Coverage": {
+        "description": "Ce que l'on sait de la part des appels captés pendant la fenêtre.",
+        "properties": {
+          "status": {
+            "const": "unknown",
+            "description": "« unknown » : la couverture du lignage n'est pas encore mesurée.",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "Coverage",
+        "type": "object"
+      },
+      "DatasetName": {
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name",
+          "kind"
+        ],
+        "title": "DatasetName",
+        "type": "object"
+      },
       "DatasetNode": {
         "properties": {
           "id": {
@@ -477,6 +516,63 @@
           "truncated"
         ],
         "title": "GraphView",
+        "type": "object"
+      },
+      "ImpactCounts": {
+        "description": "Décomptes sur tout l'incident, quelle que soit la page demandée.",
+        "properties": {
+          "answers": {
+            "description": "Réponses touchées.",
+            "title": "Answers",
+            "type": "integer"
+          },
+          "recipients": {
+            "description": "Destinataires distincts de ces réponses.",
+            "title": "Recipients",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "answers",
+          "recipients"
+        ],
+        "title": "ImpactCounts",
+        "type": "object"
+      },
+      "ImpactResult": {
+        "description": "Les réponses et les destinataires touchés par un jeu de données faux pendant une fenêtre.",
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/ImpactCounts"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/Coverage"
+          },
+          "dataset": {
+            "$ref": "#/components/schemas/DatasetName"
+          },
+          "graph": {
+            "$ref": "#/components/schemas/GraphView",
+            "description": "Les réponses touchées, les plus récentes d'abord, avec leur chaîne."
+          },
+          "truncated": {
+            "description": "Vrai quand la propagation dépasse la borne : le résultat est partiel.",
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "window": {
+            "$ref": "#/components/schemas/Window"
+          }
+        },
+        "required": [
+          "dataset",
+          "window",
+          "counts",
+          "coverage",
+          "graph",
+          "truncated"
+        ],
+        "title": "ImpactResult",
         "type": "object"
       },
       "InputDataset": {
@@ -817,6 +913,27 @@
         ],
         "title": "ToolUse",
         "type": "object"
+      },
+      "Window": {
+        "description": "Fenêtre de l'incident : début inclus, fin exclue.",
+        "properties": {
+          "from": {
+            "format": "date-time",
+            "title": "From",
+            "type": "string"
+          },
+          "to": {
+            "format": "date-time",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "Window",
+        "type": "object"
       }
     }
   },
@@ -1021,6 +1138,135 @@
           }
         },
         "summary": "Donne le graphe en cinq colonnes des réponses les plus récentes",
+        "tags": [
+          "lignage"
+        ]
+      }
+    },
+    "/api/v1/impact": {
+      "get": {
+        "description": "Réponses dont un run a lu le jeu de données pendant la fenêtre, et leurs destinataires.",
+        "operationId": "propagate_api_v1_impact_get",
+        "parameters": [
+          {
+            "description": "Espace de noms du jeu de données, par exemple « bigquery ».",
+            "in": "query",
+            "name": "namespace",
+            "required": true,
+            "schema": {
+              "description": "Espace de noms du jeu de données, par exemple « bigquery ».",
+              "maxLength": 500,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Namespace",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Nom du jeu de données.",
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "Nom du jeu de données.",
+              "maxLength": 500,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Début de la fenêtre, inclus (RFC 3339, avec fuseau).",
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "description": "Début de la fenêtre, inclus (RFC 3339, avec fuseau).",
+              "format": "date-time",
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Fin de la fenêtre, exclue (RFC 3339, avec fuseau).",
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "description": "Fin de la fenêtre, exclue (RFC 3339, avec fuseau).",
+              "format": "date-time",
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Nombre maximal de réponses dans la vue.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "description": "Nombre maximal de réponses dans la vue.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Ne garder que les réponses produites avant cet instant (RFC 3339).",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Ne garder que les réponses produites avant cet instant (RFC 3339).",
+              "title": "Before"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImpactResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Ce jeu de données n'est pas connu."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          }
+        },
+        "summary": "Propage un incident de données jusqu'aux réponses et aux destinataires",
         "tags": [
           "lignage"
         ]

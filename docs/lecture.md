@@ -6,6 +6,7 @@ L'API de lecture interroge le graphe de lignage. Elle est versionnée sous `/api
 | --- | --- |
 | `GET /api/v1/answers?channel=…&message_ref=…` | Les réponses d'agents diffusées par un message |
 | `GET /api/v1/answers/{id}/sources` | Les sources d'une réponse : jeux de données, versions, outils, agents |
+| `GET /api/v1/impact?namespace=…&name=…&from=…&to=…` | Les réponses et les destinataires touchés par un jeu de données faux pendant une fenêtre |
 | `GET /api/v1/graph` | Le graphe en cinq colonnes des réponses les plus récentes |
 
 ## Remonter d'une réponse à ses sources
@@ -95,6 +96,48 @@ Une erreur `422` donne le chemin du paramètre fautif, un code et un motif, jama
 { "errors": [{ "path": "/query/message_ref", "type": "missing", "message": "Field required" }] }
 ```
 
+## Propager un incident
+
+Une table a été fausse du chargement de nuit jusqu'à sa correction. Quelles réponses s'appuient sur elle, et qui les a reçues ?
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/impact?namespace=bigquery&name=ventes.suivi.commandes&from=2026-11-11T06:00:00Z&to=2026-11-12T12:00:00Z"
+```
+
+```json
+{
+  "dataset": { "namespace": "bigquery", "name": "ventes.suivi.commandes", "kind": "table" },
+  "window": { "from": "2026-11-11T06:00:00Z", "to": "2026-11-12T12:00:00Z" },
+  "counts": { "answers": 16, "recipients": 13 },
+  "coverage": { "status": "unknown" },
+  "graph": { "answers": ["…"], "recipients": ["…"], "…": "…" },
+  "truncated": false
+}
+```
+
+Cet exemple est le premier incident de l'[entreprise synthétique](corpus.md) : sa vérité annonce les mêmes 16 réponses et 13 destinataires.
+
+| Champ | Contenu |
+| --- | --- |
+| `counts` | Réponses touchées et destinataires distincts, sur tout l'incident |
+| `graph` | Les réponses touchées, les plus récentes d'abord, sous la forme du [graphe en cinq colonnes](#le-graphe-en-cinq-colonnes) : `graph.answers` porte chaque réponse et sa chaîne, `graph.recipients` les pseudonymes des destinataires |
+| `coverage` | Ce que l'on sait de la part des appels captés pendant la fenêtre. `unknown` : elle n'est pas encore mesurée, le résultat peut donc ignorer des réponses dont la lecture n'a pas été captée |
+| `truncated` | `true` quand la propagation dépasse 20 000 runs : le résultat est partiel |
+
+### Ce qui compte comme touché
+
+Une réponse est touchée quand un run de son arbre a lu le jeu de données pendant la fenêtre : le run de l'agent lui-même, un appel d'outil, un sous-agent à toute profondeur.
+
+- **C'est l'heure de la lecture qui compte.** Une réponse rendue après la correction, mais fondée sur une lecture faite avant, est touchée. Une lecture faite après la correction ne l'est pas.
+- **La fenêtre inclut son début et exclut sa fin.**
+- **Un run qui a lu sans répondre n'a rien à rappeler.**
+
+`limit` (200 au plus) et `before` parcourent la liste des réponses comme pour le graphe ; `counts` reste celui de tout l'incident. Un jeu de données inconnu répond `404` (`unknown_dataset`), une fenêtre vide `422`.
+
+### Mesure
+
+La propagation est mesurée sur un [corpus de vérité](corpus.md#corpus-de-vérité) : pour chaque scénario, toute réponse attendue au niveau table doit être renvoyée. Sur les incidents de l'entreprise synthétique, le résultat est exactement la vérité.
+
 ## Le graphe en cinq colonnes
 
 `GET /api/v1/graph` donne une vue d'ensemble du lignage, faite pour être dessinée : cinq colonnes, des données aux destinataires.
@@ -125,3 +168,6 @@ L'`id` d'une réponse est son identifiant stable. Celui des autres nœuds ne vau
 
 - L'API n'authentifie pas ses appelants : elle est faite, à ce stade, pour écouter sur la boucle locale ou derrière un contrôle d'accès. Elle refuse déjà les requêtes dont l'hôte ou l'origine n'est pas attendu ([réglages](ingestion.md#hôtes-et-origines-attendus)).
 - Un appel d'outil n'est rattaché à une réponse que si son événement désigne le run de l'agent comme parent.
+- La propagation s'arrête au niveau table : elle renvoie tout lecteur de la fenêtre, y compris ceux qui n'ont lu que des colonnes, des lignes ou une version saines.
+- Elle ne suit pas encore ce qu'un run touché a écrit : une réponse fondée sur une note ou une table dérivée de la donnée fausse n'est pas renvoyée.
+- La couverture du lignage sur la fenêtre n'est pas encore mesurée.

@@ -124,3 +124,46 @@ class GraphView(BaseModel):
     truncated: bool = Field(
         description="Vrai quand les arbres de runs dépassent la borne : la vue est partielle."
     )
+
+
+class DatasetName(BaseModel):
+    namespace: str
+    name: str
+    kind: str
+
+
+class Window(BaseModel):
+    """Fenêtre de l'incident : début inclus, fin exclue."""
+
+    start: AwareDatetime = Field(serialization_alias="from")
+    end: AwareDatetime = Field(serialization_alias="to")
+
+
+class ImpactCounts(BaseModel):
+    """Décomptes sur tout l'incident, quelle que soit la page demandée."""
+
+    answers: int = Field(description="Réponses touchées.")
+    recipients: int = Field(description="Destinataires distincts de ces réponses.")
+
+
+class Coverage(BaseModel):
+    """Ce que l'on sait de la part des appels captés pendant la fenêtre."""
+
+    status: Literal["unknown"] = Field(
+        description="« unknown » : la couverture du lignage n'est pas encore mesurée."
+    )
+
+
+class ImpactResult(BaseModel):
+    """Les réponses et les destinataires touchés par un jeu de données faux pendant une fenêtre."""
+
+    dataset: DatasetName
+    window: Window
+    counts: ImpactCounts
+    coverage: Coverage
+    graph: GraphView = Field(
+        description="Les réponses touchées, les plus récentes d'abord, avec leur chaîne."
+    )
+    truncated: bool = Field(
+        description="Vrai quand la propagation dépasse la borne : le résultat est partiel."
+    )

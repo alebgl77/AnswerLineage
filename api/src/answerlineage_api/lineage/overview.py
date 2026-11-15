@@ -8,10 +8,12 @@ chaîne, pour que l'on puisse la suivre d'une colonne à l'autre.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import Row, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from answerlineage_api.lineage.models import (
@@ -90,8 +92,15 @@ def _ranks[T](items: set[T]) -> dict[T, int]:
 async def overview(conn: AsyncConnection, *, limit: int, before: datetime | None) -> GraphView:
     """Les ``limit`` réponses les plus récentes, avant ``before``, et ce qu'elles touchent."""
     picked = (await conn.execute(_RECENT_ANSWERS, {"before": before, "limit": limit + 1})).all()
-    more = len(picked) > limit
-    picked = picked[:limit]
+    return await view_of(conn, picked[:limit], more=len(picked) > limit)
+
+
+async def view_of(conn: AsyncConnection, picked: Sequence[Row[Any]], *, more: bool) -> GraphView:
+    """La vue en cinq colonnes de ces réponses : leurs chaînes, et rien d'autre.
+
+    Chaque ligne porte ``id``, ``run_id``, ``fingerprint``, ``event_time`` et
+    l'agent du run (``agent_namespace``, ``agent_name``).
+    """
     roots: list[UUID] = sorted({row.run_id for row in picked}, key=lambda run_id: run_id.hex)
 
     trees = (await conn.execute(_RUN_TREES, {"roots": roots, "limit": MAX_RUNS + 1})).all()

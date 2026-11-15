@@ -44,9 +44,10 @@ Le proxy se place devant un serveur [MCP](https://modelcontextprotocol.io) exist
 | Schéma du graphe de lignage dans PostgreSQL, avec ses migrations | Disponible |
 | Alimentation du graphe à partir des événements reçus, par des workers concurrents | Disponible |
 | Remontée d'une réponse à ses sources : jeux de données, versions, outils, agents | Disponible |
-| Entreprise synthétique à vérité connue, pour essayer et tester sans donnée réelle | Disponible |
+| Propagation d'un incident : réponses et destinataires touchés par une table fausse sur une période | Disponible |
+| Entreprise synthétique et corpus de vérité, pour essayer et mesurer sans donnée réelle | Disponible |
 | Envoi des événements du proxy vers l'API | À venir |
-| Propagation d'un incident de données jusqu'aux réponses et aux destinataires | À venir |
+| Propagation fine (colonnes, lignes, versions) et transitive (mémoire, tables dérivées) | À venir |
 | Explorateur visuel, rappel des destinataires | À venir |
 
 ## Essayer
@@ -135,7 +136,15 @@ Puis il demande ses sources, avec l'identifiant obtenu : les tables et les colon
 curl http://127.0.0.1:8000/api/v1/answers/01a1c9e63a187c5cb8b5fce292591000424d79573035c170/sources
 ```
 
-L'entreprise vient aussi avec sa vérité : pour six incidents de données, la liste exacte des réponses et des destinataires touchés.
+### Propager un incident
+
+La table des commandes a été fausse du chargement de nuit du 11 novembre jusqu'à sa correction le lendemain midi. Quelles réponses s'appuient sur elle, et qui les a reçues ?
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/impact?namespace=bigquery&name=ventes.suivi.commandes&from=2026-11-11T06:00:00Z&to=2026-11-12T12:00:00Z"
+```
+
+La réponse compte 16 réponses touchées et 13 destinataires, et donne la chaîne de chacune. L'entreprise vient avec sa vérité, établie sans passer par AnswerLineage : pour six incidents de données, la liste exacte des réponses et des destinataires touchés. Cet incident est le premier, et les deux listes sont les mêmes.
 
 ```bash
 uv run answerlineage-corpus truth
@@ -155,10 +164,10 @@ L'agent se connecte alors à `http://127.0.0.1:8717` au lieu du serveur : rien d
 
 - [Proxy MCP](docs/proxy.md) : ce qui est relayé, ce qui est lu, analyse du SQL, limites connues
 - [API d'ingestion](docs/ingestion.md) : routes, lots, validation, rejeu
-- [API de lecture](docs/lecture.md) : retrouver une réponse, remonter à ses sources
+- [API de lecture](docs/lecture.md) : retrouver une réponse, remonter à ses sources, propager un incident
 - [Workers](docs/workers.md) : file de traitement, garanties, projection dans le graphe
 - [Schéma du graphe](docs/schema.md) : tables, écritures, migrations
-- [Entreprise synthétique](docs/corpus.md) : ce qu'elle contient, ses événements, la vérité de ses incidents
+- [Entreprise synthétique et corpus de vérité](docs/corpus.md) : ce qu'ils contiennent, leurs événements, la vérité des incidents
 - [Pipeline d'intégration continue](docs/ci.md) : contrôles, chaîne d'approvisionnement
 
 ## Contribuer

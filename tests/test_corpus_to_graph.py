@@ -28,7 +28,11 @@ def api(engine: AsyncEngine) -> httpx.AsyncClient:
 
 
 async def load(engine: AsyncEngine, enterprise: Enterprise) -> None:
-    events = render(enterprise)
+    await ingest(engine, render(enterprise))
+
+
+async def ingest(engine: AsyncEngine, events: list[dict[str, Any]]) -> None:
+    """Envoie des événements par l'API d'ingestion, puis laisse les workers vider la file."""
     async with api(engine) as client:
         response = await client.post("/api/v1/lineage/batch", json=events)
     assert response.status_code == 202
@@ -234,3 +238,42 @@ async def test_the_five_column_view_shows_the_chain_of_every_answer(engine: Asyn
             for call in request.calls
             for read in call.reads
         }
+
+
+async def test_propagating_each_incident_finds_exactly_the_truth(engine: AsyncEngine) -> None:
+    enterprise = generate(7, requests=120, days=5, incidents=4)
+    await load(engine, enterprise)
+    assert len(enterprise.incidents) == 4
+
+    async with api(engine) as client:
+        for incident in enterprise.incidents:
+            touched = enterprise.touched(incident)
+            response = await client.get(
+                "/api/v1/impact",
+                params={
+                    "namespace": incident.table.namespace,
+                    "name": incident.table.name,
+                    "from": incident.start.isoformat(),
+                    "to": incident.end.isoformat(),
+                },
+            )
+            assert response.status_code == 200
+            result = response.json()
+            expected_recipients = {
+                pseudonym
+                for request in touched
+                if request.answer is not None
+                for pseudonym in request.answer.recipients
+            }
+
+            assert result["truncated"] is False
+            assert result["counts"] == {
+                "answers": len(touched),
+                "recipients": len(expected_recipients),
+            }
+            assert sorted(answer["fingerprint"] for answer in result["graph"]["answers"]) == sorted(
+                request.answer.fingerprint for request in touched if request.answer is not None
+            )
+            assert {
+                recipient["pseudonym"] for recipient in result["graph"]["recipients"]
+            } == expected_recipients

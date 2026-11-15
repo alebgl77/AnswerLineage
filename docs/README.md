@@ -6,4 +6,4 @@
 - [API de lecture](lecture.md)
 - [Workers](workers.md)
 - [Proxy MCP](proxy.md)
-- [Entreprise synthétique](corpus.md)
+- [Entreprise synthétique et corpus de vérité](corpus.md)

@@ -9,8 +9,9 @@ from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from answerlineage_api.lineage import overview, trace
-from answerlineage_api.lineage.models import AnswerList, GraphView, Sources
+from answerlineage_api.ingest.models import FieldError
+from answerlineage_api.lineage import impact, overview, trace
+from answerlineage_api.lineage.models import AnswerList, GraphView, ImpactResult, Sources
 from answerlineage_api.responses import RequestRefused, RequestRejected, refused
 
 router = APIRouter(prefix="/api/v1", tags=["lignage"])
@@ -102,3 +103,64 @@ async def graph(request: Request, limit: GraphLimit = 60, before: Before = None)
     engine: AsyncEngine = request.app.state.engine
     async with engine.connect() as conn:
         return await overview.overview(conn, limit=limit, before=before)
+
+
+Namespace = Annotated[
+    str,
+    Query(
+        min_length=1,
+        max_length=500,
+        pattern=_NO_NUL,
+        description="Espace de noms du jeu de données, par exemple « bigquery ».",
+    ),
+]
+DatasetNameParam = Annotated[
+    str,
+    Query(min_length=1, max_length=500, pattern=_NO_NUL, description="Nom du jeu de données."),
+]
+WindowStart = Annotated[
+    AwareDatetime,
+    Query(alias="from", description="Début de la fenêtre, inclus (RFC 3339, avec fuseau)."),
+]
+WindowEnd = Annotated[
+    AwareDatetime,
+    Query(alias="to", description="Fin de la fenêtre, exclue (RFC 3339, avec fuseau)."),
+]
+
+
+@router.get(
+    "/impact",
+    response_model=ImpactResult,
+    summary="Propage un incident de données jusqu'aux réponses et aux destinataires",
+    responses={
+        404: {"model": RequestRefused, "description": "Ce jeu de données n'est pas connu."},
+        **_INVALID,
+    },
+)
+async def propagate(
+    request: Request,
+    namespace: Namespace,
+    name: DatasetNameParam,
+    start: WindowStart,
+    end: WindowEnd,
+    limit: GraphLimit = 200,
+    before: Before = None,
+) -> ImpactResult | JSONResponse:
+    """Réponses dont un run a lu le jeu de données pendant la fenêtre, et leurs destinataires."""
+    if end <= start:
+        rejected = RequestRejected(
+            errors=[
+                FieldError(
+                    path="/query/to",
+                    type="window_empty",
+                    message="La fin de la fenêtre doit suivre son début.",
+                )
+            ]
+        )
+        return JSONResponse(status_code=422, content=rejected.model_dump())
+    engine: AsyncEngine = request.app.state.engine
+    async with engine.connect() as conn:
+        result = await impact.propagate(
+            conn, namespace=namespace, name=name, start=start, end=end, limit=limit, before=before
+        )
+    return result if result is not None else refused(404, "unknown_dataset")
