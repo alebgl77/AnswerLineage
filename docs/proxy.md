@@ -162,7 +162,6 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - Sans authentification des émetteurs, un identifiant dérivé n'est pas une preuve d'origine : qui connaît le contexte d'un appel peut émettre un événement pour son run.
 - Une reprise HTTP garde son run quand le contexte vient de `_meta`. Quand il vient de l'en-tête d'un client HTTP qui ouvre un span par tentative, ou quand le proxy le crée, chaque tentative est un run distinct.
 - Le proxy ne rattache pas un appel au run de l'agent : la facette standard `parent` exige le job de l'agent, que le proxy ne connaît pas. Un émetteur qui connaît l'agent peut le faire ; `traceId` relie déjà les appels d'une même trace.
-- Le graphe ne range pas encore `traceId` et `spanId` dans le run : ils restent dans l'événement brut.
 - Le résultat de l'appel n'est pas lu : une erreur d'outil rendue en `200` compte comme `COMPLETE`.
 - Le transport stdio n'est pas pris en charge.
 - L'analyse du SQL n'a pas de budget de temps, seulement une taille maximale.

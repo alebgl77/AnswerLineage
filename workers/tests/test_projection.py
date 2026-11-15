@@ -83,6 +83,43 @@ def test_tool_call_becomes_a_tool_run_with_its_reads() -> None:
     )
 
 
+TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
+SPAN_ID = "00f067aa0ba902b7"
+
+
+def traced(trace_id: object, span_id: object) -> dict[str, Any]:
+    fields = {"server": "entrepot", "traceId": trace_id, "spanId": span_id}
+    call = facet(**{name: value for name, value in fields.items() if value is not None})
+    return event(run={"runId": RUN_ID, "facets": {"answerlineage_toolCall": call}})
+
+
+def test_the_trace_context_of_a_tool_call_enters_the_graph() -> None:
+    """Du lignage à la trace : le run retient le contexte que cite sa facette."""
+    record = project(traced(TRACE_ID, SPAN_ID))
+    assert (record.trace_id, record.span_id) == (TRACE_ID, SPAN_ID)
+
+
+@pytest.mark.parametrize(
+    ("trace_id", "span_id"),
+    [
+        (TRACE_ID.upper(), SPAN_ID),
+        (TRACE_ID[:-1], SPAN_ID),
+        (TRACE_ID + "\n", SPAN_ID),
+        ("0" * 32, SPAN_ID),
+        (TRACE_ID, "0" * 16),
+        (TRACE_ID, SPAN_ID + "0"),
+        (TRACE_ID, None),
+        (None, SPAN_ID),
+        (12, SPAN_ID),
+    ],
+)
+def test_a_malformed_trace_context_is_ignored(trace_id: object, span_id: object) -> None:
+    """Une moitié de contexte ne désigne rien : l'un ne va pas sans l'autre."""
+    record = project(traced(trace_id, span_id))
+    assert (record.trace_id, record.span_id) == (None, None)
+    assert record.kind == "tool"
+
+
 def test_tool_call_without_names_in_its_facet_falls_back_on_the_job() -> None:
     record = project(event(run={"runId": RUN_ID, "facets": {"answerlineage_toolCall": facet()}}))
     assert record.tool == ToolRef("entrepot", "execute_sql")

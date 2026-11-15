@@ -6,7 +6,7 @@ d'enregistrer le reste de l'événement.
 
 | Dans l'événement | Dans le graphe |
 | --- | --- |
-| facette ``answerlineage_toolCall`` | run d'outil, rattaché à son serveur et à son outil |
+| facette ``answerlineage_toolCall`` | run d'outil, son serveur, son outil, son contexte de trace |
 | facette ``answerlineage_agent`` | run d'agent, rattaché à l'agent que nomme le job |
 | facette ``parent`` | run parent |
 | ``inputs`` | lectures ; les champs de la facette ``schema`` sont les colonnes lues |
@@ -50,6 +50,9 @@ from answerlineage_api.store.graph import (
 )
 
 _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+# Identifiants d'un contexte de trace W3C : hexadécimal en minuscules, jamais nul.
+_TRACE_ID = re.compile(r"(?!0{32})[0-9a-f]{32}")
+_SPAN_ID = re.compile(r"(?!0{16})[0-9a-f]{16}")
 _SERVER_PREFIX = "mcp://"
 _DATASET_KINDS: tuple[DatasetKind, ...] = ("table", "document", "api", "memory", "answer")
 _STATES: tuple[RunState, ...] = ("START", "RUNNING", "COMPLETE", "ABORT", "FAIL", "OTHER")
@@ -87,6 +90,23 @@ def _parent_run_id(run: Mapping[str, Any]) -> UUID | None:
     if isinstance(value, str) and _UUID.fullmatch(value):
         return UUID(value)
     return None
+
+
+def _trace_context(tool_call: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    """Contexte de trace que cite la facette d'un appel d'outil, pour passer du graphe à la trace.
+
+    L'un ne va pas sans l'autre : une moitié de contexte, ou une valeur mal
+    formée, est ignorée.
+    """
+    trace_id, span_id = tool_call.get("traceId"), tool_call.get("spanId")
+    if (
+        isinstance(trace_id, str)
+        and isinstance(span_id, str)
+        and _TRACE_ID.fullmatch(trace_id)
+        and _SPAN_ID.fullmatch(span_id)
+    ):
+        return trace_id, span_id
+    return None, None
 
 
 def _dataset(dataset: Mapping[str, Any]) -> DatasetRef:
@@ -157,6 +177,7 @@ def project(payload: Mapping[str, Any]) -> RunRecord:
     namespace = _required(job["namespace"], identifiers.NAMESPACE_MAX)
     name = _required(job["name"], identifiers.JOB_NAME_MAX)
     tool_call = _facet(run, TOOL_CALL_FACET)
+    trace_id, span_id = _trace_context(tool_call)
     if tool_call:
         kind = "tool"
         server = _text(tool_call.get("server"), identifiers.TOOL_MAX) or (
@@ -191,6 +212,8 @@ def project(payload: Mapping[str, Any]) -> RunRecord:
         agent=agent,
         tool=tool,
         parent_run_id=_parent_run_id(run),
+        trace_id=trace_id,
+        span_id=span_id,
         reads=tuple(reads),
         writes=tuple(writes),
         answers=tuple(answers),

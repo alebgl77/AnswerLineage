@@ -70,8 +70,8 @@ async def test_two_tools_under_the_same_span_merge_into_one_run(
         runs = (
             await conn.execute(
                 text(
-                    "SELECT run.kind, run.state, run.ended_at, tool.name FROM run "
-                    "JOIN tool ON tool.id = run.tool_id"
+                    "SELECT run.kind, run.state, run.ended_at, tool.name, run.trace_id, "
+                    "run.span_id FROM run JOIN tool ON tool.id = run.tool_id"
                 )
             )
         ).all()
@@ -87,8 +87,11 @@ async def test_two_tools_under_the_same_span_merge_into_one_run(
         read_names, tool_names = list(reads), list(tools)
 
     # Un seul run, qui porte les lectures des deux appels.
-    ((kind, state, ended_at, tool),) = runs
+    ((kind, state, ended_at, tool, trace_id, span_id),) = runs
     assert (kind, state, ended_at) == ("tool", "COMPLETE", T0 + timedelta(seconds=1))
+    # Le run retient le contexte dont son identifiant dérive : on passe du graphe à la trace.
+    assert REUSED_SPAN is not None
+    assert (trace_id, span_id) == (REUSED_SPAN.trace_id, REUSED_SPAN.parent_id)
     assert read_names == ["crm.clients", "ref.taux_change"]
     assert tool_names == ["execute_sql", "query_warehouse"]
     # Limite constatée : le run garde l'outil du premier événement projeté, qui

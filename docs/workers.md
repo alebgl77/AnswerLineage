@@ -22,7 +22,7 @@ Les événements bruts restent dans `event_raw` : le graphe peut être reconstru
 
 | Dans l'événement | Dans le graphe |
 | --- | --- |
-| Facette `answerlineage_toolCall` | Run d'outil, rattaché à son serveur et à son outil |
+| Facette `answerlineage_toolCall` | Run d'outil, rattaché à son serveur et à son outil ; `traceId` et `spanId`, bien formés et donnés ensemble, sont gardés avec le run, pour passer du graphe à la trace |
 | Facette `answerlineage_agent` | Run d'agent, rattaché à l'agent que nomme le job |
 | Facette standard `parent` | Run parent |
 | `inputs` | Lectures ; les champs de la facette `schema` sont les colonnes lues, la facette `version` donne la version |
