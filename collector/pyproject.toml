@@ -1,0 +1,13 @@
+[project]
+name = "answerlineage-collector"
+version = "0.0.0"
+description = "Collecteur d'AnswerLineage : traces OTLP et journaux d'audit convertis en événements."
+requires-python = ">=3.13"
+dependencies = []
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/answerlineage_collector"]

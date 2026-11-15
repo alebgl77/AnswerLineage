@@ -1,0 +1,69 @@
+[project]
+name = "answerlineage"
+version = "0.0.0"
+description = "Lignage et rappel des réponses d'agents"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18",
+    "pre-commit>=4.3",
+    "pytest>=8.4",
+    "pytest-cov>=7.0",
+    "ruff>=0.14",
+]
+
+[tool.uv]
+package = false
+# Délai de carence : aucune version publiée depuis moins de 7 jours (PRD, section 13).
+exclude-newer = "7 days"
+
+[tool.uv.workspace]
+members = ["proxy", "adapters", "collector", "api", "workers", "mcp-server"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "S", "C4", "SIM", "PTH", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101"]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unreachable = true
+files = [
+    "proxy/src",
+    "adapters/src",
+    "collector/src",
+    "api/src",
+    "workers/src",
+    "mcp-server/src",
+    "tests",
+]
+
+[tool.pytest.ini_options]
+addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config", "-ra"]
+testpaths = ["tests", "proxy", "adapters", "collector", "api", "workers", "mcp-server"]
+xfail_strict = true
+
+[tool.coverage.run]
+branch = true
+source = [
+    "answerlineage_proxy",
+    "answerlineage_adapters",
+    "answerlineage_collector",
+    "answerlineage_api",
+    "answerlineage_workers",
+    "answerlineage_mcp_server",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true

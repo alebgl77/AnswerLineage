@@ -1,0 +1,13 @@
+[project]
+name = "answerlineage-proxy"
+version = "0.0.0"
+description = "Proxy MCP d'AnswerLineage : relaie les appels d'outils et émet les événements de lignage."
+requires-python = ">=3.13"
+dependencies = []
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/answerlineage_proxy"]
