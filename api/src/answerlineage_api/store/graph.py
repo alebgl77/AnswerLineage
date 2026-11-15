@@ -65,13 +65,13 @@ class Write:
 class Delivery:
     channel: str
     message_ref: str
-    # Pseudonymes des destinataires, jamais leur identité (ENF-CONF-02).
+    # Pseudonymes des destinataires, jamais leur identité.
     recipients: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class Answer:
-    # Empreinte de la réponse : le contenu n'est jamais stocké (ADR-004).
+    # Empreinte de la réponse : le contenu n'est jamais stocké.
     fingerprint: str
     deliveries: tuple[Delivery, ...] = ()
 
@@ -129,7 +129,7 @@ _UPSERT_RUN = text(
 
 # Une lecture par run, jeu de données et version. Deux événements se fusionnent :
 # la précision la plus fine l'emporte, les colonnes s'additionnent, la
-# réconciliation avec l'entrepôt prime sur l'analyse (ADR-006).
+# réconciliation avec l'entrepôt prime sur l'analyse.
 _UPSERT_READ = text(
     f"""
     INSERT INTO read_edge (run_id, dataset_id, dataset_version_id, precision, columns, origin,

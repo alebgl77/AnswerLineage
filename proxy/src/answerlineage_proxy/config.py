@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import cast
 
 import httpx
+
+from answerlineage_proxy.sql import DIALECTS, Dialect
 
 ENV_UPSTREAM = "ANSWERLINEAGE_PROXY_UPSTREAM"
 ENV_SERVER_NAME = "ANSWERLINEAGE_PROXY_SERVER_NAME"
@@ -18,10 +21,49 @@ DEFAULT_PORT = 8717
 DEFAULT_MAX_INSPECTED_BYTES = 1024 * 1024
 
 _SERVER_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+_TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+_ARGUMENT_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+_NAMESPACE = re.compile(r"[A-Za-z0-9_.:/@-]{1,255}")
 
 
 class ProxyConfigurationError(ValueError):
     """Un réglage du proxy est absent ou invalide."""
+
+
+@dataclass(frozen=True)
+class SqlTool:
+    """Outil MCP dont un argument porte une requête SQL."""
+
+    # Nom de l'argument de l'outil qui contient la requête.
+    argument: str
+    dialect: Dialect
+    # Espace de noms OpenLineage des tables lues, par exemple ``bigquery``.
+    namespace: str
+    default_catalog: str | None = None
+    default_db: str | None = None
+
+    def __post_init__(self) -> None:
+        if not _ARGUMENT_NAME.fullmatch(self.argument):
+            raise ProxyConfigurationError("Le nom de l'argument SQL est invalide.")
+        if self.dialect not in DIALECTS:
+            raise ProxyConfigurationError(
+                f"Le dialecte SQL doit être l'un de : {', '.join(DIALECTS)}."
+            )
+        if not _NAMESPACE.fullmatch(self.namespace):
+            raise ProxyConfigurationError("L'espace de noms des tables est invalide.")
+
+    @classmethod
+    def parse(cls, value: str) -> tuple[str, SqlTool]:
+        """Lit ``outil=argument:dialecte[:espace-de-noms]``."""
+        tool, separator, rule = value.partition("=")
+        parts = rule.split(":", 2)
+        if not separator or len(parts) < 2 or not _TOOL_NAME.fullmatch(tool):
+            raise ProxyConfigurationError(
+                "Un outil SQL se décrit par outil=argument:dialecte[:espace-de-noms]."
+            )
+        argument, dialect = parts[0], parts[1]
+        namespace = parts[2] if len(parts) == 3 else dialect
+        return tool, cls(argument=argument, dialect=cast(Dialect, dialect), namespace=namespace)
 
 
 @dataclass(frozen=True)
@@ -39,6 +81,8 @@ class ProxySettings:
     # Au-delà, le corps est relayé sans être lu.
     max_inspected_bytes: int = DEFAULT_MAX_INSPECTED_BYTES
     connect_timeout: float = 10.0
+    # Outils dont la requête SQL est analysée, par nom d'outil.
+    sql_tools: Mapping[str, SqlTool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.upstream.scheme not in ("http", "https") or not self.upstream.host:
@@ -61,6 +105,8 @@ class ProxySettings:
             raise ProxyConfigurationError("Le port doit être compris entre 0 et 65535.")
         if self.max_inspected_bytes < 0:
             raise ProxyConfigurationError("La taille maximale lue ne peut pas être négative.")
+        if not all(_TOOL_NAME.fullmatch(tool) for tool in self.sql_tools):
+            raise ProxyConfigurationError("Un nom d'outil SQL est invalide.")
 
     @classmethod
     def create(
@@ -72,6 +118,7 @@ class ProxySettings:
         port: int = DEFAULT_PORT,
         preserve_host: bool = True,
         max_inspected_bytes: int = DEFAULT_MAX_INSPECTED_BYTES,
+        sql_tools: Mapping[str, SqlTool] | None = None,
     ) -> ProxySettings:
         try:
             url = httpx.URL(upstream)
@@ -84,6 +131,7 @@ class ProxySettings:
             port=port,
             preserve_host=preserve_host,
             max_inspected_bytes=max_inspected_bytes,
+            sql_tools=dict(sql_tools or {}),
         )
 
     @classmethod

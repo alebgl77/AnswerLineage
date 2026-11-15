@@ -1,8 +1,8 @@
 """Destination des événements du proxy.
 
 ``emit`` ne bloque jamais et ne lève jamais : la capture ne doit ni retarder
-ni interrompre un appel d'agent (ADR-005). L'envoi asynchrone vers l'API
-d'ingestion arrive avec la boîte d'envoi (US-0406).
+ni interrompre un appel d'agent. L'envoi asynchrone vers l'API d'ingestion
+n'est pas encore disponible.
 """
 
 from __future__ import annotations

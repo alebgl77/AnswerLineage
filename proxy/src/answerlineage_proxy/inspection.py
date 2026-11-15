@@ -1,7 +1,7 @@
 """Lecture d'une requête MCP.
 
-Le proxy décide sur le corps de la requête, jamais sur les seuls en-têtes
-(EF-SEC-11). Les en-têtes ``Mcp-Method``, ``Mcp-Name`` et
+Le proxy décide sur le corps de la requête, jamais sur les seuls en-têtes.
+Les en-têtes ``Mcp-Method``, ``Mcp-Name`` et
 ``MCP-Protocol-Version`` de la révision 2026-07-28 ne servent qu'à être
 comparés au corps : un écart est signalé, et c'est le corps qui est décrit.
 
@@ -15,8 +15,8 @@ import base64
 import binascii
 import json
 import re
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 
 TOOLS_CALL = "tools/call"
 
@@ -47,6 +47,9 @@ class Inspection:
     protocol_version: str | None = None
     # Noms des en-têtes MCP dont la valeur contredit le corps.
     header_mismatches: tuple[str, ...] = ()
+    # Requête SQL d'un outil déclaré : gardée en mémoire le temps de l'analyser,
+    # jamais affichée, comparée ni conservée.
+    sql: str | None = field(default=None, repr=False, compare=False)
 
 
 def decode_header_value(value: str) -> str | None:
@@ -69,11 +72,16 @@ def _protocol_version(value: object) -> str | None:
     return None
 
 
-def inspect_request(body: bytes, headers: Iterable[tuple[str, str]]) -> Inspection | None:
+def inspect_request(
+    body: bytes,
+    headers: Iterable[tuple[str, str]],
+    sql_arguments: Mapping[str, str] | None = None,
+) -> Inspection | None:
     """Analyse le corps d'un POST MCP.
 
-    Renvoie ``None`` si le corps n'est pas une requête JSON-RPC lisible : la
-    requête est alors relayée sans être décrite.
+    ``sql_arguments`` donne, par outil, le nom de l'argument qui porte une
+    requête SQL. Renvoie ``None`` si le corps n'est pas une requête JSON-RPC
+    lisible : la requête est alors relayée sans être décrite.
     """
     try:
         message = json.loads(body)
@@ -122,10 +130,16 @@ def inspect_request(body: bytes, headers: Iterable[tuple[str, str]]) -> Inspecti
     tool = params.get("name")
     if not (isinstance(tool, str) and _TOOL_NAME.fullmatch(tool)):
         tool = None
+    sql = None
+    if tool is not None and sql_arguments is not None and tool in sql_arguments:
+        arguments = params.get("arguments")
+        candidate = arguments.get(sql_arguments[tool]) if isinstance(arguments, dict) else None
+        sql = candidate if isinstance(candidate, str) else None
     return Inspection(
         is_tool_call=True,
         tool=tool,
         invalid_tool_name=tool is None,
         protocol_version=version,
         header_mismatches=tuple(mismatches),
+        sql=sql,
     )

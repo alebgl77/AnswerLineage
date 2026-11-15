@@ -1,1 +1,1 @@
-"""Ingestion des événements OpenLineage (EF-EVT-01)."""
+"""Ingestion des événements OpenLineage."""

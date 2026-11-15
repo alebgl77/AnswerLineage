@@ -1,4 +1,4 @@
-"""Le proxy décide sur le corps de la requête, jamais sur les seuls en-têtes (EF-SEC-11)."""
+"""Le proxy décide sur le corps de la requête, jamais sur les seuls en-têtes."""
 
 from __future__ import annotations
 

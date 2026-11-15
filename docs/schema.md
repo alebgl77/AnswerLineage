@@ -1,6 +1,6 @@
 # Schéma du graphe
 
-Le lignage est stocké dans PostgreSQL (ADR-001). Le schéma est déclaré dans `api/src/answerlineage_api/store/schema.py` et créé par les migrations Alembic de `api/src/answerlineage_api/migrations/`. Un test compare la base migrée au schéma déclaré, colonne par colonne, contrainte par contrainte.
+Le lignage est stocké dans PostgreSQL, seule dépendance obligatoire d'AnswerLineage. Le schéma est déclaré dans `api/src/answerlineage_api/store/schema.py` et créé par les migrations Alembic de `api/src/answerlineage_api/migrations/`. Un test compare la base migrée au schéma déclaré, colonne par colonne, contrainte par contrainte.
 
 ## Du jeu de données au destinataire
 
@@ -19,9 +19,9 @@ write_edge   agent, tool
 | `run` | `run_id` | Requête d'un agent ou appel d'outil, run parent, trace, état |
 | `read_edge` | run, jeu de données, version | Niveau de précision, colonnes lues, origine (analyse ou réconciliation) |
 | `write_edge` | run, jeu de données, version | Sortie produite par le run |
-| `answer` | run et empreinte | Empreinte de la réponse, jamais son contenu (ADR-004) |
+| `answer` | run et empreinte | Empreinte de la réponse, jamais son contenu |
 | `delivery` | réponse, canal, référence du message | Diffusion de la réponse |
-| `recipient` | pseudonyme | Destinataire pseudonymisé (ENF-CONF-02) |
+| `recipient` | pseudonyme | Destinataire pseudonymisé, sans table de correspondance |
 | `event_raw` | empreinte de l'événement | Événement OpenLineage reçu tel quel, rejouable |
 
 Chaque arête porte `event_time`, l'heure déclarée par l'émetteur, et `recorded_at`, l'heure posée par la base.
@@ -40,4 +40,4 @@ ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run 
 ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run python -m answerlineage_api.store.migrate downgrade base
 ```
 
-Une migration nomme ses contraintes explicitement et fournit sa descente. Le partitionnement mensuel et la conservation arrivent avec US-0202.
+Une migration nomme ses contraintes explicitement et fournit sa descente. Les tables ne sont pas encore partitionnées ni purgées.

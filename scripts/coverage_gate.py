@@ -1,4 +1,4 @@
-"""Porte de couverture du pipeline (ENF-MAIN-01).
+"""Porte de couverture du pipeline.
 
 Lit le rapport JSON de coverage.py et vérifie, composant par composant, que la
 couverture de branches et la couverture combinée (lignes et branches) tiennent

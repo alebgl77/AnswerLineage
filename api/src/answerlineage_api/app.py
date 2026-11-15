@@ -18,7 +18,7 @@ from answerlineage_api.ingest.models import run_event_json_schema
 from answerlineage_api.ingest.routes import router as ingestion_router
 from answerlineage_api.store.engine import create_engine, database_url_from_environment
 
-# L'API a son propre numéro de version, distinct de celui du produit (PRD, section 13).
+# L'API a son propre numéro de version, distinct de celui du produit.
 API_VERSION = "1.0.0"
 DEFAULT_MAX_BATCH_EVENTS = 1000
 

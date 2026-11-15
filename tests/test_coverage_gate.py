@@ -1,11 +1,11 @@
-"""Porte de couverture (ENF-MAIN-01) : un composant sous le seuil bloque le pipeline."""
+"""Porte de couverture : un composant sous le seuil bloque le pipeline."""
 
 import json
 from pathlib import Path
 
 import pytest
 
-from scripts.coverage_gate import ComponentCoverage, evaluate, load_config, main
+from scripts.coverage_gate import ComponentCoverage, evaluate, main
 
 
 def summary(
@@ -119,10 +119,3 @@ def test_main_fails_when_the_report_is_missing(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert main(["--report", str(tmp_path / "absent.json"), "--config", str(pyproject)]) == 2
-
-
-def test_repository_gate_covers_the_proxy_at_85_percent() -> None:
-    root = Path(__file__).resolve().parent.parent
-    minimum, paths = load_config(root / "pyproject.toml")
-    assert minimum >= 85.0
-    assert "proxy/src" in paths

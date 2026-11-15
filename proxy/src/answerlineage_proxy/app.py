@@ -1,4 +1,4 @@
-"""Relais ASGI transparent devant un serveur MCP (US-0401, EF-CAP-01).
+"""Relais ASGI transparent devant un serveur MCP.
 
 Le proxy relaie chaque requête HTTP à l'identique et rend la réponse du
 serveur octet pour octet, en flux : il ne décompresse rien, ne réécrit rien et
@@ -7,8 +7,7 @@ section 7.6.1) ne sont pas transmis.
 
 À côté du relais, il lit le corps des requêtes POST pour reconnaître un appel
 d'outil et émet un événement par appel, une fois l'échange terminé. Aucun
-en-tête, argument ou résultat n'est conservé ni journalisé (ADR-004,
-ENF-SEC-05).
+en-tête, argument ou résultat n'est conservé ni journalisé.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ from uuid import UUID, uuid4
 
 import httpx
 
-from answerlineage_proxy.config import ProxySettings
+from answerlineage_proxy.config import ProxySettings, SqlTool
 from answerlineage_proxy.events import Outcome, build_tool_call_event
 from answerlineage_proxy.inspection import (
     HEADER_METHOD,
@@ -33,6 +32,7 @@ from answerlineage_proxy.inspection import (
     inspect_request,
 )
 from answerlineage_proxy.sink import EventSink
+from answerlineage_proxy.sql import SqlAnalysis, analyze_sql
 
 Scope = MutableMapping[str, Any]
 Message = MutableMapping[str, Any]
@@ -73,7 +73,7 @@ def quiet_transport_logs() -> None:
     """Relève le niveau des journaux du client HTTP, qui citeraient URL et en-têtes.
 
     Le réglage vaut pour tout le processus et résiste à un niveau DEBUG posé
-    sur le journal racine (ENF-SEC-05).
+    sur le journal racine.
     """
     for name in _TRANSPORT_LOGGERS:
         transport_logger = logging.getLogger(name)
@@ -153,9 +153,12 @@ class McpProxy:
         self._client = client
         self._owns_client = client is None
         self._clock = clock
-        # L'identifiant de run sera dérivé du contexte de trace W3C par US-0403.
+        # Identifiant aléatoire pour l'instant : il sera dérivé du contexte de trace W3C.
         self._new_run_id = new_run_id
         self._prefix = settings.upstream.raw_path.rstrip(b"/")
+        self._sql_arguments = {tool: rule.argument for tool, rule in settings.sql_tools.items()}
+        # Analyses de SQL en cours, menées après la réponse, hors du chemin de l'appel.
+        self._pending: set[asyncio.Task[None]] = set()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
@@ -167,8 +170,18 @@ class McpProxy:
             await receive()
             await send({"type": "websocket.close", "code": 1003})
 
+    async def drain(self) -> None:
+        """Attend la fin des analyses en cours, pour que leurs événements soient émis."""
+        while self._pending:
+            tasks = list(self._pending)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # Retrait explicite : attendre des tâches déjà terminées ne rend pas la
+            # main à la boucle, et leur rappel de fin n'aurait pas encore tourné.
+            self._pending.difference_update(tasks)
+
     async def aclose(self) -> None:
-        """Ferme les connexions vers le serveur MCP."""
+        """Termine les analyses en cours, puis ferme les connexions vers le serveur MCP."""
+        await self.drain()
         if self._client is not None and self._owns_client:
             await self._client.aclose()
             self._client = None
@@ -213,7 +226,7 @@ class McpProxy:
             await self._exchange(scope, headers, body, stream, upload_done, receive, send, exchange)
         finally:
             if inspection is not None and inspection.is_tool_call:
-                self._emit(inspection, exchange)
+                self._describe(inspection, exchange)
 
     def _inspect(self, method: str, headers: list[Header], body: bytes | None) -> Inspection | None:
         if method != "POST":
@@ -226,7 +239,7 @@ class McpProxy:
             for name, value in headers
             if name.lower() in _INSPECTED_HEADERS
         ]
-        inspection = inspect_request(body, inspected)
+        inspection = inspect_request(body, inspected, self._sql_arguments)
         if inspection is None:
             self.stats.uninspected += 1
         elif inspection.header_mismatches:
@@ -399,18 +412,57 @@ class McpProxy:
         )
         await send({"type": "http.response.body", "body": body, "more_body": False})
 
-    def _emit(self, inspection: Inspection, exchange: _Exchange) -> None:
+    def _describe(self, inspection: Inspection, exchange: _Exchange) -> None:
+        """Émet l'événement de l'appel, après analyse du SQL si l'outil est déclaré."""
+        event_time = self._clock()
+        rule = self.settings.sql_tools.get(inspection.tool) if inspection.tool else None
+        if rule is None or exchange.outcome != "COMPLETE":
+            # Un appel qui a échoué n'a rien fait lire à l'agent.
+            self._emit(inspection, exchange, event_time)
+            return
+        task = asyncio.ensure_future(
+            self._analyze_then_emit(inspection, exchange, event_time, rule)
+        )
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    async def _analyze_then_emit(
+        self, inspection: Inspection, exchange: _Exchange, event_time: datetime, rule: SqlTool
+    ) -> None:
+        if inspection.sql is None:
+            reads = SqlAnalysis(resolved=False, reason="missing_argument")
+        else:
+            # Dans un fil à part : l'analyse ne retient pas la boucle qui relaie les appels.
+            reads = await asyncio.to_thread(
+                analyze_sql,
+                inspection.sql,
+                rule.dialect,
+                default_catalog=rule.default_catalog,
+                default_db=rule.default_db,
+            )
+        self._emit(inspection, exchange, event_time, reads, rule.namespace)
+
+    def _emit(
+        self,
+        inspection: Inspection,
+        exchange: _Exchange,
+        event_time: datetime,
+        reads: SqlAnalysis | None = None,
+        namespace: str | None = None,
+    ) -> None:
         """Émet l'événement de l'appel. Un échec d'émission n'atteint jamais l'appel."""
         self.stats.tool_calls += 1
         try:
             event = build_tool_call_event(
                 run_id=self._new_run_id(),
-                event_time=self._clock(),
+                event_time=event_time,
                 outcome=exchange.outcome,
                 server=self.settings.server_name,
                 inspection=inspection,
                 http_status=exchange.status,
                 proxy_error=exchange.error,
+                reads=reads,
+                namespace=namespace,
             )
             self._sink.emit(event)
         except Exception as error:

@@ -20,9 +20,7 @@ def normalize_url(url: str) -> URL:
     """Accepte une URL PostgreSQL usuelle et impose le pilote psycopg 3."""
     parsed = make_url(url)
     if parsed.get_backend_name() != "postgresql":
-        raise DatabaseConfigurationError(
-            "AnswerLineage ne fonctionne qu'avec PostgreSQL (ADR-001)."
-        )
+        raise DatabaseConfigurationError("AnswerLineage ne fonctionne qu'avec PostgreSQL.")
     return parsed.set(drivername=_DRIVER)
 
 

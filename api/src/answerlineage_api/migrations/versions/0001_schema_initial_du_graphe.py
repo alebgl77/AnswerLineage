@@ -1,4 +1,4 @@
-"""Schéma initial du graphe (US-0201, EF-GRA-01).
+"""Schéma initial du graphe.
 
 Révision : 0001
 Précédente : aucune

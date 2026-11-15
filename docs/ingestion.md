@@ -1,6 +1,6 @@
 # API d'ingestion
 
-L'API reçoit des `RunEvent` OpenLineage (schéma 2-0-2, OpenLineage 1.55), les valide et les enregistre tels quels dans `event_raw` (EF-EVT-01). Elle est versionnée sous `/api/v1` et décrite par `/api/v1/openapi.json` (EF-API-01).
+L'API reçoit des `RunEvent` OpenLineage (schéma 2-0-2, OpenLineage 1.55), les valide et les enregistre tels quels dans `event_raw`. Elle est versionnée sous `/api/v1` et décrite par `/api/v1/openapi.json`.
 
 ```bash
 ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run uvicorn --factory answerlineage_api.app:create_app
@@ -41,7 +41,7 @@ Chaque événement d'un lot est validé séparément. Un événement invalide es
 
 ## Validation
 
-Le contrat est le schéma officiel d'OpenLineage, copié dans `spec/openlineage/2-0-2/`. L'API le traduit en modèles Pydantic pour la vitesse ; un test compare les deux, événement par événement, sur des événements valides et invalides. L'API n'ajoute pour l'instant aucune règle au-delà du schéma : la validation des identifiants arrive avec US-2001, les limites de taille et de profondeur avec US-2002.
+Le contrat est le schéma officiel d'OpenLineage, copié dans `spec/openlineage/2-0-2/`. L'API le traduit en modèles Pydantic pour la vitesse ; un test compare les deux, événement par événement, sur des événements valides et invalides.
 
 Deux textes que PostgreSQL ne peut pas conserver sont rejetés (`unstorable_text`) : le caractère nul et les demi-codets Unicode isolés.
 
@@ -51,9 +51,7 @@ L'identifiant d'un événement est l'empreinte SHA-256 de sa forme canonique. Un
 
 ## Limites connues
 
-| Limite | Story qui la lève |
-| --- | --- |
-| Aucune authentification des émetteurs | US-2010, US-1701 |
-| Le corps est lu en entier avant d'être contrôlé | US-2002 |
-| Les événements enregistrés ne sont pas encore projetés dans le graphe | US-0304 |
-| Aucune métrique d'ingestion | US-1803 |
+- Les émetteurs ne sont pas authentifiés : l'API ne s'expose pas hors d'un réseau de confiance.
+- Le corps est lu en entier avant d'être contrôlé ; seule la taille du lot est bornée.
+- Les identifiants reçus (noms de jeux de données, d'outils, d'agents) ne sont pas encore validés au-delà du schéma.
+- L'API n'exporte pas encore de métriques.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Détection de secrets avec gitleaks (US-0103, ENF-SEC-02).
+# Détection de secrets avec gitleaks.
 #
 #   scripts/gitleaks.sh scan      analyse tout l'historique du dépôt
 #   scripts/gitleaks.sh selftest  vérifie que le détecteur bloque bien un secret

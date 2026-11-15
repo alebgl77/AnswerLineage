@@ -1,4 +1,4 @@
-"""US-0301 : un événement invalide est rejeté avec le chemin du champ fautif."""
+"""Un événement invalide est rejeté avec le chemin du champ fautif."""
 
 from __future__ import annotations
 

@@ -21,6 +21,7 @@ from answerlineage_proxy.config import (
     ENV_UPSTREAM,
     ProxyConfigurationError,
     ProxySettings,
+    SqlTool,
 )
 from answerlineage_proxy.sink import NullSink
 
@@ -53,6 +54,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_INSPECTED_BYTES,
         help="taille de corps au-delà de laquelle une requête est relayée sans être lue",
     )
+    parser.add_argument(
+        "--sql-tool",
+        action="append",
+        default=[],
+        metavar="OUTIL=ARGUMENT:DIALECTE[:ESPACE]",
+        help=(
+            "outil dont l'argument porte une requête SQL à analyser, par exemple "
+            "execute_sql=query:bigquery (dialectes : bigquery, snowflake, postgres)"
+        ),
+    )
     return parser
 
 
@@ -76,6 +87,7 @@ def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str
         port=port,
         preserve_host=not args.no_preserve_host,
         max_inspected_bytes=args.max_inspected_bytes,
+        sql_tools=dict(SqlTool.parse(value) for value in args.sql_tool),
     )
 
 
@@ -95,7 +107,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     logger.warning(
         "Aucune destination d'événements : les appels d'outils sont comptés, "
-        "l'envoi vers l'API d'ingestion arrive avec la boîte d'envoi (US-0406)."
+        "l'envoi vers l'API d'ingestion n'est pas encore disponible."
     )
     uvicorn.run(
         McpProxy(settings, NullSink()),

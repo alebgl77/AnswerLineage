@@ -1,4 +1,4 @@
-"""US-0401 : le proxy relaie à l'identique et émet un événement par appel d'outil."""
+"""Le proxy relaie à l'identique et émet un événement par appel d'outil."""
 
 from __future__ import annotations
 
@@ -339,7 +339,7 @@ async def test_failing_sink_never_reaches_the_call(
 async def test_nothing_sensitive_reaches_events_or_logs(
     bench: BenchFactory, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Ni jeton, ni paramètre recopié en en-tête, ni argument, ni résultat (ENF-SEC-05, ADR-004)."""
+    """Ni jeton, ni paramètre recopié en en-tête, ni argument, ni résultat."""
     headers = [
         ("authorization", TOKEN_CANARY),
         ("mcp-param-region", PARAM_CANARY),

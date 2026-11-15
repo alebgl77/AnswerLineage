@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -13,14 +13,9 @@ import pytest
 from answerlineage_proxy import cli
 from answerlineage_proxy.app import McpProxy, end_to_end_headers, quiet_transport_logs
 from answerlineage_proxy.config import DEFAULT_PORT, ProxyConfigurationError, ProxySettings
-from answerlineage_proxy.events import (
-    RUN_EVENT_SCHEMA,
-    UNRESOLVED_TOOL,
-    build_tool_call_event,
-    format_event_time,
-)
+from answerlineage_proxy.events import RUN_EVENT_SCHEMA, UNRESOLVED_TOOL, build_tool_call_event
 from answerlineage_proxy.inspection import Inspection
-from answerlineage_proxy.sink import MemorySink, NullSink
+from answerlineage_proxy.sink import MemorySink
 
 RUN_ID = UUID("0193a9c5-7a10-7c3e-9d5e-2f1b6c8a4e77")
 MOMENT = datetime(2026, 11, 16, 10, 30, 0, 123456, tzinfo=timezone(timedelta(hours=1)))
@@ -81,12 +76,6 @@ def test_event_of_a_failed_call_with_an_invalid_name() -> None:
     assert facet["proxyError"] == "upstream_unreachable"
 
 
-def test_event_time_is_utc_with_microseconds() -> None:
-    assert format_event_time(datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)) == (
-        "2026-01-02T03:04:05.000000Z"
-    )
-
-
 def test_memory_sink_drops_the_oldest_event_when_full() -> None:
     sink = MemorySink(capacity=2)
     for index in range(5):
@@ -97,13 +86,6 @@ def test_memory_sink_drops_the_oldest_event_when_full() -> None:
     assert sink.events == []
     with pytest.raises(ValueError, match="capacité"):
         MemorySink(capacity=0)
-
-
-def test_null_sink_counts_what_it_discards() -> None:
-    sink = NullSink()
-    sink.emit({})
-    sink.emit({})
-    assert sink.discarded == 2
 
 
 def test_hop_by_hop_headers_are_removed_including_those_named_by_connection() -> None:

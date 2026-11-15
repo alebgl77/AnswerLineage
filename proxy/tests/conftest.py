@@ -16,7 +16,7 @@ import pytest
 import uvicorn
 
 from answerlineage_proxy.app import McpProxy, Message, Receive, Scope, Send
-from answerlineage_proxy.config import ProxySettings
+from answerlineage_proxy.config import ProxySettings, SqlTool
 from answerlineage_proxy.sink import MemorySink
 
 TOOL_RESULT = (
@@ -217,7 +217,11 @@ BenchFactory = Callable[..., AbstractAsyncContextManager[Bench]]
 def bench() -> BenchFactory:
     @asynccontextmanager
     async def start(
-        *, prefix: str = "", preserve_host: bool = True, max_inspected_bytes: int = 1024 * 1024
+        *,
+        prefix: str = "",
+        preserve_host: bool = True,
+        max_inspected_bytes: int = 1024 * 1024,
+        sql_tools: dict[str, SqlTool] | None = None,
     ) -> AsyncIterator[Bench]:
         upstream = FakeMcpServer()
         sink = MemorySink()
@@ -227,6 +231,7 @@ def bench() -> BenchFactory:
                 "meteo",
                 preserve_host=preserve_host,
                 max_inspected_bytes=max_inspected_bytes,
+                sql_tools=sql_tools,
             )
             proxy = McpProxy(settings, sink)
             async with running(proxy, transparent=True) as proxy_url:
@@ -273,9 +278,11 @@ async def exchange(
         return Exchange(response.status_code, end_to_end, body)
 
 
-def tool_call(name: object = "get_weather", **meta: object) -> bytes:
+def tool_call(name: object = "get_weather", arguments: object = None, **meta: object) -> bytes:
     """Corps d'un appel d'outil, avec une mise en forme volontairement irrégulière."""
-    params: dict[str, Any] = {"name": name, "arguments": {"location": "Séville, ES"}}
+    if arguments is None:
+        arguments = {"location": "Séville, ES"}
+    params: dict[str, Any] = {"name": name, "arguments": arguments}
     if meta:
         params["_meta"] = meta
     message = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params}

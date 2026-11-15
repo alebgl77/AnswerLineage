@@ -1,4 +1,4 @@
-"""US-0201 : le graphe relie le jeu de données au destinataire (EF-GRA-01)."""
+"""Le graphe relie le jeu de données au destinataire."""
 
 from __future__ import annotations
 

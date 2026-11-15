@@ -1,4 +1,4 @@
-"""US-0201 : les migrations créent le schéma et la descente le retire proprement."""
+"""Les migrations créent le schéma et la descente le retire proprement."""
 
 from __future__ import annotations
 

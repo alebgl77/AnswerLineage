@@ -1,13 +1,15 @@
-"""Contrôle de politique des workflows GitHub Actions (US-0103, ENF-SEC-02).
+"""Contrôle de politique des workflows GitHub Actions.
 
-La chaîne de construction ne doit pas devenir un vecteur d'attaque (PRD,
-section 13). Ce contrôle échoue dès qu'un workflow :
+La chaîne de construction ne doit pas devenir un vecteur d'attaque. Ce contrôle
+échoue dès qu'un workflow, une action composite ou un script du dépôt :
 
 - référence une action par balise ou par branche au lieu d'une empreinte de commit ;
 - utilise une image de conteneur sans empreinte ``@sha256:`` ;
 - ne déclare pas de permissions, ou en accorde en écriture à tout le workflow ;
 - se déclenche sur ``pull_request_target`` ;
-- laisse ``actions/checkout`` conserver le jeton du pipeline.
+- laisse ``actions/checkout`` conserver le jeton du pipeline ;
+- a un job ``ci-ok``, seul contrôle exigé avant fusion, qui ne dépend pas de tous
+  les autres jobs.
 
 Usage : ``python -m scripts.check_workflows [fichier ...]``
 """
@@ -31,6 +33,8 @@ _IMAGE_IN_SCRIPT = re.compile(
     r"mcr\.microsoft\.com|public\.ecr\.aws|[\w.-]+\.pkg\.dev)/[^\s\"'`;|&)]+)"
 )
 _WRITE_ALL = "write-all"
+# Job exigé par la protection de la branche principale.
+GATE_JOB = "ci-ok"
 
 
 @dataclass(frozen=True)
@@ -174,6 +178,43 @@ def check_workflow(path: str, workflow: object) -> list[Violation]:
                 )
         for index, step in _steps(job):
             violations.extend(_step_violations(path, f"{where}, étape {index}", step))
+    violations.extend(_gate_violations(path, _mapping(workflow.get("jobs"))))
+    return violations
+
+
+def _gate_violations(path: str, jobs: Mapping[str, Any]) -> Iterator[Violation]:
+    """Le job exigé avant fusion doit échouer dès qu'un autre job n'est pas vert."""
+    gate = jobs.get(GATE_JOB)
+    if gate is None:
+        return
+    gate = _mapping(gate)
+    needs = gate.get("needs")
+    needed = {needs} if isinstance(needs, str) else set(needs or [])
+    missing = sorted(set(jobs) - {GATE_JOB} - needed)
+    where = f"job {GATE_JOB}"
+    if missing:
+        yield Violation(
+            path,
+            where,
+            "porte-complete",
+            f"le job doit dépendre de tous les autres ; il manque : {', '.join(missing)}",
+        )
+    if "always()" not in str(gate.get("if", "")):
+        yield Violation(
+            path,
+            where,
+            "porte-complete",
+            "le job doit s'exécuter même quand un autre échoue (if: always())",
+        )
+
+
+def check_script(path: str, script: str) -> list[Violation]:
+    """Renvoie les images non épinglées qu'un script du dépôt référence."""
+    violations = []
+    for match in _IMAGE_IN_SCRIPT.finditer(script):
+        problem = _image_violation(match.group(1))
+        if problem:
+            violations.append(Violation(path, "script", "image-epinglee", problem))
     return violations
 
 
@@ -188,21 +229,25 @@ def check_action(path: str, action: object) -> list[Violation]:
 
 
 def discover(root: Path) -> list[Path]:
-    """Workflows et actions composites du dépôt."""
+    """Workflows, actions composites et scripts du dépôt."""
     github = root / ".github"
     found = [
         *github.glob("workflows/*.yml"),
         *github.glob("workflows/*.yaml"),
         *github.glob("actions/**/action.yml"),
         *github.glob("actions/**/action.yaml"),
+        *(root / "scripts").glob("*.sh"),
     ]
     return sorted(found)
 
 
 def check_file(path: Path) -> list[Violation]:
     try:
-        document = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as error:
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".sh":
+            return check_script(str(path), text)
+        document = yaml.safe_load(text)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
         return [Violation(str(path), "fichier", "lisible", type(error).__name__)]
     if path.name.startswith("action."):
         return check_action(str(path), document)

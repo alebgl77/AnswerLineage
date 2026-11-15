@@ -8,7 +8,7 @@ setup: ## Installe l'environnement (uv) et les hooks pre-commit
 	uv sync --all-packages --locked
 	uv run pre-commit install
 
-check: policy format-check lint typecheck test coverage-gate ## Porte de toute story : politique, format, lint, typage strict, tests, couverture
+check: policy format-check lint typecheck test coverage-gate ## Porte de toute contribution : politique, format, lint, typage strict, tests, couverture
 
 policy: ## Contrôle de politique des workflows (actions épinglées, permissions minimales)
 	uv run python -m scripts.check_workflows

@@ -1,4 +1,4 @@
-"""US-0401 : un vrai client et un vrai serveur MCP fonctionnent au travers du proxy.
+"""Un vrai client et un vrai serveur MCP fonctionnent au travers du proxy.
 
 Le SDK MCP officiel parle la révision 2026-07-28 (sans session) et, en mode
 ``legacy``, la révision 2025-11-25 (session, flux GET, clôture par DELETE).

@@ -14,8 +14,8 @@ dev = [
     "mcp>=1.20",
     "mypy>=1.18",
     "pre-commit>=4.3",
-    "pytest>=8.4",
     "pytest-cov>=7.0",
+    "pytest>=8.4",
     "pyyaml>=6.0",
     "ruff>=0.14",
     "testcontainers[postgres]>=4.10",
@@ -25,16 +25,23 @@ dev = [
 
 [tool.uv]
 package = false
-# Délai de carence : aucune version publiée depuis moins de 7 jours (PRD, section 13).
+# Délai de carence : une version publiée depuis moins de 7 jours n'est pas adoptée.
 exclude-newer = "7 days"
 
 [tool.uv.workspace]
-members = ["proxy", "adapters", "collector", "api", "workers", "mcp-server"]
+members = [
+    "api",
+    "proxy",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-src = ["proxy/src", "adapters/src", "collector/src", "api/src", "workers/src", "mcp-server/src", "."]
+src = [
+    "api/src",
+    "proxy/src",
+    ".",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "S", "C4", "SIM", "PTH", "RUF"]
@@ -52,21 +59,13 @@ warn_unreachable = true
 namespace_packages = true
 explicit_package_bases = true
 mypy_path = [
-    "proxy/src",
-    "adapters/src",
-    "collector/src",
     "api/src",
-    "workers/src",
-    "mcp-server/src",
+    "proxy/src",
     ".",
 ]
 files = [
-    "proxy",
-    "adapters",
-    "collector",
     "api",
-    "workers",
-    "mcp-server",
+    "proxy",
     "scripts",
     "tests",
     "conftest.py",
@@ -79,7 +78,11 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config", "-ra"]
 pythonpath = ["."]
-testpaths = ["tests", "proxy", "adapters", "collector", "api", "workers", "mcp-server"]
+testpaths = [
+    "tests",
+    "api",
+    "proxy",
+]
 xfail_strict = true
 markers = [
     "integration: test sur un PostgreSQL réel, démarré par Testcontainers (Docker requis)",
@@ -88,28 +91,21 @@ markers = [
 [tool.coverage.run]
 branch = true
 source = [
-    "answerlineage_proxy",
-    "answerlineage_adapters",
-    "answerlineage_collector",
-    "answerlineage_api",
-    "answerlineage_workers",
-    "answerlineage_mcp_server",
+    "scripts",
+    "api/src",
+    "proxy/src",
 ]
 
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
 
-# Porte de couverture (ENF-MAIN-01) : chaque composant suivi tient le seuil, en
-# couverture de branches comme en couverture combinée. Le moteur d'impact
-# rejoint la liste avec sa première story.
+# Porte de couverture : chaque chemin suivi tient le seuil, en couverture de
+# branches comme en couverture combinée des lignes et des branches.
 [tool.answerlineage.coverage_gate]
 minimum = 85
 paths = [
-    "proxy/src",
-    "adapters/src",
-    "collector/src",
+    "scripts",
     "api/src",
-    "workers/src",
-    "mcp-server/src",
+    "proxy/src",
 ]

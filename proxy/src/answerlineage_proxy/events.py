@@ -1,7 +1,7 @@
-"""Événements OpenLineage émis par le proxy : un par appel d'outil (EF-CAP-01).
+"""Événements OpenLineage émis par le proxy : un par appel d'outil.
 
 Un événement ne porte aucun contenu : ni argument, ni résultat, ni en-tête,
-ni jeton (ADR-004, ENF-SEC-05).
+ni jeton.
 """
 
 from __future__ import annotations
@@ -12,16 +12,21 @@ from uuid import UUID
 
 from answerlineage_proxy import __version__
 from answerlineage_proxy.inspection import Inspection
+from answerlineage_proxy.sql import SqlAnalysis
 
 Outcome = Literal["COMPLETE", "FAIL", "ABORT"]
 
 PRODUCER = f"https://github.com/alebgl77/AnswerLineage/tree/{__version__}/proxy"
 RUN_EVENT_SCHEMA = "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent"
-# Les schémas des facettes propres sont publiés à une URL immuable par US-0303.
+# Adresse provisoire : les schémas des facettes propres seront publiés à une URL immuable.
 TOOL_CALL_FACET = "answerlineage_toolCall"
 TOOL_CALL_FACET_SCHEMA = (
     "https://github.com/alebgl77/AnswerLineage/blob/main/spec/facets/"
     "ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
+)
+# Facette standard : les champs d'un jeu de données lu sont ceux que la requête lit.
+SCHEMA_FACET_SCHEMA = (
+    "https://openlineage.io/spec/facets/1-2-0/SchemaDatasetFacet.json#/$defs/SchemaDatasetFacet"
 )
 # Nom de job d'un appel dont le nom d'outil n'a pas une forme admise.
 UNRESOLVED_TOOL = "outil-non-resolu"
@@ -40,8 +45,14 @@ def build_tool_call_event(
     inspection: Inspection,
     http_status: int | None = None,
     proxy_error: str | None = None,
+    reads: SqlAnalysis | None = None,
+    namespace: str | None = None,
 ) -> dict[str, Any]:
-    """Construit le RunEvent d'un appel d'outil relayé."""
+    """Construit le RunEvent d'un appel d'outil relayé.
+
+    ``reads`` est l'analyse de la requête SQL d'un outil déclaré : chaque table
+    lue devient un jeu de données d'entrée, sous ``namespace``.
+    """
     facet: dict[str, Any] = {
         "_producer": PRODUCER,
         "_schemaURL": TOOL_CALL_FACET_SCHEMA,
@@ -58,6 +69,22 @@ def build_tool_call_event(
         facet["httpStatus"] = http_status
     if proxy_error is not None:
         facet["proxyError"] = proxy_error
+    inputs: list[dict[str, Any]] = []
+    if reads is not None:
+        facet["readResolution"] = "resolved" if reads.resolved else "unresolved"
+        if reads.reason is not None:
+            facet["unresolvedReason"] = reads.reason
+        for table in reads.tables:
+            dataset: dict[str, Any] = {"namespace": namespace or "", "name": table.name}
+            if table.precision == "columns":
+                dataset["facets"] = {
+                    "schema": {
+                        "_producer": PRODUCER,
+                        "_schemaURL": SCHEMA_FACET_SCHEMA,
+                        "fields": [{"name": column} for column in table.columns],
+                    }
+                }
+            inputs.append(dataset)
     return {
         "eventType": outcome,
         "eventTime": format_event_time(event_time),
@@ -65,6 +92,6 @@ def build_tool_call_event(
         "schemaURL": RUN_EVENT_SCHEMA,
         "run": {"runId": str(run_id), "facets": {TOOL_CALL_FACET: facet}},
         "job": {"namespace": f"mcp://{server}", "name": inspection.tool or UNRESOLVED_TOOL},
-        "inputs": [],
+        "inputs": inputs,
         "outputs": [],
     }

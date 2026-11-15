@@ -1,6 +1,4 @@
-# docs
-
-PRD, ADR, menaces par surface, runbooks.
+# Documentation
 
 - [Pipeline d'intégration continue](ci.md)
 - [Schéma du graphe](schema.md)

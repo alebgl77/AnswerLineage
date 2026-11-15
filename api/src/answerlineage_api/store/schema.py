@@ -1,4 +1,4 @@
-"""Schéma du graphe de lignage (EF-GRA-01).
+"""Schéma du graphe de lignage.
 
 Le graphe va du jeu de données au destinataire :
 ``dataset`` → ``read_edge`` → ``run`` → ``answer`` → ``delivery`` → ``recipient``.
@@ -166,7 +166,7 @@ answer = Table(
     metadata,
     Column("id", BigInteger, Identity(always=True), primary_key=True),
     Column("run_id", Uuid, ForeignKey("run.run_id"), nullable=False),
-    # Empreinte de la réponse : le contenu n'est jamais stocké (ADR-004).
+    # Empreinte de la réponse : le contenu n'est jamais stocké.
     Column("fingerprint", Text, nullable=False),
     Column("event_time", DateTime(timezone=True), nullable=False),
     _recorded_at(),
@@ -190,7 +190,7 @@ recipient = Table(
     "recipient",
     metadata,
     Column("id", BigInteger, Identity(always=True), primary_key=True),
-    # Pseudonyme HMAC du destinataire : aucune table de correspondance (ENF-CONF-02).
+    # Pseudonyme HMAC du destinataire : aucune table de correspondance.
     Column("pseudonym", Text, nullable=False),
     _recorded_at(),
     UniqueConstraint("pseudonym"),

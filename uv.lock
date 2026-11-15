@@ -14,12 +14,8 @@ exclude-newer-span = "P7D"
 [manifest]
 members = [
     "answerlineage",
-    "answerlineage-adapters",
     "answerlineage-api",
-    "answerlineage-collector",
-    "answerlineage-mcp-server",
     "answerlineage-proxy",
-    "answerlineage-workers",
 ]
 
 [[package]]
@@ -96,11 +92,6 @@ dev = [
 ]
 
 [[package]]
-name = "answerlineage-adapters"
-version = "0.0.0"
-source = { editable = "adapters" }
-
-[[package]]
 name = "answerlineage-api"
 version = "0.0.0"
 source = { editable = "api" }
@@ -122,34 +113,21 @@ requires-dist = [
 ]
 
 [[package]]
-name = "answerlineage-collector"
-version = "0.0.0"
-source = { editable = "collector" }
-
-[[package]]
-name = "answerlineage-mcp-server"
-version = "0.0.0"
-source = { editable = "mcp-server" }
-
-[[package]]
 name = "answerlineage-proxy"
 version = "0.0.0"
 source = { editable = "proxy" }
 dependencies = [
     { name = "httpx" },
+    { name = "sqlglot" },
     { name = "uvicorn" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
+    { name = "sqlglot", specifier = ">=27.0" },
     { name = "uvicorn", specifier = ">=0.38" },
 ]
-
-[[package]]
-name = "answerlineage-workers"
-version = "0.0.0"
-source = { editable = "workers" }
 
 [[package]]
 name = "anyio"
@@ -1843,6 +1821,15 @@ wheels = [
 [package.optional-dependencies]
 asyncio = [
     { name = "greenlet" },
+]
+
+[[package]]
+name = "sqlglot"
+version = "30.30.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b8/93/cedd3e86d49841c9509979dce3f4470243691fbd5c5227d2988d4903531e/sqlglot-30.30.0.tar.gz", hash = "sha256:b8e344042c85d7baa1d0d827127dfe1611ce9ac59bceab6fe370665baeb14ce7", size = 6186227, upload-time = "2026-11-06T13:54:57.133Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bc/1f/2472bab660417265daa9cf6baf7870583bfbd447608b525b0071cc4c5448/sqlglot-30.30.0-py3-none-any.whl", hash = "sha256:06c4c212a7868c7dcff0fd0fda348dd3c5cbad40137b3083a70ecdfe22921cf9", size = 807597, upload-time = "2026-11-06T13:54:54.435Z" },
 ]
 
 [[package]]

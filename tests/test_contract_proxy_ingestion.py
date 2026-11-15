@@ -12,6 +12,7 @@ from answerlineage_api.ingest.models import validate_event
 from answerlineage_api.ingest.store import event_identifier
 from answerlineage_proxy.events import build_tool_call_event
 from answerlineage_proxy.inspection import Inspection
+from answerlineage_proxy.sql import analyze_sql
 from api.tests.events import official_run_event_schema
 
 OFFICIAL = Draft202012Validator(official_run_event_schema(), format_checker=FormatChecker())
@@ -44,3 +45,26 @@ def test_proxy_event_is_a_valid_openlineage_run_event(name: str) -> None:
     assert accepted.job.namespace == "mcp://entrepot"
     assert "answerlineage_toolCall" in accepted.run.facets
     assert len(event_identifier(event)) == 64
+
+
+def test_proxy_event_with_sql_reads_is_a_valid_openlineage_run_event() -> None:
+    sql = "SELECT c.nom, fx.taux FROM crm.clients c JOIN ref.taux_change fx ON fx.devise = c.devise"
+    event = build_tool_call_event(
+        run_id=uuid4(),
+        event_time=datetime.now(UTC),
+        outcome="COMPLETE",
+        server="entrepot",
+        inspection=Inspection(is_tool_call=True, tool="execute_sql"),
+        http_status=200,
+        reads=analyze_sql(sql + " WHERE fx.date = '2026-11-02'", "bigquery"),
+        namespace="bigquery",
+    )
+    assert list(OFFICIAL.iter_errors(event)) == []
+    accepted, errors = validate_event(event)
+    assert errors == []
+    assert accepted is not None
+    assert [(item.namespace, item.name) for item in accepted.inputs] == [
+        ("bigquery", "crm.clients"),
+        ("bigquery", "ref.taux_change"),
+    ]
+    assert set(accepted.inputs[1].facets) == {"schema"}

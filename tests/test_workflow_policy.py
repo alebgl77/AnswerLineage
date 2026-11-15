@@ -1,4 +1,4 @@
-"""US-0103 : une action référencée par balise fait échouer le contrôle de politique."""
+"""Une action référencée par balise fait échouer le contrôle de politique."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from scripts.check_workflows import (
     Violation,
     check_action,
     check_file,
+    check_script,
     check_workflow,
     discover,
     main,
@@ -147,6 +148,40 @@ def test_image_pulled_in_a_script_must_be_pinned_by_digest() -> None:
     assert rules(check_workflow("ci.yml", workflow([step]))) == ["image-epinglee"]
 
 
+def gated(needs: object, condition: object = "${{ always() }}") -> dict[str, Any]:
+    document = workflow()
+    document["jobs"]["tests"] = {"runs-on": "ubuntu-24.04", "steps": []}
+    document["jobs"]["ci-ok"] = {"runs-on": "ubuntu-24.04", "needs": needs, "steps": []}
+    if condition is not None:
+        document["jobs"]["ci-ok"]["if"] = condition
+    return document
+
+
+def test_required_job_must_depend_on_every_other_job() -> None:
+    """Un job oublié dans la porte ne bloquerait aucune fusion."""
+    assert check_workflow("ci.yml", gated(["build", "tests"])) == []
+    violations = check_workflow("ci.yml", gated(["build"]))
+    assert rules(violations) == ["porte-complete"]
+    assert "il manque : tests" in violations[0].message
+    assert rules(check_workflow("ci.yml", gated("build"))) == ["porte-complete"]
+    assert rules(check_workflow("ci.yml", gated(None))) == ["porte-complete"]
+
+
+def test_required_job_must_run_even_when_another_job_fails() -> None:
+    """Sans « always() », le job serait sauté, et un contrôle sauté ne bloque pas."""
+    assert rules(check_workflow("ci.yml", gated(["build", "tests"], None))) == ["porte-complete"]
+    assert rules(check_workflow("ci.yml", gated(["build", "tests"], "success()"))) == [
+        "porte-complete"
+    ]
+
+
+def test_image_referenced_by_a_script_must_be_pinned_by_digest() -> None:
+    pinned = f'IMAGE="ghcr.io/org/outil:v1@{DIGEST}"\ndocker run --rm "$IMAGE" scan\n'
+    assert check_script("scripts/outil.sh", pinned) == []
+    floating = "docker run --rm ghcr.io/org/outil:v1 scan\n"
+    assert rules(check_script("scripts/outil.sh", floating)) == ["image-epinglee"]
+
+
 def test_composite_action_steps_are_checked() -> None:
     action = {"runs": {"using": "composite", "steps": [{"uses": "actions/cache@v5"}]}}
     assert rules(check_action("action.yml", action)) == ["action-epinglee"]
@@ -178,8 +213,14 @@ def test_files_are_discovered_and_checked(
         encoding="utf-8",
     )
 
-    assert discover(tmp_path) == sorted([action, broken, good, bad])
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    script = scripts / "analyse.sh"
+    script.write_text("docker run quay.io/org/analyseur:2 /src\n", encoding="utf-8")
+
+    assert discover(tmp_path) == sorted([action, broken, good, bad, script])
     assert check_file(good) == []
+    assert rules(check_file(script)) == ["image-epinglee"]
     assert rules(check_file(broken)) == ["lisible"]
     assert rules(check_file(action)) == ["action-epinglee"]
 

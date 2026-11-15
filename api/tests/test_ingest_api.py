@@ -1,4 +1,4 @@
-"""US-0301 : l'API d'ingestion valide et enregistre des RunEvents OpenLineage par lots."""
+"""L'API d'ingestion valide et enregistre des RunEvents OpenLineage par lots."""
 
 from __future__ import annotations
 

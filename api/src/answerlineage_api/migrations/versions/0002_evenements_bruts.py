@@ -1,4 +1,4 @@
-"""Événements bruts reçus par l'API d'ingestion (US-0301, EF-EVT-01).
+"""Événements bruts reçus par l'API d'ingestion.
 
 Révision : 0002
 Précédente : 0001
