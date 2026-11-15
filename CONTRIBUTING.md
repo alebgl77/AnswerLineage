@@ -37,6 +37,7 @@ Toute contribution passe `make check` : politique du dépôt, compatibilité de 
 | `make contract` | Compare l'API et les schémas de facettes à ceux de la branche cible : un changement incompatible échoue |
 | `make ui` | Construit l'explorateur dans `ui/dist` |
 | `make e2e` | Tests de l'explorateur dans Chromium, après `make ui` et `uv run playwright install chromium` |
+| `make abuse` | Rejoue le corpus d'abus seul : chaque attaque doit être bloquée, un échec nomme le cas |
 | `make image` | Construit l'image, produit son SBOM et l'analyse : une vulnérabilité haute ou critique bloque |
 
 ## Ce qui est attendu d'un changement

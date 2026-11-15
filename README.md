@@ -63,6 +63,7 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Empreintes à clé des appels, et SQL conservé sans ses littéraux | Disponible |
 | Couverture du lignage : part des appels captés, trous connus, émetteurs muets | Disponible |
 | Kit de conformité des émetteurs, avec preuve de non-fuite par canari | Disponible |
+| Corpus d'abus rejoué à chaque merge request : 94 attaques, par famille, contre le proxy, l'API et l'explorateur | Disponible |
 | Image analysée à chaque merge request : SBOM, vulnérabilités hautes et critiques bloquantes | Disponible |
 | Envoi des événements du proxy vers l'API | À venir |
 | Propagation fine (colonnes, lignes, versions) et transitive (mémoire, tables dérivées) | À venir |
@@ -225,7 +226,7 @@ L'agent se connecte alors à `http://127.0.0.1:8717` au lieu du serveur : rien d
 - [Explorateur](docs/explorateur.md) : le graphe en cinq colonnes, le mode Propager, les adresses partageables
 - [Workers](docs/workers.md) : file de traitement, garanties, projection dans le graphe
 - [Schéma du graphe](docs/schema.md) : tables, écritures, migrations
-- [Entreprise synthétique et corpus de vérité](docs/corpus.md) : ce qu'ils contiennent, leurs événements, la vérité des incidents
+- [Entreprise synthétique, corpus de vérité et corpus d'abus](docs/corpus.md) : ce qu'ils contiennent, la vérité des incidents, les attaques rejouées et celles qui restent ouvertes
 - [Pipeline d'intégration continue](docs/ci.md) : contrôles, chaîne d'approvisionnement
 
 ## Contribuer
