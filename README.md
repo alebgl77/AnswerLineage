@@ -38,6 +38,7 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 - **La capture ne bloque jamais un agent.** Le proxy décrit l'appel après l'avoir relayé ; une panne d'AnswerLineage n'arrête rien.
 - **Standards ouverts.** OpenLineage pour les événements, MCP pour la capture : les catalogues de données en place restent utilisables.
 - **Écoute locale par défaut.** Le proxy et l'API refusent une requête dont l'hôte ou l'origine n'est pas attendu : une page web ouverte sur le poste ne les atteint pas.
+- **Il sait ce qu'il ignore.** Chaque émetteur publie ce qu'il a vu ; un résultat d'impact dit quelle part des appels a été captée sur la période, et les trous connus. « Aucune réponse touchée » ne vaut que si l'on sait ce qui a été vu.
 - **Toute entrée est tenue pour hostile.** Un nom reçu n'entre dans le graphe que s'il a la forme d'un nom ; toute requête est bornée en taille, en profondeur et en durée ; une erreur ne renvoie jamais la valeur reçue.
 - **Une seule dépendance : PostgreSQL.** Aucun service cloud propriétaire, installation possible hors ligne.
 
@@ -60,6 +61,7 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Schémas JSON versionnés des facettes propres, pour écrire un émetteur sans lire le code | Disponible |
 | Identifiant de run dérivé du contexte de trace W3C : lignage et traces se rejoignent | Disponible |
 | Empreintes à clé des appels, et SQL conservé sans ses littéraux | Disponible |
+| Couverture du lignage : part des appels captés, trous connus, émetteurs muets | Disponible |
 | Kit de conformité des émetteurs, avec preuve de non-fuite par canari | Disponible |
 | Image analysée à chaque merge request : SBOM, vulnérabilités hautes et critiques bloquantes | Disponible |
 | Envoi des événements du proxy vers l'API | À venir |
