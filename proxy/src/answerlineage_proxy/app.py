@@ -21,7 +21,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, MutableMapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import unquote_to_bytes
 
@@ -29,6 +29,12 @@ import httpx
 
 from answerlineage_proxy.analyzer import Origin, SqlAnalyzer
 from answerlineage_proxy.config import ProxySettings, SqlTool
+from answerlineage_proxy.coverage import (
+    DEFAULT_WINDOW,
+    CoverageWindows,
+    Report,
+    report_periodically,
+)
 from answerlineage_proxy.events import Outcome, build_tool_call_event
 from answerlineage_proxy.fingerprint import RESULT_LABEL, Digest, arguments_fingerprint
 from answerlineage_proxy.inspection import (
@@ -217,10 +223,17 @@ class McpProxy:
         client: httpx.AsyncClient | None = None,
         clock: Callable[[], datetime] = _now,
         analyzer: SqlAnalyzer | None = None,
+        coverage_window: timedelta = DEFAULT_WINDOW,
     ) -> None:
         quiet_transport_logs()
         self.settings = settings
         self.stats = ProxyStats()
+        # Compteurs par fenêtre, remis à la destination des événements comme relevés de
+        # couverture. L'émetteur est l'espace de noms des jobs du proxy.
+        self.coverage = CoverageWindows(
+            f"mcp://{settings.server_name}", length=coverage_window, started_at=clock()
+        )
+        self._reporting: asyncio.Task[None] | None = None
         self._sink = sink
         self._client = client
         self._owns_client = client is None
@@ -261,9 +274,13 @@ class McpProxy:
             self._pending.difference_update(tasks)
 
     async def aclose(self) -> None:
-        """Termine les analyses en cours, arrête le processus d'analyse, puis ferme les
-        connexions vers le serveur MCP."""
+        """Termine les analyses en cours, remet la dernière fenêtre de couverture, arrête le
+        processus d'analyse, puis ferme les connexions vers le serveur MCP."""
         await self.drain()
+        if self._reporting is not None:
+            await _settle(self._reporting)
+            self._reporting = None
+        self._report(self.coverage.close_all(self._clock()))
         await self.analyzer.aclose()
         if self._client is not None and self._owns_client:
             await self._client.aclose()
@@ -287,6 +304,9 @@ class McpProxy:
             message = await receive()
             if message["type"] == "lifespan.startup":
                 self._upstream_client()
+                self._reporting = asyncio.ensure_future(
+                    report_periodically(self.coverage, self._clock, self._report)
+                )
                 await send({"type": "lifespan.startup.complete"})
             elif message["type"] == "lifespan.shutdown":
                 await self.aclose()
@@ -356,6 +376,7 @@ class McpProxy:
             )
         if inspection is None:
             self.stats.uninspected += 1
+            self.coverage.uninspected(self._clock())
         elif inspection.header_mismatches:
             self.stats.header_mismatches += 1
             # Seuls les noms des en-têtes sont journalisés, jamais leur valeur.
@@ -537,6 +558,7 @@ class McpProxy:
     ) -> None:
         """Émet l'événement de l'appel, après analyse du SQL si l'outil est déclaré."""
         event_time = self._clock()
+        self.coverage.begin(event_time)
         rule = self.settings.sql_tools.get(inspection.tool) if inspection.tool else None
         if rule is None or exchange.outcome != "COMPLETE":
             # Un appel qui a échoué n'a rien fait lire à l'agent.
@@ -614,9 +636,19 @@ class McpProxy:
             self._sink.emit(event)
         except Exception as error:
             self.stats.emit_failures += 1
+            self.coverage.settle(event_time, emitted=False)
             logger.error("Événement de lignage non émis (%s).", type(error).__name__)
         else:
             self.stats.events_emitted += 1
+            self.coverage.settle(event_time, emitted=True)
+
+    def _report(self, reports: list[Report]) -> None:
+        """Remet des relevés de couverture. Un échec de remise n'atteint jamais un appel."""
+        for report in reports:
+            try:
+                self._sink.report_coverage(report)
+            except Exception as error:
+                logger.error("Relevé de couverture non remis (%s).", type(error).__name__)
 
     def _fingerprints(self, inspection: Inspection, exchange: _Exchange) -> dict[str, Any]:
         """Empreintes et taille de l'appel : aucune empreinte sans clé, et rien du

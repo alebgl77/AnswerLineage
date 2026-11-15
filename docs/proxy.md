@@ -22,6 +22,7 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrep
 | Résultats d'analyse gardés en cache | `--sql-cache-size` | `ANSWERLINEAGE_PROXY_SQL_CACHE_SIZE` | 1 024 (0 pour aucun, jusqu'à 1 000 000) |
 | Fichier de la clé d'empreinte | `--fingerprint-key-file` | `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY_FILE` | aucun |
 | Clé d'empreinte elle-même, en hexadécimal | | `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY` | aucune : pas d'empreinte |
+| Durée d'une fenêtre des relevés de couverture | `--coverage-window-seconds` | `ANSWERLINEAGE_PROXY_COVERAGE_WINDOW_SECONDS` | 60 s (1 à 86 400) |
 
 L'adresse du serveur MCP ne porte ni identifiant ni paramètre : elle peut apparaître dans la configuration. Son hôte peut être une adresse IPv6, entre crochets (`http://[2001:db8::1]:9000`) ; une adresse IPv6 ne faisant pas un nom de serveur, `--server-name` est alors obligatoire. Un réglage invalide arrête le proxy avec le message « Configuration invalide : … » et le code de sortie 2.
 
@@ -83,7 +84,7 @@ Le proxy ne décrit que ce qu'il lit sans ambiguïté. Une requête qu'il ne peu
 | Corps compressé (`Content-Encoding`) | Le proxy ne le déploie pas |
 | Corps plus grand que la taille lue, dont le début ne nomme pas l'outil | Voir ci-dessous |
 
-Le proxy ne devine pas : décrire un appel à partir d'une lecture douteuse ferait entrer dans le graphe un outil ou une lecture que le serveur n'a pas vus. Ce compteur dit ce que le lignage ignore ; il a vocation à être publié avec les relevés de couverture.
+Le proxy ne devine pas : décrire un appel à partir d'une lecture douteuse ferait entrer dans le graphe un outil ou une lecture que le serveur n'a pas vus. Ce compteur dit ce que le lignage ignore : il est publié, fenêtre par fenêtre, dans les [relevés de couverture](#relevés-de-couverture).
 
 ### Corps plus grand que la taille lue
 
@@ -191,6 +192,38 @@ Une analyse abandonnée au budget, ou perdue par un processus mort en plein calc
 | `sql_over_budget` | Analyses abandonnées au budget, processus tué |
 | `sql_refused` | Analyses refusées, file pleine |
 | `sql_analyzer_failures` | Analyses perdues par un processus d'analyse en panne |
+
+## Relevés de couverture
+
+Le proxy publie ce qu'il a vu, pour que l'on sache quelle part du trafic le lignage a réellement captée. Il tient ses compteurs par fenêtre de temps, une minute par défaut (`--coverage-window-seconds`), et remet chaque fenêtre close à sa destination d'événements, au format du [relevé de couverture](ingestion.md#relevés-de-couverture) de l'API :
+
+```json
+{
+  "emitter": "mcp://entrepot",
+  "window": { "from": "2026-11-11T09:00:00.000000Z", "to": "2026-11-11T09:01:00.000000Z" },
+  "calls_seen": 42,
+  "events_emitted": 42,
+  "events_lost": 0,
+  "uninspected": 1
+}
+```
+
+| Champ | Ce que le proxy compte |
+| --- | --- |
+| `emitter` | Son identifiant d'émetteur : `mcp://<serveur>`, l'espace de noms des jobs de ses événements |
+| `calls_seen` | Appels d'outils décrits, y compris d'après le seul début d'un corps trop grand |
+| `events_emitted` | Événements que la destination a pris en charge |
+| `events_lost` | Événements que la destination a refusés, et, à l'arrêt, ceux d'appels dont l'analyse n'avait pas abouti |
+| `uninspected` | Requêtes relayées sans pouvoir être inspectées ([ci-dessus](#ce-que-le-proxy-ne-peut-pas-inspecter)) |
+
+- **Un appel compte dans la fenêtre où tombe l'heure de son événement.** L'événement d'un outil SQL part une fois la requête analysée, parfois après la fin de sa fenêtre : la fenêtre ne se clôt qu'une fois tous ses appels réglés, et les relevés partent dans l'ordre du temps.
+- **Une fenêtre sans appel est publiée aussi** : c'est le battement qui prouve que le proxy n'est pas muet. Un proxy arrêté, bloqué ou coupé de l'API ne publie plus, et le [contrôle des émetteurs muets](workers.md#émetteurs-muets) le signale.
+- **Les fenêtres sont alignées** sur des multiples de leur durée depuis l'origine des temps Unix. La première commence au démarrage du proxy ; à l'arrêt, la fenêtre en cours s'achève à l'heure de l'arrêt. Deux vies successives du proxy publient donc des fenêtres disjointes, et l'intervalle où il était arrêté se lit comme un silence.
+- **Rien ne retarde un appel.** Compter est une addition faite là où l'appel est déjà décrit ; la clôture des fenêtres tourne à part, réveillée à la fin de chaque fenêtre, et un échec de remise est journalisé par sa classe, sans atteindre un appel.
+
+Les relevés ne portent que des nombres, des heures et l'identifiant de l'émetteur : rien d'une requête.
+
+**L'envoi réseau des relevés vers l'API d'ingestion ne fait pas encore partie du proxy.** Il viendra avec sa boîte d'envoi, comme celui des événements : d'ici là, la destination par défaut les compte sans les envoyer, et une destination fournie au proxy (`EventSink.report_coverage`) les reçoit.
 
 ## Identifiant de run et contexte de trace
 
@@ -318,7 +351,8 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 
 ## Limites connues
 
-- Les événements sont comptés mais ne partent pas encore vers l'API d'ingestion.
+- Les événements et les relevés de couverture sont comptés mais ne partent pas encore vers l'API d'ingestion.
+- Plusieurs proxys devant un même serveur publient sous le même identifiant d'émetteur : l'API fusionne leurs relevés d'une même fenêtre au plus grand au lieu de les additionner. Un seul proxy par serveur, en attendant un identifiant d'instance.
 - Un client qui réutilise le même span pour deux appels d'outil leur donne le même identifiant de run : le graphe fusionne alors les deux appels en un seul run, qui porte les lectures des deux mais l'outil du premier événement projeté, donc selon l'ordre d'arrivée (`tests/test_trace_context_graph.py` le constate).
 - Sans authentification des émetteurs, un identifiant dérivé n'est pas une preuve d'origine : qui connaît le contexte d'un appel peut émettre un événement pour son run.
 - Une reprise HTTP garde son run quand le contexte vient de `_meta`. Quand il vient de l'en-tête d'un client HTTP qui ouvre un span par tentative, ou quand le proxy le crée, chaque tentative est un run distinct.

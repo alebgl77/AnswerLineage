@@ -423,6 +423,9 @@ async def test_failing_sink_never_reaches_the_call(
         def emit(self, event: Mapping[str, Any]) -> None:
             raise RuntimeError("destination en panne")
 
+        def report_coverage(self, report: Mapping[str, Any]) -> None:
+            raise RuntimeError("destination en panne")
+
     async with bench() as b:
         b.proxy._sink = BrokenSink()
         with caplog.at_level(logging.ERROR, logger="answerlineage_proxy"):
