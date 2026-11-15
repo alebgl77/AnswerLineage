@@ -114,6 +114,32 @@ async def test_a_table_name_holding_an_instruction_never_reaches_the_graph(
     assert await rows(engine, "SELECT count(*) FROM event_raw") == [(0,)]
 
 
+async def test_a_password_in_an_address_never_enters_the_base_nor_the_answer(
+    engine: AsyncEngine,
+) -> None:
+    """Un émetteur mal réglé envoie son mot de passe dans un espace de noms : rien n'en reste."""
+    canary = "Xk7-canari"
+    event = reading(0, "crm.clients")
+    event["inputs"][0]["namespace"] = f"postgres://lecteur:{canary}@hote:5432"
+    async with api(engine) as client:
+        response = await client.post("/api/v1/lineage", json=event)
+        batch = await client.post("/api/v1/lineage/batch", json=[event])
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "path": "/inputs/0/namespace",
+            "type": "identifier_credentials",
+            "message": "Un identifiant ne porte pas de mot de passe : une adresse s'écrit sans "
+            "« utilisateur:motdepasse@ ».",
+        }
+    ]
+    assert batch.status_code == 422
+    assert canary not in response.text + batch.text
+    assert await rows(engine, "SELECT count(*) FROM event_raw") == [(0,)]
+    assert await process_batch(engine) == BatchResult()
+    assert await rows(engine, "SELECT count(*) FROM dataset") == [(0,)]
+
+
 async def test_event_time_in_lower_case_is_accepted_then_projected(engine: AsyncEngine) -> None:
     async with api(engine) as client:
         response = await client.post(

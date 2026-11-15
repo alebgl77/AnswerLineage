@@ -118,7 +118,9 @@ def _is_invisible(character: str) -> bool:
 # Lettres, marques et chiffres de toute écriture, sans les caractères invisibles.
 LETTERS = st.characters(categories=("L", "M", "N")).filter(lambda c: not _is_invisible(c))
 ADMITTED = st.one_of(LETTERS, st.sampled_from(sorted(PUNCTUATION)))
-VALID = st.text(ADMITTED, min_size=1, max_size=80)
+VALID = st.text(ADMITTED, min_size=1, max_size=80).filter(
+    lambda value: "://" not in value or "@" not in value
+)
 
 
 @pytest.mark.parametrize("value", REAL)
@@ -166,6 +168,54 @@ def test_each_fault_has_its_own_stable_code(value: str, code: str) -> None:
     assert raised.value.fault == fault
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "postgres://lecteur:Xk7-canari@hote:5432",
+        "https://lecteur:Xk7-canari@hote/",
+        "mongodb://service:secret@h1:27017,h2:27017/base",
+        "amqp://:secret@file",
+        "postgres://utilisateur:@hote",
+        "entrepot/copie/https://lecteur:Xk7-canari@hote/table",
+    ],
+)
+def test_an_address_that_carries_a_password_is_refused(value: str) -> None:
+    """Un mot de passe glissé dans une adresse n'entre ni dans le graphe ni dans une réponse."""
+    fault = identifier_fault(value, max_length=DATASET_NAME_MAX)
+    assert fault is not None
+    assert fault.code == "identifier_credentials"
+    # Le motif est un texte fixe : il ne cite ni l'adresse ni le mot de passe reçus.
+    assert fault.message == FAULT_CODES["identifier_credentials"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "postgres://crm:5432",
+        "kafka://broker1:9092,broker2:9092",
+        "abfss://conteneur@compte.dfs.core.windows.net",
+        "postgres://lecteur@hote:5432",
+        "s3://seau/chemin/a:b@c",
+        "C07AB/1730538030.000100",
+        "equipe:ventes@2026",
+    ],
+)
+def test_an_address_without_a_password_is_admitted(value: str) -> None:
+    assert identifier_fault(value, max_length=DATASET_NAME_MAX) is None
+
+
+@settings(max_examples=300)
+@given(scheme=st.sampled_from(["postgres", "https", "mysql", "amqp"]), user=VALID, secret=VALID)
+def test_any_password_before_the_host_is_refused_without_being_echoed(
+    scheme: str, user: str, secret: str
+) -> None:
+    user, secret = (part.replace("/", "").replace("@", "") for part in (user, secret))
+    fault = identifier_fault(f"{scheme}://{user}:{secret}@hote/base", max_length=DATASET_NAME_MAX)
+    assert fault is not None
+    assert fault.code == "identifier_credentials"
+    assert fault.message == FAULT_CODES["identifier_credentials"]
+
+
 def test_the_most_dangerous_fault_is_the_one_reported() -> None:
     def code(value: str) -> str | None:
         fault = identifier_fault(value, max_length=10)
@@ -176,6 +226,7 @@ def test_the_most_dangerous_fault_is_the_one_reported() -> None:
     assert code("a <b>" + "x" * 20) == "identifier_markup"
     assert code("a b;" + "x" * 20) == "identifier_whitespace"
     assert code("a;" + "x" * 20) == "identifier_forbidden_character"
+    assert code("a://b:c@" + "x" * 20) == "identifier_credentials"
     assert code("x" * 20) == "identifier_too_long"
 
 

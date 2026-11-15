@@ -88,6 +88,7 @@ Tout le reste est rejeté, un code par motif. Quand une valeur a plusieurs défa
 | `identifier_markup` | Un chevron, un guillemet ou un accent grave, y compris sous une forme de compatibilité comme `＜` : rien qui forme une balise ou sorte d'une chaîne |
 | `identifier_whitespace` | Un espace ou un blanc, quel qu'il soit : tabulation, retour à la ligne, espace insécable ou idéographique |
 | `identifier_forbidden_character` | Tout autre signe : ponctuation, symbole, émoji, usage privé |
+| `identifier_credentials` | Un mot de passe devant l'hôte d'une adresse (`postgres://utilisateur:motdepasse@hote`) : une adresse s'écrit sans lui, sinon le secret d'un émetteur mal réglé entrerait dans le graphe et dans les réponses de l'API. Un nom d'utilisateur seul (`conteneur@compte`) reste admis |
 | `identifier_too_long` | Plus de caractères que la borne du champ |
 | `identifier_empty` | Un texte vide |
 

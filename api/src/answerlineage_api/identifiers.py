@@ -14,6 +14,8 @@ n'y entre que s'il a la forme d'un nom :
 - ni chevron, ni guillemet, ni accent grave, même sous une forme de
   compatibilité comme le chevron pleine chasse (U+FF1C) : rien qui forme une
   balise ou sorte d'une chaîne ;
+- aucun mot de passe : une adresse s'écrit sans ``utilisateur:motdepasse@``,
+  sinon le secret d'un émetteur mal réglé entrerait dans le graphe ;
 - une longueur bornée, comptée en caractères de la forme normalisée.
 
 La forme normalisée est NFC : deux écritures d'un même nom, composée et
@@ -26,6 +28,7 @@ la valeur reçue.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -59,6 +62,7 @@ FaultCode = Literal[
     "identifier_markup",
     "identifier_whitespace",
     "identifier_forbidden_character",
+    "identifier_credentials",
 ]
 
 # Motif de chaque code ; ``{max_length}`` est la borne du champ, jamais sa valeur.
@@ -81,6 +85,10 @@ FAULT_CODES: Final[Mapping[str, str]] = {
         "Un identifiant ne contient que des lettres, des chiffres et les signes "
         ". _ - / : @ = + ~ % , # $ * [ ]."
     ),
+    "identifier_credentials": (
+        "Un identifiant ne porte pas de mot de passe : une adresse s'écrit sans "
+        "« utilisateur:motdepasse@ »."
+    ),
 }
 
 # Quand une valeur a plusieurs défauts, le plus grave est rapporté.
@@ -93,6 +101,9 @@ _PRIORITY: Final[tuple[FaultCode, ...]] = (
 )
 
 _MARKUP: Final = frozenset("<>\"'`")
+
+# Un mot de passe devant l'hôte d'une adresse : « schéma://utilisateur:motdepasse@hôte ».
+_CREDENTIALS: Final = re.compile(r"://[^/@]*:[^/@]*@")
 
 # Propriété Unicode Default_Ignorable_Code_Point (DerivedCoreProperties.txt) :
 # des caractères sans rendu, dont certains sont classés lettres ou marques
@@ -173,6 +184,8 @@ def identifier_fault(value: str, *, max_length: int) -> Fault | None:
     for code in _PRIORITY:
         if code in found:
             return _fault(code, max_length)
+    if _CREDENTIALS.search(normalized):
+        return _fault("identifier_credentials", max_length)
     if len(normalized) > max_length:
         return _fault("identifier_too_long", max_length)
     return None
