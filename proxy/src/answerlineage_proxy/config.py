@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
 import httpx
 
+from answerlineage_proxy.guard import RequestGuard
 from answerlineage_proxy.sql import DIALECTS, Dialect
 
 ENV_UPSTREAM = "ANSWERLINEAGE_PROXY_UPSTREAM"
 ENV_SERVER_NAME = "ANSWERLINEAGE_PROXY_SERVER_NAME"
 ENV_HOST = "ANSWERLINEAGE_PROXY_HOST"
 ENV_PORT = "ANSWERLINEAGE_PROXY_PORT"
+ENV_ALLOWED_HOSTS = "ANSWERLINEAGE_PROXY_ALLOWED_HOSTS"
+ENV_ALLOWED_ORIGINS = "ANSWERLINEAGE_PROXY_ALLOWED_ORIGINS"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8717
@@ -28,6 +31,11 @@ _NAMESPACE = re.compile(r"[A-Za-z0-9_.:/@-]{1,255}")
 
 class ProxyConfigurationError(ValueError):
     """Un réglage du proxy est absent ou invalide."""
+
+
+def listed(value: str | None) -> tuple[str, ...]:
+    """Lit une liste séparée par des virgules, telle qu'une variable d'environnement la porte."""
+    return tuple(item.strip() for item in (value or "").split(",") if item.strip())
 
 
 @dataclass(frozen=True)
@@ -83,6 +91,11 @@ class ProxySettings:
     connect_timeout: float = 10.0
     # Outils dont la requête SQL est analysée, par nom d'outil.
     sql_tools: Mapping[str, SqlTool] = field(default_factory=dict)
+    # Noms d'hôte acceptés dans l'en-tête Host, en plus de la boucle locale et
+    # du serveur MCP. « * » accepte tout hôte et toute origine.
+    allowed_hosts: tuple[str, ...] = ()
+    # Origines acceptées dans l'en-tête Origin, en plus de celles des hôtes acceptés.
+    allowed_origins: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.upstream.scheme not in ("http", "https") or not self.upstream.host:
@@ -107,6 +120,10 @@ class ProxySettings:
             raise ProxyConfigurationError("La taille maximale lue ne peut pas être négative.")
         if not all(_TOOL_NAME.fullmatch(tool) for tool in self.sql_tools):
             raise ProxyConfigurationError("Un nom d'outil SQL est invalide.")
+        try:
+            RequestGuard.create(self.allowed_hosts, self.allowed_origins)
+        except ValueError as error:
+            raise ProxyConfigurationError(str(error)) from error
 
     @classmethod
     def create(
@@ -119,6 +136,8 @@ class ProxySettings:
         preserve_host: bool = True,
         max_inspected_bytes: int = DEFAULT_MAX_INSPECTED_BYTES,
         sql_tools: Mapping[str, SqlTool] | None = None,
+        allowed_hosts: Sequence[str] = (),
+        allowed_origins: Sequence[str] = (),
     ) -> ProxySettings:
         try:
             url = httpx.URL(upstream)
@@ -132,6 +151,8 @@ class ProxySettings:
             preserve_host=preserve_host,
             max_inspected_bytes=max_inspected_bytes,
             sql_tools=dict(sql_tools or {}),
+            allowed_hosts=tuple(allowed_hosts),
+            allowed_origins=tuple(allowed_origins),
         )
 
     @classmethod
@@ -150,4 +171,6 @@ class ProxySettings:
             environment.get(ENV_SERVER_NAME) or None,
             host=environment.get(ENV_HOST, DEFAULT_HOST),
             port=port,
+            allowed_hosts=listed(environment.get(ENV_ALLOWED_HOSTS)),
+            allowed_origins=listed(environment.get(ENV_ALLOWED_ORIGINS)),
         )

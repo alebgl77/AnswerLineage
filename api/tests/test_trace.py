@@ -41,7 +41,7 @@ FINGERPRINT = "sha256:" + "ab" * 32
 @pytest.fixture
 async def client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
     transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://api.test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         yield client
 
 

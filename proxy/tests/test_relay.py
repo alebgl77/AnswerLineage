@@ -382,7 +382,7 @@ def http_scope(raw_path: bytes = b"/mcp") -> dict[str, Any]:
         "path": raw_path.decode(),
         "raw_path": raw_path,
         "query_string": b"",
-        "headers": [],
+        "headers": [(b"host", b"127.0.0.1:8717")],
     }
 
 

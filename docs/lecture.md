@@ -96,5 +96,5 @@ Une erreur `422` donne le chemin du paramètre fautif, un code et un motif, jama
 
 ## Limites connues
 
-- L'API n'authentifie pas ses appelants : elle est faite, à ce stade, pour écouter sur la boucle locale ou derrière un contrôle d'accès.
+- L'API n'authentifie pas ses appelants : elle est faite, à ce stade, pour écouter sur la boucle locale ou derrière un contrôle d'accès. Elle refuse déjà les requêtes dont l'hôte ou l'origine n'est pas attendu ([réglages](ingestion.md#hôtes-et-origines-attendus)).
 - Un appel d'outil n'est rattaché à une réponse que si son événement désigne le run de l'agent comme parent.

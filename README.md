@@ -31,6 +31,7 @@ Le proxy se place devant un serveur [MCP](https://modelcontextprotocol.io) exist
 - **Aucun modèle embarqué.** Un lignage qui sert de preuve doit être déterministe.
 - **La capture ne bloque jamais un agent.** Le proxy décrit l'appel après l'avoir relayé ; une panne d'AnswerLineage n'arrête rien.
 - **Standards ouverts.** OpenLineage pour les événements, MCP pour la capture : les catalogues de données en place restent utilisables.
+- **Écoute locale par défaut.** Le proxy et l'API refusent une requête dont l'hôte ou l'origine n'est pas attendu : une page web ouverte sur le poste ne les atteint pas.
 - **Une seule dépendance : PostgreSQL.** Aucun service cloud propriétaire, installation possible hors ligne.
 
 ## État du projet

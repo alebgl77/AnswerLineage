@@ -24,7 +24,7 @@ SINGLE = "/api/v1/lineage"
 @pytest.fixture
 async def client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
     transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://api.test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         yield client
 
 
@@ -135,7 +135,7 @@ async def test_body_that_is_not_a_json_array_is_refused(
 
 async def test_batch_larger_than_the_limit_is_refused(engine: AsyncEngine) -> None:
     transport = httpx.ASGITransport(app=create_app(engine, max_batch_events=3))
-    async with httpx.AsyncClient(transport=transport, base_url="http://api.test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         allowed = await client.post(BATCH, json=[run_event(i) for i in range(3)])
         refused = await client.post(BATCH, json=[run_event(i) for i in range(10, 14)])
     assert allowed.status_code == 202
@@ -224,7 +224,7 @@ async def test_application_opens_and_closes_its_own_database_connection(
     assert app.state.engine is None
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://api.test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
             response = await client.post(SINGLE, json=minimal_event())
         assert response.status_code == 201
     assert app.state.engine is None

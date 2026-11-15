@@ -12,6 +12,8 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrep
 | Nom du serveur dans le lignage | `--server-name` | `ANSWERLINEAGE_PROXY_SERVER_NAME` | hôte du serveur |
 | Adresse d'écoute | `--host` | `ANSWERLINEAGE_PROXY_HOST` | `127.0.0.1` |
 | Port d'écoute | `--port` | `ANSWERLINEAGE_PROXY_PORT` | `8717` |
+| Hôtes attendus dans `Host` | `--allow-host` | `ANSWERLINEAGE_PROXY_ALLOWED_HOSTS` | boucle locale et serveur MCP |
+| Origines attendues dans `Origin` | `--allow-origin` | `ANSWERLINEAGE_PROXY_ALLOWED_ORIGINS` | celles des hôtes attendus |
 | En-tête `Host` du serveur MCP | `--no-preserve-host` | | celui du client |
 | Taille de corps lue | `--max-inspected-bytes` | | 1 Mo |
 | Outil dont un argument porte du SQL | `--sql-tool` | | aucun |
@@ -26,6 +28,27 @@ L'adresse du serveur MCP ne porte ni identifiant ni paramètre : elle peut appar
 - La fermeture du flux par le client : le proxy ferme aussitôt sa connexion au serveur MCP, ce qui annule l'appel.
 
 Si le serveur MCP est injoignable, le proxy répond `502` avec un corps fixe. Si sa réponse s'interrompt, la connexion au client est fermée sans être terminée : une réponse tronquée ne passe pas pour complète.
+
+## Hôtes et origines attendus
+
+Le proxy écoute par défaut sur la boucle locale. Une page web ouverte sur le même poste peut pourtant l'atteindre : par réassociation DNS, un nom d'hôte de l'attaquant finit par désigner `127.0.0.1`. Le navigateur envoie alors ce nom dans l'en-tête `Host`, et l'adresse de la page dans `Origin`.
+
+Le proxy refuse donc, avant tout relais, une requête dont l'un de ces deux en-têtes n'est pas attendu. Rien n'atteint le serveur MCP et aucun événement n'est émis.
+
+| En-tête | Valeurs acceptées |
+| --- | --- |
+| `Host` | `127.0.0.1`, `localhost`, `[::1]`, l'hôte du serveur MCP et les noms ajoutés par `--allow-host`. Le port n'est pas comparé. |
+| `Origin` | Absent, ou une origine dont l'hôte est accepté, ou une origine ajoutée par `--allow-origin` |
+
+Une requête refusée reçoit `403` avec `{"error":"host_not_allowed"}` ou `{"error":"origin_not_allowed"}`. Le journal cite le nom de l'en-tête, jamais sa valeur.
+
+Un proxy joint sous un autre nom, par exemple derrière un service Kubernetes, déclare ce nom :
+
+```bash
+uv run answerlineage-proxy --upstream http://mcp.interne:9000 --host 0.0.0.0 --allow-host proxy.interne
+```
+
+`--allow-host '*'` accepte tout hôte et toute origine : à réserver à un proxy placé derrière un autre contrôle. Les variables d'environnement prennent une liste séparée par des virgules.
 
 ## Ce qui est lu
 
@@ -67,6 +90,6 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - Les événements sont comptés mais ne partent pas encore vers l'API d'ingestion.
 - L'identifiant de run est aléatoire : il n'est pas encore dérivé du contexte de trace W3C.
 - Le résultat de l'appel n'est pas lu : une erreur d'outil rendue en `200` compte comme `COMPLETE`.
-- Les en-têtes `Origin` et `Host` ne sont pas contrôlés, et le transport stdio n'est pas pris en charge.
+- Le transport stdio n'est pas pris en charge.
 - L'analyse du SQL n'a pas de budget de temps, seulement une taille maximale.
 - La latence ajoutée par le proxy n'est pas encore mesurée.

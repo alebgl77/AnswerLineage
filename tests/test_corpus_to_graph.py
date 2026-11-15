@@ -24,7 +24,7 @@ async def rows(engine: AsyncEngine, sql: str) -> list[tuple[Any, ...]]:
 
 def api(engine: AsyncEngine) -> httpx.AsyncClient:
     transport = httpx.ASGITransport(app=create_app(engine))
-    return httpx.AsyncClient(transport=transport, base_url="http://api.test")
+    return httpx.AsyncClient(transport=transport, base_url="http://localhost")
 
 
 async def load(engine: AsyncEngine, enterprise: Enterprise) -> None:

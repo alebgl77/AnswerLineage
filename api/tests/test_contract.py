@@ -44,7 +44,9 @@ def api_schema(database: URL) -> Iterator[Any]:
     # Une connexion par requête : chaque appel généré tourne dans sa propre boucle.
     engine = create_async_engine(database, poolclass=NullPool, hide_parameters=True)
     try:
-        yield schemathesis.openapi.from_asgi("/api/v1/openapi.json", create_app(engine))
+        # Le client de test se présente sous le nom « testserver ».
+        app = create_app(engine, allowed_hosts=["testserver"])
+        yield schemathesis.openapi.from_asgi("/api/v1/openapi.json", app)
     finally:
         asyncio.run(engine.dispose())
 

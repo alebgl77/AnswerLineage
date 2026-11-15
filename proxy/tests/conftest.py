@@ -222,6 +222,8 @@ def bench() -> BenchFactory:
         preserve_host: bool = True,
         max_inspected_bytes: int = 1024 * 1024,
         sql_tools: dict[str, SqlTool] | None = None,
+        allowed_hosts: tuple[str, ...] = (),
+        allowed_origins: tuple[str, ...] = (),
     ) -> AsyncIterator[Bench]:
         upstream = FakeMcpServer()
         sink = MemorySink()
@@ -232,6 +234,8 @@ def bench() -> BenchFactory:
                 preserve_host=preserve_host,
                 max_inspected_bytes=max_inspected_bytes,
                 sql_tools=sql_tools,
+                allowed_hosts=allowed_hosts,
+                allowed_origins=allowed_origins,
             )
             proxy = McpProxy(settings, sink)
             async with running(proxy, transparent=True) as proxy_url:

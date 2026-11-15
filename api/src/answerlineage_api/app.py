@@ -6,7 +6,8 @@ Lancement : ``uvicorn --factory answerlineage_api.app:create_app``, avec
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import os
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -15,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from answerlineage_api.guard import HostOriginMiddleware, guard_from_settings
 from answerlineage_api.ingest.models import run_event_json_schema
 from answerlineage_api.ingest.routes import router as ingestion_router
 from answerlineage_api.lineage.routes import router as lineage_router
@@ -27,9 +29,19 @@ DEFAULT_MAX_BATCH_EVENTS = 1000
 
 
 def create_app(
-    engine: AsyncEngine | None = None, *, max_batch_events: int = DEFAULT_MAX_BATCH_EVENTS
+    engine: AsyncEngine | None = None,
+    *,
+    max_batch_events: int = DEFAULT_MAX_BATCH_EVENTS,
+    allowed_hosts: Sequence[str] | None = None,
+    allowed_origins: Sequence[str] | None = None,
 ) -> FastAPI:
-    """Construit l'application. Sans moteur fourni, la base vient de l'environnement."""
+    """Construit l'application. Sans moteur fourni, la base vient de l'environnement.
+
+    ``allowed_hosts`` et ``allowed_origins`` nomment les hôtes et les origines
+    attendus en plus de la boucle locale ; sans eux, ils viennent de
+    ``ANSWERLINEAGE_ALLOWED_HOSTS`` et ``ANSWERLINEAGE_ALLOWED_ORIGINS``.
+    """
+    guard = guard_from_settings(allowed_hosts, allowed_origins, os.environ)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -58,6 +70,7 @@ def create_app(
     app.include_router(ingestion_router)
     app.include_router(lineage_router)
     app.add_exception_handler(RequestValidationError, reject_invalid_request)
+    app.add_middleware(HostOriginMiddleware, guard=guard)
 
     def openapi() -> dict[str, Any]:
         if app.openapi_schema is None:

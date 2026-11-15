@@ -24,6 +24,7 @@ import httpx
 
 from answerlineage_proxy.config import ProxySettings, SqlTool
 from answerlineage_proxy.events import Outcome, build_tool_call_event
+from answerlineage_proxy.guard import LOOPBACK_HOSTS, RequestGuard
 from answerlineage_proxy.inspection import (
     HEADER_METHOD,
     HEADER_NAME,
@@ -62,6 +63,11 @@ _INSPECTED_HEADERS = frozenset(
 )
 _BAD_GATEWAY_BODY = b'{"error":"upstream_unreachable"}'
 _BAD_REQUEST_BODY = b'{"error":"invalid_request_target"}'
+_FORBIDDEN_BODIES = {
+    "host_not_allowed": b'{"error":"host_not_allowed"}',
+    "origin_not_allowed": b'{"error":"origin_not_allowed"}',
+}
+_REFUSED_HEADERS = {"host_not_allowed": "Host", "origin_not_allowed": "Origin"}
 
 
 # httpx journalise l'URL complète de chaque requête, paramètres compris, et
@@ -97,6 +103,8 @@ class ProxyStats:
     header_mismatches: int = 0
     upstream_failures: int = 0
     client_disconnects: int = 0
+    # Requêtes refusées pour un en-tête Host ou Origin inattendu, jamais relayées.
+    refused: int = 0
 
 
 @dataclass
@@ -157,6 +165,10 @@ class McpProxy:
         self._new_run_id = new_run_id
         self._prefix = settings.upstream.raw_path.rstrip(b"/")
         self._sql_arguments = {tool: rule.argument for tool, rule in settings.sql_tools.items()}
+        self._guard = RequestGuard.create(
+            [*LOOPBACK_HOSTS, settings.upstream.host, *settings.allowed_hosts],
+            settings.allowed_origins,
+        )
         # Analyses de SQL en cours, menées après la réponse, hors du chemin de l'appel.
         self._pending: set[asyncio.Task[None]] = set()
 
@@ -211,8 +223,15 @@ class McpProxy:
                 return
 
     async def _http(self, scope: Scope, receive: Receive, send: Send) -> None:
-        self.stats.relayed += 1
         headers: list[Header] = [(bytes(name), bytes(value)) for name, value in scope["headers"]]
+        refusal = self._guard.refusal(headers)
+        if refusal is not None:
+            self.stats.refused += 1
+            # Seul le nom de l'en-tête est journalisé : sa valeur est choisie par l'appelant.
+            logger.warning("Requête refusée : en-tête %s inattendu.", _REFUSED_HEADERS[refusal])
+            await self._respond(send, 403, _FORBIDDEN_BODIES[refusal])
+            return
+        self.stats.relayed += 1
         upload_done = asyncio.Event()
         try:
             body, stream = await self._receive_body(receive, upload_done)

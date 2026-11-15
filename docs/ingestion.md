@@ -51,6 +51,19 @@ La spécification publiée est un contrat. Des tests générés depuis la spéci
 
 `make openapi` met à jour le fichier publié, `make contract` rejoue la comparaison sur le poste.
 
+## Hôtes et origines attendus
+
+L'API, ingestion et lecture, n'accepte une requête que si son en-tête `Host` désigne un hôte attendu, et son en-tête `Origin`, quand il est présent, une origine attendue. Une page web ouverte sur le poste ne peut ainsi ni lire le lignage ni envoyer de faux événements, même par réassociation DNS.
+
+| Variable | Rôle | Défaut |
+| --- | --- | --- |
+| `ANSWERLINEAGE_ALLOWED_HOSTS` | Noms d'hôte sous lesquels l'API est jointe, séparés par des virgules | aucun |
+| `ANSWERLINEAGE_ALLOWED_ORIGINS` | Origines de pages autorisées à appeler l'API, sous la forme `https://console.exemple.fr` | aucune |
+
+La boucle locale (`127.0.0.1`, `localhost`, `[::1]`) est toujours acceptée, et une origine dont l'hôte est accepté l'est aussi. Le port d'un hôte n'est pas comparé. `*` accepte tout hôte et toute origine : à réserver à une API placée derrière un autre contrôle.
+
+Une requête refusée reçoit `403` avec `{"error":"host_not_allowed"}` ou `{"error":"origin_not_allowed"}`. Un réglage mal formé empêche l'application de démarrer.
+
 ## Rejeu
 
 L'identifiant d'un événement est l'empreinte SHA-256 de sa forme canonique. Un événement déjà reçu n'est pas enregistré une seconde fois : il est compté dans `duplicates`.
