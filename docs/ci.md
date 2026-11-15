@@ -7,6 +7,7 @@ Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque me
 | `static` | Politique du dépôt, compatibilité de l'API et des schémas de facettes avec ceux publiés, format, lint (ruff), typage strict (mypy) | `make policy contract format-check lint typecheck` |
 | `tests` | Tests et couverture de branches, sur la matrice Python 3.13 et 3.14, PostgreSQL 17 et 18 | `make test` |
 | `tests` | Porte de couverture : 85 % par composant, en branches et en lignes et branches | `make coverage-gate` |
+| `tests` | Porte de qualité du moteur d'impact : sur le [corpus de vérité](corpus.md#mesure-du-moteur-dimpact), un rappel au niveau table d'au moins 0,99 et aucune réponse hors d'atteinte ; un échec nomme les réponses manquées | `make measure` |
 | `tests`, `explorer` | Corpus d'abus : chaque cas d'attaque est rejoué et doit être bloqué. Détail plus bas | `make abuse` |
 | `secrets` | Aucun secret dans tout l'historique (gitleaks), après un canari qui prouve que le détecteur bloque. Une trouvaille est affichée avec son fichier, sa ligne et sa règle, valeur masquée ; une exception se déclare dans `.gitleaksignore`, chemin protégé | `make secrets` |
 | `image` | L'image de `deploy/Dockerfile` se construit ; son SBOM est produit (Syft, CycloneDX) et gardé comme artefact du job ; Grype l'analyse, après un canari qui prouve que l'analyse bloque. Une vulnérabilité haute ou critique sans exception valable fait échouer le job. Détail plus bas | `make image` |

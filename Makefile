@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check policy contract openapi format format-check lint typecheck test coverage-gate abuse secrets image ui e2e demo
+.PHONY: help setup check policy contract openapi format format-check lint typecheck test coverage-gate measure abuse secrets image ui e2e demo
 
 help: ## Liste les cibles
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -38,6 +38,9 @@ test: ## Lance les tests avec la couverture de branches
 
 coverage-gate: ## Vérifie le seuil de couverture par composant (après make test)
 	uv run python -m scripts.coverage_gate
+
+measure: ## Mesure le moteur d'impact sur le corpus de vérité, imprime le tableau (Docker requis ; REPORT=… : JSON)
+	uv run pytest -q -s "tests/test_truth_corpus_impact.py::test_the_impact_engine_passes_its_quality_gate_on_the_truth_corpus" $(if $(REPORT),--truth-report="$(REPORT)")
 
 abuse: ## Rejoue le corpus d'abus seul : chaque cas d'attaque doit être bloqué (Docker requis)
 	uv run answerlineage-corpus check

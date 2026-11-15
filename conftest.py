@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -18,6 +19,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 DEFAULT_POSTGRES_IMAGE = "postgres:18"
 _TEMPLATE = "answerlineage_template"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--truth-report",
+        dest="truth_report",
+        metavar="CHEMIN",
+        help="écrit en JSON la mesure du moteur d'impact sur le corpus de vérité",
+    )
 
 
 @pytest.fixture
@@ -111,3 +121,23 @@ async def engine(database: URL) -> AsyncIterator[AsyncEngine]:
         yield engine
     finally:
         await engine.dispose()
+
+
+@pytest.fixture
+def fresh_engine(
+    postgres_server: URL, migrated_template: str
+) -> Callable[[], AbstractAsyncContextManager[AsyncEngine]]:
+    """Fabrique de moteurs, chacun sur sa base migrée : pour un test qui en ouvre plusieurs."""
+    from answerlineage_api.store.engine import create_engine
+
+    @asynccontextmanager
+    async def opened() -> AsyncIterator[AsyncEngine]:
+        url = _new_database(postgres_server, migrated_template)
+        engine = create_engine(url)
+        try:
+            yield engine
+        finally:
+            await engine.dispose()
+            _drop_database(postgres_server, url)
+
+    return opened

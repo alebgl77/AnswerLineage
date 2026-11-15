@@ -113,6 +113,35 @@ Le corpus porte un numéro de version, lié à son contenu : changer un scénari
 
 Les sous-ensembles et les clés d'une lecture sont décrits dans le scénario, mais pas encore dans ses événements : le contrat d'événements ne les porte pas.
 
+### Mesure du moteur d'impact
+
+```bash
+make measure                           # rejoue la mesure et imprime son tableau
+make measure REPORT=/tmp/mesure.json   # écrit aussi son détail en JSON, hors du dépôt
+```
+
+Chaque scénario passe par le chemin réel, dans sa propre base : ingestion, file, workers, puis propagation de son incident par l'API. Ce que le moteur renvoie est comparé à la vérité du scénario, scénario par scénario puis en tout : réponses attendues, retrouvées, manquées, en trop, rappel et précision. La mesure reçoit les réponses renvoyées et lit la vérité dans le corpus (`answerlineage_corpus.measure`) : la vérité ne passe jamais par le produit.
+
+La même vérité se lit de trois façons :
+
+| Lecture | Réponses attendues | Réponses en trop |
+| --- | --- | --- |
+| Au niveau table | Toute réponse dont un run a lu la table pendant la fenêtre : les touchées directement, et les écartées, qui l'ont lue aussi | Les réponses hors d'atteinte |
+| À la précision déclarée | Les réponses touchées directement, par scénario puis par niveau (table, colonnes, sous-ensemble, clés) | Les réponses écartées et les réponses hors d'atteinte |
+| Transitivité | Les réponses touchées par une sortie d'un run touché | |
+
+**La porte.** Elle joue à chaque merge request, dans le job `tests` (`tests/test_truth_corpus_impact.py`). Elle échoue quand le rappel au niveau table, sur l'ensemble du corpus, passe sous 0,99 (`MIN_TABLE_RECALL`), ou quand une réponse que le corpus dit hors d'atteinte est renvoyée. Son message nomme chaque réponse en cause par son scénario et son identifiant dans le scénario, puis donne la mesure obtenue :
+
+```
+Réponses manquées au niveau table :
+  table-sous-agent/synthese
+Rappel au niveau table : 0,950 (19/20), sous le seuil de 0,99.
+```
+
+Taire une réponse touchée est le pire défaut d'un rappel : celui qui l'a lue ne sera pas prévenu. Sur les quelques dizaines de réponses attendues du corpus, le seuil n'en tolère aucune manquée ; quand le corpus grandira, une sur cent au plus. Un test affaiblit réellement le moteur, qui ne remonte plus qu'au run parent immédiat d'une lecture, et vérifie que la porte échoue en nommant la réponse que le sous-agent a fait perdre.
+
+**Ce que la porte ne retient pas encore.** Le moteur propage au niveau table : il renvoie les réponses écartées, et la précision déclarée est mesurée et imprimée, sans seuil. Elle dit ce que gagnerait une propagation par colonnes, sous-ensembles, clés ou versions. Les réponses touchées par transitivité sont imprimées comme manquées : le moteur ne suit pas encore ce qu'un run touché a écrit ([limites](lecture.md#limites-connues)).
+
 ## Corpus d'abus
 
 Le corpus tient aussi des cas d'attaque : une requête piégée, et ce que le produit doit en faire. Ils sont rejoués à chaque merge request devant le vrai proxy, la vraie API, un vrai PostgreSQL, un worker et, pour l'explorateur, un vrai navigateur. Un cas qui n'est plus bloqué fait échouer le pipeline, qui le nomme :

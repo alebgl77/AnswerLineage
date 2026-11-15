@@ -143,7 +143,7 @@ Une réponse est touchée quand un run de son arbre a lu le jeu de données pend
 
 ### Mesure
 
-La propagation est mesurée sur un [corpus de vérité](corpus.md#corpus-de-vérité) : pour chaque scénario, toute réponse attendue au niveau table doit être renvoyée. Sur les incidents de l'entreprise synthétique, le résultat est exactement la vérité.
+La propagation est mesurée sur un [corpus de vérité](corpus.md#mesure-du-moteur-dimpact), comme un modèle : rappel et précision, scénario par scénario puis en tout. À chaque merge request, le rappel au niveau table sur l'ensemble du corpus doit atteindre 0,99, et aucune réponse hors d'atteinte ne doit être renvoyée ; sinon le pipeline échoue et nomme les réponses manquées. `make measure` rejoue la mesure et imprime son tableau. Sur les incidents de l'entreprise synthétique, le résultat est exactement la vérité.
 
 ## Couverture du lignage
 
