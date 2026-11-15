@@ -69,8 +69,16 @@ def test_single_required_check_fails_when_any_blocking_job_is_not_green() -> Non
     assert "exit 1" in script
 
 
-def test_pipeline_token_is_read_only() -> None:
+def test_pipeline_token_is_read_only_except_for_code_scanning_results() -> None:
     workflow = load()
     assert workflow["permissions"] == {"contents": "read"}
-    for job in workflow["jobs"].values():
-        assert "permissions" not in job
+    with_own_permissions = {
+        name: job["permissions"] for name, job in workflow["jobs"].items() if "permissions" in job
+    }
+    assert with_own_permissions == {
+        "codeql": {"contents": "read", "security-events": "write"},
+    }
+
+
+def test_static_job_checks_the_workflow_policy() -> None:
+    assert "make policy" in commands(load()["jobs"]["static"])

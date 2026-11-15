@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check format format-check lint typecheck test coverage-gate
+.PHONY: help setup check policy format format-check lint typecheck test coverage-gate secrets
 
 help: ## Liste les cibles
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -8,7 +8,10 @@ setup: ## Installe l'environnement (uv) et les hooks pre-commit
 	uv sync --all-packages --locked
 	uv run pre-commit install
 
-check: format-check lint typecheck test coverage-gate ## Porte de toute story : format, lint, typage strict, tests, couverture
+check: policy format-check lint typecheck test coverage-gate ## Porte de toute story : politique, format, lint, typage strict, tests, couverture
+
+policy: ## Contrôle de politique des workflows (actions épinglées, permissions minimales)
+	uv run python -m scripts.check_workflows
 
 format: ## Reformate le code
 	uv run ruff format .
@@ -28,3 +31,7 @@ test: ## Lance les tests avec la couverture de branches
 
 coverage-gate: ## Vérifie le seuil de couverture par composant (après make test)
 	uv run python -m scripts.coverage_gate
+
+secrets: ## Détection de secrets sur tout l'historique (gitleaks, Docker requis)
+	scripts/gitleaks.sh selftest
+	scripts/gitleaks.sh scan
