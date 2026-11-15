@@ -182,6 +182,29 @@ def test_unreadable_body_is_not_described(payload: bytes) -> None:
     assert inspect_request(payload, [("mcp-method", "tools/call")]) is None
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # Deux analyseurs JSON ne retiennent pas la même valeur d'une clé répétée :
+        # le serveur peut exécuter un appel d'outil là où le proxy lirait autre chose.
+        b'{"jsonrpc":"2.0","id":1,"method":"ping","method":"tools/call",'
+        b'"params":{"name":"execute_sql"}}',
+        b'{"jsonrpc":"2.0","id":1,"method":"tools/call","method":"ping"}',
+        b'{"jsonrpc":"2.0","id":1,"method":"tools/call",'
+        b'"params":{"name":"get_weather","name":"execute_sql"}}',
+        b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"execute_sql",'
+        b'"arguments":{"query":"SELECT 1","query":"SELECT * FROM clients"}}}',
+        b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x"},"params":{}}',
+        # Un lot JSON-RPC : plusieurs appels dans un seul corps.
+        b'[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"execute_sql"}},'
+        b'{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_weather"}}]',
+    ],
+)
+def test_a_body_that_two_parsers_could_read_differently_is_not_described(payload: bytes) -> None:
+    """Le proxy ne décrit que ce qu'il lit sans ambiguïté : le reste est compté, pas deviné."""
+    assert inspect_request(payload, [], {"execute_sql": "query"}) is None
+
+
 def test_params_and_meta_of_the_wrong_type_are_ignored() -> None:
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": []}).encode()
     result = inspect_request(payload, [])

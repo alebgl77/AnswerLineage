@@ -78,6 +78,20 @@ def _protocol_version(value: object) -> str | None:
     return None
 
 
+def _unambiguous(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Un objet JSON dont aucune clé n'est répétée.
+
+    Deux analyseurs ne retiennent pas la même valeur d'une clé répétée : le
+    serveur pourrait exécuter un appel d'outil là où le proxy lirait autre
+    chose. Un tel corps n'est pas décrit ; la requête est comptée comme non
+    inspectée.
+    """
+    members = dict(pairs)
+    if len(members) != len(pairs):
+        raise ValueError("clé répétée")
+    return members
+
+
 def inspect_request(
     body: bytes,
     headers: Iterable[tuple[str, str]],
@@ -87,10 +101,11 @@ def inspect_request(
 
     ``sql_arguments`` donne, par outil, le nom de l'argument qui porte une
     requête SQL. Renvoie ``None`` si le corps n'est pas une requête JSON-RPC
-    lisible : la requête est alors relayée sans être décrite.
+    lisible sans ambiguïté (JSON invalide, lot de requêtes, clé répétée, corps
+    compressé) : la requête est alors relayée sans être décrite, et comptée.
     """
     try:
-        message = json.loads(body)
+        message = json.loads(body, object_pairs_hook=_unambiguous)
     except (ValueError, RecursionError):
         return None
     if not isinstance(message, dict):

@@ -67,7 +67,21 @@ Le proxy lit le corps des requêtes `POST` pour reconnaître un appel d'outil. I
 - l'événement décrit l'outil du corps ;
 - la requête est relayée telle quelle : c'est le serveur MCP qui la refuse, comme la révision 2026-07-28 l'y oblige.
 
-Un nom d'outil hors de la forme recommandée par MCP (1 à 128 lettres, chiffres, `_`, `-`, `.`) n'est pas recopié : l'événement porte `invalidToolName`. Un corps illisible est relayé sans être décrit et compté (`uninspected`).
+Un nom d'outil hors de la forme recommandée par MCP (1 à 128 lettres, chiffres, `_`, `-`, `.`) n'est pas recopié : l'événement porte `invalidToolName`.
+
+### Ce que le proxy ne peut pas inspecter
+
+Le proxy ne décrit que ce qu'il lit sans ambiguïté. Une requête qu'il ne peut pas lire ainsi est relayée telle quelle, parce que la capture ne bloque jamais un agent, mais elle se compte (`uninspected`) : un appel d'outil peut s'y cacher, que le serveur exécutera peut-être sans qu'aucun événement n'en sorte.
+
+| Requête | Pourquoi elle n'est pas décrite |
+| --- | --- |
+| Corps qui n'est pas du JSON, ou pas une requête JSON-RPC | Rien à lire |
+| Clé répétée dans un objet, à n'importe quel niveau | Deux analyseurs JSON ne retiennent pas la même valeur : le proxy pourrait lire `ping` là où le serveur exécute `tools/call` |
+| Lot JSON-RPC (un tableau de requêtes) | Les révisions prises en charge n'en admettent plus ; un serveur plus ancien exécuterait chaque appel du lot |
+| Corps compressé (`Content-Encoding`) | Le proxy ne le déploie pas |
+| Corps plus grand que la taille lue, dont le début ne nomme pas l'outil | Voir ci-dessous |
+
+Le proxy ne devine pas : décrire un appel à partir d'une lecture douteuse ferait entrer dans le graphe un outil ou une lecture que le serveur n'a pas vus. Ce compteur dit ce que le lignage ignore ; il a vocation à être publié avec les relevés de couverture.
 
 ### Corps plus grand que la taille lue
 
