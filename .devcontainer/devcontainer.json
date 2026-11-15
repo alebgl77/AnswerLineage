@@ -1,0 +1,18 @@
+{
+  "name": "AnswerLineage",
+  "build": { "dockerfile": "Dockerfile" },
+  "remoteUser": "dev",
+  "mounts": [],
+  "remoteEnv": {
+    "GH_TOKEN": "",
+    "GITHUB_TOKEN": "",
+    "NODE_AUTH_TOKEN": "",
+    "NPM_TOKEN": "",
+    "PYPI_TOKEN": "",
+    "SSH_AUTH_SOCK": "",
+    "TWINE_PASSWORD": "",
+    "UV_PUBLISH_PASSWORD": "",
+    "UV_PUBLISH_TOKEN": ""
+  },
+  "postCreateCommand": "make setup"
+}

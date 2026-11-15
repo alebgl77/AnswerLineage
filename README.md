@@ -128,4 +128,6 @@ L'agent se connecte alors à `http://127.0.0.1:8717` au lieu du serveur : rien d
 make check
 ```
 
-`make check` enchaîne le contrôle de politique des workflows, le format, le lint, le typage strict, les tests et la porte de couverture. Les tests d'intégration démarrent un PostgreSQL réel avec Testcontainers.
+`make check` enchaîne le contrôle de politique du dépôt, le format, le lint, le typage strict, les tests et la porte de couverture. Les tests d'intégration démarrent un PostgreSQL réel avec Testcontainers.
+
+Le dépôt fournit un conteneur de développement (`.devcontainer/`), sans identifiant ni jeton, utilisable avec VS Code ou GitHub Codespaces.

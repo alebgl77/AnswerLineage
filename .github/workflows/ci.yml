@@ -2,6 +2,8 @@ name: ci
 
 on:
   pull_request:
+    # Poser ou retirer un label relance la revue de la configuration d'agents.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
 
@@ -106,12 +108,44 @@ jobs:
         with:
           category: /language:${{ matrix.language }}
 
+  agent-config:
+    name: Revue de la configuration d'agents
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # La comparaison avec la branche cible demande son historique.
+          fetch-depth: 0
+      - name: Exige l'approbation d'un mainteneur si un fichier protégé change
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: python3 -m scripts.check_agent_config
+
+  devcontainer:
+    name: Conteneur de développement
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Construit le conteneur
+        run: docker build --tag answerlineage-dev .devcontainer
+      - name: Vérifie qu'il installe et contrôle le projet
+        run: |
+          docker run --rm --volume "$PWD:/src:ro" answerlineage-dev sh -c \
+            'cp -r /src /tmp/projet && cd /tmp/projet && make setup && uv run pytest -m "not integration" -q'
+
   # Seul contrôle à exiger dans la protection de la branche principale : il
   # échoue dès qu'une étape bloquante échoue, est annulée ou est sautée.
   ci-ok:
     name: ci-ok
     if: ${{ always() }}
-    needs: [static, tests, secrets, codeql]
+    needs: [static, tests, secrets, codeql, agent-config, devcontainer]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

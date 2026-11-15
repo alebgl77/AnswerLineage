@@ -10,8 +10,8 @@ setup: ## Installe l'environnement (uv) et les hooks pre-commit
 
 check: policy format-check lint typecheck test coverage-gate ## Porte de toute contribution : politique, format, lint, typage strict, tests, couverture
 
-policy: ## Contrôle de politique des workflows (actions épinglées, permissions minimales)
-	uv run python -m scripts.check_workflows
+policy: ## Politique du dépôt (actions et images épinglées, permissions minimales, agents de code)
+	uv run python -m scripts.check_policy
 
 format: ## Reformate le code
 	uv run ruff format .

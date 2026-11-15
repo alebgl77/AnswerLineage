@@ -1,0 +1,24 @@
+# Configuration d'agents de code et garde-fous du pipeline : toute modification
+# demande la revue du mainteneur. Le contrôle de politique vérifie que chaque
+# chemin protégé figure ici.
+
+# Configuration d'agents de code
+/.claude/                         @alebgl77
+/.mcp.json                        @alebgl77
+/CLAUDE.md                        @alebgl77
+/AGENTS.md                        @alebgl77
+/GEMINI.md                        @alebgl77
+/.cursor/                         @alebgl77
+/.cursorrules                     @alebgl77
+/.codex/                          @alebgl77
+/.gemini/                         @alebgl77
+/.github/copilot-instructions.md  @alebgl77
+
+# Garde-fous de l'atelier et du pipeline
+/.devcontainer/                   @alebgl77
+/.github/workflows/               @alebgl77
+/.github/actions/                 @alebgl77
+/.github/CODEOWNERS               @alebgl77
+/.pre-commit-config.yaml          @alebgl77
+/renovate.json                    @alebgl77
+/scripts/                         @alebgl77

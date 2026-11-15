@@ -16,10 +16,10 @@ Le périmètre et l'ordre des travaux sont fixés par le cahier des charges et l
 
 ```bash
 make setup    # uv sync --all-packages --locked, puis installation des hooks pre-commit
-make check    # porte de toute contribution : politique des workflows, format, lint, typage strict, tests, couverture
+make check    # porte de toute contribution : politique du dépôt, format, lint, typage strict, tests, couverture
 make format   # reformate et applique les corrections automatiques de ruff
 make test     # tests seuls, avec le rapport de couverture
-make policy   # contrôle de politique des workflows et des scripts
+make policy   # politique du dépôt : workflows, scripts, Dockerfiles, conteneur de développement, propriétaires du code
 uv run pytest proxy/tests/test_sql.py::test_select_star_reads_the_whole_table   # un test isolé
 uv run pytest -m "not integration"                                              # sans PostgreSQL
 ```
@@ -74,4 +74,5 @@ Un changement qui en viole un est faux, même si ses tests passent.
 - La porte est `make check`. La couverture tient 85 % par composant, en branches comme en lignes et branches.
 - Le métier se dit en français (rappel, piste, écart, criticité, quarantaine), les identifiants techniques en anglais. « Rappel » désigne à la fois la notification des destinataires et la métrique *recall*.
 - Les actions GitHub s'épinglent par empreinte de commit et les images par empreinte `@sha256:` ; `make policy` le vérifie.
+- Une merge request qui touche un chemin protégé (`scripts/check_agent_config.py` en tient la liste : configuration d'agents, workflows, `scripts/`, `.devcontainer/`…) échoue au job `agent-config` tant que le mainteneur n'a pas posé le label `agent-config-approved`. Le signaler dans la merge request plutôt que de contourner le contrôle.
 - Reviennent au mainteneur : fusionner, publier, poser un label, lire un secret, ajouter une dépendance, modifier la configuration d'agents (`.claude/`, `.mcp.json`), ce fichier ou les garde-fous du pipeline.

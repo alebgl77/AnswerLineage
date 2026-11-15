@@ -19,9 +19,9 @@ repos:
         language: system
         types_or: [python, pyi]
         pass_filenames: false
-      - id: workflow-policy
-        name: politique des workflows
-        entry: uv run python -m scripts.check_workflows
+      - id: repository-policy
+        name: politique du dépôt
+        entry: uv run python -m scripts.check_policy
         language: system
-        files: ^\.github/(workflows|actions)/
+        files: ^(\.github/|\.devcontainer/|scripts/.*\.sh$)|Dockerfile
         pass_filenames: false

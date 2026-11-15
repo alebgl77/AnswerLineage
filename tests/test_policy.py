@@ -8,9 +8,13 @@ from typing import Any
 import pytest
 import yaml
 
-from scripts.check_workflows import (
+from scripts.check_agent_config import PROTECTED
+from scripts.check_policy import (
     Violation,
     check_action,
+    check_codeowners,
+    check_devcontainer,
+    check_dockerfile,
     check_file,
     check_script,
     check_workflow,
@@ -236,7 +240,7 @@ def test_main_checks_the_working_directory_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("sys.argv", ["check_workflows"])
+    monkeypatch.setattr("sys.argv", ["check_policy"])
     assert main() == 0
 
 
@@ -244,3 +248,129 @@ def test_repository_workflows_respect_the_policy() -> None:
     paths = discover(ROOT)
     assert ROOT / ".github" / "workflows" / "ci.yml" in paths
     assert [violation for path in paths for violation in check_file(path)] == []
+
+
+def agent_workflow(on: object, step: dict[str, Any], **job: Any) -> dict[str, Any]:
+    document = workflow([step], on=on)
+    document["jobs"]["build"].update(job)
+    return document
+
+
+AGENT_ACTION = {"uses": f"anthropics/claude-code-action@{SHA}"}
+
+
+@pytest.mark.parametrize(
+    "on", ["issues", "issue_comment", "pull_request", "pull_request_review_comment", "discussion"]
+)
+def test_code_agent_on_untrusted_input_must_not_write(on: str) -> None:
+    """Une issue ou un commentaire piégé ne doit pas donner la main sur le dépôt."""
+    document = agent_workflow({on: None}, AGENT_ACTION, permissions={"contents": "write"})
+    violations = check_workflow("agent.yml", document)
+    assert rules(violations) == ["agent-sur-entree-non-fiable"]
+    assert "un droit d'écriture" in violations[0].message
+    assert on in violations[0].message
+
+
+def test_code_agent_on_untrusted_input_must_not_receive_a_secret() -> None:
+    step = {**AGENT_ACTION, "with": {"api_key": "${{ secrets.CLE_API }}"}}
+    violations = check_workflow("agent.yml", agent_workflow({"issue_comment": None}, step))
+    assert rules(violations) == ["agent-sur-entree-non-fiable"]
+    assert "un secret" in violations[0].message
+    from_env = {"run": "claude -p 'trie cette issue'", "env": {"CLE": "${{ secrets['CLE'] }}"}}
+    assert rules(check_workflow("agent.yml", agent_workflow({"issues": None}, from_env))) == [
+        "agent-sur-entree-non-fiable"
+    ]
+
+
+def test_code_agent_command_line_is_recognized_in_a_script() -> None:
+    step = {"run": "npx codex exec 'corrige'"}
+    document = agent_workflow({"issue_comment": None}, step, permissions={"issues": "write"})
+    assert rules(check_workflow("agent.yml", document)) == ["agent-sur-entree-non-fiable"]
+    harmless = {"run": "echo 'le dossier .claude/ est protégé' && ./scripts/gemini-report.sh"}
+    document = agent_workflow({"issue_comment": None}, harmless, permissions={"issues": "write"})
+    assert check_workflow("bot.yml", document) == []
+
+
+def test_code_agent_without_secret_or_write_access_is_allowed_on_untrusted_input() -> None:
+    assert check_workflow("agent.yml", agent_workflow({"issue_comment": None}, AGENT_ACTION)) == []
+
+
+def test_code_agent_with_write_access_is_allowed_on_trusted_triggers() -> None:
+    document = agent_workflow(
+        {"workflow_dispatch": None, "schedule": [{"cron": "0 6 * * 1"}]},
+        {**AGENT_ACTION, "with": {"api_key": "${{ secrets.CLE_API }}"}},
+        permissions={"contents": "write"},
+    )
+    assert check_workflow("agent.yml", document) == []
+
+
+def test_workflow_without_agent_may_use_secrets_on_pull_requests() -> None:
+    step = {"run": "make deploy", "env": {"JETON": "${{ secrets.JETON }}"}}
+    assert check_workflow("ci.yml", agent_workflow({"pull_request": None}, step)) == []
+
+
+def test_development_container_must_not_mount_host_credentials() -> None:
+    clean = {"mounts": [], "remoteEnv": {"GH_TOKEN": ""}, "postCreateCommand": "make setup"}
+    assert check_devcontainer("devcontainer.json", clean) == []
+    for mount in (
+        "source=${localEnv:HOME}/.ssh,target=/home/dev/.ssh,type=bind",
+        {"source": "${localEnv:HOME}/.config/gh", "target": "/home/dev/.config/gh", "type": "bind"},
+        "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
+        "source=${localEnv:HOME}/.claude,target=/home/dev/.claude,type=bind",
+    ):
+        violations = check_devcontainer("devcontainer.json", {"mounts": [mount]})
+        assert rules(violations) == ["conteneur-sans-identifiant"], mount
+    by_argument = {"runArgs": ["-v", "${localEnv:HOME}/.aws:/home/dev/.aws:ro"]}
+    assert rules(check_devcontainer("devcontainer.json", by_argument)) == [
+        "conteneur-sans-identifiant"
+    ]
+    assert rules(check_devcontainer("devcontainer.json", ["pas un objet"])) == ["lisible"]
+
+
+def test_development_container_must_not_receive_host_tokens() -> None:
+    for section in ("containerEnv", "remoteEnv"):
+        config = {section: {"GH_TOKEN": "${localEnv:GH_TOKEN}", "LANG": "${localEnv:LANG}"}}
+        violations = check_devcontainer("devcontainer.json", config)
+        assert rules(violations) == ["conteneur-sans-identifiant"]
+        assert "GH_TOKEN" in violations[0].message
+    renamed = {"remoteEnv": {"JETON": "${localEnv:UV_PUBLISH_TOKEN}"}}
+    assert rules(check_devcontainer("devcontainer.json", renamed)) == ["conteneur-sans-identifiant"]
+
+
+def test_every_protected_path_needs_a_code_owner() -> None:
+    complete = "\n".join(f"/{path} @mainteneur" for path in PROTECTED)
+    assert check_codeowners("CODEOWNERS", complete) == []
+    without_claude = "\n".join(f"/{path} @mainteneur" for path in PROTECTED if path != ".claude/")
+    violations = check_codeowners("CODEOWNERS", without_claude + "\n# /.claude/ @mainteneur\n")
+    assert rules(violations) == ["chemin-protege-sans-proprietaire"]
+    assert ".claude/" in violations[0].message
+    assert len(check_codeowners("CODEOWNERS", "/.claude/\n")) == len(PROTECTED)
+
+
+def test_dockerfile_base_images_must_be_pinned_by_digest() -> None:
+    pinned = f"FROM python:3.13@{DIGEST} AS build\nRUN make\nFROM build AS tests\nFROM scratch\n"
+    assert check_dockerfile("Dockerfile", pinned) == []
+    floating = "FROM --platform=linux/amd64 python:3.13-slim\nFROM node:22 AS ui\n"
+    assert rules(check_dockerfile("Dockerfile", floating)) == ["image-epinglee", "image-epinglee"]
+
+
+def test_development_container_files_are_discovered(tmp_path: Path) -> None:
+    folder = tmp_path / ".devcontainer"
+    folder.mkdir()
+    config = folder / "devcontainer.json"
+    config.write_text('{"mounts": ["source=/home/u/.ssh,target=/root/.ssh,type=bind"]}', "utf-8")
+    dockerfile = folder / "Dockerfile"
+    dockerfile.write_text("FROM python:3.13\n", "utf-8")
+    owners = tmp_path / ".github" / "CODEOWNERS"
+    owners.parent.mkdir()
+    owners.write_text("", "utf-8")
+    ignored = tmp_path / ".venv" / "lib" / "Dockerfile"
+    ignored.parent.mkdir(parents=True)
+    ignored.write_text("FROM python:3.13\n", "utf-8")
+
+    assert discover(tmp_path) == sorted([config, dockerfile, owners])
+    assert rules(check_file(config)) == ["conteneur-sans-identifiant"]
+    assert rules(check_file(dockerfile)) == ["image-epinglee"]
+    assert len(check_file(owners)) == len(PROTECTED)
+    config.write_text("{", "utf-8")
+    assert rules(check_file(config)) == ["lisible"]
