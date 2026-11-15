@@ -1,6 +1,6 @@
 # API d'ingestion
 
-L'API reçoit des `RunEvent` OpenLineage (schéma 2-0-2, OpenLineage 1.55), les valide et les enregistre tels quels dans `event_raw`. Elle est versionnée sous `/api/v1` et décrite par `/api/v1/openapi.json`.
+L'API reçoit des `RunEvent` OpenLineage (schéma 2-0-2, OpenLineage 1.55), les valide et les enregistre tels quels dans `event_raw`. Elle est versionnée sous `/api/v1`. Sa spécification OpenAPI est servie sur `/api/v1/openapi.json` et publiée dans [`spec/openapi/answerlineage-v1.json`](../spec/openapi/answerlineage-v1.json).
 
 ```bash
 ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run uvicorn --factory answerlineage_api.app:create_app
@@ -44,6 +44,12 @@ Chaque événement d'un lot est validé séparément. Un événement invalide es
 Le contrat est le schéma officiel d'OpenLineage, copié dans `spec/openlineage/2-0-2/`. L'API le traduit en modèles Pydantic pour la vitesse ; un test compare les deux, événement par événement, sur des événements valides et invalides.
 
 Deux textes que PostgreSQL ne peut pas conserver sont rejetés (`unstorable_text`) : le caractère nul et les demi-codets Unicode isolés.
+
+## Contrat
+
+La spécification publiée est un contrat. Des tests générés depuis la spécification vérifient que chaque route répond avec un statut, un type de contenu et un corps conformes à ce qu'elle déclare, sans jamais d'erreur du serveur. Le pipeline compare le contrat d'une merge request à celui de la branche cible et échoue sur un changement incompatible : route ou champ de réponse retiré, type modifié, paramètre devenu obligatoire. Une rupture demande une nouvelle version de l'API.
+
+`make openapi` met à jour le fichier publié, `make contract` rejoue la comparaison sur le poste.
 
 ## Rejeu
 

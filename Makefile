@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check policy format format-check lint typecheck test coverage-gate secrets
+.PHONY: help setup check policy contract openapi format format-check lint typecheck test coverage-gate secrets
 
 help: ## Liste les cibles
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -8,10 +8,16 @@ setup: ## Installe l'environnement (uv) et les hooks pre-commit
 	uv sync --all-packages --locked
 	uv run pre-commit install
 
-check: policy format-check lint typecheck test coverage-gate ## Porte de toute contribution : politique, format, lint, typage strict, tests, couverture
+check: policy contract format-check lint typecheck test coverage-gate ## Porte de toute contribution : politique, contrat de l'API, format, lint, typage strict, tests, couverture
 
 policy: ## Politique du dépôt (actions et images épinglées, permissions minimales, agents de code)
 	uv run python -m scripts.check_policy
+
+contract: ## Compatibilité de l'API avec le contrat publié sur la branche cible
+	uv run python -m scripts.check_openapi_compat
+
+openapi: ## Met à jour la spécification OpenAPI publiée
+	uv run python -m answerlineage_api.openapi > spec/openapi/answerlineage-v1.json
 
 format: ## Reformate le code
 	uv run ruff format .

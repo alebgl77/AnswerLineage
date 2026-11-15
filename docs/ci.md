@@ -4,7 +4,7 @@ Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque me
 
 | Job | Ce qu'il vérifie | Commande locale |
 | --- | --- | --- |
-| `static` | Politique des workflows, format, lint (ruff), typage strict (mypy) | `make policy format-check lint typecheck` |
+| `static` | Politique du dépôt, compatibilité de l'API avec le contrat publié, format, lint (ruff), typage strict (mypy) | `make policy contract format-check lint typecheck` |
 | `tests` | Tests et couverture de branches, sur la matrice Python 3.13 et 3.14, PostgreSQL 17 et 18 | `make test` |
 | `tests` | Porte de couverture : 85 % par composant, en branches et en lignes et branches | `make coverage-gate` |
 | `secrets` | Aucun secret dans tout l'historique (gitleaks), après un canari qui prouve que le détecteur bloque | `make secrets` |

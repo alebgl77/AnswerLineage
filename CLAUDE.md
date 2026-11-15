@@ -20,6 +20,8 @@ make check    # porte de toute contribution : politique du dépôt, format, lint
 make format   # reformate et applique les corrections automatiques de ruff
 make test     # tests seuls, avec le rapport de couverture
 make policy   # politique du dépôt : workflows, scripts, Dockerfiles, conteneur de développement, propriétaires du code
+make openapi  # met à jour le contrat OpenAPI publié (spec/openapi/), à relancer dès qu'une route change
+make contract # compare le contrat à celui de la branche cible : un changement incompatible échoue
 uv run pytest proxy/tests/test_sql.py::test_select_star_reads_the_whole_table   # un test isolé
 uv run pytest -m "not integration"                                              # sans PostgreSQL
 ```
@@ -50,6 +52,7 @@ Ce qui demande de lire plusieurs fichiers :
 - **Le proxy décide sur le corps de la requête**, jamais sur les en-têtes MCP (`inspection.py`). Les en-têtes ne servent qu'à être comparés au corps.
 - **Rien ne retarde un appel.** Le relais (`app.py`) rend la réponse au fil de l'eau ; l'événement est construit après l'échange, et l'analyse du SQL (`sql.py`) tourne ensuite dans un fil à part.
 - **L'analyse du SQL échoue du côté sûr.** Elle ne liste les colonnes d'une table que si la liste est sûre d'être complète ; sinon la table est rendue en entier, ou la lecture est « non résolue ». Une colonne manquante ferait écarter à tort une réponse touchée.
+- **L'API publiée est un contrat.** `spec/openapi/answerlineage-v1.json` est la spécification servie par l'application ; un test échoue s'ils diffèrent, des tests générés (Schemathesis) vérifient que chaque route s'y conforme, et `scripts/check_openapi_compat.py` refuse un changement incompatible avec la branche cible.
 - **Écritures du graphe idempotentes et commutatives** (`api/.../store/graph.py`) : rejouer un événement, ou recevoir deux événements d'un run dans le désordre, donne le même graphe.
 - **De l'événement au graphe.** L'ingestion écrit l'événement brut et une ligne de file dans la même transaction (`api/.../ingest/store.py`). Un worker réclame un lot avec `FOR UPDATE SKIP LOCKED`, projette chaque événement (`workers/.../projection.py`) et retire le lot de la file dans une seule transaction (`workers/.../queue.py`) : ni double traitement, ni perte. `workers` dépend de `api` pour le schéma et l'écriture du graphe.
 - **Schéma et migrations.** `store/schema.py` déclare le schéma, les migrations Alembic le créent, et un test compare la base migrée au schéma déclaré. Une migration nomme ses contraintes et fournit sa descente.
