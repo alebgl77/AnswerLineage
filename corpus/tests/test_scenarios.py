@@ -373,7 +373,7 @@ def test_the_command_line_checks_the_corpus(
     assert cli.main(["check"]) == 0
     printed = capsys.readouterr().out
     assert "colonnes : niveau columns, 3 touchée(s), 1 écartée(s), 1 hors d'atteinte" in printed
-    assert printed.endswith(f"scénarios, version {CORPUS_VERSION}.\n")
+    assert f"scénarios, version {CORPUS_VERSION}.\n" in printed
     assert cli.main(["check", "--directory", str(directory)]) == 0
     capsys.readouterr()
 

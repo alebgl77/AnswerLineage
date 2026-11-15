@@ -3,7 +3,7 @@
 ``events`` écrit les événements OpenLineage de l'entreprise synthétique,
 ``truth`` la vérité de ses incidents, et ``load`` envoie les événements à une
 API d'ingestion d'AnswerLineage, puis les relevés de couverture de ses
-serveurs MCP. ``check`` contrôle le corpus de vérité.
+serveurs MCP. ``check`` contrôle le corpus de vérité et le corpus d'abus.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from answerlineage_corpus.abuse import ABUSE_VERSION, check_abuse_corpus, load_abuse_corpus
 from answerlineage_corpus.coverage import coverage_reports
 from answerlineage_corpus.enterprise import (
     DEFAULT_DAYS,
@@ -51,9 +52,12 @@ def _parser() -> argparse.ArgumentParser:
         "--url", required=True, help="adresse de l'API, par exemple http://127.0.0.1:8000"
     )
     load.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
-    check = commands.add_parser("check", help="contrôle le corpus de vérité")
+    check = commands.add_parser("check", help="contrôle le corpus de vérité et le corpus d'abus")
     check.add_argument(
         "--directory", type=Path, help="dossier de scénarios, ceux du paquet par défaut"
+    )
+    check.add_argument(
+        "--abuse-directory", type=Path, help="dossier du corpus d'abus, celui du paquet par défaut"
     )
     return parser
 
@@ -78,6 +82,25 @@ def _check(directory: Path | None) -> int:
     return 0
 
 
+def _check_abuse(directory: Path | None) -> int:
+    problems = check_abuse_corpus(directory)
+    if problems:
+        for problem in problems:
+            print(problem, file=sys.stderr)
+        print(f"Corpus d'abus incohérent : {len(problems)} problème(s).", file=sys.stderr)
+        return 1
+    corpus = load_abuse_corpus(directory)
+    for family in dict.fromkeys(case.family for case in corpus):
+        cases = [case for case in corpus if case.family == family]
+        opened = sum(1 for case in cases if case.is_open)
+        print(f"{family} : {len(cases) - opened} cas bloqués, {opened} ouvert(s)")
+    print(
+        f"Corpus d'abus cohérent : {len(corpus.cases)} cas, dont {len(corpus.open_cases)} ouverts, "
+        f"version {ABUSE_VERSION}."
+    )
+    return 0
+
+
 def _enterprise(args: argparse.Namespace) -> Enterprise:
     return generate(args.seed, requests=args.requests, days=args.days, incidents=args.incidents)
 
@@ -85,7 +108,8 @@ def _enterprise(args: argparse.Namespace) -> Enterprise:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "check":
-        return _check(args.directory)
+        # Les deux corpus sont contrôlés, même quand le premier est incohérent.
+        return max(_check(args.directory), _check_abuse(args.abuse_directory))
     try:
         enterprise = _enterprise(args)
     except ValueError as error:

@@ -1,0 +1,126 @@
+{
+  "title": "Caractères invisibles : largeur nulle, sens d'écriture forcé, sélecteur de variante, caractère nul, deux écritures d'un même nom",
+  "cases": [
+    {
+      "name": "outil-largeur-nulle",
+      "title": "Un espace de largeur nulle (U+200B) dans un nom d'outil",
+      "surface": "proxy",
+      "base": "proxy/appel-outil",
+      "alter": {"field": "/body/params/name", "value": "rechercher\u200bcanari7c1d"},
+      "expect": {"verdict": "neutralise", "code": "invalidToolName"}
+    },
+    {
+      "name": "outil-sens-force",
+      "title": "Un forçage du sens d'écriture (U+202E) dans un nom d'outil",
+      "surface": "proxy",
+      "base": "proxy/appel-outil",
+      "alter": {"field": "/body/params/name", "value": "rechercher_\u202ecanari7c1d"},
+      "expect": {"verdict": "neutralise", "code": "invalidToolName"}
+    },
+    {
+      "name": "outil-selecteur-variante",
+      "title": "Un sélecteur de variante (U+FE0F) dans un nom d'outil",
+      "surface": "proxy",
+      "base": "proxy/appel-outil",
+      "alter": {"field": "/body/params/name", "value": "rechercher_canari7c1d\ufe0f"},
+      "expect": {"verdict": "neutralise", "code": "invalidToolName"}
+    },
+    {
+      "name": "table-largeur-nulle",
+      "title": "Un espace de largeur nulle dans le nom d'une table lue",
+      "surface": "proxy",
+      "base": "proxy/appel-sql",
+      "alter": {"field": "/body/params/arguments/query", "value": "SELECT taux FROM finance.ref.`taux\u200bcanari7c1d`"},
+      "expect": {"verdict": "neutralise", "code": "unresolved", "reason": "unsupported_identifier"}
+    },
+    {
+      "name": "table-sens-force",
+      "title": "Un forçage du sens d'écriture dans le nom d'une table lue",
+      "surface": "proxy",
+      "base": "proxy/appel-sql",
+      "alter": {"field": "/body/params/arguments/query", "value": "SELECT taux FROM finance.ref.`\u202ecanari7c1d`"},
+      "expect": {"verdict": "neutralise", "code": "unresolved", "reason": "unsupported_identifier"}
+    },
+    {
+      "name": "table-selecteur-variante",
+      "title": "Un sélecteur de variante dans le nom d'une table lue",
+      "surface": "proxy",
+      "base": "proxy/appel-sql",
+      "alter": {"field": "/body/params/arguments/query", "value": "SELECT taux FROM finance.ref.`canari7c1d\ufe0f`"},
+      "expect": {"verdict": "neutralise", "code": "unresolved", "reason": "unsupported_identifier"}
+    },
+    {
+      "name": "jeu-largeur-nulle",
+      "title": "Un espace de largeur nulle dans un nom de jeu de données",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"field": "/body/0/inputs/0/name", "value": "finance.ref.taux\u200bcanari7c1d"},
+      "expect": {"verdict": "rejete", "index": 0, "path": "/inputs/0/name", "code": "identifier_invisible"}
+    },
+    {
+      "name": "jeu-sens-force",
+      "title": "Un forçage du sens d'écriture dans un nom de jeu de données",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"field": "/body/0/inputs/0/name", "value": "finance.ref.\u202ecanari7c1d"},
+      "expect": {"verdict": "rejete", "index": 0, "path": "/inputs/0/name", "code": "identifier_invisible"}
+    },
+    {
+      "name": "jeu-selecteur-variante",
+      "title": "Un sélecteur de variante dans un nom de jeu de données",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"field": "/body/0/inputs/0/name", "value": "finance.ref.canari7c1d\ufe0f"},
+      "expect": {"verdict": "rejete", "index": 0, "path": "/inputs/0/name", "code": "identifier_invisible"}
+    },
+    {
+      "name": "jeu-trait-d-union-conditionnel",
+      "title": "Un trait d'union conditionnel (U+00AD) dans un pseudonyme de destinataire",
+      "surface": "ingestion",
+      "base": "ingestion/reponse",
+      "alter": {"field": "/body/0/outputs/0/outputFacets/answerlineage_delivery/recipients/0", "value": "canari\u00ad7c1d-canari7c1d"},
+      "expect": {"verdict": "rejete", "index": 0, "path": "/outputs/0/outputFacets/answerlineage_delivery/recipients/0", "code": "identifier_invisible"}
+    },
+    {
+      "name": "jeu-caractere-nul",
+      "title": "Un caractère nul dans un nom de jeu de données, que PostgreSQL ne peut pas conserver",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"field": "/body/0/inputs/0/name", "value": "finance.ref.canari7c1d\u0000"},
+      "expect": {"verdict": "rejete", "index": 0, "path": "", "code": "unstorable_text"}
+    },
+    {
+      "name": "deux-ecritures",
+      "title": "Le même nom écrit en forme décomposée (e suivi de U+0301) : un seul jeu de données dans le graphe",
+      "surface": "ingestion",
+      "base": "ingestion/deux-lectures",
+      "canary": "e\u0301",
+      "alter": {"field": "/body/1/inputs/0/name", "value": "re\u0301fe\u0301rentiel.socie\u0301te\u0301s"},
+      "expect": {"verdict": "sans_effet"}
+    },
+    {
+      "name": "message-caractere-nul",
+      "title": "Un caractère nul dans la référence d'un message recherché",
+      "surface": "lecture",
+      "base": "lecture/reponses-d-un-message",
+      "alter": {"field": "/query/message_ref", "value": "canari7c1d\u0000"},
+      "expect": {"verdict": "refuse", "status": 422, "path": "/query/message_ref", "code": "string_pattern_mismatch"}
+    },
+    {
+      "name": "jeu-a-propager-caractere-nul",
+      "title": "Un caractère nul dans le nom du jeu de données à propager",
+      "surface": "lecture",
+      "base": "lecture/propagation",
+      "alter": {"field": "/query/name", "value": "finance.ref.taux_change\u0000canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 422, "path": "/query/name", "code": "string_pattern_mismatch"}
+    },
+    {
+      "name": "adresse-caractere-nul",
+      "title": "Un caractère nul dans l'adresse d'un incident de l'explorateur",
+      "surface": "explorateur",
+      "base": "explorateur/propager",
+      "alter": {"field": "/query/name", "value": "finance.ref.taux_change\u0000canari7c1d"},
+      "expect": {"verdict": "inerte", "message": "La demande est invalide : vérifiez le jeu de données et la fenêtre."}
+    }
+  ]
+}

@@ -1,0 +1,117 @@
+{
+  "title": "Lots surdimensionnés : trop d'événements, trop d'octets, trop de niveaux, trop d'éléments, trop de temps",
+  "cases": [
+    {
+      "name": "lot-1001",
+      "title": "Un lot de 1 001 événements, un de plus que le maximum",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"recipe": "repeter", "field": "/body", "count": 1001},
+      "expect": {"verdict": "refuse", "status": 413, "code": "batch_too_large"}
+    },
+    {
+      "name": "corps-trop-grand",
+      "title": "Un corps annoncé un octet au-delà de 16 Mio : refusé sans être lu",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"recipe": "gonfler", "bytes": 16777217},
+      "expect": {"verdict": "refuse", "status": 413, "code": "body_too_large", "read": "partial"}
+    },
+    {
+      "name": "corps-trop-grand-en-flux",
+      "title": "Un corps de 20 Mio envoyé en flux, sans longueur annoncée : la lecture s'arrête au maximum",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"recipe": "gonfler", "bytes": 20971520, "announce": false},
+      "expect": {"verdict": "refuse", "status": 413, "code": "body_too_large", "read": "partial"}
+    },
+    {
+      "name": "json-trop-profond",
+      "title": "Un lot enfoui sous cent mille tableaux imbriqués",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"recipe": "imbriquer", "field": "/body", "open": "[", "close": "]", "depth": 100000},
+      "expect": {"verdict": "refuse", "status": 400, "code": "json_too_deep"}
+    },
+    {
+      "name": "bombe-gzip",
+      "title": "Un corps gzip de quelques dizaines de Ko qui se déploie en 32 Mio",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"recipe": "bombe-gzip", "bytes": 33554432},
+      "expect": {"verdict": "refuse", "status": 413, "code": "body_too_large"}
+    },
+    {
+      "name": "encodage-empile",
+      "title": "Un corps annoncé sous deux encodages empilés",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"header": "content-encoding", "value": "gzip, canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 415, "code": "unsupported_content_encoding"}
+    },
+    {
+      "name": "entrees-demesurees",
+      "title": "Un événement qui déclare 1 001 jeux de données lus",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"recipe": "repeter", "field": "/body/0/inputs", "count": 1001},
+      "expect": {"verdict": "rejete", "index": 0, "path": "/inputs", "code": "too_many_items"}
+    },
+    {
+      "name": "colonnes-demesurees",
+      "title": "Une facette schema de 10 001 colonnes",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"recipe": "repeter", "field": "/body/0/inputs/0/facets/schema/fields", "count": 10001},
+      "expect": {"verdict": "rejete", "index": 0, "path": "/inputs/0/facets/schema/fields", "code": "too_many_items"}
+    },
+    {
+      "name": "facettes-demesurees",
+      "title": "Un run qui porte 101 facettes",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"recipe": "repeter", "field": "/body/0/run/facets", "count": 101},
+      "expect": {"verdict": "rejete", "index": 0, "path": "/run/facets", "code": "too_many_items"}
+    },
+    {
+      "name": "sorties-demesurees",
+      "title": "Un événement qui déclare 1 001 sorties",
+      "surface": "ingestion",
+      "base": "ingestion/reponse",
+      "alter": {"recipe": "repeter", "field": "/body/0/outputs", "count": 1001},
+      "expect": {"verdict": "rejete", "index": 0, "path": "/outputs", "code": "too_many_items"}
+    },
+    {
+      "name": "destinataires-demesures",
+      "title": "Une diffusion à 10 001 destinataires",
+      "surface": "ingestion",
+      "base": "ingestion/reponse",
+      "alter": {"recipe": "repeter", "field": "/body/0/outputs/0/outputFacets/answerlineage_delivery/recipients", "count": 10001},
+      "expect": {"verdict": "rejete", "index": 0, "path": "/outputs/0/outputFacets/answerlineage_delivery/recipients", "code": "too_many_items"}
+    },
+    {
+      "name": "parents-mutuels",
+      "title": "Deux runs qui se désignent parents l'un de l'autre : la propagation se termine et retrouve la réponse",
+      "surface": "lecture",
+      "base": "lecture/propagation",
+      "alter": {
+        "field": "/seed/0/run/facets/parent",
+        "value": {
+          "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/corpus",
+          "_schemaURL": "https://openlineage.io/spec/facets/1-2-0/ParentRunFacet.json#/$defs/ParentRunFacet",
+          "run": {"runId": "019a4d1e-8d98-7c3e-9d5e-2f1b6c8a0002"},
+          "job": {"namespace": "mcp://entrepot", "name": "canari7c1d"}
+        }
+      },
+      "expect": {"verdict": "borne", "status": 200, "truncated": false}
+    },
+    {
+      "name": "lecture-hors-delai",
+      "title": "Une lecture qui dépasse son délai maximal : PostgreSQL l'interrompt, la route le dit",
+      "surface": "lecture",
+      "base": "lecture/propagation",
+      "alter": {"recipe": "ralentir", "timeout_ms": 50},
+      "expect": {"verdict": "borne", "status": 503, "code": "query_timeout"}
+    }
+  ]
+}

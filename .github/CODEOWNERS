@@ -25,3 +25,6 @@
 /.gitleaks.toml                   @alebgl77
 /.gitleaksignore                  @alebgl77
 /vulnerability-exceptions.toml    @alebgl77
+
+# Exceptions du corpus d'abus : les cas d'attaque que le produit ne bloque pas encore
+/corpus/src/answerlineage_corpus/abuse_open.json  @alebgl77

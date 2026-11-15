@@ -1,0 +1,510 @@
+{
+  "seeds": {
+    "une-reponse": [
+      {
+        "eventType": "START",
+        "eventTime": "2026-11-03T09:00:00.000000Z",
+        "producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/corpus",
+        "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
+        "run": {
+          "runId": "019a4d1e-7a10-7c3e-9d5e-2f1b6c8a0001",
+          "facets": {
+            "answerlineage_agent": {
+              "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/corpus",
+              "_schemaURL": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/AgentRunFacet.json#/$defs/AgentRunFacet"
+            }
+          }
+        },
+        "job": {"namespace": "agent://finance", "name": "analyste-tresorerie"},
+        "inputs": [],
+        "outputs": []
+      },
+      {
+        "eventType": "COMPLETE",
+        "eventTime": "2026-11-03T09:00:05.000000Z",
+        "producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+        "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
+        "run": {
+          "runId": "019a4d1e-8d98-7c3e-9d5e-2f1b6c8a0002",
+          "facets": {
+            "parent": {
+              "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+              "_schemaURL": "https://openlineage.io/spec/facets/1-2-0/ParentRunFacet.json#/$defs/ParentRunFacet",
+              "run": {"runId": "019a4d1e-7a10-7c3e-9d5e-2f1b6c8a0001"},
+              "job": {"namespace": "agent://finance", "name": "analyste-tresorerie"}
+            },
+            "answerlineage_toolCall": {
+              "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+              "_schemaURL": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/ToolCallRunFacet.json#/$defs/ToolCallRunFacet",
+              "server": "entrepot",
+              "transport": "http",
+              "headerMismatch": [],
+              "invalidToolName": false,
+              "tool": "execute_sql",
+              "protocolVersion": "2026-07-28",
+              "httpStatus": 200,
+              "readResolution": "resolved"
+            }
+          }
+        },
+        "job": {"namespace": "mcp://entrepot", "name": "execute_sql"},
+        "inputs": [
+          {
+            "namespace": "bigquery",
+            "name": "finance.ref.taux_change",
+            "facets": {
+              "schema": {
+                "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+                "_schemaURL": "https://openlineage.io/spec/facets/1-2-0/SchemaDatasetFacet.json#/$defs/SchemaDatasetFacet",
+                "fields": [{"name": "devise"}, {"name": "taux"}]
+              },
+              "version": {
+                "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+                "_schemaURL": "https://openlineage.io/spec/facets/1-0-1/DatasetVersionDatasetFacet.json#/$defs/DatasetVersionDatasetFacet",
+                "datasetVersion": "2026-11-03"
+              }
+            }
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "eventType": "COMPLETE",
+        "eventTime": "2026-11-03T09:00:30.000000Z",
+        "producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/corpus",
+        "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
+        "run": {
+          "runId": "019a4d1e-7a10-7c3e-9d5e-2f1b6c8a0001",
+          "facets": {
+            "answerlineage_agent": {
+              "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/corpus",
+              "_schemaURL": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/AgentRunFacet.json#/$defs/AgentRunFacet"
+            }
+          }
+        },
+        "job": {"namespace": "agent://finance", "name": "analyste-tresorerie"},
+        "inputs": [],
+        "outputs": [
+          {
+            "namespace": "agent://finance",
+            "name": "analyste-tresorerie/reponses",
+            "outputFacets": {
+              "answerlineage_delivery": {
+                "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/corpus",
+                "_schemaURL": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/DeliveryOutputDatasetFacet.json#/$defs/DeliveryOutputDatasetFacet",
+                "fingerprint": "sha256:5d1c0e6b9f3a4872d0c1b2a39e8f7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c",
+                "channel": "slack",
+                "messageRef": "8f2c41d09ab37e65",
+                "recipients": ["3b9f0a1c5d7e2f4861a0b9c8d7e6f5a4", "c4d5e6f7a8b90c1d2e3f4a5b6c7d8e9f"]
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "bases": {
+    "proxy/appel-outil": {
+      "title": "Un appel d'outil MCP, révision 2026-07-28, à un outil sans SQL",
+      "surface": "proxy",
+      "settings": {"server": "crm"},
+      "request": {
+        "method": "POST",
+        "path": "/mcp",
+        "headers": {
+          "content-type": "application/json",
+          "accept": "application/json, text/event-stream",
+          "mcp-protocol-version": "2026-07-28",
+          "mcp-method": "tools/call",
+          "mcp-name": "rechercher_comptes"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {
+            "name": "rechercher_comptes",
+            "arguments": {"secteur": "énergie"},
+            "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
+          }
+        }
+      },
+      "healthy": {"tool": "rechercher_comptes", "protocol": "2026-07-28"}
+    },
+    "proxy/appel-sql": {
+      "title": "Un appel à un outil SQL déclaré, dont la requête lit une table",
+      "surface": "proxy",
+      "settings": {
+        "server": "entrepot",
+        "sql_tool": {"name": "execute_sql", "argument": "query", "dialect": "bigquery", "namespace": "bigquery"},
+        "sql_budget_ms": 250
+      },
+      "request": {
+        "method": "POST",
+        "path": "/mcp",
+        "headers": {
+          "content-type": "application/json",
+          "accept": "application/json, text/event-stream",
+          "mcp-protocol-version": "2026-07-28",
+          "mcp-method": "tools/call",
+          "mcp-name": "execute_sql"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {
+            "name": "execute_sql",
+            "arguments": {"query": "SELECT taux FROM finance.ref.taux_change WHERE devise = 'EUR'"},
+            "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
+          }
+        }
+      },
+      "healthy": {"tool": "execute_sql", "protocol": "2026-07-28", "reads": ["finance.ref.taux_change"]}
+    },
+    "ingestion/appel-outil": {
+      "title": "Un lot d'un événement : l'appel d'outil tel que le proxy l'émet",
+      "surface": "ingestion",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/lineage/batch",
+        "headers": {"content-type": "application/json"},
+        "body": [
+          {
+            "eventType": "COMPLETE",
+            "eventTime": "2026-11-03T09:00:05.000000Z",
+            "producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+            "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
+            "run": {
+              "runId": "019a4d1e-8d98-7c3e-9d5e-2f1b6c8a0002",
+              "facets": {
+                "parent": {
+                  "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+                  "_schemaURL": "https://openlineage.io/spec/facets/1-2-0/ParentRunFacet.json#/$defs/ParentRunFacet",
+                  "run": {"runId": "019a4d1e-7a10-7c3e-9d5e-2f1b6c8a0001"},
+                  "job": {"namespace": "agent://finance", "name": "analyste-tresorerie"}
+                },
+                "answerlineage_toolCall": {
+                  "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+                  "_schemaURL": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/ToolCallRunFacet.json#/$defs/ToolCallRunFacet",
+                  "server": "entrepot",
+                  "transport": "http",
+                  "headerMismatch": [],
+                  "invalidToolName": false,
+                  "tool": "execute_sql",
+                  "protocolVersion": "2026-07-28",
+                  "httpStatus": 200,
+                  "readResolution": "resolved"
+                }
+              }
+            },
+            "job": {"namespace": "mcp://entrepot", "name": "execute_sql"},
+            "inputs": [
+              {
+                "namespace": "bigquery",
+                "name": "finance.ref.taux_change",
+                "facets": {
+                  "schema": {
+                    "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+                    "_schemaURL": "https://openlineage.io/spec/facets/1-2-0/SchemaDatasetFacet.json#/$defs/SchemaDatasetFacet",
+                    "fields": [{"name": "devise"}, {"name": "taux"}]
+                  },
+                  "version": {
+                    "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+                    "_schemaURL": "https://openlineage.io/spec/facets/1-0-1/DatasetVersionDatasetFacet.json#/$defs/DatasetVersionDatasetFacet",
+                    "datasetVersion": "2026-11-03"
+                  }
+                }
+              }
+            ],
+            "outputs": []
+          }
+        ]
+      },
+      "healthy": {
+        "status": 202,
+        "body": {"accepted": 1, "duplicates": 0, "rejected": []},
+        "graph": {"run": 1, "tool": 1, "dataset": 1, "dataset_version": 1, "read_edge": 1}
+      }
+    },
+    "ingestion/reponse": {
+      "title": "Un lot d'un événement : la fin du run d'un agent, avec sa réponse et sa diffusion",
+      "surface": "ingestion",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/lineage/batch",
+        "headers": {"content-type": "application/json"},
+        "body": [
+          {
+            "eventType": "COMPLETE",
+            "eventTime": "2026-11-03T09:00:30.000000Z",
+            "producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/corpus",
+            "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
+            "run": {
+              "runId": "019a4d1e-7a10-7c3e-9d5e-2f1b6c8a0001",
+              "facets": {
+                "answerlineage_agent": {
+                  "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/corpus",
+                  "_schemaURL": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/AgentRunFacet.json#/$defs/AgentRunFacet"
+                }
+              }
+            },
+            "job": {"namespace": "agent://finance", "name": "analyste-tresorerie"},
+            "inputs": [],
+            "outputs": [
+              {
+                "namespace": "agent://finance",
+                "name": "analyste-tresorerie/reponses",
+                "outputFacets": {
+                  "answerlineage_delivery": {
+                    "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/corpus",
+                    "_schemaURL": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/DeliveryOutputDatasetFacet.json#/$defs/DeliveryOutputDatasetFacet",
+                    "fingerprint": "sha256:5d1c0e6b9f3a4872d0c1b2a39e8f7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c",
+                    "channel": "slack",
+                    "messageRef": "8f2c41d09ab37e65",
+                    "recipients": ["3b9f0a1c5d7e2f4861a0b9c8d7e6f5a4", "c4d5e6f7a8b90c1d2e3f4a5b6c7d8e9f"]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "healthy": {
+        "status": 202,
+        "body": {"accepted": 1, "duplicates": 0, "rejected": []},
+        "graph": {"run": 1, "agent": 1, "answer": 1, "delivery": 1, "recipient": 2, "delivery_recipient": 2}
+      }
+    },
+    "ingestion/deux-lectures": {
+      "title": "Un lot de deux appels d'outil qui lisent la même table, au nom accentué",
+      "surface": "ingestion",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/lineage/batch",
+        "headers": {"content-type": "application/json"},
+        "body": [
+          {
+            "eventType": "COMPLETE",
+            "eventTime": "2026-11-03T10:15:00.000000Z",
+            "producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+            "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
+            "run": {
+              "runId": "019a4d63-2a60-7c3e-9d5e-2f1b6c8a0011",
+              "facets": {
+                "answerlineage_toolCall": {
+                  "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+                  "_schemaURL": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/ToolCallRunFacet.json#/$defs/ToolCallRunFacet",
+                  "server": "crm",
+                  "tool": "rechercher_comptes"
+                }
+              }
+            },
+            "job": {"namespace": "mcp://crm", "name": "rechercher_comptes"},
+            "inputs": [{"namespace": "postgres://crm:5432", "name": "référentiel.sociétés"}],
+            "outputs": []
+          },
+          {
+            "eventType": "COMPLETE",
+            "eventTime": "2026-11-03T10:16:00.000000Z",
+            "producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+            "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
+            "run": {
+              "runId": "019a4d64-14c0-7c3e-9d5e-2f1b6c8a0012",
+              "facets": {
+                "answerlineage_toolCall": {
+                  "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+                  "_schemaURL": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/ToolCallRunFacet.json#/$defs/ToolCallRunFacet",
+                  "server": "crm",
+                  "tool": "rechercher_comptes"
+                }
+              }
+            },
+            "job": {"namespace": "mcp://crm", "name": "rechercher_comptes"},
+            "inputs": [{"namespace": "postgres://crm:5432", "name": "référentiel.sociétés"}],
+            "outputs": []
+          }
+        ]
+      },
+      "healthy": {
+        "status": 202,
+        "body": {"accepted": 2, "duplicates": 0, "rejected": []},
+        "graph": {"run": 2, "tool": 1, "dataset": 1, "read_edge": 2}
+      }
+    },
+    "ingestion/evenement-seul": {
+      "title": "Un événement envoyé seul, au point d'entrée standard d'OpenLineage",
+      "surface": "ingestion",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/lineage",
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "eventType": "COMPLETE",
+          "eventTime": "2026-11-03T11:00:00.000000Z",
+          "producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+          "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
+          "run": {
+            "runId": "019a4d8c-5f80-7c3e-9d5e-2f1b6c8a0021",
+            "facets": {
+              "answerlineage_toolCall": {
+                "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+                "_schemaURL": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/ToolCallRunFacet.json#/$defs/ToolCallRunFacet",
+                "server": "support",
+                "tool": "lister_tickets"
+              }
+            }
+          },
+          "job": {"namespace": "mcp://support", "name": "lister_tickets"},
+          "inputs": [{"namespace": "postgres://support:5432", "name": "support.public.tickets"}],
+          "outputs": []
+        }
+      },
+      "healthy": {
+        "status": 201,
+        "body": {"duplicate": false},
+        "graph": {"run": 1, "tool": 1, "dataset": 1, "read_edge": 1}
+      }
+    },
+    "ingestion/releve": {
+      "title": "Le relevé de couverture d'un émetteur, pour une fenêtre d'une minute",
+      "surface": "ingestion",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/coverage",
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "emitter": "mcp://entrepot",
+          "window": {"from": "2026-11-03T09:00:00Z", "to": "2026-11-03T09:01:00Z"},
+          "calls_seen": 1,
+          "events_emitted": 1,
+          "events_lost": 0,
+          "uninspected": 0
+        }
+      },
+      "healthy": {
+        "status": 201,
+        "body": {"emitter": "mcp://entrepot", "calls_seen": 1, "events_emitted": 1, "events_lost": 0},
+        "events": 0,
+        "graph": {"coverage_report": 1, "coverage_emitter": 1}
+      }
+    },
+    "lecture/propagation": {
+      "title": "Propager un incident sur la table qu'une réponse a lue",
+      "surface": "lecture",
+      "seed": "une-reponse",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/impact",
+        "query": {
+          "namespace": "bigquery",
+          "name": "finance.ref.taux_change",
+          "from": "2026-11-03T06:00:00Z",
+          "to": "2026-11-03T16:00:00Z"
+        }
+      },
+      "healthy": {
+        "status": 200,
+        "body": {
+          "counts": {"answers": 1, "recipients": 2, "lower_bound": false},
+          "graph": {"answers": [{"fingerprint": "sha256:5d1c0e6b9f3a4872d0c1b2a39e8f7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c"}]},
+          "truncated": false
+        }
+      }
+    },
+    "lecture/reponses-d-un-message": {
+      "title": "Retrouver la réponse qu'un message a diffusée",
+      "surface": "lecture",
+      "seed": "une-reponse",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/answers",
+        "query": {"channel": "slack", "message_ref": "8f2c41d09ab37e65"}
+      },
+      "healthy": {
+        "status": 200,
+        "body": {"answers": [{"fingerprint": "sha256:5d1c0e6b9f3a4872d0c1b2a39e8f7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c"}]}
+      }
+    },
+    "lecture/graphe": {
+      "title": "Le graphe en cinq colonnes des réponses les plus récentes",
+      "surface": "lecture",
+      "seed": "une-reponse",
+      "request": {"method": "GET", "path": "/api/v1/graph"},
+      "healthy": {
+        "status": 200,
+        "body": {
+          "datasets": [{"namespace": "bigquery", "name": "finance.ref.taux_change"}],
+          "tools": [{"server": "entrepot", "name": "execute_sql"}],
+          "agents": [{"namespace": "agent://finance", "name": "analyste-tresorerie"}],
+          "answers": [{"fingerprint": "sha256:5d1c0e6b9f3a4872d0c1b2a39e8f7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c"}],
+          "recipients": [{}, {}],
+          "truncated": false
+        }
+      }
+    },
+    "lecture/doublons": {
+      "title": "Le compteur de doublons, par émetteur et par jour",
+      "surface": "lecture",
+      "seed": "une-reponse",
+      "request": {"method": "GET", "path": "/api/v1/ingestion/duplicates"},
+      "healthy": {"status": 200, "body": {"duplicates": []}}
+    },
+    "lecture/couverture": {
+      "title": "La couverture du lignage sur une fenêtre, d'après le relevé de l'émetteur",
+      "surface": "lecture",
+      "seed": "une-reponse",
+      "reports": [
+        {
+          "emitter": "mcp://entrepot",
+          "window": {"from": "2026-11-03T09:00:00Z", "to": "2026-11-03T09:01:00Z"},
+          "calls_seen": 1,
+          "events_emitted": 1,
+          "events_lost": 0,
+          "uninspected": 0
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/coverage",
+        "query": {"from": "2026-11-03T06:00:00Z", "to": "2026-11-03T16:00:00Z"}
+      },
+      "healthy": {
+        "status": 200,
+        "body": {
+          "emitters": [
+            {
+              "emitter": "mcp://entrepot",
+              "coverage": {"rate": 1.0, "calls_seen": 1, "events_in_graph": 1, "events_lost": 0}
+            }
+          ]
+        }
+      }
+    },
+    "explorateur/propager": {
+      "title": "L'adresse d'un incident, ouverte dans l'explorateur",
+      "surface": "explorateur",
+      "seed": "une-reponse",
+      "request": {
+        "path": "/propager",
+        "query": {
+          "namespace": "bigquery",
+          "name": "finance.ref.taux_change",
+          "from": "2026-11-03T06:00:00Z",
+          "to": "2026-11-03T16:00:00Z"
+        }
+      },
+      "healthy": {"nodes": 6, "shows": ["Réponses touchées", "Couverture du lignage"]}
+    },
+    "explorateur/donnees": {
+      "title": "L'adresse d'un jeu de données, ouverte dans l'explorateur",
+      "surface": "explorateur",
+      "seed": "une-reponse",
+      "request": {
+        "path": "/donnees",
+        "query": {"namespace": "bigquery", "name": "finance.ref.taux_change"}
+      },
+      "healthy": {"nodes": 6, "shows": ["Propager un incident sur ce jeu de données"]}
+    }
+  }
+}
