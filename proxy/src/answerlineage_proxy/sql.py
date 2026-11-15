@@ -53,8 +53,9 @@ def silence_sqlglot_logs() -> None:
 
 silence_sqlglot_logs()
 
-# Seul un identifiant de cette forme est recopié dans un événement.
-_IDENTIFIER = re.compile(r"[\w$*-]{1,300}")
+# Seul un identifiant de cette forme est recopié dans un événement. Le proxy
+# l'applique aussi à ce que rend le processus d'analyse.
+IDENTIFIER = re.compile(r"[\w$*-]{1,300}")
 
 # Instructions sans lecture de données.
 _NO_READ = (exp.Show, exp.Describe, exp.Use, exp.Set, exp.Transaction, exp.Commit, exp.Rollback)
@@ -100,7 +101,7 @@ def _table_name(table: exp.Table) -> str:
         # Fonction de table : elle peut lire n'importe quoi (requête fédérée, lien distant).
         raise _UnresolvedError("table_function")
     parts = [part for part in (table.catalog, table.db, table.name) if part]
-    if not parts or not all(_IDENTIFIER.fullmatch(part) for part in parts):
+    if not parts or not all(IDENTIFIER.fullmatch(part) for part in parts):
         raise _UnresolvedError("unsupported_identifier")
     return ".".join(parts)
 
@@ -133,7 +134,7 @@ def _lookup(scope: Scope, alias: str) -> object:
 
 def _column_name(column: exp.Column) -> str:
     name = column.name
-    if not _IDENTIFIER.fullmatch(name):
+    if not IDENTIFIER.fullmatch(name):
         raise _UnresolvedError("unsupported_identifier")
     return name
 
@@ -165,7 +166,7 @@ def _collect(scope: Scope, reads: dict[str, _Table]) -> None:
             whole(local)
         # JOIN ... USING (c) lit la colonne c des deux côtés.
         for identifier in join.args.get("using") or []:
-            if not _IDENTIFIER.fullmatch(identifier.name):
+            if not IDENTIFIER.fullmatch(identifier.name):
                 raise _UnresolvedError("unsupported_identifier")
             for table in local:
                 entry(table).columns.add(identifier.name)

@@ -235,13 +235,15 @@ async def test_redirect_is_relayed_not_followed(bench: BenchFactory) -> None:
         assert len(b.upstream.requests) == 1
 
 
-async def test_body_larger_than_the_inspected_size_is_streamed_unread(bench: BenchFactory) -> None:
+async def test_body_larger_than_the_inspected_size_is_streamed_and_described_by_its_start(
+    bench: BenchFactory,
+) -> None:
     body = tool_call() + b" " * 600_000
     async with bench(max_inspected_bytes=1000) as b:
         proxied = await exchange(
             "POST",
             b.proxy_url + "/echo",
-            headers=[("content-type", "application/json")],
+            headers=[("content-type", "application/json"), ("mcp-name", "autre")],
             content=body,
         )
         assert json.loads(proxied.body) == {
@@ -249,8 +251,67 @@ async def test_body_larger_than_the_inspected_size_is_streamed_unread(bench: Ben
             "size": len(body),
         }
         assert b.upstream.requests[0].header("content-length") == [str(len(body))]
+        (event,) = b.sink.events
+        assert event["job"]["name"] == "get_weather"
+        assert facet(event)["headerMismatch"] == ["mcp-name"]
+        # L'outil n'est pas déclaré comme outil SQL : aucune lecture n'est décrite.
+        assert "readResolution" not in facet(event)
+        assert (b.proxy.stats.uninspected, b.proxy.stats.inspected_from_prefix) == (0, 1)
+        assert b.proxy.stats.header_mismatches == 1
+        # Le _meta du corps n'a pas été lu : aucun contexte de trace n'est ajouté à la
+        # requête, celui que le proxy crée ne sert qu'à l'identifiant de run.
+        assert b.upstream.requests[0].header("traceparent") == []
+        assert facet(event)["traceOrigin"] == "proxy"
+        assert UUID(event["run"]["runId"])
+
+
+async def test_body_larger_than_the_inspected_size_keeps_the_trace_context_of_its_header(
+    bench: BenchFactory,
+) -> None:
+    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    body = tool_call() + b" " * 5000
+    async with bench(max_inspected_bytes=1000) as b:
+        await exchange(
+            "POST", b.proxy_url + "/mcp", headers=[("traceparent", traceparent)], content=body
+        )
+        assert b.upstream.requests[0].header("traceparent") == [traceparent]
+        (event,) = b.sink.events
+        assert facet(event)["traceOrigin"] == "header"
+        assert event["run"]["runId"] == "a7e19836-59d9-8033-bd72-8a4bccb7271f"
+
+
+async def test_body_whose_start_does_not_name_the_tool_is_streamed_unread(
+    bench: BenchFactory,
+) -> None:
+    message = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"arguments": {"texte": "x" * 600_000}, "name": "get_weather"},
+    }
+    body = json.dumps(message).encode()
+    async with bench(max_inspected_bytes=1000) as b:
+        proxied = await exchange("POST", b.proxy_url + "/echo", content=body)
+        assert json.loads(proxied.body)["size"] == len(body)
         assert b.sink.events == []
-        assert b.proxy.stats.uninspected == 1
+        assert (b.proxy.stats.uninspected, b.proxy.stats.inspected_from_prefix) == (1, 0)
+
+
+async def test_single_message_larger_than_the_inspected_size_is_described_by_its_start(
+    bench: BenchFactory,
+) -> None:
+    """Un corps reçu d'un seul tenant, mais trop grand, n'est pas lu en entier non plus."""
+    body = tool_call() + b" " * 5000
+    seen: list[httpx.Request] = []
+    async with recording_client(seen) as client:
+        sink = MemorySink()
+        settings = ProxySettings.create("http://amont.exemple", "meteo", max_inspected_bytes=100)
+        proxy = McpProxy(settings, sink, client=client)
+        await run_asgi(proxy, http_scope(), [{"type": "http.request", "body": body}])
+        await proxy.drain()
+    assert seen[0].content == body
+    assert [event["job"]["name"] for event in sink.events] == ["get_weather"]
+    assert proxy.stats.inspected_from_prefix == 1
 
 
 async def test_chunked_upload_is_relayed(bench: BenchFactory) -> None:

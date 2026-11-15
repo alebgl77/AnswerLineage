@@ -18,6 +18,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
+from answerlineage_proxy.prefix import read_call_prefix
 from answerlineage_proxy.tracecontext import TRACEPARENT, TraceContext, parse_traceparent
 
 TOOLS_CALL = "tools/call"
@@ -148,4 +149,29 @@ def inspect_request(
         header_mismatches=tuple(mismatches),
         sql=sql,
         trace_context=parse_traceparent(meta.get(TRACEPARENT)),
+    )
+
+
+def inspect_prefix(prefix: bytes, headers: Iterable[tuple[str, str]]) -> Inspection | None:
+    """Décrit un appel d'outil d'après le seul début de son corps.
+
+    Sert quand le corps dépasse la taille lue. Renvoie ``None`` si ce début
+    n'établit pas un appel d'outil et son nom. La révision du protocole n'est
+    pas décrite : le début du corps ne garantit pas de contenir ``_meta``.
+    """
+    call = read_call_prefix(prefix)
+    if call.method != TOOLS_CALL or call.name is None:
+        return None
+    named = [(name.lower(), value) for name, value in headers]
+    mismatches: list[str] = []
+    if any(value != TOOLS_CALL for name, value in named if name == HEADER_METHOD):
+        mismatches.append(HEADER_METHOD)
+    if any(decode_header_value(value) != call.name for name, value in named if name == HEADER_NAME):
+        mismatches.append(HEADER_NAME)
+    tool = call.name if _TOOL_NAME.fullmatch(call.name) else None
+    return Inspection(
+        is_tool_call=True,
+        tool=tool,
+        invalid_tool_name=tool is None,
+        header_mismatches=tuple(mismatches),
     )

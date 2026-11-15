@@ -15,6 +15,7 @@ import httpx
 import pytest
 import uvicorn
 
+from answerlineage_proxy.analyzer import SqlAnalyzer
 from answerlineage_proxy.app import McpProxy, Message, Receive, Scope, Send
 from answerlineage_proxy.config import ProxySettings, SqlTool
 from answerlineage_proxy.sink import MemorySink
@@ -83,6 +84,8 @@ class FakeMcpServer:
     requests: list[Received] = field(default_factory=list)
     gate: asyncio.Event = field(default_factory=asyncio.Event)
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
+    # Premiers octets d'un corps reçus : la requête est relayée avant d'être complète.
+    first_bytes: asyncio.Event = field(default_factory=asyncio.Event)
     aborted: int = 0
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -96,6 +99,8 @@ class FakeMcpServer:
                 self.aborted += 1
                 return
             body += message.get("body", b"")
+            if body:
+                self.first_bytes.set()
             if not message.get("more_body", False):
                 break
         received = Received(
@@ -234,6 +239,8 @@ def bench() -> BenchFactory:
         sql_tools: dict[str, SqlTool] | None = None,
         allowed_hosts: tuple[str, ...] = (),
         allowed_origins: tuple[str, ...] = (),
+        sql_budget_ms: int = 50,
+        analyzer: SqlAnalyzer | None = None,
     ) -> AsyncIterator[Bench]:
         upstream = FakeMcpServer()
         sink = MemorySink()
@@ -246,8 +253,9 @@ def bench() -> BenchFactory:
                 sql_tools=sql_tools,
                 allowed_hosts=allowed_hosts,
                 allowed_origins=allowed_origins,
+                sql_budget_ms=sql_budget_ms,
             )
-            proxy = McpProxy(settings, sink)
+            proxy = McpProxy(settings, sink, analyzer=analyzer)
             async with running(proxy, transparent=True) as proxy_url:
                 yield Bench(upstream, upstream_url, proxy, proxy_url, sink)
 

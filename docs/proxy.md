@@ -17,6 +17,9 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrep
 | En-tête `Host` du serveur MCP | `--no-preserve-host` | | celui du client |
 | Taille de corps lue | `--max-inspected-bytes` | | 1 Mo |
 | Outil dont un argument porte du SQL | `--sql-tool` | | aucun |
+| Budget de calcul de l'analyse d'une requête SQL | `--sql-budget-ms` | `ANSWERLINEAGE_PROXY_SQL_BUDGET_MS` | 50 ms (1 à 60 000) |
+| Analyses du SQL en attente, au plus | `--sql-queue-size` | `ANSWERLINEAGE_PROXY_SQL_QUEUE_SIZE` | 32 (1 à 10 000) |
+| Résultats d'analyse gardés en cache | `--sql-cache-size` | `ANSWERLINEAGE_PROXY_SQL_CACHE_SIZE` | 1 024 (0 pour aucun, jusqu'à 1 000 000) |
 
 L'adresse du serveur MCP ne porte ni identifiant ni paramètre : elle peut apparaître dans la configuration. Son hôte peut être une adresse IPv6, entre crochets (`http://[2001:db8::1]:9000`) ; une adresse IPv6 ne faisant pas un nom de serveur, `--server-name` est alors obligatoire. Un réglage invalide arrête le proxy avec le message « Configuration invalide : … » et le code de sortie 2.
 
@@ -64,7 +67,17 @@ Le proxy lit le corps des requêtes `POST` pour reconnaître un appel d'outil. I
 - l'événement décrit l'outil du corps ;
 - la requête est relayée telle quelle : c'est le serveur MCP qui la refuse, comme la révision 2026-07-28 l'y oblige.
 
-Un nom d'outil hors de la forme recommandée par MCP (1 à 128 lettres, chiffres, `_`, `-`, `.`) n'est pas recopié : l'événement porte `invalidToolName`. Un corps illisible, ou plus grand que la taille lue, est relayé sans être décrit et compté.
+Un nom d'outil hors de la forme recommandée par MCP (1 à 128 lettres, chiffres, `_`, `-`, `.`) n'est pas recopié : l'événement porte `invalidToolName`. Un corps illisible est relayé sans être décrit et compté (`uninspected`).
+
+### Corps plus grand que la taille lue
+
+Au-delà de `--max-inspected-bytes`, le corps est relayé en flux, sans attendre sa fin : le serveur MCP en reçoit le début pendant que le client envoie la suite. Le proxy ne lit alors que ses 16 premiers Ko, où les clients MCP écrivent la méthode et le nom de l'outil avant les arguments. Un lecteur JSON strict y cherche `method` au premier niveau et `params.name` :
+
+- il saute les autres valeurs (chaînes et leurs échappements, nombres, objets et tableaux imbriqués) : une clé `method` dans une chaîne ou dans un objet imbriqué ne compte pas ;
+- il ne rend une valeur que s'il en est certain : un début qui s'achève avant la clé, ou qui s'écarte de la syntaxe JSON, n'établit rien ; une clé vue deux fois non plus ;
+- son temps de lecture est linéaire, sans retour en arrière.
+
+Si ce début établit un appel d'outil et son nom, l'événement est émis comme pour tout appel, compté dans `inspected_from_prefix` ; pour un outil SQL, la lecture est « non résolue », motif `request_too_large`, sans que la requête soit analysée. Sinon, la requête est relayée sans être décrite et comptée dans `uninspected`. C'est toujours le corps qui décide, jamais les en-têtes.
 
 ## Analyse du SQL
 
@@ -82,6 +95,52 @@ L'analyse est prudente : elle ne liste des colonnes que si la liste est sûre d'
 | Syntaxe inconnue, SQL dynamique, procédure, fonction de table, `UPDATE`, `DELETE`, `MERGE`, requête de plus de 100 Ko | Lecture « non résolue » (`readResolution`), l'appel passe |
 
 Une vue est rapportée sous son nom : les tables qu'elle lit ne sont pas connues du proxy. La requête et ses littéraux n'atteignent ni l'événement ni les journaux.
+
+### Un processus à part, un budget borné
+
+Une requête pathologique de quelques dizaines de Ko peut occuper sqlglot plusieurs secondes. Un fil Python ne s'interrompt pas, et il disputerait l'interpréteur à la boucle qui relaie les appels : l'analyse tourne donc dans un processus à part, un interpréteur démarré à neuf (`python -I -m answerlineage_proxy.analyzer`) au premier appel à analyser. Le proxy lui confie les requêtes une à une, sur son entrée standard, et lit ses réponses sans jamais bloquer la boucle.
+
+- **Budget.** Chaque requête dispose de `--sql-budget-ms` (50 ms par défaut), comptées à partir du moment où le processus annonce qu'il commence le calcul : ni son démarrage ni l'attente dans la file n'en consomment. Passé le budget, le processus est tué, le calcul s'arrête donc réellement, et un nouveau processus est démarré à la requête suivante.
+- **File.** Les requêtes qui attendent leur tour sont au plus `--sql-queue-size`. File pleine, la lecture est « non résolue » sur-le-champ : ni mémoire sans borne, ni attente sans fin.
+- **Pannes.** Toute attente a un délai, et une réponse du processus n'est crue que si elle a exactement la forme attendue (noms de tables et de colonnes compris). Un processus qui meurt, refuse de démarrer ou répond n'importe quoi donne une lecture « non résolue » : l'événement de l'appel est toujours émis.
+- **Arrêt.** `drain()` attend les analyses en cours ; `aclose()`, appelé aussi à l'arrêt du serveur HTTP, arrête ensuite le processus. Si le proxy disparaît sans l'arrêter, le processus s'arrête sur la fin de son entrée, ou, en plein calcul, par une alarme du système une seconde après le budget.
+- **Silence.** La sortie d'erreur du processus est fermée : un message d'erreur pourrait citer la requête.
+
+### Cache
+
+Deux requêtes identiques, avec les mêmes réglages d'analyse (dialecte, catalogue et base par défaut), ne s'analysent qu'une fois, y compris quand elles arrivent ensemble. Le cache garde au plus `--sql-cache-size` résultats et 4 millions de caractères de noms ; les moins récemment servis sortent les premiers. Sa clé est une empreinte BLAKE2b, à clé tirée au démarrage du proxy, du texte et des réglages : le texte de la requête n'est pas conservé, même en mémoire, au-delà de l'appel. Seul le résultat de l'analyse, des noms de tables et de colonnes, est gardé.
+
+Une analyse abandonnée au budget, ou perdue par un processus mort en plein calcul, est mise en cache comme les autres. L'analyse est déterministe : la relancer coûterait de nouveau le budget, un processus tué et un redémarrage, et répéter une requête pathologique deviendrait un moyen d'occuper l'analyse aux dépens des autres appels. Une requête refusée faute de place, ou qu'un processus n'a pas pu commencer, n'est pas mise en cache : l'échec ne tient pas à elle.
+
+### Motifs d'une lecture non résolue
+
+| Motif (`unresolvedReason`) | Cause |
+| --- | --- |
+| `not_understood` | Syntaxe inconnue, ou forme que l'analyse ne couvre pas |
+| `unsupported_statement` | `UPDATE`, `DELETE`, `MERGE`, procédure, SQL dynamique |
+| `table_function` | Fonction de table, qui peut lire n'importe quoi |
+| `unsupported_identifier` | Nom de table ou de colonne hors de la forme admise |
+| `too_deep` | Imbrication trop profonde pour l'analyseur |
+| `too_large` | Requête de plus de 100 Ko |
+| `empty` | Requête vide |
+| `missing_argument` | L'argument déclaré manque ou n'est pas une chaîne |
+| `request_too_large` | Corps de la requête plus grand que la taille lue : la requête n'est pas lue |
+| `budget_exceeded` | Analyse abandonnée au budget |
+| `queue_full` | File des analyses pleine |
+| `analyzer_unavailable` | Processus d'analyse impossible à démarrer, ou analyse interrompue par l'arrêt du proxy |
+| `analyzer_failed` | Processus mort en plein calcul, ou réponse illisible |
+
+### Compteurs
+
+`ProxyStats` compte, sans aucune valeur issue des requêtes :
+
+| Compteur | Ce qu'il compte |
+| --- | --- |
+| `inspected_from_prefix` | Appels décrits d'après le seul début d'un corps trop grand |
+| `sql_from_cache` | Analyses servies par le cache, ou par une analyse identique en cours |
+| `sql_over_budget` | Analyses abandonnées au budget, processus tué |
+| `sql_refused` | Analyses refusées, file pleine |
+| `sql_analyzer_failures` | Analyses perdues par un processus d'analyse en panne |
 
 ## Identifiant de run et contexte de trace
 
@@ -105,7 +164,8 @@ Une valeur est bien formée quand elle suit le format W3C : version (2 hexadéci
 | en-tête `traceparent` unique et bien formé | l'en-tête | inchangée |
 | aucun contexte | contexte créé | un en-tête `traceparent` ajouté, à la fin, qui porte le contexte créé |
 | en-tête `traceparent` mal formé ou en double, sans `_meta` valable | contexte créé | inchangée : l'en-tête reçu est relayé tel quel, rien n'est ajouté |
-| requête qui n'est pas un appel d'outil, corps illisible ou plus grand que la taille lue | aucun (pas d'événement) | inchangée |
+| appel d'outil au corps plus grand que la taille lue | l'en-tête `traceparent` s'il est unique et bien formé, sinon un contexte créé | inchangée : `_meta` n'a pas été lu, rien n'est ajouté |
+| requête qui n'est pas un appel d'outil, corps illisible, ou corps trop grand dont le début n'établit pas un appel d'outil | aucun (pas d'événement) | inchangée |
 
 Un en-tête `traceparent` déjà présent n'est donc jamais remplacé ni doublé. Quand il est mal formé, le contexte créé ne sert qu'à l'identifiant de run : le transmettre ferait deux en-têtes `traceparent`, que le serveur ne saurait départager. Le corps n'est jamais modifié.
 
@@ -164,5 +224,6 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - Le proxy ne rattache pas un appel au run de l'agent : la facette standard `parent` exige le job de l'agent, que le proxy ne connaît pas. Un émetteur qui connaît l'agent peut le faire ; `traceId` relie déjà les appels d'une même trace.
 - Le résultat de l'appel n'est pas lu : une erreur d'outil rendue en `200` compte comme `COMPLETE`.
 - Le transport stdio n'est pas pris en charge.
-- L'analyse du SQL n'a pas de budget de temps, seulement une taille maximale.
+- Dans un corps plus grand que la taille lue, une clé `method` ou `name` répétée au-delà des 16 premiers Ko ne peut pas être vue : l'événement décrit la première.
+- Le budget se mesure en temps écoulé : sur une machine très chargée, une requête qui tient d'ordinaire dans le budget peut le dépasser et rester « non résolue » tant qu'elle est en cache.
 - La latence ajoutée par le proxy n'est pas encore mesurée.

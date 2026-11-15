@@ -15,15 +15,22 @@ from answerlineage_proxy.config import (
     DEFAULT_HOST,
     DEFAULT_MAX_INSPECTED_BYTES,
     DEFAULT_PORT,
+    DEFAULT_SQL_BUDGET_MS,
+    DEFAULT_SQL_CACHE_SIZE,
+    DEFAULT_SQL_QUEUE_SIZE,
     ENV_ALLOWED_HOSTS,
     ENV_ALLOWED_ORIGINS,
     ENV_HOST,
     ENV_PORT,
     ENV_SERVER_NAME,
+    ENV_SQL_BUDGET_MS,
+    ENV_SQL_CACHE_SIZE,
+    ENV_SQL_QUEUE_SIZE,
     ENV_UPSTREAM,
     ProxyConfigurationError,
     ProxySettings,
     SqlTool,
+    integer,
     listed,
 )
 from answerlineage_proxy.guard import LOOPBACK_HOSTS
@@ -88,6 +95,30 @@ def build_parser() -> argparse.ArgumentParser:
             "execute_sql=query:bigquery (dialectes : bigquery, snowflake, postgres)"
         ),
     )
+    parser.add_argument(
+        "--sql-budget-ms",
+        type=int,
+        help=(
+            "temps de calcul accordé à l'analyse d'une requête SQL, "
+            f"{DEFAULT_SQL_BUDGET_MS} ms par défaut (ou {ENV_SQL_BUDGET_MS})"
+        ),
+    )
+    parser.add_argument(
+        "--sql-queue-size",
+        type=int,
+        help=(
+            "analyses du SQL en attente au plus, au-delà la lecture est non résolue, "
+            f"{DEFAULT_SQL_QUEUE_SIZE} par défaut (ou {ENV_SQL_QUEUE_SIZE})"
+        ),
+    )
+    parser.add_argument(
+        "--sql-cache-size",
+        type=int,
+        help=(
+            "résultats d'analyse du SQL gardés en cache, 0 pour aucun, "
+            f"{DEFAULT_SQL_CACHE_SIZE} par défaut (ou {ENV_SQL_CACHE_SIZE})"
+        ),
+    )
     return parser
 
 
@@ -114,6 +145,21 @@ def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str
         sql_tools=dict(SqlTool.parse(value) for value in args.sql_tool),
         allowed_hosts=args.allow_host or listed(environment.get(ENV_ALLOWED_HOSTS)),
         allowed_origins=args.allow_origin or listed(environment.get(ENV_ALLOWED_ORIGINS)),
+        sql_budget_ms=(
+            args.sql_budget_ms
+            if args.sql_budget_ms is not None
+            else integer(environment, ENV_SQL_BUDGET_MS, DEFAULT_SQL_BUDGET_MS)
+        ),
+        sql_queue_size=(
+            args.sql_queue_size
+            if args.sql_queue_size is not None
+            else integer(environment, ENV_SQL_QUEUE_SIZE, DEFAULT_SQL_QUEUE_SIZE)
+        ),
+        sql_cache_size=(
+            args.sql_cache_size
+            if args.sql_cache_size is not None
+            else integer(environment, ENV_SQL_CACHE_SIZE, DEFAULT_SQL_CACHE_SIZE)
+        ),
     )
 
 

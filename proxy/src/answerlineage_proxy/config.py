@@ -18,10 +18,24 @@ ENV_HOST = "ANSWERLINEAGE_PROXY_HOST"
 ENV_PORT = "ANSWERLINEAGE_PROXY_PORT"
 ENV_ALLOWED_HOSTS = "ANSWERLINEAGE_PROXY_ALLOWED_HOSTS"
 ENV_ALLOWED_ORIGINS = "ANSWERLINEAGE_PROXY_ALLOWED_ORIGINS"
+ENV_SQL_BUDGET_MS = "ANSWERLINEAGE_PROXY_SQL_BUDGET_MS"
+ENV_SQL_QUEUE_SIZE = "ANSWERLINEAGE_PROXY_SQL_QUEUE_SIZE"
+ENV_SQL_CACHE_SIZE = "ANSWERLINEAGE_PROXY_SQL_CACHE_SIZE"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8717
 DEFAULT_MAX_INSPECTED_BYTES = 1024 * 1024
+# Analyse du SQL : temps de calcul accordé à une requête, analyses en attente,
+# résultats gardés en cache.
+DEFAULT_SQL_BUDGET_MS = 50
+DEFAULT_SQL_QUEUE_SIZE = 32
+DEFAULT_SQL_CACHE_SIZE = 1024
+# Bornes des réglages d'analyse : (minimum, maximum).
+_SQL_LIMITS = {
+    "sql_budget_ms": (1, 60_000),
+    "sql_queue_size": (1, 10_000),
+    "sql_cache_size": (0, 1_000_000),
+}
 
 _SERVER_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
@@ -36,6 +50,14 @@ class ProxyConfigurationError(ValueError):
 def listed(value: str | None) -> tuple[str, ...]:
     """Lit une liste séparée par des virgules, telle qu'une variable d'environnement la porte."""
     return tuple(item.strip() for item in (value or "").split(",") if item.strip())
+
+
+def integer(environment: Mapping[str, str], name: str, default: int) -> int:
+    """Lit un entier dans une variable d'environnement, ``default`` si elle est absente."""
+    try:
+        return int(environment.get(name, default))
+    except ValueError as error:
+        raise ProxyConfigurationError(f"{name} doit être un entier.") from error
 
 
 @dataclass(frozen=True)
@@ -96,6 +118,11 @@ class ProxySettings:
     allowed_hosts: tuple[str, ...] = ()
     # Origines acceptées dans l'en-tête Origin, en plus de celles des hôtes acceptés.
     allowed_origins: tuple[str, ...] = ()
+    # Analyse du SQL, hors du chemin de l'appel : budget de calcul par requête, en
+    # millisecondes, nombre d'analyses en attente et nombre de résultats en cache.
+    sql_budget_ms: int = DEFAULT_SQL_BUDGET_MS
+    sql_queue_size: int = DEFAULT_SQL_QUEUE_SIZE
+    sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE
 
     def __post_init__(self) -> None:
         if self.upstream.scheme not in ("http", "https") or not self.upstream.host:
@@ -122,6 +149,11 @@ class ProxySettings:
             raise ProxyConfigurationError("La taille maximale lue ne peut pas être négative.")
         if not all(_TOOL_NAME.fullmatch(tool) for tool in self.sql_tools):
             raise ProxyConfigurationError("Un nom d'outil SQL est invalide.")
+        for name, (minimum, maximum) in _SQL_LIMITS.items():
+            if not minimum <= getattr(self, name) <= maximum:
+                raise ProxyConfigurationError(
+                    f"{name} doit être compris entre {minimum} et {maximum}."
+                )
         try:
             RequestGuard.create([self.upstream_host])
         except ValueError as error:
@@ -162,6 +194,9 @@ class ProxySettings:
         sql_tools: Mapping[str, SqlTool] | None = None,
         allowed_hosts: Sequence[str] = (),
         allowed_origins: Sequence[str] = (),
+        sql_budget_ms: int = DEFAULT_SQL_BUDGET_MS,
+        sql_queue_size: int = DEFAULT_SQL_QUEUE_SIZE,
+        sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE,
     ) -> ProxySettings:
         try:
             url = httpx.URL(upstream)
@@ -177,6 +212,9 @@ class ProxySettings:
             sql_tools=dict(sql_tools or {}),
             allowed_hosts=tuple(allowed_hosts),
             allowed_origins=tuple(allowed_origins),
+            sql_budget_ms=sql_budget_ms,
+            sql_queue_size=sql_queue_size,
+            sql_cache_size=sql_cache_size,
         )
 
     @classmethod
@@ -197,4 +235,7 @@ class ProxySettings:
             port=port,
             allowed_hosts=listed(environment.get(ENV_ALLOWED_HOSTS)),
             allowed_origins=listed(environment.get(ENV_ALLOWED_ORIGINS)),
+            sql_budget_ms=integer(environment, ENV_SQL_BUDGET_MS, DEFAULT_SQL_BUDGET_MS),
+            sql_queue_size=integer(environment, ENV_SQL_QUEUE_SIZE, DEFAULT_SQL_QUEUE_SIZE),
+            sql_cache_size=integer(environment, ENV_SQL_CACHE_SIZE, DEFAULT_SQL_CACHE_SIZE),
         )
