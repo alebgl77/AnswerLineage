@@ -553,6 +553,18 @@
             "title": "More",
             "type": "boolean"
           },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor ». Nul quand il n'y a plus de réponse.",
+            "title": "Next Cursor"
+          },
           "recipients": {
             "items": {
               "$ref": "#/components/schemas/RecipientNode"
@@ -568,7 +580,7 @@
             "type": "array"
           },
           "truncated": {
-            "description": "Vrai quand les arbres de runs dépassent la borne : la vue est partielle.",
+            "description": "Vrai quand les chaînes des réponses dépassent une borne (runs, lectures, destinataires) : la vue est partielle.",
             "title": "Truncated",
             "type": "boolean"
           }
@@ -580,6 +592,7 @@
           "answers",
           "recipients",
           "more",
+          "next_cursor",
           "truncated"
         ],
         "title": "GraphView",
@@ -593,6 +606,11 @@
             "title": "Answers",
             "type": "integer"
           },
+          "lower_bound": {
+            "description": "Vrai quand le résultat est tronqué : les décomptes sont des minimums, et zéro ne veut pas dire que rien n'est touché.",
+            "title": "Lower Bound",
+            "type": "boolean"
+          },
           "recipients": {
             "description": "Destinataires distincts de ces réponses.",
             "title": "Recipients",
@@ -601,7 +619,8 @@
         },
         "required": [
           "answers",
-          "recipients"
+          "recipients",
+          "lower_bound"
         ],
         "title": "ImpactCounts",
         "type": "object"
@@ -623,7 +642,7 @@
             "description": "Les réponses touchées, les plus récentes d'abord, avec leur chaîne."
           },
           "truncated": {
-            "description": "Vrai quand la propagation dépasse la borne : le résultat est partiel.",
+            "description": "Vrai quand la propagation dépasse une borne : le résultat est partiel, d'autres réponses peuvent être touchées, et les décomptes sont des minimums.",
             "title": "Truncated",
             "type": "boolean"
           },
@@ -918,7 +937,7 @@
             "type": "array"
           },
           "truncated": {
-            "description": "Vrai quand l'arbre des runs dépasse la borne : les sources sont partielles.",
+            "description": "Vrai quand l'arbre des runs ou ses lectures dépassent leur borne : les sources sont partielles.",
             "title": "Truncated",
             "type": "boolean"
           }
@@ -1079,6 +1098,16 @@
               }
             },
             "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
           }
         },
         "summary": "Retrouve les réponses diffusées par un message",
@@ -1135,6 +1164,16 @@
               }
             },
             "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
           }
         },
         "summary": "Remonte d'une réponse à ses sources",
@@ -1183,6 +1222,16 @@
               }
             },
             "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
           }
         },
         "summary": "Liste les jeux de données connus du graphe",
@@ -1211,22 +1260,22 @@
             }
           },
           {
-            "description": "Ne garder que les réponses produites avant cet instant (RFC 3339).",
+            "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
             "in": "query",
-            "name": "before",
+            "name": "cursor",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "format": "date-time",
+                  "pattern": "^[0-9]{1,18}\\.[0-9a-f]{48}$",
                   "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Ne garder que les réponses produites avant cet instant (RFC 3339).",
-              "title": "Before"
+              "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+              "title": "Cursor"
             }
           },
           {
@@ -1279,6 +1328,16 @@
               }
             },
             "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
           }
         },
         "summary": "Donne le graphe en cinq colonnes des réponses les plus récentes, ou d'une réponse",
@@ -1359,22 +1418,22 @@
             }
           },
           {
-            "description": "Ne garder que les réponses produites avant cet instant (RFC 3339).",
+            "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
             "in": "query",
-            "name": "before",
+            "name": "cursor",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "format": "date-time",
+                  "pattern": "^[0-9]{1,18}\\.[0-9a-f]{48}$",
                   "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Ne garder que les réponses produites avant cet instant (RFC 3339).",
-              "title": "Before"
+              "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+              "title": "Cursor"
             }
           }
         ],
@@ -1408,6 +1467,16 @@
               }
             },
             "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
           }
         },
         "summary": "Propage un incident de données jusqu'aux réponses et aux destinataires",
@@ -1418,7 +1487,7 @@
     },
     "/api/v1/ingestion/duplicates": {
       "get": {
-        "description": "Du jour le plus récent au plus ancien. Sans doublon, un émetteur n'a pas de ligne.",
+        "description": "Du jour le plus récent au plus ancien. Sans doublon, un émetteur n'a pas de ligne.\n\nComme toute lecture, elle s'exécute sous le délai maximal des lectures.",
         "operationId": "duplicates_api_v1_ingestion_duplicates_get",
         "parameters": [
           {
@@ -1456,6 +1525,16 @@
               }
             },
             "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
           }
         },
         "summary": "Compte les événements reçus en double, par émetteur et par jour",

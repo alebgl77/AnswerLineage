@@ -16,10 +16,11 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import Date, func, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from answerlineage_api.identifiers import normalize_identifier
 from answerlineage_api.ingest.models import RunEvent
+from answerlineage_api.lineage.reading import TIMED_OUT, reading
 from answerlineage_api.responses import RequestRejected
 from answerlineage_api.store import schema
 
@@ -80,19 +81,26 @@ Limit = Annotated[
     "/ingestion/duplicates",
     response_model=DuplicateList,
     summary="Compte les événements reçus en double, par émetteur et par jour",
-    responses={422: {"model": RequestRejected, "description": "Un paramètre est invalide."}},
+    responses={
+        422: {"model": RequestRejected, "description": "Un paramètre est invalide."},
+        **TIMED_OUT,
+    },
 )
 async def duplicates(request: Request, limit: Limit = 100) -> DuplicateList:
-    """Du jour le plus récent au plus ancien. Sans doublon, un émetteur n'a pas de ligne."""
-    engine: AsyncEngine = request.app.state.engine
+    """Du jour le plus récent au plus ancien. Sans doublon, un émetteur n'a pas de ligne.
+
+    Comme toute lecture, elle s'exécute sous le délai maximal des lectures.
+    """
     table = schema.ingest_duplicate
     statement = (
         select(table.c.emitter, table.c.day, table.c.duplicates)
         .order_by(table.c.day.desc(), table.c.emitter)
         .limit(limit)
     )
-    async with engine.connect() as conn:
-        found = (await conn.execute(statement)).all()
+    async with reading(request) as reader:
+        found = (await reader.execute(statement, {})).all()
     return DuplicateList(
-        duplicates=[DuplicateCount(emitter=row[0], day=row[1], count=row[2]) for row in found]
+        duplicates=[
+            DuplicateCount(emitter=row.emitter, day=row.day, count=row.duplicates) for row in found
+        ]
     )

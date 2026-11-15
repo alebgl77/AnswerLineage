@@ -270,6 +270,7 @@ async def test_propagating_each_incident_finds_exactly_the_truth(engine: AsyncEn
             assert result["counts"] == {
                 "answers": len(touched),
                 "recipients": len(expected_recipients),
+                "lower_bound": False,
             }
             assert sorted(answer["fingerprint"] for answer in result["graph"]["answers"]) == sorted(
                 request.answer.fingerprint for request in touched if request.answer is not None

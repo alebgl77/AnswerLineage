@@ -15,9 +15,11 @@ from typing import Any, NoReturn
 
 import pytest
 from playwright.async_api import Browser, Error, Page, async_playwright
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
+from answerlineage_api.lineage import impact
 from answerlineage_api.lineage.trace import answer_key
 from answerlineage_corpus.cli import DEFAULT_SEED
 from answerlineage_corpus.enterprise import Enterprise, Request, generate
@@ -411,3 +413,52 @@ async def test_an_empty_graph_says_so(browser: Browser, engine: AsyncEngine) -> 
         ).wait_for()
         assert await count(page, ".column") == 0
         assert errors == []
+
+
+async def test_a_truncated_incident_gives_minimums_and_never_says_nothing_is_touched(
+    browser: Browser, explorer: str, enterprise: Enterprise, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    incident = enterprise.incidents[0]
+    address = (
+        f"{explorer}#/propager?namespace={incident.table.namespace}&name={incident.table.name}"
+        f"&from={incident.start:%Y-%m-%dT%H:%M:%SZ}&to={incident.end:%Y-%m-%dT%H:%M:%SZ}"
+    )
+    # Une seule lecture suivie : le résultat est partiel, ses décomptes des minimums.
+    monkeypatch.setattr(impact, "MAX_READS", 1)
+    page, errors = await opened(browser, address)
+    await page.wait_for_selector("[data-testid=counters]")
+    answers = await page.locator("[data-testid=count-answers]").text_content() or ""
+    assert answers.startswith("au moins ")
+    assert int(answers.removeprefix("au moins ")) < len(list(enterprise.touched(incident)))
+    recipients = await page.locator("[data-testid=count-recipients]").text_content() or ""
+    assert recipients.startswith("au moins ")
+    assert await count(page, "[data-testid=partial]") == 1
+
+    # Aucune lecture suivie : zéro réponse trouvée ne se lit pas comme « rien n'est touché ».
+    monkeypatch.setattr(impact, "MAX_RUNS", 0)
+    await page.reload()
+    await page.wait_for_selector("[data-testid=counters]")
+    assert await page.locator("[data-testid=count-answers]").text_content() == "au moins 0"
+    assert await count(page, "[data-testid=partial]") == 1
+    assert await page.locator(".notice", has_text="Aucune réponse ne s'appuie").count() == 0
+    notices = " ".join(await page.locator(".notice").all_text_contents())
+    assert "ne permet pas de conclure qu'aucune réponse n'est touchée" in notices
+    assert errors == []
+
+
+async def test_a_read_beyond_the_time_limit_is_said_plainly(
+    browser: Browser, engine: AsyncEngine
+) -> None:
+    if not (DIST / "index.html").is_file():
+        unavailable("L'explorateur n'est pas construit : lancer make ui.")
+    async with (
+        running(create_app(engine, ui_directory=DIST, read_timeout_ms=50)) as url,
+        engine.connect() as holder,
+    ):
+        # Une autre connexion tient la table des réponses : la lecture dépasse son délai.
+        await holder.execute(text("LOCK TABLE answer IN ACCESS EXCLUSIVE MODE"))
+        page, _ = await opened(browser, url + "/")
+        await page.wait_for_selector(".notice-error")
+        message = await page.locator(".notice-error").text_content() or ""
+        assert message.startswith("La lecture du graphe a dépassé son délai maximal")
+        await holder.rollback()

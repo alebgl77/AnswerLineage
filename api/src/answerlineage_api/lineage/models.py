@@ -64,7 +64,10 @@ class Sources(BaseModel):
     tools: list[ToolUse]
     datasets: list[DatasetSource]
     truncated: bool = Field(
-        description="Vrai quand l'arbre des runs dépasse la borne : les sources sont partielles."
+        description=(
+            "Vrai quand l'arbre des runs ou ses lectures dépassent leur borne :"
+            " les sources sont partielles."
+        )
     )
 
 
@@ -121,8 +124,17 @@ class GraphView(BaseModel):
     answers: list[AnswerNode] = Field(description="Les plus récentes d'abord.")
     recipients: list[RecipientNode]
     more: bool = Field(description="Vrai quand des réponses plus anciennes existent.")
+    next_cursor: str | None = Field(
+        description=(
+            "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor »."
+            " Nul quand il n'y a plus de réponse."
+        )
+    )
     truncated: bool = Field(
-        description="Vrai quand les arbres de runs dépassent la borne : la vue est partielle."
+        description=(
+            "Vrai quand les chaînes des réponses dépassent une borne (runs, lectures,"
+            " destinataires) : la vue est partielle."
+        )
     )
 
 
@@ -144,6 +156,12 @@ class ImpactCounts(BaseModel):
 
     answers: int = Field(description="Réponses touchées.")
     recipients: int = Field(description="Destinataires distincts de ces réponses.")
+    lower_bound: bool = Field(
+        description=(
+            "Vrai quand le résultat est tronqué : les décomptes sont des minimums,"
+            " et zéro ne veut pas dire que rien n'est touché."
+        )
+    )
 
 
 class Coverage(BaseModel):
@@ -165,7 +183,10 @@ class ImpactResult(BaseModel):
         description="Les réponses touchées, les plus récentes d'abord, avec leur chaîne."
     )
     truncated: bool = Field(
-        description="Vrai quand la propagation dépasse la borne : le résultat est partiel."
+        description=(
+            "Vrai quand la propagation dépasse une borne : le résultat est partiel, d'autres"
+            " réponses peuvent être touchées, et les décomptes sont des minimums."
+        )
     )
 
 

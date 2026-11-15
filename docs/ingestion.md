@@ -164,7 +164,7 @@ curl "http://127.0.0.1:8000/api/v1/ingestion/duplicates?limit=30"
 | --- | --- |
 | `limit` | Nombre maximal de lignes (émetteur et jour), de 1 à 1 000, 100 par défaut |
 
-Les lignes vont du jour le plus récent au plus ancien, puis par émetteur. Un paramètre invalide répond `422` avec son chemin et son motif, jamais la valeur reçue.
+Les lignes vont du jour le plus récent au plus ancien, puis par émetteur. Un paramètre invalide répond `422` avec son chemin et son motif, jamais la valeur reçue. Comme toute lecture, cette route s'exécute sous le délai maximal des lectures : au-delà, elle répond `503` et `query_timeout` ([bornes et délais](lecture.md#bornes-et-délais)).
 
 Chaque événement nouveau entre dans la file de traitement, d'où un [worker](workers.md) le projette dans le graphe.
 

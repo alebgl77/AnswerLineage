@@ -47,6 +47,8 @@ export interface GraphView {
   answers: AnswerNode[];
   recipients: RecipientNode[];
   more: boolean;
+  // Curseur de la page suivante ; nul quand il n'y a plus de réponse.
+  next_cursor: string | null;
   truncated: boolean;
 }
 
@@ -64,7 +66,8 @@ export interface DatasetList {
 export interface ImpactResult {
   dataset: DatasetName;
   window: { from: string; to: string };
-  counts: { answers: number; recipients: number };
+  // ``lower_bound`` : le résultat est tronqué, les décomptes sont des minimums.
+  counts: { answers: number; recipients: number; lower_bound: boolean };
   coverage: { status: "unknown" };
   graph: GraphView;
   truncated: boolean;

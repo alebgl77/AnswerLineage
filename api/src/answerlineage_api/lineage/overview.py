@@ -9,12 +9,10 @@ chaîne, pour que l'on puisse la suivre d'une colonne à l'autre.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Row, text
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy import Row, TextClause, text
 
 from answerlineage_api.lineage.models import (
     AgentNode,
@@ -28,10 +26,25 @@ from answerlineage_api.lineage.models import (
     RecipientNode,
     ToolNode,
 )
+from answerlineage_api.lineage.paging import (
+    AFTER_CURSOR,
+    ANSWER_DIGEST,
+    ANSWER_ORDER,
+    Cursor,
+)
+from answerlineage_api.lineage.reading import Reader
 from answerlineage_api.lineage.trace import answer_key
 
 # Borne des runs parcourus pour toutes les réponses d'une vue.
 MAX_RUNS = 20_000
+# Borne des couples (run, jeu de données lu) de ces runs.
+MAX_READS = 50_000
+# Borne des liens de diffusion de ces réponses : canal et destinataire.
+MAX_LINKS = 50_000
+
+# Colonnes d'une réponse choisie pour une vue : voir ``view_of``.
+ANSWER_COLUMNS = f"""a.id, a.run_id, a.fingerprint, a.event_time, {ANSWER_DIGEST} AS digest,
+           g.namespace AS agent_namespace, g.name AS agent_name"""
 
 _DATASETS = text(
     """
@@ -40,28 +53,31 @@ _DATASETS = text(
 )
 
 _ONE_ANSWER = text(
-    """
-    SELECT a.id, a.run_id, a.fingerprint, a.event_time,
-           g.namespace AS agent_namespace, g.name AS agent_name
+    f"""
+    SELECT {ANSWER_COLUMNS}
     FROM answer a
     JOIN run r ON r.run_id = a.run_id
     LEFT JOIN agent g ON g.id = r.agent_id
     WHERE a.run_id = :run_id AND a.fingerprint = :fingerprint
-    """
+    LIMIT :limit
+    """  # noqa: S608 — seules des colonnes constantes sont interpolées.
 )
 
-_RECENT_ANSWERS = text(
-    """
-    SELECT a.id, a.run_id, a.fingerprint, a.event_time,
-           g.namespace AS agent_namespace, g.name AS agent_name
-    FROM answer a
-    JOIN run r ON r.run_id = a.run_id
-    LEFT JOIN agent g ON g.id = r.agent_id
-    WHERE CAST(:before AS timestamptz) IS NULL OR a.event_time < CAST(:before AS timestamptz)
-    ORDER BY a.event_time DESC, a.id DESC
-    LIMIT :limit
-    """
-)
+
+def _recent_answers(cursor: Cursor | None) -> TextClause:
+    after = "" if cursor is None else f"WHERE {AFTER_CURSOR}"
+    return text(
+        f"""
+        SELECT {ANSWER_COLUMNS}
+        FROM answer a
+        JOIN run r ON r.run_id = a.run_id
+        LEFT JOIN agent g ON g.id = r.agent_id
+        {after}
+        ORDER BY {ANSWER_ORDER}
+        LIMIT :limit
+        """  # noqa: S608 — seuls des fragments constants sont interpolés.
+    )
+
 
 # UNION, et non UNION ALL : des runs qui se désignent l'un l'autre comme parent
 # ne font pas tourner la recherche sans fin.
@@ -76,19 +92,24 @@ _RUN_TREES = text(
     """
 )
 
+# Une ligne par run demandé au plus : la borne est celle des arbres.
 _TOOLS = text(
     """
     SELECT r.run_id, t.server, t.name
     FROM run r JOIN tool t ON t.id = r.tool_id
     WHERE r.run_id = ANY(:run_ids)
+    ORDER BY r.run_id
+    LIMIT :limit
     """
 )
 
 _READS = text(
     """
-    SELECT e.run_id, d.namespace, d.name, d.kind
+    SELECT DISTINCT e.run_id, d.namespace, d.name, d.kind
     FROM read_edge e JOIN dataset d ON d.id = e.dataset_id
     WHERE e.run_id = ANY(:run_ids)
+    ORDER BY e.run_id, d.namespace, d.name
+    LIMIT :limit
     """
 )
 
@@ -99,6 +120,8 @@ _DELIVERIES = text(
     LEFT JOIN delivery_recipient l ON l.delivery_id = d.id
     LEFT JOIN recipient c ON c.id = l.recipient_id
     WHERE d.answer_id = ANY(:answer_ids)
+    ORDER BY d.answer_id, d.channel, c.pseudonym
+    LIMIT :limit
     """
 )
 
@@ -109,59 +132,58 @@ def _ranks[T](items: set[T]) -> dict[T, int]:
     return {item: rank for rank, item in enumerate(sorted(items))}  # type: ignore[type-var]
 
 
-async def overview(conn: AsyncConnection, *, limit: int, before: datetime | None) -> GraphView:
-    """Les ``limit`` réponses les plus récentes, avant ``before``, et ce qu'elles touchent."""
-    picked = (await conn.execute(_RECENT_ANSWERS, {"before": before, "limit": limit + 1})).all()
-    return await view_of(conn, picked[:limit], more=len(picked) > limit)
+async def overview(reader: Reader, *, limit: int, cursor: Cursor | None) -> GraphView:
+    """Les ``limit`` réponses les plus récentes, après ``cursor``, et ce qu'elles touchent."""
+    params = {} if cursor is None else cursor.parameters()
+    picked = await reader.fetch(_recent_answers(cursor), params, limit=limit)
+    return await view_of(reader, picked.rows, more=picked.truncated)
 
 
-async def datasets(conn: AsyncConnection, *, limit: int) -> DatasetList:
+async def datasets(reader: Reader, *, limit: int) -> DatasetList:
     """Les jeux de données connus, par espace de noms puis par nom."""
-    rows = (await conn.execute(_DATASETS, {"limit": limit + 1})).all()
+    found = await reader.fetch(_DATASETS, {}, limit=limit)
     return DatasetList(
         datasets=[
-            DatasetName(namespace=row.namespace, name=row.name, kind=row.kind)
-            for row in rows[:limit]
+            DatasetName(namespace=row.namespace, name=row.name, kind=row.kind) for row in found.rows
         ],
-        more=len(rows) > limit,
+        more=found.truncated,
     )
 
 
-async def view_of_answer(conn: AsyncConnection, answer: AnswerSummary) -> GraphView:
+async def view_of_answer(reader: Reader, answer: AnswerSummary) -> GraphView:
     """La vue en cinq colonnes d'une seule réponse : sa chaîne."""
-    picked = (
-        await conn.execute(
-            _ONE_ANSWER, {"run_id": answer.run_id, "fingerprint": answer.fingerprint}
-        )
-    ).all()
-    return await view_of(conn, picked, more=False)
+    picked = await reader.fetch(
+        _ONE_ANSWER, {"run_id": answer.run_id, "fingerprint": answer.fingerprint}, limit=1
+    )
+    return await view_of(reader, picked.rows, more=False)
 
 
-async def view_of(conn: AsyncConnection, picked: Sequence[Row[Any]], *, more: bool) -> GraphView:
+async def view_of(reader: Reader, picked: Sequence[Row[Any]], *, more: bool) -> GraphView:
     """La vue en cinq colonnes de ces réponses : leurs chaînes, et rien d'autre.
 
-    Chaque ligne porte ``id``, ``run_id``, ``fingerprint``, ``event_time`` et
-    l'agent du run (``agent_namespace``, ``agent_name``).
+    Chaque ligne porte les colonnes de ``ANSWER_COLUMNS``. Quand ``more`` est
+    vrai, la vue donne le curseur qui suit la dernière réponse.
     """
     roots: list[UUID] = sorted({row.run_id for row in picked}, key=lambda run_id: run_id.hex)
 
-    trees = (await conn.execute(_RUN_TREES, {"roots": roots, "limit": MAX_RUNS + 1})).all()
-    truncated = len(trees) > MAX_RUNS
+    trees = await reader.fetch(_RUN_TREES, {"roots": roots}, limit=MAX_RUNS)
     roots_of: dict[UUID, set[UUID]] = {}
-    for row in trees[:MAX_RUNS]:
+    for row in trees.rows:
         roots_of.setdefault(row.run_id, set()).add(row.root)
     run_ids = list(roots_of)
 
     # Par run racine : les outils appelés et les lectures, avec l'outil qui les a faites.
     tool_of: dict[UUID, _Key] = {}
     tools_of_root: dict[UUID, set[_Key]] = {}
-    for row in await conn.execute(_TOOLS, {"run_ids": run_ids}):
+    tools = await reader.fetch(_TOOLS, {"run_ids": run_ids}, limit=len(run_ids))
+    for row in tools.rows:
         tool_of[row.run_id] = (row.server, row.name)
         for root in roots_of[row.run_id]:
             tools_of_root.setdefault(root, set()).add((row.server, row.name))
     kinds: dict[_Key, str] = {}
     reads_of_root: dict[UUID, set[tuple[_Key, _Key | None]]] = {}
-    for row in await conn.execute(_READS, {"run_ids": run_ids}):
+    reads = await reader.fetch(_READS, {"run_ids": run_ids}, limit=MAX_READS)
+    for row in reads.rows:
         dataset = (row.namespace, row.name)
         kinds[dataset] = row.kind
         for root in roots_of[row.run_id]:
@@ -170,13 +192,14 @@ async def view_of(conn: AsyncConnection, picked: Sequence[Row[Any]], *, more: bo
     channels: dict[int, set[str]] = {}
     recipients_of: dict[int, set[str]] = {}
     answer_ids = [row.id for row in picked]
-    for row in await conn.execute(_DELIVERIES, {"answer_ids": answer_ids}):
+    deliveries = await reader.fetch(_DELIVERIES, {"answer_ids": answer_ids}, limit=MAX_LINKS)
+    for row in deliveries.rows:
         channels.setdefault(row.answer_id, set()).add(row.channel)
         if row.pseudonym is not None:
             recipients_of.setdefault(row.answer_id, set()).add(row.pseudonym)
 
     datasets = _ranks(set(kinds))
-    tools = _ranks({tool for used in tools_of_root.values() for tool in used})
+    tool_ranks = _ranks({tool for used in tools_of_root.values() for tool in used})
     agents = _ranks(
         {(row.agent_namespace, row.agent_name) for row in picked if row.agent_name is not None}
     )
@@ -199,7 +222,7 @@ async def view_of(conn: AsyncConnection, picked: Sequence[Row[Any]], *, more: bo
             ],
             tools=[
                 f"tool-{rank}"
-                for rank in sorted(tools[tool] for tool in tools_of_root.get(row.run_id, ()))
+                for rank in sorted(tool_ranks[tool] for tool in tools_of_root.get(row.run_id, ()))
             ],
             reads=[
                 AnswerRead(
@@ -207,7 +230,7 @@ async def view_of(conn: AsyncConnection, picked: Sequence[Row[Any]], *, more: bo
                 )
                 for dataset, tool in sorted(
                     {
-                        (datasets[dataset], None if tool is None else tools[tool])
+                        (datasets[dataset], None if tool is None else tool_ranks[tool])
                         for dataset, tool in reads_of_root.get(row.run_id, ())
                     },
                     key=lambda read: (read[0], -1 if read[1] is None else read[1]),
@@ -222,7 +245,8 @@ async def view_of(conn: AsyncConnection, picked: Sequence[Row[Any]], *, more: bo
             for key, rank in datasets.items()
         ],
         tools=[
-            ToolNode(id=f"tool-{rank}", server=key[0], name=key[1]) for key, rank in tools.items()
+            ToolNode(id=f"tool-{rank}", server=key[0], name=key[1])
+            for key, rank in tool_ranks.items()
         ],
         agents=[
             AgentNode(id=f"agent-{rank}", namespace=key[0], name=key[1])
@@ -234,5 +258,6 @@ async def view_of(conn: AsyncConnection, picked: Sequence[Row[Any]], *, more: bo
             for pseudonym, rank in recipients.items()
         ],
         more=more,
-        truncated=truncated,
+        next_cursor=Cursor.after(picked[-1]).encode() if more and picked else None,
+        truncated=trees.truncated or tools.truncated or reads.truncated or deliveries.truncated,
     )

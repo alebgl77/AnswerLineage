@@ -1,4 +1,8 @@
-"""Routes de lecture du lignage."""
+"""Routes de lecture du lignage.
+
+Chaque route lit le graphe sous un délai maximal (``reading``) : au-delà, elle
+répond ``503`` et ``query_timeout``.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,6 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Path, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime
-from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.ingest.models import FieldError
 from answerlineage_api.lineage import impact, overview, trace
@@ -18,6 +21,8 @@ from answerlineage_api.lineage.models import (
     ImpactResult,
     Sources,
 )
+from answerlineage_api.lineage.paging import CURSOR_PATTERN, Cursor, CursorError
+from answerlineage_api.lineage.reading import TIMED_OUT, reading
 from answerlineage_api.responses import RequestRefused, RequestRejected, refused
 
 router = APIRouter(prefix="/api/v1", tags=["lignage"])
@@ -27,6 +32,13 @@ _NO_NUL = r"^[^\x00]*$"
 _INVALID: dict[int | str, dict[str, Any]] = {
     422: {"model": RequestRejected, "description": "Un paramètre est invalide."}
 }
+
+
+def _rejected(path: str, kind: str, message: str) -> JSONResponse:
+    """Un paramètre bien formé mais inutilisable : son chemin et le motif, jamais sa valeur."""
+    rejected = RequestRejected(errors=[FieldError(path=path, type=kind, message=message)])
+    return JSONResponse(status_code=422, content=rejected.model_dump())
+
 
 Channel = Annotated[
     str,
@@ -59,15 +71,14 @@ AnswerId = Annotated[
     "/answers",
     response_model=AnswerList,
     summary="Retrouve les réponses diffusées par un message",
-    responses={**_INVALID},
+    responses={**_INVALID, **TIMED_OUT},
 )
 async def find_answers(
     request: Request, channel: Channel, message_ref: MessageRef, limit: Limit = 20
 ) -> AnswerList:
     """Le destinataire d'un message retrouve la réponse d'agent qu'il porte."""
-    engine: AsyncEngine = request.app.state.engine
-    async with engine.connect() as conn:
-        return AnswerList(answers=await trace.find_by_message(conn, channel, message_ref, limit))
+    async with reading(request) as reader:
+        return AnswerList(answers=await trace.find_by_message(reader, channel, message_ref, limit))
 
 
 @router.get(
@@ -77,25 +88,40 @@ async def find_answers(
     responses={
         404: {"model": RequestRefused, "description": "Aucune réponse ne porte cet identifiant."},
         **_INVALID,
+        **TIMED_OUT,
     },
 )
 async def answer_sources(request: Request, answer_id: AnswerId) -> Sources | JSONResponse:
     """Jeux de données et versions lus, outils appelés et agents intervenus, sans contenu."""
-    engine: AsyncEngine = request.app.state.engine
-    async with engine.connect() as conn:
-        answer = await trace.find_answer(conn, answer_id)
+    async with reading(request) as reader:
+        answer = await trace.find_answer(reader, answer_id)
         if answer is None:
             return refused(404, "unknown_answer")
-        return await trace.sources(conn, answer)
+        return await trace.sources(reader, answer)
 
 
 GraphLimit = Annotated[
     int, Query(ge=1, le=200, description="Nombre maximal de réponses dans la vue.")
 ]
-Before = Annotated[
-    AwareDatetime | None,
-    Query(description="Ne garder que les réponses produites avant cet instant (RFC 3339)."),
+CursorParam = Annotated[
+    str | None,
+    Query(
+        alias="cursor",
+        pattern=CURSOR_PATTERN,
+        description=(
+            "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor »."
+        ),
+    ),
 ]
+
+
+def _cursor(value: str | None) -> Cursor | JSONResponse | None:
+    if value is None:
+        return None
+    try:
+        return Cursor.decode(value)
+    except CursorError:
+        return _rejected("/query/cursor", "cursor_invalid", "Ce curseur ne désigne aucune page.")
 
 
 OneAnswer = Annotated[
@@ -114,20 +140,26 @@ OneAnswer = Annotated[
     responses={
         404: {"model": RequestRefused, "description": "Aucune réponse ne porte cet identifiant."},
         **_INVALID,
+        **TIMED_OUT,
     },
 )
 async def graph(
-    request: Request, limit: GraphLimit = 60, before: Before = None, answer: OneAnswer = None
+    request: Request,
+    limit: GraphLimit = 60,
+    cursor_value: CursorParam = None,
+    answer: OneAnswer = None,
 ) -> GraphView | JSONResponse:
     """Données, outils, agents, réponses et destinataires, avec la chaîne de chaque réponse."""
-    engine: AsyncEngine = request.app.state.engine
-    async with engine.connect() as conn:
+    cursor = _cursor(cursor_value)
+    if isinstance(cursor, JSONResponse):
+        return cursor
+    async with reading(request) as reader:
         if answer is None:
-            return await overview.overview(conn, limit=limit, before=before)
-        found = await trace.find_answer(conn, answer)
+            return await overview.overview(reader, limit=limit, cursor=cursor)
+        found = await trace.find_answer(reader, answer)
         if found is None:
             return refused(404, "unknown_answer")
-        return await overview.view_of_answer(conn, found)
+        return await overview.view_of_answer(reader, found)
 
 
 DatasetLimit = Annotated[
@@ -139,13 +171,12 @@ DatasetLimit = Annotated[
     "/datasets",
     response_model=DatasetList,
     summary="Liste les jeux de données connus du graphe",
-    responses={**_INVALID},
+    responses={**_INVALID, **TIMED_OUT},
 )
 async def datasets(request: Request, limit: DatasetLimit = 200) -> DatasetList:
     """Les jeux de données lus ou écrits par un run, par espace de noms puis par nom."""
-    engine: AsyncEngine = request.app.state.engine
-    async with engine.connect() as conn:
-        return await overview.datasets(conn, limit=limit)
+    async with reading(request) as reader:
+        return await overview.datasets(reader, limit=limit)
 
 
 Namespace = Annotated[
@@ -178,6 +209,7 @@ WindowEnd = Annotated[
     responses={
         404: {"model": RequestRefused, "description": "Ce jeu de données n'est pas connu."},
         **_INVALID,
+        **TIMED_OUT,
     },
 )
 async def propagate(
@@ -187,23 +219,16 @@ async def propagate(
     start: WindowStart,
     end: WindowEnd,
     limit: GraphLimit = 200,
-    before: Before = None,
+    cursor_value: CursorParam = None,
 ) -> ImpactResult | JSONResponse:
     """Réponses dont un run a lu le jeu de données pendant la fenêtre, et leurs destinataires."""
     if end <= start:
-        rejected = RequestRejected(
-            errors=[
-                FieldError(
-                    path="/query/to",
-                    type="window_empty",
-                    message="La fin de la fenêtre doit suivre son début.",
-                )
-            ]
-        )
-        return JSONResponse(status_code=422, content=rejected.model_dump())
-    engine: AsyncEngine = request.app.state.engine
-    async with engine.connect() as conn:
+        return _rejected("/query/to", "window_empty", "La fin de la fenêtre doit suivre son début.")
+    cursor = _cursor(cursor_value)
+    if isinstance(cursor, JSONResponse):
+        return cursor
+    async with reading(request) as reader:
         result = await impact.propagate(
-            conn, namespace=namespace, name=name, start=start, end=end, limit=limit, before=before
+            reader, namespace=namespace, name=name, start=start, end=end, limit=limit, cursor=cursor
         )
     return result if result is not None else refused(404, "unknown_dataset")

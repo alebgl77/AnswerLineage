@@ -23,6 +23,11 @@ from answerlineage_api.headers import SecurityHeadersMiddleware
 from answerlineage_api.ingest.duplicates import router as duplicates_router
 from answerlineage_api.ingest.models import run_event_json_schema
 from answerlineage_api.ingest.routes import router as ingestion_router
+from answerlineage_api.lineage.reading import (
+    ReadTimedOut,
+    read_timeout_from_settings,
+    refuse_timed_out,
+)
 from answerlineage_api.lineage.routes import router as lineage_router
 from answerlineage_api.responses import reject_invalid_request
 from answerlineage_api.store.engine import create_engine, database_url_from_environment
@@ -50,6 +55,7 @@ def create_app(
     allowed_hosts: Sequence[str] | None = None,
     allowed_origins: Sequence[str] | None = None,
     ui_directory: str | os.PathLike[str] | None = None,
+    read_timeout_ms: int | None = None,
 ) -> FastAPI:
     """Construit l'application. Sans moteur fourni, la base vient de l'environnement.
 
@@ -59,9 +65,13 @@ def create_app(
     ``ui_directory`` est le dossier construit de l'explorateur, servi à la
     racine ; sans lui, il vient de ``ANSWERLINEAGE_UI_DIR``, et l'API ne sert
     aucune page quand il n'est pas donné.
+    ``read_timeout_ms`` est le délai maximal d'une lecture du graphe, en
+    millisecondes ; sans lui, il vient de ``ANSWERLINEAGE_READ_TIMEOUT_MS``,
+    et vaut 5 secondes quand la variable n'est pas donnée.
     """
     guard = guard_from_settings(allowed_hosts, allowed_origins, os.environ)
     explorer = explorer_files(ui_directory, os.environ)
+    read_timeout = read_timeout_from_settings(read_timeout_ms, os.environ)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -87,10 +97,12 @@ def create_app(
     )
     app.state.engine = engine
     app.state.max_batch_events = max_batch_events
+    app.state.read_timeout_ms = read_timeout
     app.include_router(ingestion_router)
     app.include_router(duplicates_router)
     app.include_router(lineage_router)
     app.add_exception_handler(RequestValidationError, reject_invalid_request)
+    app.add_exception_handler(ReadTimedOut, refuse_timed_out)
     app.add_middleware(HostOriginMiddleware, guard=guard)
     if explorer is not None:
         # Monté en dernier : les routes de l'API passent avant les fichiers.

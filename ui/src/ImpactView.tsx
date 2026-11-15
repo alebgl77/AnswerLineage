@@ -104,6 +104,11 @@ function ImpactForm({ datasets, dataset, from, to }: FormProps) {
   );
 }
 
+// Un résultat tronqué ne donne que des minimums : il le dit à chaque décompte.
+function counted(count: number, lowerBound: boolean): string {
+  return lowerBound ? `au moins ${count}` : String(count);
+}
+
 function Result({ result }: { result: ImpactResult }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
@@ -113,17 +118,20 @@ function Result({ result }: { result: ImpactResult }) {
       (node) => node.namespace === result.dataset.namespace && node.name === result.dataset.name,
     )?.id ?? null;
   const described = focus ?? selected ?? source;
+  const lowerBound = result.truncated || result.counts.lower_bound;
 
   return (
     <>
       <dl className="counters" data-testid="counters">
         <div>
           <dt>Réponses touchées</dt>
-          <dd data-testid="count-answers">{result.counts.answers}</dd>
+          <dd data-testid="count-answers">{counted(result.counts.answers, lowerBound)}</dd>
         </div>
         <div>
           <dt>Destinataires</dt>
-          <dd data-testid="count-recipients">{result.counts.recipients}</dd>
+          <dd data-testid="count-recipients">
+            {counted(result.counts.recipients, lowerBound)}
+          </dd>
         </div>
         <div>
           <dt>Couverture du lignage</dt>
@@ -134,12 +142,18 @@ function Result({ result }: { result: ImpactResult }) {
         La couverture du lignage sur cette fenêtre n'est pas encore mesurée : une réponse dont la
         lecture n'a pas été captée n'apparaît pas ici.
       </p>
-      {result.truncated && (
-        <p className="notice" role="status">
-          Résultat partiel : l'incident touche plus de runs que la propagation n'en parcourt.
+      {lowerBound && (
+        <p className="notice" role="status" data-testid="partial">
+          Résultat partiel : l'incident dépasse ce que la propagation parcourt. D'autres réponses
+          peuvent être touchées ; les décomptes sont des minimums.
         </p>
       )}
-      {view.answers.length === 0 ? (
+      {view.answers.length === 0 && lowerBound ? (
+        <p className="notice" role="status">
+          Aucune réponse touchée n'a été trouvée dans la part parcourue de l'incident. Ce résultat
+          ne permet pas de conclure qu'aucune réponse n'est touchée.
+        </p>
+      ) : view.answers.length === 0 ? (
         <p className="notice" role="status">
           Aucune réponse ne s'appuie sur une lecture de ce jeu de données pendant cette fenêtre.
         </p>
@@ -153,7 +167,7 @@ function Result({ result }: { result: ImpactResult }) {
           {view.more && (
             <p className="notice" role="status">
               Les {MAX_LIMIT} réponses touchées les plus récentes sont affichées, sur{" "}
-              {result.counts.answers}.
+              {counted(result.counts.answers, lowerBound)}.
             </p>
           )}
           {view.truncated && <Partial />}

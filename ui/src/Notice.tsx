@@ -21,7 +21,9 @@ export function Failure({ status, missing }: FailureProps) {
       ? missing
       : status === 422
         ? "La demande est invalide : vérifiez le jeu de données et la fenêtre."
-        : "Le graphe n'a pas pu être chargé. L'API d'AnswerLineage est-elle lancée ?";
+        : status === 503
+          ? "La lecture du graphe a dépassé son délai maximal et a été interrompue. Réessayez dans un instant ; pour un incident, une fenêtre plus courte allège la recherche."
+          : "Le graphe n'a pas pu être chargé. L'API d'AnswerLineage est-elle lancée ?";
   return (
     <p className="notice notice-error" role="alert">
       {message}

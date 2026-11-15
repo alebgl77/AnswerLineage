@@ -63,7 +63,11 @@ async def test_every_answer_expected_at_table_level_is_returned(
 
     recipients = {pseudonym for f in returned for pseudonym in by_fingerprint[f].recipients}
     assert {r["pseudonym"] for r in result["graph"]["recipients"]} == recipients
-    assert result["counts"] == {"answers": len(returned), "recipients": len(recipients)}
+    assert result["counts"] == {
+        "answers": len(returned),
+        "recipients": len(recipients),
+        "lower_bound": False,
+    }
     assert result["truncated"] is False
 
 

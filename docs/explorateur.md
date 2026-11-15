@@ -31,7 +31,7 @@ L'explorateur est alors sur `http://127.0.0.1:8000/`. Sans `ANSWERLINEAGE_UI_DIR
 
 Survoler ou choisir un nœud met sa chaîne en évidence. Depuis une donnée, on suit ce qui en dépend : les outils qui l'ont lue, les agents, les réponses, les destinataires. Depuis une réponse ou un destinataire, on remonte à ce qui a été lu.
 
-**Propager.** Le mode Propager prend un jeu de données et la période pendant laquelle il a été faux. Les réponses et les destinataires touchés s'allument, et trois compteurs s'affichent : réponses touchées, destinataires, couverture du lignage. La couverture dit ce que le résultat peut manquer ; elle n'est pas encore mesurée, et l'explorateur l'écrit.
+**Propager.** Le mode Propager prend un jeu de données et la période pendant laquelle il a été faux. Les réponses et les destinataires touchés s'allument, et trois compteurs s'affichent : réponses touchées, destinataires, couverture du lignage. La couverture dit ce que le résultat peut manquer ; elle n'est pas encore mesurée, et l'explorateur l'écrit. Quand la propagation dépasse ses bornes, les compteurs s'écrivent « au moins … » et un avis dit que le résultat est partiel : un résultat tronqué sans réponse ne s'affiche jamais comme « aucune réponse ». Une lecture interrompue par son délai maximal le dit aussi ([bornes et délais](lecture.md#bornes-et-délais)).
 
 **Adresses.** L'adresse de la page dit ce que l'explorateur montre. Copiée dans un ticket ou un message, elle rouvre le même incident, la même réponse ou le même jeu de données, dans le même mode. L'identifiant d'une réponse reste valable si le graphe est reconstruit.
 

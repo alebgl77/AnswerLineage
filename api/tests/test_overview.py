@@ -108,6 +108,7 @@ async def test_an_empty_graph_has_five_empty_columns(client: httpx.AsyncClient) 
         "answers": [],
         "recipients": [],
         "more": False,
+        "next_cursor": None,
         "truncated": False,
     }
 
@@ -188,6 +189,7 @@ async def test_the_five_columns_and_the_chain_of_each_answer(
             {"id": "recipient-2", "pseudonym": "p-3"},
         ],
         "more": False,
+        "next_cursor": None,
         "truncated": False,
     }
 
@@ -242,7 +244,7 @@ async def test_only_what_the_listed_answers_touch_is_shown(
     assert [agent["name"] for agent in recent["agents"]] == ["analyste-tresorerie"]
     assert [recipient["pseudonym"] for recipient in recent["recipients"]] == ["p-1"]
 
-    older = await graph(client, limit=2, before=recent["answers"][-1]["produced_at"])
+    older = await graph(client, limit=2, cursor=recent["next_cursor"])
     assert [answer["fingerprint"] for answer in older["answers"]] == [fingerprint(1)]
     assert older["more"] is False
     assert [recipient["pseudonym"] for recipient in older["recipients"]] == ["p-ancien"]
@@ -258,8 +260,10 @@ async def test_only_what_the_listed_answers_touch_is_shown(
         ({"limit": "0"}, "/query/limit"),
         ({"limit": "201"}, "/query/limit"),
         ({"limit": "beaucoup"}, "/query/limit"),
-        ({"before": "hier"}, "/query/before"),
-        ({"before": "2026-11-02T09:00:00"}, "/query/before"),
+        ({"cursor": "hier"}, "/query/cursor"),
+        ({"cursor": "2026-11-02T09:00:00Z"}, "/query/cursor"),
+        ({"cursor": f"{'1' * 19}.{'0' * 48}"}, "/query/cursor"),
+        ({"cursor": f"9{'9' * 17}.{'0' * 48}"}, "/query/cursor"),
     ],
 )
 async def test_the_view_is_bounded(
@@ -285,6 +289,36 @@ async def test_run_trees_beyond_the_bound_are_reported_as_truncated(
     assert (await graph(client))["truncated"] is False
     monkeypatch.setattr(overview, "MAX_RUNS", 3)
     assert (await graph(client))["truncated"] is True
+
+
+async def test_reads_beyond_the_bound_are_reported_as_truncated(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = uuid4()
+    await record(
+        engine,
+        answering(run_id, 1),
+        calling(run_id, SQL, Read(RATES), Read(ORDERS)),
+        calling(run_id, ACCOUNTS_TOOL, Read(ACCOUNTS)),
+    )
+    monkeypatch.setattr(overview, "MAX_READS", 3)
+    assert (await graph(client))["truncated"] is False
+    monkeypatch.setattr(overview, "MAX_READS", 2)
+    bounded = await graph(client)
+    assert bounded["truncated"] is True
+    assert len(bounded["answers"][0]["reads"]) == 2
+
+
+async def test_recipients_beyond_the_bound_are_reported_as_truncated(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await record(engine, answering(uuid4(), 1, recipients=("p-1", "p-2", "p-3")))
+    monkeypatch.setattr(overview, "MAX_LINKS", 3)
+    assert (await graph(client))["truncated"] is False
+    monkeypatch.setattr(overview, "MAX_LINKS", 2)
+    bounded = await graph(client)
+    assert bounded["truncated"] is True
+    assert len(bounded["recipients"]) == 2
 
 
 async def test_several_answers_of_one_run_share_its_chain(
@@ -331,7 +365,7 @@ async def test_the_chain_of_one_answer_can_be_asked_for_by_its_identifier(
     assert [dataset["name"] for dataset in found["datasets"]] == ["crm.public.comptes"]
     assert [recipient["pseudonym"] for recipient in found["recipients"]] == ["p-ancien"]
     assert [agent["name"] for agent in found["agents"]] == ["assistant-commercial"]
-    assert (found["more"], found["truncated"]) == (False, False)
+    assert (found["more"], found["next_cursor"], found["truncated"]) == (False, None, False)
 
 
 async def test_the_chain_of_an_unknown_answer_is_not_found(

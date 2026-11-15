@@ -402,3 +402,26 @@ async def test_a_run_tree_beyond_the_bound_is_reported_as_truncated(
     bounded = await sources(client, run_id)
     assert bounded["truncated"] is True
     assert sum(tool["calls"] for tool in bounded["tools"]) <= 3
+
+
+async def test_reads_beyond_the_bound_are_reported_as_truncated(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = uuid4()
+    await record(
+        engine,
+        answering(run_id),
+        calling(run_id, SQL, 5, Read(RATES, "columns", ("taux",)), Read(ORDERS)),
+        calling(run_id, ACCOUNTS_TOOL, 20, Read(ACCOUNTS)),
+    )
+
+    monkeypatch.setattr(trace, "MAX_READS", 3)
+    assert (await sources(client, run_id))["truncated"] is False
+    monkeypatch.setattr(trace, "MAX_READS", 2)
+    bounded = await sources(client, run_id)
+    assert bounded["truncated"] is True
+    # Les lectures les plus anciennes d'abord : la dernière n'a pas été lue.
+    assert [dataset["name"] for dataset in bounded["datasets"]] == [
+        "finance.ref.taux_change",
+        "ventes.suivi.commandes",
+    ]

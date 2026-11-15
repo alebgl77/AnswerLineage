@@ -6,13 +6,11 @@ enfants : appels d'outils, sous-agents. Le run parent n'en fait pas partie.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import Row, text
-from sqlalchemy.ext.asyncio import AsyncConnection
 
 from answerlineage_api.lineage.models import (
     AgentName,
@@ -22,11 +20,13 @@ from answerlineage_api.lineage.models import (
     Sources,
     ToolUse,
 )
+from answerlineage_api.lineage.paging import ANSWER_DIGEST, digest
+from answerlineage_api.lineage.reading import Reader
 
-# Borne de l'arbre des runs parcouru pour une réponse.
+# Borne de l'arbre des runs parcouru pour une réponse, son propre run compris.
 MAX_RUNS = 10_000
-# Réponses d'un même run examinées pour retrouver un identifiant.
-_MAX_ANSWERS_PER_RUN = 1_000
+# Borne des lectures faites par cet arbre.
+MAX_READS = 50_000
 # De la lecture la moins précise à la plus précise.
 _PRECISIONS: tuple[Precision, ...] = ("table", "columns", "subset", "keys")
 
@@ -47,10 +47,12 @@ _BY_MESSAGE = text(
     """
 )
 
-_BY_RUN = text(
+# L'identifiant d'une réponse se retrouve dans la base, quel que soit le
+# nombre de réponses de son run.
+_BY_KEY = text(
     f"""
     SELECT {_ANSWER_COLUMNS}
-    WHERE a.run_id = :run_id
+    WHERE a.run_id = :run_id AND {ANSWER_DIGEST} = :digest
     ORDER BY a.fingerprint
     LIMIT :limit
     """
@@ -69,6 +71,8 @@ _RUN_TREE = text(
     """
 )
 
+# Une ligne par run demandé au plus : la borne est celle de l'arbre.
+
 _ACTORS = text(
     """
     SELECT g.namespace AS agent_namespace, g.name AS agent_name,
@@ -77,9 +81,12 @@ _ACTORS = text(
     LEFT JOIN agent g ON g.id = r.agent_id
     LEFT JOIN tool t ON t.id = r.tool_id
     WHERE r.run_id = ANY(:run_ids)
+    ORDER BY r.run_id
+    LIMIT :limit
     """
 )
 
+# Les lectures les plus anciennes d'abord : une source partielle garde les premières.
 _READS = text(
     """
     SELECT d.namespace, d.name, d.kind, v.version, e.precision, e.columns, e.event_time
@@ -87,6 +94,8 @@ _READS = text(
     JOIN dataset d ON d.id = e.dataset_id
     LEFT JOIN dataset_version v ON v.id = e.dataset_version_id
     WHERE e.run_id = ANY(:run_ids)
+    ORDER BY e.event_time, e.id
+    LIMIT :limit
     """
 )
 
@@ -96,7 +105,7 @@ def answer_key(run_id: UUID, fingerprint: str) -> str:
 
     Il se recalcule à partir du graphe et ne recopie aucun texte de l'émetteur.
     """
-    return run_id.hex + hashlib.sha256(fingerprint.encode()).hexdigest()[:16]
+    return run_id.hex + digest(fingerprint).hex()
 
 
 def _summary(row: Row[Any]) -> AnswerSummary:
@@ -115,23 +124,22 @@ def _summary(row: Row[Any]) -> AnswerSummary:
 
 
 async def find_by_message(
-    conn: AsyncConnection, channel: str, message_ref: str, limit: int
+    reader: Reader, channel: str, message_ref: str, limit: int
 ) -> list[AnswerSummary]:
-    """Réponses diffusées par ce message, les plus anciennes d'abord."""
-    rows = await conn.execute(
-        _BY_MESSAGE, {"channel": channel, "message_ref": message_ref, "limit": limit}
+    """Réponses diffusées par ce message, les plus anciennes d'abord, ``limit`` au plus."""
+    found = await reader.fetch(
+        _BY_MESSAGE, {"channel": channel, "message_ref": message_ref}, limit=limit
     )
-    return [_summary(row) for row in rows]
+    return [_summary(row) for row in found.rows]
 
 
-async def find_answer(conn: AsyncConnection, answer_id: str) -> AnswerSummary | None:
+async def find_answer(reader: Reader, answer_id: str) -> AnswerSummary | None:
     """La réponse que désigne cet identifiant, déjà validé par la route."""
     run_id = UUID(hex=answer_id[:32])
-    rows = await conn.execute(_BY_RUN, {"run_id": run_id, "limit": _MAX_ANSWERS_PER_RUN})
-    for row in rows:
-        if answer_key(run_id, row.fingerprint) == answer_id:
-            return _summary(row)
-    return None
+    found = await reader.fetch(
+        _BY_KEY, {"run_id": run_id, "digest": bytes.fromhex(answer_id[32:])}, limit=1
+    )
+    return _summary(found.rows[0]) if found.rows else None
 
 
 def _datasets(rows: Sequence[Row[Any]]) -> list[DatasetSource]:
@@ -171,23 +179,21 @@ def _datasets(rows: Sequence[Row[Any]]) -> list[DatasetSource]:
     ]
 
 
-async def sources(conn: AsyncConnection, answer: AnswerSummary) -> Sources:
+async def sources(reader: Reader, answer: AnswerSummary) -> Sources:
     """Jeux de données, versions, outils et agents intervenus dans la réponse."""
-    children = (
-        (await conn.execute(_RUN_TREE, {"root": answer.run_id, "limit": MAX_RUNS})).scalars().all()
-    )
-    truncated = len(children) >= MAX_RUNS
-    run_ids = [answer.run_id, *children[: MAX_RUNS - 1]]
+    children = await reader.fetch(_RUN_TREE, {"root": answer.run_id}, limit=MAX_RUNS - 1)
+    run_ids = [answer.run_id, *(row.run_id for row in children.rows)]
 
     agents: set[tuple[str, str]] = set()
     calls: dict[tuple[str, str], int] = {}
-    for row in await conn.execute(_ACTORS, {"run_ids": run_ids}):
+    actors = await reader.fetch(_ACTORS, {"run_ids": run_ids}, limit=len(run_ids))
+    for row in actors.rows:
         if row.agent_name is not None:
             agents.add((row.agent_namespace, row.agent_name))
         if row.tool_name is not None:
             tool = (row.tool_server, row.tool_name)
             calls[tool] = calls.get(tool, 0) + 1
-    reads = (await conn.execute(_READS, {"run_ids": run_ids})).all()
+    reads = await reader.fetch(_READS, {"run_ids": run_ids}, limit=MAX_READS)
 
     return Sources(
         answer=answer,
@@ -196,6 +202,6 @@ async def sources(conn: AsyncConnection, answer: AnswerSummary) -> Sources:
             ToolUse(server=server, name=name, calls=count)
             for (server, name), count in sorted(calls.items())
         ],
-        datasets=_datasets(reads),
-        truncated=truncated,
+        datasets=_datasets(reads.rows),
+        truncated=children.truncated or actors.truncated or reads.truncated,
     )

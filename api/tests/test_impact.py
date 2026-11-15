@@ -133,7 +133,7 @@ async def test_answers_and_recipients_reached_by_a_wrong_table_during_a_window(
         "kind": "table",
     }
     assert result["window"] == {"from": "2026-11-03T06:00:00Z", "to": "2026-11-03T16:00:00Z"}
-    assert result["counts"] == {"answers": 2, "recipients": 3}
+    assert result["counts"] == {"answers": 2, "recipients": 3, "lower_bound": False}
     assert result["coverage"] == {"status": "unknown"}
     graph = result["graph"]
     assert [answer["fingerprint"] for answer in graph["answers"]] == [
@@ -198,7 +198,7 @@ async def test_a_run_that_read_the_table_without_answering_has_nothing_to_recall
         reading(silent, 2, RATES),
     )
     result = await propagate(client)
-    assert result["counts"] == {"answers": 0, "recipients": 0}
+    assert result["counts"] == {"answers": 0, "recipients": 0, "lower_bound": False}
     assert result["graph"]["answers"] == []
 
 
@@ -207,7 +207,11 @@ async def test_an_answer_without_recipient_is_counted_as_an_answer(
 ) -> None:
     run_id = uuid4()
     await record(engine, answering(run_id, 1, 3, recipients=()), reading(run_id, 2, RATES))
-    assert (await propagate(client))["counts"] == {"answers": 1, "recipients": 0}
+    assert (await propagate(client))["counts"] == {
+        "answers": 1,
+        "recipients": 0,
+        "lower_bound": False,
+    }
 
 
 async def test_counts_cover_the_whole_incident_and_the_list_is_paged(
@@ -222,17 +226,18 @@ async def test_counts_cover_the_whole_incident_and_the_list_is_paged(
         )
 
     first = await propagate(client, limit=2)
-    assert first["counts"] == {"answers": 5, "recipients": 5}
+    assert first["counts"] == {"answers": 5, "recipients": 5, "lower_bound": False}
     assert touched(first) == [fingerprint(4), fingerprint(5)]
     assert first["graph"]["more"] is True
 
-    older = await propagate(client, limit=2, before=first["graph"]["answers"][-1]["produced_at"])
-    assert older["counts"] == {"answers": 5, "recipients": 5}
+    older = await propagate(client, limit=2, cursor=first["graph"]["next_cursor"])
+    assert older["counts"] == {"answers": 5, "recipients": 5, "lower_bound": False}
     assert touched(older) == [fingerprint(2), fingerprint(3)]
 
-    last = await propagate(client, limit=2, before=older["graph"]["answers"][-1]["produced_at"])
+    last = await propagate(client, limit=2, cursor=older["graph"]["next_cursor"])
     assert touched(last) == [fingerprint(1)]
     assert last["graph"]["more"] is False
+    assert last["graph"]["next_cursor"] is None
 
 
 async def test_an_unknown_dataset_is_not_found(
@@ -259,7 +264,8 @@ async def test_an_unknown_dataset_is_not_found(
         ({"to": "2026-11-03T05:00:00Z"}, "/query/to"),
         ({"limit": "0"}, "/query/limit"),
         ({"limit": "201"}, "/query/limit"),
-        ({"before": "hier"}, "/query/before"),
+        ({"cursor": "hier"}, "/query/cursor"),
+        ({"cursor": f"9{'9' * 17}.{'0' * 48}"}, "/query/cursor"),
     ],
 )
 async def test_an_incident_names_a_dataset_and_a_window_that_is_not_empty(
@@ -272,6 +278,7 @@ async def test_an_incident_names_a_dataset_and_a_window_that_is_not_empty(
     assert error["path"] == path
     assert set(error) == {"path", "type", "message"}
     assert "demain" not in response.text
+    assert "hier" not in response.text
 
 
 async def test_runs_that_name_each_other_as_parent_do_not_hang_the_propagation(
@@ -289,16 +296,151 @@ async def test_runs_that_name_each_other_as_parent_do_not_hang_the_propagation(
     assert result["truncated"] is False
 
 
-async def test_a_propagation_beyond_the_bound_is_reported_as_truncated(
+def silent(at: float, *, parent: UUID | None = None) -> RunRecord:
+    """Un run d'agent qui a échoué sans répondre."""
+    return RunRecord(
+        run_id=uuid4(),
+        kind="agent",
+        state="FAIL",
+        event_time=hours(at),
+        agent=SALES,
+        parent_run_id=parent,
+    )
+
+
+async def test_more_readers_than_the_bound_on_runs_still_reach_every_answer(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Chaque agent a lu la table par deux appels d'outil : les lecteurs sont deux
+    # fois plus nombreux que les runs qui répondent.
+    for rank in range(1, 4):
+        run_id = uuid4()
+        await record(
+            engine,
+            answering(run_id, rank, rank + 0.5, recipients=(f"p-{rank}",)),
+            reading(run_id, rank, RATES),
+            reading(run_id, rank + 0.25, RATES),
+        )
+
+    # La borne des runs parcourus vaut pour la remontée, pas pour les lecteurs :
+    # elle ne coupe plus avant les runs qui ont répondu.
+    monkeypatch.setattr(impact, "MAX_RUNS", 4)
+    result = await propagate(client)
+    assert touched(result) == [fingerprint(1), fingerprint(2), fingerprint(3)]
+    assert result["counts"] == {"answers": 3, "recipients": 3, "lower_bound": False}
+    assert result["truncated"] is False
+
+
+async def test_reads_beyond_the_bound_give_a_partial_result_that_says_so(
     client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for rank in range(1, 4):
         run_id = uuid4()
         await record(engine, answering(run_id, rank, rank + 0.5), reading(run_id, rank, RATES))
 
-    monkeypatch.setattr(impact, "MAX_RUNS", 6)
+    monkeypatch.setattr(impact, "MAX_READS", 3)
     assert (await propagate(client))["truncated"] is False
-    monkeypatch.setattr(impact, "MAX_RUNS", 4)
+
+    monkeypatch.setattr(impact, "MAX_READS", 2)
     bounded = await propagate(client)
     assert bounded["truncated"] is True
-    assert bounded["counts"]["answers"] <= 3
+    # Les lectures les plus récentes sont suivies jusqu'à leurs réponses.
+    assert touched(bounded) == [fingerprint(2), fingerprint(3)]
+    assert bounded["counts"] == {"answers": 2, "recipients": 1, "lower_bound": True}
+
+
+async def test_reads_that_lead_to_no_answer_do_not_use_up_the_bound(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = uuid4()
+    await record(engine, answering(run_id, 1, 1.5), reading(run_id, 1, RATES))
+    # Des lectures plus récentes, faites par des runs sans parent ni réponse.
+    for at in range(2, 6):
+        await record(
+            engine,
+            RunRecord(
+                run_id=uuid4(),
+                kind="job",
+                state="COMPLETE",
+                event_time=hours(at),
+                reads=(Read(RATES),),
+            ),
+        )
+
+    monkeypatch.setattr(impact, "MAX_READS", 1)
+    result = await propagate(client)
+    assert touched(result) == [fingerprint(1)]
+    assert result["truncated"] is False
+
+
+async def test_a_truncated_result_without_answer_never_reads_as_nothing_touched(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answered = uuid4()
+    failed = silent(5)
+    await record(
+        engine,
+        answering(answered, 1, 1.5),
+        reading(answered, 1, RATES),
+        # La lecture la plus récente remonte à un agent qui n'a pas répondu.
+        failed,
+        reading(failed.run_id, 4, RATES),
+    )
+
+    monkeypatch.setattr(impact, "MAX_READS", 1)
+    result = await propagate(client)
+    assert result["graph"]["answers"] == []
+    assert result["truncated"] is True
+    assert result["counts"] == {"answers": 0, "recipients": 0, "lower_bound": True}
+
+
+async def test_a_delegation_deeper_than_the_bound_is_reported_as_truncated(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    top, delegated = uuid4(), uuid4()
+    await record(
+        engine,
+        answering(top, 1, 5, agent=FINANCE),
+        answering(delegated, 2, 4, parent=top),
+        reading(delegated, 3, RATES),
+    )
+
+    monkeypatch.setattr(impact, "MAX_RUNS", 2)
+    assert (await propagate(client))["truncated"] is False
+
+    monkeypatch.setattr(impact, "MAX_RUNS", 1)
+    bounded = await propagate(client)
+    assert bounded["truncated"] is True
+    # La remontée va d'abord aux runs les plus proches de la lecture.
+    assert touched(bounded) == [fingerprint(2)]
+    assert bounded["counts"]["lower_bound"] is True
+
+
+async def test_counts_beyond_their_bound_are_minimums(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for rank in range(1, 4):
+        run_id = uuid4()
+        await record(
+            engine,
+            answering(run_id, rank, rank + 0.5, recipients=(f"p-{rank}", "p-commun")),
+            reading(run_id, rank, RATES),
+        )
+    assert (await propagate(client))["counts"] == {
+        "answers": 3,
+        "recipients": 4,
+        "lower_bound": False,
+    }
+
+    monkeypatch.setattr(impact, "MAX_ANSWERS", 2)
+    by_answers = await propagate(client)
+    assert by_answers["truncated"] is True
+    assert by_answers["counts"]["lower_bound"] is True
+    assert 2 <= by_answers["counts"]["answers"] <= 3
+
+    monkeypatch.setattr(impact, "MAX_ANSWERS", 3)
+    monkeypatch.setattr(impact, "MAX_LINKS", 2)
+    by_links = await propagate(client)
+    assert by_links["truncated"] is True
+    assert by_links["counts"]["lower_bound"] is True
+    assert 1 <= by_links["counts"]["recipients"] <= 4
