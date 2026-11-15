@@ -1,0 +1,208 @@
+{
+  "title": "Une seule colonne de la table est fausse",
+  "level": "columns",
+  "agents": {
+    "tresorerie": {
+      "namespace": "agent://finance",
+      "name": "analyste-tresorerie"
+    },
+    "commercial": {
+      "namespace": "agent://ventes",
+      "name": "assistant-commercial"
+    }
+  },
+  "tools": {
+    "sql": {
+      "server": "entrepot",
+      "name": "execute_sql"
+    }
+  },
+  "datasets": {
+    "taux": {
+      "namespace": "bigquery",
+      "name": "finance.ref.taux_change"
+    }
+  },
+  "runs": [
+    {
+      "id": "colonne-fausse",
+      "agent": "tresorerie",
+      "start": "2026-11-03T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "devise",
+                "taux"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "colonne-fausse",
+        "at": "2026-11-03T09:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "autres-colonnes",
+      "agent": "commercial",
+      "start": "2026-11-03T09:10:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:10:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "date_valeur",
+                "devise"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "autres-colonnes",
+        "at": "2026-11-03T09:10:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d2"
+        ]
+      }
+    },
+    {
+      "id": "table-entiere",
+      "agent": "commercial",
+      "start": "2026-11-03T09:20:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:20:05Z",
+          "reads": [
+            {
+              "dataset": "taux"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "table-entiere",
+        "at": "2026-11-03T09:20:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d3"
+        ]
+      }
+    },
+    {
+      "id": "deux-appels",
+      "agent": "tresorerie",
+      "start": "2026-11-03T09:30:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:30:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "devise"
+              ]
+            }
+          ]
+        },
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:30:15Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "taux"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "deux-appels",
+        "at": "2026-11-03T09:30:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1",
+          "d4"
+        ]
+      }
+    },
+    {
+      "id": "hors-fenetre",
+      "agent": "tresorerie",
+      "start": "2026-11-03T17:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T17:00:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "taux"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "hors-fenetre",
+        "at": "2026-11-03T17:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    }
+  ],
+  "incident": {
+    "dataset": "taux",
+    "from": "2026-11-03T06:00:00Z",
+    "to": "2026-11-03T16:00:00Z",
+    "columns": [
+      "taux"
+    ]
+  },
+  "truth": {
+    "touched": [
+      {
+        "answer": "colonne-fausse",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "table-entiere",
+        "confidence": "possible"
+      },
+      {
+        "answer": "deux-appels",
+        "confidence": "certaine"
+      }
+    ],
+    "discarded": [
+      {
+        "answer": "autres-colonnes",
+        "reason": "colonnes disjointes"
+      }
+    ],
+    "untouched": [
+      "hors-fenetre"
+    ]
+  }
+}

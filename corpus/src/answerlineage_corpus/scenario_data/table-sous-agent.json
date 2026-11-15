@@ -1,0 +1,174 @@
+{
+  "title": "La lecture est faite par un sous-agent, ou par un appel parmi d'autres",
+  "level": "table",
+  "agents": {
+    "tresorerie": {
+      "namespace": "agent://finance",
+      "name": "analyste-tresorerie"
+    },
+    "commercial": {
+      "namespace": "agent://ventes",
+      "name": "assistant-commercial"
+    },
+    "direction": {
+      "namespace": "agent://direction",
+      "name": "synthese-hebdomadaire"
+    }
+  },
+  "tools": {
+    "sql": {
+      "server": "entrepot",
+      "name": "execute_sql"
+    }
+  },
+  "datasets": {
+    "taux": {
+      "namespace": "bigquery",
+      "name": "finance.ref.taux_change"
+    },
+    "factures": {
+      "namespace": "bigquery",
+      "name": "finance.compta.factures"
+    },
+    "clients": {
+      "namespace": "bigquery",
+      "name": "ventes.suivi.clients"
+    }
+  },
+  "runs": [
+    {
+      "id": "synthese",
+      "agent": "direction",
+      "start": "2026-11-03T09:00:00Z",
+      "calls": [],
+      "answer": {
+        "id": "synthese",
+        "at": "2026-11-03T09:01:00Z",
+        "channel": "email",
+        "recipients": [
+          "d1",
+          "d2",
+          "d3"
+        ]
+      }
+    },
+    {
+      "id": "delegation-tresorerie",
+      "agent": "tresorerie",
+      "start": "2026-11-03T09:00:05Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:00:10Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "taux"
+              ]
+            }
+          ]
+        }
+      ],
+      "parent": "synthese"
+    },
+    {
+      "id": "plusieurs-appels",
+      "agent": "commercial",
+      "start": "2026-11-03T09:30:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:30:04Z",
+          "reads": [
+            {
+              "dataset": "clients",
+              "columns": [
+                "segment"
+              ]
+            }
+          ]
+        },
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:30:12Z",
+          "reads": [
+            {
+              "dataset": "factures"
+            },
+            {
+              "dataset": "taux",
+              "columns": [
+                "devise",
+                "taux"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "plusieurs-appels",
+        "at": "2026-11-03T09:30:40Z",
+        "channel": "slack",
+        "recipients": [
+          "d4"
+        ]
+      }
+    },
+    {
+      "id": "synthese-sans-taux",
+      "agent": "direction",
+      "start": "2026-11-03T10:00:00Z",
+      "calls": [],
+      "answer": {
+        "id": "synthese-sans-taux",
+        "at": "2026-11-03T10:01:00Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "delegation-factures",
+      "agent": "tresorerie",
+      "start": "2026-11-03T10:00:05Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T10:00:09Z",
+          "reads": [
+            {
+              "dataset": "factures",
+              "columns": [
+                "montant"
+              ]
+            }
+          ]
+        }
+      ],
+      "parent": "synthese-sans-taux"
+    }
+  ],
+  "incident": {
+    "dataset": "taux",
+    "from": "2026-11-03T06:00:00Z",
+    "to": "2026-11-03T16:00:00Z"
+  },
+  "truth": {
+    "touched": [
+      {
+        "answer": "synthese",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "plusieurs-appels",
+        "confidence": "certaine"
+      }
+    ],
+    "discarded": [],
+    "untouched": [
+      "synthese-sans-taux"
+    ]
+  }
+}

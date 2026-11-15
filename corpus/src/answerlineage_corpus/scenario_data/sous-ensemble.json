@@ -1,0 +1,218 @@
+{
+  "title": "Seules les factures en dollars sont fausses",
+  "level": "subset",
+  "agents": {
+    "tresorerie": {
+      "namespace": "agent://finance",
+      "name": "analyste-tresorerie"
+    },
+    "commercial": {
+      "namespace": "agent://ventes",
+      "name": "assistant-commercial"
+    }
+  },
+  "tools": {
+    "sql": {
+      "server": "entrepot",
+      "name": "execute_sql"
+    }
+  },
+  "datasets": {
+    "factures": {
+      "namespace": "bigquery",
+      "name": "finance.compta.factures"
+    }
+  },
+  "runs": [
+    {
+      "id": "factures-en-dollars",
+      "agent": "tresorerie",
+      "start": "2026-11-03T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "factures",
+              "columns": [
+                "devise",
+                "montant"
+              ],
+              "subset": {
+                "devise": [
+                  "USD"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "factures-en-dollars",
+        "at": "2026-11-03T09:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "factures-en-euros",
+      "agent": "tresorerie",
+      "start": "2026-11-03T09:10:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:10:05Z",
+          "reads": [
+            {
+              "dataset": "factures",
+              "columns": [
+                "devise",
+                "montant"
+              ],
+              "subset": {
+                "devise": [
+                  "EUR"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "factures-en-euros",
+        "at": "2026-11-03T09:10:30Z",
+        "channel": "email",
+        "recipients": [
+          "d2"
+        ]
+      }
+    },
+    {
+      "id": "sous-ensemble-inconnu",
+      "agent": "commercial",
+      "start": "2026-11-03T09:20:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:20:05Z",
+          "reads": [
+            {
+              "dataset": "factures",
+              "columns": [
+                "montant"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "sous-ensemble-inconnu",
+        "at": "2026-11-03T09:20:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d3"
+        ]
+      }
+    },
+    {
+      "id": "table-entiere",
+      "agent": "commercial",
+      "start": "2026-11-03T09:30:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:30:05Z",
+          "reads": [
+            {
+              "dataset": "factures"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "table-entiere",
+        "at": "2026-11-03T09:30:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d4"
+        ]
+      }
+    },
+    {
+      "id": "autre-colonne-en-dollars",
+      "agent": "tresorerie",
+      "start": "2026-11-03T09:40:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:40:05Z",
+          "reads": [
+            {
+              "dataset": "factures",
+              "columns": [
+                "devise",
+                "statut"
+              ],
+              "subset": {
+                "devise": [
+                  "USD"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "autre-colonne-en-dollars",
+        "at": "2026-11-03T09:40:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    }
+  ],
+  "incident": {
+    "dataset": "factures",
+    "from": "2026-11-03T06:00:00Z",
+    "to": "2026-11-03T16:00:00Z",
+    "columns": [
+      "montant"
+    ],
+    "subset": {
+      "devise": [
+        "USD"
+      ]
+    }
+  },
+  "truth": {
+    "touched": [
+      {
+        "answer": "factures-en-dollars",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "sous-ensemble-inconnu",
+        "confidence": "probable"
+      },
+      {
+        "answer": "table-entiere",
+        "confidence": "possible"
+      }
+    ],
+    "discarded": [
+      {
+        "answer": "factures-en-euros",
+        "reason": "sous-ensembles disjoints"
+      },
+      {
+        "answer": "autre-colonne-en-dollars",
+        "reason": "colonnes disjointes"
+      }
+    ],
+    "untouched": []
+  }
+}

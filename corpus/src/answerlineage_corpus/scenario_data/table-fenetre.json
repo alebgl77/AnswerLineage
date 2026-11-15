@@ -1,0 +1,208 @@
+{
+  "title": "Une table fausse du chargement de nuit à sa correction dans l'après-midi",
+  "level": "table",
+  "agents": {
+    "tresorerie": {
+      "namespace": "agent://finance",
+      "name": "analyste-tresorerie"
+    },
+    "commercial": {
+      "namespace": "agent://ventes",
+      "name": "assistant-commercial"
+    },
+    "direction": {
+      "namespace": "agent://direction",
+      "name": "synthese-hebdomadaire"
+    }
+  },
+  "tools": {
+    "sql": {
+      "server": "entrepot",
+      "name": "execute_sql"
+    }
+  },
+  "datasets": {
+    "taux": {
+      "namespace": "bigquery",
+      "name": "finance.ref.taux_change"
+    },
+    "factures": {
+      "namespace": "bigquery",
+      "name": "finance.compta.factures"
+    }
+  },
+  "runs": [
+    {
+      "id": "lecture-du-matin",
+      "agent": "tresorerie",
+      "start": "2026-11-03T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "devise",
+                "taux"
+              ],
+              "version": "2026-11-03"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "matin",
+        "at": "2026-11-03T09:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1",
+          "d2"
+        ]
+      }
+    },
+    {
+      "id": "lecture-juste-avant-la-correction",
+      "agent": "commercial",
+      "start": "2026-11-03T15:59:50Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T15:59:58Z",
+          "reads": [
+            {
+              "dataset": "taux"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "reponse-rendue-apres-la-correction",
+        "at": "2026-11-03T16:00:20Z",
+        "channel": "slack",
+        "recipients": [
+          "d3"
+        ]
+      }
+    },
+    {
+      "id": "lecture-a-l-heure-de-la-correction",
+      "agent": "tresorerie",
+      "start": "2026-11-03T15:59:59Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T16:00:00Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "taux"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "heure-de-la-correction",
+        "at": "2026-11-03T16:00:10Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "lecture-avant-le-chargement",
+      "agent": "commercial",
+      "start": "2026-11-03T05:59:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T05:59:59Z",
+          "reads": [
+            {
+              "dataset": "taux"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "avant-le-chargement",
+        "at": "2026-11-03T06:00:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d4"
+        ]
+      }
+    },
+    {
+      "id": "autre-table",
+      "agent": "tresorerie",
+      "start": "2026-11-03T10:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T10:00:04Z",
+          "reads": [
+            {
+              "dataset": "factures",
+              "columns": [
+                "montant"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "autre-table",
+        "at": "2026-11-03T10:00:20Z",
+        "channel": "email",
+        "recipients": [
+          "d2"
+        ]
+      }
+    },
+    {
+      "id": "run-sans-reponse",
+      "agent": "direction",
+      "start": "2026-11-03T11:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T11:00:03Z",
+          "reads": [
+            {
+              "dataset": "taux"
+            }
+          ]
+        }
+      ],
+      "failed": true
+    }
+  ],
+  "incident": {
+    "dataset": "taux",
+    "from": "2026-11-03T06:00:00Z",
+    "to": "2026-11-03T16:00:00Z"
+  },
+  "truth": {
+    "touched": [
+      {
+        "answer": "matin",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "reponse-rendue-apres-la-correction",
+        "confidence": "certaine"
+      }
+    ],
+    "discarded": [],
+    "untouched": [
+      "heure-de-la-correction",
+      "avant-le-chargement",
+      "autre-table"
+    ]
+  }
+}

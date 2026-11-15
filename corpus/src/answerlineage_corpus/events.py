@@ -8,8 +8,10 @@ contenu.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 from answerlineage_corpus import __version__
 from answerlineage_corpus.enterprise import Agent, Enterprise, Request, TableRead, ToolCall
@@ -28,6 +30,7 @@ _SCHEMA_SCHEMA = _STANDARD + "1-2-0/SchemaDatasetFacet.json#/$defs/SchemaDataset
 _VERSION_SCHEMA = (
     _STANDARD + "1-0-1/DatasetVersionDatasetFacet.json#/$defs/DatasetVersionDatasetFacet"
 )
+_TYPE_SCHEMA = _STANDARD + "1-0-1/DatasetTypeDatasetFacet.json#/$defs/DatasetTypeDatasetFacet"
 # Adresses provisoires : les schémas des facettes propres seront publiés à une URL immuable.
 _OWN = "https://github.com/alebgl77/AnswerLineage/blob/main/spec/facets/"
 _AGENT_SCHEMA = _OWN + "AgentRunFacet.json#/$defs/AgentRunFacet"
@@ -56,85 +59,166 @@ def _event(kind: str, moment: datetime, run: dict[str, Any], job: dict[str, str]
     }
 
 
-def _job(agent: Agent) -> dict[str, str]:
-    return {"namespace": agent.namespace, "name": agent.name}
+def _parent(run_id: UUID, job: dict[str, str]) -> dict[str, Any]:
+    return _facet(_PARENT_SCHEMA, run={"runId": str(run_id)}, job=job)
 
 
-def _input(read: TableRead) -> dict[str, Any]:
-    dataset: dict[str, Any] = {"namespace": read.table.namespace, "name": read.table.name}
+def dataset_read(
+    namespace: str,
+    name: str,
+    *,
+    columns: Sequence[str] = (),
+    version: str | None = None,
+    kind: str = "table",
+) -> dict[str, Any]:
+    """Un jeu de données lu : ses colonnes et sa version voyagent dans des facettes standard."""
+    dataset: dict[str, Any] = {"namespace": namespace, "name": name}
     facets: dict[str, Any] = {}
-    if read.columns:
-        facets["schema"] = _facet(
-            _SCHEMA_SCHEMA, fields=[{"name": column} for column in read.columns]
-        )
-    if read.version is not None:
-        facets["version"] = _facet(_VERSION_SCHEMA, datasetVersion=read.version)
+    if columns:
+        facets["schema"] = _facet(_SCHEMA_SCHEMA, fields=[{"name": column} for column in columns])
+    if version is not None:
+        facets["version"] = _facet(_VERSION_SCHEMA, datasetVersion=version)
+    if kind != "table":
+        facets["datasetType"] = _facet(_TYPE_SCHEMA, datasetType=kind)
     if facets:
         dataset["facets"] = facets
     return dataset
 
 
-def tool_call_event(request: Request, call: ToolCall) -> dict[str, Any]:
-    """L'appel d'outil, run enfant de la demande, avec les tables qu'il a lues."""
+def dataset_written(namespace: str, name: str, *, kind: str = "table") -> dict[str, Any]:
+    """Un jeu de données écrit par un run : mémoire, fichier, table."""
+    dataset: dict[str, Any] = {"namespace": namespace, "name": name}
+    if kind != "table":
+        dataset["facets"] = {"datasetType": _facet(_TYPE_SCHEMA, datasetType=kind)}
+    return dataset
+
+
+def answer_delivered(
+    job: dict[str, str],
+    *,
+    fingerprint: str,
+    channel: str,
+    message_ref: str,
+    recipients: Sequence[str],
+) -> dict[str, Any]:
+    """La réponse d'un agent : une sortie décrite par son empreinte et sa diffusion."""
+    return {
+        "namespace": job["namespace"],
+        "name": f"{job['name']}/reponses",
+        "outputFacets": {
+            DELIVERY_FACET: _facet(
+                _DELIVERY_SCHEMA,
+                fingerprint=fingerprint,
+                channel=channel,
+                messageRef=message_ref,
+                recipients=list(recipients),
+            )
+        },
+    }
+
+
+def agent_event(
+    kind: str,
+    moment: datetime,
+    run_id: UUID,
+    job: dict[str, str],
+    *,
+    parent: tuple[UUID, dict[str, str]] | None = None,
+    outputs: Sequence[dict[str, Any]] = (),
+) -> dict[str, Any]:
+    """Un événement du run d'un agent ; ``parent`` le rattache au run qui l'a délégué."""
+    facets: dict[str, Any] = {AGENT_FACET: _facet(_AGENT_SCHEMA)}
+    if parent is not None:
+        facets["parent"] = _parent(*parent)
+    event = _event(kind, moment, {"runId": str(run_id), "facets": facets}, job)
+    event["outputs"] = list(outputs)
+    return event
+
+
+def tool_event(
+    moment: datetime,
+    run_id: UUID,
+    *,
+    server: str,
+    tool: str,
+    parent: tuple[UUID, dict[str, str]],
+    inputs: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    """Un appel d'outil terminé, run enfant de celui de l'agent, tel que le proxy l'émet."""
     event = _event(
         "COMPLETE",
-        call.time,
+        moment,
         {
-            "runId": str(call.run_id),
+            "runId": str(run_id),
             "facets": {
-                "parent": _facet(
-                    _PARENT_SCHEMA, run={"runId": str(request.run_id)}, job=_job(request.agent)
-                ),
+                "parent": _parent(*parent),
                 TOOL_CALL_FACET: _facet(
                     _TOOL_CALL_SCHEMA,
-                    server=call.tool.server,
+                    server=server,
                     transport="http",
                     headerMismatch=[],
                     invalidToolName=False,
-                    tool=call.tool.name,
+                    tool=tool,
                     protocolVersion=PROTOCOL_VERSION,
                     httpStatus=200,
                     readResolution="resolved",
                 ),
             },
         },
-        {"namespace": f"mcp://{call.tool.server}", "name": call.tool.name},
+        {"namespace": f"mcp://{server}", "name": tool},
     )
-    event["inputs"] = [_input(read) for read in call.reads]
+    event["inputs"] = list(inputs)
     return event
+
+
+def _job(agent: Agent) -> dict[str, str]:
+    return {"namespace": agent.namespace, "name": agent.name}
+
+
+def _input(read: TableRead) -> dict[str, Any]:
+    return dataset_read(
+        read.table.namespace, read.table.name, columns=read.columns, version=read.version
+    )
+
+
+def tool_call_event(request: Request, call: ToolCall) -> dict[str, Any]:
+    """L'appel d'outil, run enfant de la demande, avec les tables qu'il a lues."""
+    return tool_event(
+        call.time,
+        call.run_id,
+        server=call.tool.server,
+        tool=call.tool.name,
+        parent=(request.run_id, _job(request.agent)),
+        inputs=[_input(read) for read in call.reads],
+    )
 
 
 def request_events(request: Request) -> list[dict[str, Any]]:
     """Les événements d'une demande, dans l'ordre où ils se produisent."""
-    run = {"runId": str(request.run_id), "facets": {AGENT_FACET: _facet(_AGENT_SCHEMA)}}
     job = _job(request.agent)
-    events = [_event("START", request.started_at, run, job)]
+    events = [agent_event("START", request.started_at, request.run_id, job)]
     events.extend(tool_call_event(request, call) for call in request.calls)
     if request.answer is None:
-        events.append(_event("FAIL", request.ended_at, run, job))
+        events.append(agent_event("FAIL", request.ended_at, request.run_id, job))
         return events
-    end = _event("COMPLETE", request.ended_at, run, job)
-    end["outputs"] = [
-        {
-            "namespace": request.agent.namespace,
-            "name": f"{request.agent.name}/reponses",
-            "outputFacets": {
-                DELIVERY_FACET: _facet(
-                    _DELIVERY_SCHEMA,
-                    fingerprint=request.answer.fingerprint,
-                    channel=request.answer.channel,
-                    messageRef=request.answer.message_ref,
-                    recipients=list(request.answer.recipients),
-                )
-            },
-        }
-    ]
-    events.append(end)
+    answer = answer_delivered(
+        job,
+        fingerprint=request.answer.fingerprint,
+        channel=request.answer.channel,
+        message_ref=request.answer.message_ref,
+        recipients=request.answer.recipients,
+    )
+    events.append(agent_event("COMPLETE", request.ended_at, request.run_id, job, outputs=[answer]))
     return events
+
+
+def in_time_order(events: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Les événements dans l'ordre du temps ; à heure égale, leur ordre est gardé."""
+    return sorted(events, key=lambda event: str(event["eventTime"]))
 
 
 def render(enterprise: Enterprise) -> list[dict[str, Any]]:
     """Tous les événements de l'entreprise, dans l'ordre du temps."""
-    events = [event for request in enterprise.requests for event in request_events(request)]
-    # Tri stable : à heure égale, l'ordre de la demande est gardé.
-    return sorted(events, key=lambda event: str(event["eventTime"]))
+    return in_time_order(
+        [event for request in enterprise.requests for event in request_events(request)]
+    )

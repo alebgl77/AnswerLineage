@@ -71,6 +71,40 @@ Le générateur établit cette liste lui-même, à partir de ce qu'il a génér�
 }
 ```
 
+## Corpus de vérité
+
+À côté de l'entreprise générée, le corpus tient des scénarios d'incident écrits à la main, chacun avec sa vérité. Ils servent à mesurer le moteur d'impact comme on mesure un modèle : rappel sur les réponses touchées, précision sur les réponses écartées.
+
+```bash
+uv run answerlineage-corpus check
+```
+
+| Scénario | Niveau | Ce qu'il éprouve |
+| --- | --- | --- |
+| `table-fenetre` | table | Les bornes de la fenêtre, la réponse rendue après la correction, le run sans réponse |
+| `table-sous-agent` | table | La lecture faite par un sous-agent, ou par un appel parmi d'autres |
+| `fenetre-sans-lecture` | table | Un incident qui ne touche personne |
+| `version-corrigee` | table | La table rechargée avant la fin déclarée de l'incident |
+| `colonnes` | colonnes | Une seule colonne fausse : colonnes communes, disjointes, table lue en entier |
+| `sous-ensemble` | sous-ensemble | Une partition fausse : sous-ensemble commun, disjoint, inconnu |
+| `cles` | clés | Quelques lignes fausses : clés communes, disjointes, inconnues |
+| `transitivite-memoire` | table | Une réponse fondée sur une note écrite à partir de la table fausse |
+| `transitivite-chaine` | table | La table fausse alimente une table dérivée, puis une note, puis une réponse |
+
+Un scénario est un fichier JSON de `corpus/src/answerlineage_corpus/scenario_data/`. Il décrit quelques runs d'agents, un incident et sa vérité :
+
+| Rubrique de la vérité | Sens |
+| --- | --- |
+| `touched` | Réponses à rappeler, avec la confiance attendue (`certaine`, `probable`, `possible`). `path` vaut `indirect` quand la réponse dépend d'une sortie d'un run touché et non de la table elle-même |
+| `discarded` | Réponses qui ont lu la table pendant la fenêtre sans dépendre de ce qui est faux, avec le motif : colonnes, sous-ensembles, clés ou version disjoints |
+| `untouched` | Réponses sans rapport avec l'incident |
+
+Le contrôle refuse un scénario sans vérité, une réponse que la vérité oublie ou classe deux fois, et une vérité que la description contredit : une réponse dite touchée alors que rien n'a lu la table pendant la fenêtre, une dépendance indirecte qui remonterait le temps. Il exige que le corpus couvre les quatre niveaux de précision, la transitivité et les réponses écartées.
+
+Le corpus porte un numéro de version, lié à son contenu : changer un scénario ou sa vérité demande une nouvelle version, pour que deux mesures restent comparables.
+
+Les sous-ensembles et les clés d'une lecture sont décrits dans le scénario, mais pas encore dans ses événements : le contrat d'événements ne les porte pas.
+
 ## Limites connues
 
 - Les agents ne se lisent pas entre eux : aucune réponse ne dépend d'une sortie d'un autre agent.

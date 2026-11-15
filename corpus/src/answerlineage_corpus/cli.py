@@ -2,7 +2,7 @@
 
 ``events`` écrit les événements OpenLineage de l'entreprise synthétique,
 ``truth`` la vérité de ses incidents, et ``load`` envoie les événements à une
-API d'ingestion d'AnswerLineage.
+API d'ingestion d'AnswerLineage. ``check`` contrôle le corpus de vérité.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from answerlineage_corpus.enterprise import (
     DEFAULT_DAYS,
@@ -21,6 +22,7 @@ from answerlineage_corpus.enterprise import (
 )
 from answerlineage_corpus.events import render
 from answerlineage_corpus.loader import DEFAULT_BATCH_SIZE, LoadError, send
+from answerlineage_corpus.scenarios import CORPUS_VERSION, check_corpus, load_corpus
 from answerlineage_corpus.truth import truth
 
 DEFAULT_SEED = 1
@@ -45,7 +47,31 @@ def _parser() -> argparse.ArgumentParser:
         "--url", required=True, help="adresse de l'API, par exemple http://127.0.0.1:8000"
     )
     load.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    check = commands.add_parser("check", help="contrôle le corpus de vérité")
+    check.add_argument(
+        "--directory", type=Path, help="dossier de scénarios, ceux du paquet par défaut"
+    )
     return parser
+
+
+def _check(directory: Path | None) -> int:
+    problems = check_corpus(directory)
+    if problems:
+        for problem in problems:
+            print(problem, file=sys.stderr)
+        print(f"Corpus de vérité incohérent : {len(problems)} problème(s).", file=sys.stderr)
+        return 1
+    corpus = load_corpus(directory)
+    for scenario in corpus:
+        print(
+            f"{scenario.name} : niveau {scenario.level}, "
+            f"{len(scenario.touched)} touchée(s), {len(scenario.discarded)} écartée(s), "
+            f"{len(scenario.untouched)} hors d'atteinte"
+        )
+    print(
+        f"Corpus de vérité cohérent : {len(corpus.scenarios)} scénarios, version {CORPUS_VERSION}."
+    )
+    return 0
 
 
 def _enterprise(args: argparse.Namespace) -> Enterprise:
@@ -54,6 +80,8 @@ def _enterprise(args: argparse.Namespace) -> Enterprise:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "check":
+        return _check(args.directory)
     try:
         enterprise = _enterprise(args)
     except ValueError as error:

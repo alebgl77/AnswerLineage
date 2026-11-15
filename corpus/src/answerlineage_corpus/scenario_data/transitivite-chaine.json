@@ -1,0 +1,167 @@
+{
+  "title": "La table fausse alimente une table dérivée, puis une note, puis une réponse",
+  "level": "table",
+  "agents": {
+    "tresorerie": {
+      "namespace": "agent://finance",
+      "name": "analyste-tresorerie"
+    },
+    "commercial": {
+      "namespace": "agent://ventes",
+      "name": "assistant-commercial"
+    },
+    "direction": {
+      "namespace": "agent://direction",
+      "name": "synthese-hebdomadaire"
+    }
+  },
+  "tools": {
+    "sql": {
+      "server": "entrepot",
+      "name": "execute_sql"
+    },
+    "memoire": {
+      "server": "memoire",
+      "name": "lire_notes"
+    }
+  },
+  "datasets": {
+    "taux": {
+      "namespace": "bigquery",
+      "name": "finance.ref.taux_change"
+    },
+    "tresorerie": {
+      "namespace": "bigquery",
+      "name": "finance.marts.tresorerie"
+    },
+    "notes": {
+      "namespace": "memory://finance",
+      "name": "notes-tresorerie",
+      "kind": "memory"
+    }
+  },
+  "runs": [
+    {
+      "id": "derivee-lue-avant-son-calcul",
+      "agent": "direction",
+      "start": "2026-11-03T07:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T07:00:05Z",
+          "reads": [
+            {
+              "dataset": "tresorerie"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "derivee-lue-avant-son-calcul",
+        "at": "2026-11-03T07:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "d4"
+        ]
+      }
+    },
+    {
+      "id": "calcule-la-derivee",
+      "agent": "tresorerie",
+      "start": "2026-11-03T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "taux"
+            }
+          ]
+        }
+      ],
+      "writes": [
+        "tresorerie"
+      ],
+      "end": "2026-11-03T09:02:00Z"
+    },
+    {
+      "id": "lit-la-derivee",
+      "agent": "direction",
+      "start": "2026-11-03T10:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T10:00:05Z",
+          "reads": [
+            {
+              "dataset": "tresorerie",
+              "columns": [
+                "solde"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "lit-la-derivee",
+        "at": "2026-11-03T10:01:00Z",
+        "channel": "email",
+        "recipients": [
+          "d1",
+          "d2"
+        ]
+      },
+      "writes": [
+        "notes"
+      ]
+    },
+    {
+      "id": "lit-la-note",
+      "agent": "commercial",
+      "start": "2026-11-04T09:00:00Z",
+      "calls": [
+        {
+          "tool": "memoire",
+          "at": "2026-11-04T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "notes"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "lit-la-note",
+        "at": "2026-11-04T09:00:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d3"
+        ]
+      }
+    }
+  ],
+  "incident": {
+    "dataset": "taux",
+    "from": "2026-11-03T06:00:00Z",
+    "to": "2026-11-03T12:00:00Z"
+  },
+  "truth": {
+    "touched": [
+      {
+        "answer": "lit-la-derivee",
+        "confidence": "probable",
+        "path": "indirect"
+      },
+      {
+        "answer": "lit-la-note",
+        "confidence": "probable",
+        "path": "indirect"
+      }
+    ],
+    "discarded": [],
+    "untouched": [
+      "derivee-lue-avant-son-calcul"
+    ]
+  }
+}

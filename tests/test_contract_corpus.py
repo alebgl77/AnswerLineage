@@ -14,9 +14,18 @@ import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 
 from answerlineage_api.ingest.models import validate_event
-from answerlineage_api.store.graph import AgentRef, Answer, DatasetRef, Delivery, Read, ToolRef
+from answerlineage_api.store.graph import (
+    AgentRef,
+    Answer,
+    DatasetRef,
+    Delivery,
+    Read,
+    ToolRef,
+    Write,
+)
 from answerlineage_corpus.enterprise import Enterprise, generate
 from answerlineage_corpus.events import PROTOCOL_VERSION, render, request_events, tool_call_event
+from answerlineage_corpus.scenarios import load_corpus
 from answerlineage_proxy.events import build_tool_call_event
 from answerlineage_proxy.inspection import Inspection
 from answerlineage_proxy.sql import SqlAnalysis, TableRead
@@ -144,4 +153,59 @@ def test_the_projection_reads_a_request_as_an_agent_run_its_tool_runs_and_its_an
                         ),
                     ),
                 ),
+            )
+
+
+def test_every_event_of_the_truth_corpus_is_accepted_and_projected() -> None:
+    for scenario in load_corpus():
+        runs = {run.run_id: run for run in scenario.runs}
+        calls = {call.run_id: call for run in scenario.runs for call in run.calls}
+        for event in scenario.events():
+            assert list(OFFICIAL.iter_errors(event)) == []
+            accepted, errors = validate_event(event)
+            assert (accepted is not None, errors) == (True, [])
+
+            record = project(event)
+            if record.run_id in calls:
+                call = calls[record.run_id]
+                assert (record.kind, record.tool) == ("tool", ToolRef(call.server, call.tool))
+                assert record.reads == tuple(
+                    Read(
+                        DatasetRef(
+                            read.dataset.namespace,
+                            read.dataset.name,
+                            kind="memory" if read.dataset.kind == "memory" else "table",
+                            version=read.version,
+                        ),
+                        precision="columns" if read.columns else "table",
+                        columns=tuple(sorted(read.columns)),
+                    )
+                    for read in call.reads
+                )
+                continue
+            run = runs[record.run_id]
+            assert (record.kind, record.agent) == ("agent", AgentRef(*run.agent))
+            above = (
+                None
+                if run.parent is None
+                else next(other.run_id for other in scenario.runs if other.key == run.parent)
+            )
+            assert record.parent_run_id == above
+            if record.state == "START":
+                assert (record.writes, record.answers) == ((), ())
+                continue
+            assert record.state == ("FAIL" if run.failed else "COMPLETE")
+            # Une sortie qui porte une diffusion est une réponse ; les autres sont des écritures.
+            assert record.writes == tuple(
+                Write(
+                    DatasetRef(
+                        written.namespace,
+                        written.name,
+                        kind="memory" if written.kind == "memory" else "table",
+                    )
+                )
+                for written in run.writes
+            )
+            assert [answer.fingerprint for answer in record.answers] == (
+                [] if run.answer is None else [run.answer.fingerprint]
             )

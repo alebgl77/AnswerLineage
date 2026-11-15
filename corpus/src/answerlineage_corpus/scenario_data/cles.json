@@ -1,0 +1,176 @@
+{
+  "title": "Deux factures sont fausses",
+  "level": "keys",
+  "agents": {
+    "tresorerie": {
+      "namespace": "agent://finance",
+      "name": "analyste-tresorerie"
+    },
+    "commercial": {
+      "namespace": "agent://ventes",
+      "name": "assistant-commercial"
+    }
+  },
+  "tools": {
+    "sql": {
+      "server": "entrepot",
+      "name": "execute_sql"
+    }
+  },
+  "datasets": {
+    "factures": {
+      "namespace": "bigquery",
+      "name": "finance.compta.factures"
+    },
+    "clients": {
+      "namespace": "bigquery",
+      "name": "ventes.suivi.clients"
+    }
+  },
+  "runs": [
+    {
+      "id": "facture-fausse",
+      "agent": "tresorerie",
+      "start": "2026-11-03T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "factures",
+              "columns": [
+                "facture_id",
+                "montant"
+              ],
+              "keys": [
+                "F-1042"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "facture-fausse",
+        "at": "2026-11-03T09:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "autres-factures",
+      "agent": "tresorerie",
+      "start": "2026-11-03T09:10:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:10:05Z",
+          "reads": [
+            {
+              "dataset": "factures",
+              "columns": [
+                "facture_id",
+                "montant"
+              ],
+              "keys": [
+                "F-2001",
+                "F-2002"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "autres-factures",
+        "at": "2026-11-03T09:10:30Z",
+        "channel": "email",
+        "recipients": [
+          "d2"
+        ]
+      }
+    },
+    {
+      "id": "table-entiere",
+      "agent": "commercial",
+      "start": "2026-11-03T09:20:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:20:05Z",
+          "reads": [
+            {
+              "dataset": "factures"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "table-entiere",
+        "at": "2026-11-03T09:20:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d3"
+        ]
+      }
+    },
+    {
+      "id": "autre-table",
+      "agent": "commercial",
+      "start": "2026-11-03T09:30:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:30:05Z",
+          "reads": [
+            {
+              "dataset": "clients",
+              "keys": [
+                "C-7"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "autre-table",
+        "at": "2026-11-03T09:30:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d3"
+        ]
+      }
+    }
+  ],
+  "incident": {
+    "dataset": "factures",
+    "from": "2026-11-03T06:00:00Z",
+    "to": "2026-11-03T16:00:00Z",
+    "keys": [
+      "F-1042",
+      "F-1043"
+    ]
+  },
+  "truth": {
+    "touched": [
+      {
+        "answer": "facture-fausse",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "table-entiere",
+        "confidence": "possible"
+      }
+    ],
+    "discarded": [
+      {
+        "answer": "autres-factures",
+        "reason": "clés disjointes"
+      }
+    ],
+    "untouched": [
+      "autre-table"
+    ]
+  }
+}

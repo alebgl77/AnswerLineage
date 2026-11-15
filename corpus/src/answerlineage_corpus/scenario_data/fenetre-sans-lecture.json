@@ -1,0 +1,120 @@
+{
+  "title": "Personne n'a lu la table pendant la fenêtre",
+  "level": "table",
+  "agents": {
+    "tresorerie": {
+      "namespace": "agent://finance",
+      "name": "analyste-tresorerie"
+    },
+    "commercial": {
+      "namespace": "agent://ventes",
+      "name": "assistant-commercial"
+    }
+  },
+  "tools": {
+    "sql": {
+      "server": "entrepot",
+      "name": "execute_sql"
+    }
+  },
+  "datasets": {
+    "taux": {
+      "namespace": "bigquery",
+      "name": "finance.ref.taux_change"
+    },
+    "factures": {
+      "namespace": "bigquery",
+      "name": "finance.compta.factures"
+    }
+  },
+  "runs": [
+    {
+      "id": "la-veille",
+      "agent": "tresorerie",
+      "start": "2026-11-02T17:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-02T17:00:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "version": "2026-11-02"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "la-veille",
+        "at": "2026-11-02T17:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "le-lendemain",
+      "agent": "commercial",
+      "start": "2026-11-04T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-04T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "version": "2026-11-04"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "le-lendemain",
+        "at": "2026-11-04T09:00:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d2"
+        ]
+      }
+    },
+    {
+      "id": "autre-table",
+      "agent": "tresorerie",
+      "start": "2026-11-03T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "factures"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "autre-table",
+        "at": "2026-11-03T09:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    }
+  ],
+  "incident": {
+    "dataset": "taux",
+    "from": "2026-11-03T06:00:00Z",
+    "to": "2026-11-03T16:00:00Z"
+  },
+  "truth": {
+    "touched": [],
+    "discarded": [],
+    "untouched": [
+      "la-veille",
+      "le-lendemain",
+      "autre-table"
+    ]
+  }
+}
