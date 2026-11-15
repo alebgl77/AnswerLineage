@@ -208,9 +208,6 @@ Un cas que le produit ne bloque pas encore reste au corpus, déclaré avec son m
 | `emetteur/lecture-antidatee` | Les émetteurs ne sont pas authentifiés, et le graphe garde la plus ancienne heure reçue pour une lecture : rejouer l'appel d'un autre avec une heure antérieure sort cette lecture de la fenêtre d'un incident, et la réponse n'est plus rappelée. |
 | `emetteur/doublons-au-nom-d-un-autre` | Les émetteurs ne sont pas authentifiés : un rejeu est compté au nom de l'émetteur que l'événement déclare, pas de celui qui l'envoie. |
 | `emetteur/releve-au-nom-d-un-autre` | Un relevé de couverture n'est pas authentifié plus qu'un événement : quiconque en publie un au nom d'un autre émetteur gonfle les appels vus d'une fenêtre, et la fusion au plus grand ne le défait pas. |
-| `sql/table-hostile` | La forme sans littéraux d'une requête, portée par la facette sql de l'événement, garde les noms choisis par son auteur : un nom de table que le proxy refuse de recopier comme jeu de données atteint tout de même l'événement. |
-| `sql/colonne-hostile` | La forme sans littéraux d'une requête garde les noms choisis par son auteur : un nom de colonne fait d'une balise, refusé comme colonne lue, atteint l'événement par la facette sql. |
-| `invisibles/table-selecteur-variante` | La forme sans littéraux d'une requête n'est gardée que si elle est imprimable, mais un sélecteur de variante passe ce contrôle : le nom de table qui le porte atteint l'événement par la facette sql. |
 
 ### Ce que le corpus ne dit pas
 

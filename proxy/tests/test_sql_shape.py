@@ -182,10 +182,34 @@ def test_several_statements_keep_one_shape() -> None:
     assert shape == "SELECT a FROM t WHERE b = ?; SELECT c FROM u"
 
 
-def test_a_name_chosen_by_the_author_is_kept_as_written() -> None:
-    """Limite connue : un alias ou un nom de colonne choisi par l'auteur est un nom."""
+def test_a_name_with_the_form_of_an_identifier_is_kept() -> None:
+    """Limite connue : un alias d'un seul mot, choisi par l'auteur, reste un nom."""
     shape = analyze_sql('SELECT nom AS "Dupont" FROM crm.clients', "postgres").shape
     assert shape == 'SELECT nom AS "Dupont" FROM crm.clients'
+
+
+def test_a_qualified_name_written_in_one_piece_is_kept() -> None:
+    shape = analyze_sql("SELECT id FROM `proj.jeu.clients` WHERE id = 7", "bigquery").shape
+    assert shape == "SELECT id FROM `proj.jeu.clients` WHERE id = ?"
+
+
+@pytest.mark.parametrize(
+    ("sql", "dialect"),
+    [
+        # Un nom entre guillemets est un texte libre : une donnée, une instruction, une balise.
+        ('SELECT nom AS "Jeanne Dupont" FROM crm.clients', "postgres"),
+        ("SELECT * FROM `canari; DROP TABLE comptes`", "bigquery"),
+        ('SELECT "<b>canari</b>" FROM crm.clients', "postgres"),
+        ('SELECT a FROM db.sch."Ma Table" t', "snowflake"),
+        ("SELECT `Nom Client` FROM `proj.jeu.clients`", "bigquery"),
+        # Un caractère sans rendu, que le contrôle « imprimable » laisse passer.
+        ("SELECT * FROM crm.`clients\ufe0f`", "bigquery"),
+        ("SELECT * FROM `proj..clients`", "bigquery"),
+    ],
+)
+def test_no_shape_is_kept_when_a_name_is_not_an_identifier(sql: str, dialect: Dialect) -> None:
+    """Seul un nom qu'un événement peut recopier reste dans une forme ; sinon, pas de forme."""
+    assert analyze_sql(sql, dialect).shape is None
 
 
 @pytest.mark.parametrize(

@@ -54,7 +54,7 @@ from answerlineage_corpus.scenarios import CorpusError
 # Change dès qu'un cas, une base ou une exception change : affaiblir le corpus
 # sans le dire échoue au contrôle.
 ABUSE_VERSION = "1"
-_DIGESTS = {"1": "b4bf623764e73a700bebeb1515ebec55e7dea7189fb6d4d5f38cf1072703fa90"}
+_DIGESTS = {"1": "a6e3bdbb6724874d86cde209f8549640b68bce9d76e097da185ea54284a05619"}
 
 # Marque que porte toute valeur hostile, cherchée ensuite partout : réponses,
 # base, événements, journaux. Ni mot réel, ni suite hexadécimale.

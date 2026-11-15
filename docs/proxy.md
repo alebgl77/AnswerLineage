@@ -127,7 +127,7 @@ La forme se construit sur l'arbre syntaxique de la requête, lu par sqlglot dans
 - toute constante devient le marqueur `?`, quelle que soit son écriture : chaîne (entre apostrophes ou guillemets selon le dialecte, triple, brute, échappée, Unicode, nationale, délimitée par dollars de PostgreSQL), nombre, booléen, hexadécimal, binaire, octets, date ou heure typée (`DATE '…'`), intervalle entier (`INTERVAL '3 days'`), paramètre numéroté (`$1`), motif `LIKE`, `ILIKE`, `SIMILAR TO` ou d'expression régulière, chaîne et chemin JSON (`j ->> 'cle'`, `v:cle`) ;
 - une liste `IN` de constantes devient `IN (?)` : la forme ne dépend pas de sa longueur ;
 - les commentaires disparaissent ;
-- les noms restent : tables, colonnes, fonctions, alias, paramètres nommés (`@p`).
+- les noms restent : tables, colonnes, fonctions, alias, paramètres nommés (`@p`), quand ils ont la forme d'un identifiant (lettres, chiffres, `_`, `$`, `*`, `-`). Un nom entre guillemets est un texte libre : s'il porte un espace, une ponctuation, une balise ou un caractère sans rendu, la requête n'a pas de forme.
 
 La forme se calcule avec l'analyse des lectures, dans le même processus, à partir du même découpage et dans le même budget : elle ne retarde aucun appel, et une analyse abandonnée ou en panne n'en donne pas. Elle franchit la même frontière que les lectures : le proxy ne la croit que bornée (32 768 caractères), imprimable et sans marque de commentaire. Elle est gardée en cache avec le reste du résultat.
 
@@ -145,7 +145,7 @@ Seule exception au contrôle : une unité de temps (`DAY`, `MONTH`, `YEAR`…, u
 
 Une instruction dont les lectures ne sont pas connues (`UPDATE`, `INSERT … VALUES`) garde sa forme : elle se lit en entier, la lecture reste « non résolue ».
 
-La limite qui reste : un nom choisi par l'auteur de la requête (alias, nom de colonne, nom de table ou de paramètre) est conservé tel quel. `SELECT nom AS "Jeanne Dupont"` garde `"Jeanne Dupont"`.
+La limite qui reste : un nom d'un seul mot choisi par l'auteur de la requête (alias, nom de colonne, de table ou de paramètre) est conservé tel quel. `SELECT nom AS "Dupont"` garde `"Dupont"` ; `SELECT nom AS "Jeanne Dupont"`, dont le nom n'a pas la forme d'un identifiant, n'a pas de forme.
 
 ### Un processus à part, un budget borné
 
@@ -362,6 +362,6 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - Dans un corps plus grand que la taille lue, une clé `method` ou `name` répétée au-delà des 16 premiers Ko ne peut pas être vue : l'événement décrit la première.
 - Le budget se mesure en temps écoulé : sur une machine très chargée, une requête qui tient d'ordinaire dans le budget peut le dépasser et rester « non résolue » tant qu'elle est en cache.
 - La latence ajoutée par le proxy n'est pas encore mesurée.
-- La forme d'une requête garde les noms choisis par son auteur : un alias ou un nom de colonne qui serait une donnée métier (`AS "Jeanne Dupont"`) est conservé tel quel.
+- La forme d'une requête garde les noms d'un seul mot choisis par son auteur : un alias qui serait une donnée métier (`AS "Dupont"`) est conservé tel quel. Un nom qui n'a pas la forme d'un identifiant fait renoncer à la forme.
 - L'empreinte du résultat porte sur les octets relayés : le même résultat, compressé ou non, ou découpé autrement en événements SSE, a deux empreintes différentes.
 - Les arguments d'un appel dont le corps dépasse la taille lue ne sont pas lus : pas d'empreinte des arguments.

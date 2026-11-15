@@ -344,6 +344,8 @@ _TIME_UNITS = frozenset(
 )
 # Marques d'un commentaire : aucune forme n'en contient, même dans un nom.
 _COMMENT_MARKERS = ("--", "/*", "*/")
+# Noms d'une forme redécoupée, écrits nus ou entre guillemets.
+_NAME_TOKENS = frozenset({TokenType.VAR, TokenType.IDENTIFIER})
 
 
 def is_plain_shape(shape: str) -> bool:
@@ -356,6 +358,15 @@ def is_plain_shape(shape: str) -> bool:
         and shape.isprintable()
         and not any(marker in shape for marker in _COMMENT_MARKERS)
     )
+
+
+def _is_admitted_name(name: str) -> bool:
+    """Vrai pour un nom qu'un événement peut recopier, qualifié ou non.
+
+    Un nom entre guillemets est un texte libre : seul celui qui a la forme d'un
+    identifiant reste dans une forme, comme pour les tables et les colonnes lues.
+    """
+    return all(IDENTIFIER.fullmatch(part) for part in name.split("."))
 
 
 def _marker() -> exp.Placeholder:
@@ -399,12 +410,14 @@ def _without_constants(statement: exp.Expr) -> exp.Expr:
 
 
 def _is_doubtless(shape: str, source: Sequence[Token], dialect: SqlglotDialect) -> bool:
-    """Vrai si la forme ne garde rien d'une constante ni d'un commentaire de la requête.
+    """Vrai si la forme ne garde rien d'une constante, d'un commentaire ni d'un texte libre.
 
     La forme est redécoupée : aucune constante, sauf une unité de temps, ni aucun
-    commentaire n'y figure. Et aucun de ses mots n'est le texte d'une constante de
+    commentaire n'y figure. Aucun de ses mots n'est le texte d'une constante de
     la requête qui n'y était pas aussi écrite comme un nom : une constante que
-    l'analyseur aurait changée en nom serait sinon recopiée.
+    l'analyseur aurait changée en nom serait sinon recopiée. Et chacun de ses
+    noms a la forme d'un identifiant : un nom entre guillemets peut porter une
+    donnée, une instruction ou une balise.
     """
     if not is_plain_shape(shape):
         return False
@@ -418,7 +431,9 @@ def _is_doubtless(shape: str, source: Sequence[Token], dialect: SqlglotDialect) 
         if token.token_type in _LITERAL_TOKENS:
             if word not in _TIME_UNITS:
                 return False
-        elif word in hidden:
+        elif word in hidden or (
+            token.token_type in _NAME_TOKENS and not _is_admitted_name(token.text)
+        ):
             return False
     return True
 
