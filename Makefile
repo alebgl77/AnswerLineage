@@ -41,7 +41,7 @@ coverage-gate: ## Vérifie le seuil de couverture par composant (après make tes
 
 abuse: ## Rejoue le corpus d'abus seul : chaque cas d'attaque doit être bloqué (Docker requis)
 	uv run answerlineage-corpus check
-	uv run pytest tests/test_abuse_corpus.py
+	uv run pytest tests/test_abuse_corpus.py tests/test_abuse_explorer.py
 
 secrets: ## Détection de secrets sur tout l'historique (gitleaks, Docker requis)
 	scripts/gitleaks.sh selftest

@@ -7,6 +7,7 @@ Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque me
 | `static` | Politique du dépôt, compatibilité de l'API et des schémas de facettes avec ceux publiés, format, lint (ruff), typage strict (mypy) | `make policy contract format-check lint typecheck` |
 | `tests` | Tests et couverture de branches, sur la matrice Python 3.13 et 3.14, PostgreSQL 17 et 18 | `make test` |
 | `tests` | Porte de couverture : 85 % par composant, en branches et en lignes et branches | `make coverage-gate` |
+| `tests`, `explorer` | Corpus d'abus : chaque cas d'attaque est rejoué et doit être bloqué. Détail plus bas | `make abuse` |
 | `secrets` | Aucun secret dans tout l'historique (gitleaks), après un canari qui prouve que le détecteur bloque. Une trouvaille est affichée avec son fichier, sa ligne et sa règle, valeur masquée ; une exception se déclare dans `.gitleaksignore`, chemin protégé | `make secrets` |
 | `image` | L'image de `deploy/Dockerfile` se construit ; son SBOM est produit (Syft, CycloneDX) et gardé comme artefact du job ; Grype l'analyse, après un canari qui prouve que l'analyse bloque. Une vulnérabilité haute ou critique sans exception valable fait échouer le job. Détail plus bas | `make image` |
 | `codeql` | Analyse de sécurité du code Python et des workflows (CodeQL, requêtes étendues) | |
@@ -31,6 +32,31 @@ ANSWERLINEAGE_TEST_POSTGRES_IMAGE=postgres:17 UV_PYTHON=3.14 UV_PROJECT_ENVIRONM
 ```
 
 Un serveur PostgreSQL déjà disponible s'utilise à la place avec `ANSWERLINEAGE_TEST_DATABASE_URL`. Sans Docker ni serveur, les tests d'intégration sont sautés sur le poste ; en CI, ils échouent.
+
+## Corpus d'abus
+
+Le [corpus d'abus](corpus.md#corpus-dabus) tient des cas d'attaque : injections dans les identifiants, SQL pathologique, lots surdimensionnés, caractères invisibles, usurpation d'émetteur, écart entre en-têtes et corps, requêtes qui sortiraient du lignage. Une régression de sécurité bloque ainsi la fusion.
+
+Il n'a pas de job à lui. Ses cas sont des tests ordinaires, que `ci-ok` exige déjà :
+
+| Job | Tests | Ce qui est joué |
+| --- | --- | --- |
+| `tests`, sur les quatre cases de la matrice | `tests/test_abuse_corpus.py` | Les cas qui visent le proxy, l'ingestion et la lecture, devant le vrai proxy, la vraie API, un vrai PostgreSQL et un worker |
+| `explorer` | `tests/test_abuse_explorer.py` | Les adresses hostiles, ouvertes dans Chromium devant l'explorateur construit |
+| `tests` | `corpus/tests/test_abuse.py` | Le contrôle du corpus lui-même : format, listes fermées, familles exigées, version |
+
+**Lire un échec.** Chaque cas est un test, dont l'identifiant est le nom du cas. Son message commence par ce nom, dit l'attendu et l'obtenu, et ne cite jamais la valeur hostile :
+
+```
+FAILED tests/test_abuse_corpus.py::test_every_case_of_the_abuse_corpus_is_blocked[lots/lot-1001]
+lots/lot-1001 : 413 batch_too_large attendu, 202 obtenu
+```
+
+Le cas se rejoue seul avec son identifiant, puis se lit dans le fichier de sa famille.
+
+**Cas ouverts.** Un cas que le produit ne bloque pas encore est un échec attendu : il apparaît à chaque exécution dans le résumé des tests (`XFAIL`), avec ce qui a été obtenu et son motif, et ne fait pas échouer le job. S'il se trouve bloqué, son test échoue tant que son exception n'est pas retirée de `abuse_open.json`. Les cas ouverts et leurs motifs sont listés dans [Cas ouverts](corpus.md#cas-ouverts).
+
+**Rejouer sur le poste.** `make abuse` contrôle le corpus puis rejoue tous ses cas ; ceux de l'explorateur sont sautés tant que l'interface n'est pas construite (`make ui`).
 
 ## Image : SBOM et vulnérabilités
 
@@ -130,7 +156,7 @@ Une issue, un commentaire ou une merge request peuvent porter des instructions p
 
 **Aucun agent de code sur une entrée non fiable avec un secret ou un droit d'écriture.** `make policy` refuse un workflow déclenché par une issue, un commentaire, une discussion ou une merge request qui lance un agent de code (action ou ligne de commande) en lui donnant un secret ou une permission d'écriture.
 
-**Revue obligatoire de la configuration d'agents et des garde-fous.** Les fichiers qui pilotent ce qu'un agent a le droit de faire sont protégés : `.claude/`, `.mcp.json`, `CLAUDE.md` et leurs équivalents pour d'autres agents, ainsi que `.github/workflows/`, `.github/CODEOWNERS`, `.devcontainer/`, `.pre-commit-config.yaml`, `renovate.json`, `scripts/` et les exceptions des analyses (`.gitleaksignore`, `vulnerability-exceptions.toml`). Deux mécanismes se complètent :
+**Revue obligatoire de la configuration d'agents et des garde-fous.** Les fichiers qui pilotent ce qu'un agent a le droit de faire sont protégés : `.claude/`, `.mcp.json`, `CLAUDE.md` et leurs équivalents pour d'autres agents, ainsi que `.github/workflows/`, `.github/CODEOWNERS`, `.devcontainer/`, `.pre-commit-config.yaml`, `renovate.json`, `scripts/`, les exceptions des analyses (`.gitleaksignore`, `vulnerability-exceptions.toml`) et celles du corpus d'abus (`corpus/src/answerlineage_corpus/abuse_open.json`). Deux mécanismes se complètent :
 
 - `.github/CODEOWNERS` leur donne un propriétaire, dont la revue peut être exigée ; `make policy` vérifie que chaque chemin protégé y figure ;
 - le job `agent-config` échoue quand une merge request modifie l'un d'eux, jusqu'à ce qu'un mainteneur lui pose le label `agent-config-approved`.
