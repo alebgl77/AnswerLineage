@@ -20,7 +20,7 @@ L'explorateur est ensuite sur [http://127.0.0.1:8000/](http://127.0.0.1:8000/). 
 
 Les données empruntent le chemin réel : ingestion, file de traitement, worker, graphe. Rien n'est écrit directement dans la base.
 
-Tous les services partagent une image, construite depuis les sources et les versions verrouillées du dépôt (`deploy/Dockerfile`). Aucun ne tourne en administrateur. L'image part d'une base Alpine et ne garde que l'interpréteur et l'environnement installé : ni les sources, ni l'installateur de paquets. Moins elle contient de paquets système, moins elle a de vulnérabilités à suivre ; le pipeline l'analyse à chaque merge request ([Image : SBOM et vulnérabilités](ci.md)).
+Tous les services partagent une image, construite depuis les sources et les versions verrouillées du dépôt (`deploy/Dockerfile`). Aucun ne tourne en administrateur. L'image part d'une base Alpine et ne garde que l'interpréteur et l'environnement installé : ni les sources, ni l'installateur de paquets, ni SQLite, dont aucun service ne se sert (`import sqlite3` y échoue, et un test vérifie qu'aucun service n'en a besoin). Les dépendances Python viennent du verrou ; les paquets système d'Alpine reçoivent à chaque construction les correctifs de sécurité de leur branche stable, qui ne sont donc pas figés. Moins elle contient de paquets système, moins elle a de vulnérabilités à suivre ; le pipeline l'analyse à chaque merge request ([Image : SBOM et vulnérabilités](ci.md)).
 
 ## Ce que l'on peut y faire
 

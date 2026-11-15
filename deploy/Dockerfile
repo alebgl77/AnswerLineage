@@ -35,11 +35,24 @@ RUN uv sync --locked --all-packages --no-dev --no-editable
 
 
 # Une base Alpine : quelques paquets système seulement, donc peu de
-# vulnérabilités à suivre. pip n'y reste pas : rien ne s'installe dans une
-# image qui tourne.
+# vulnérabilités à suivre.
 FROM public.ecr.aws/docker/library/python:3.13-alpine3.23@sha256:bf88c40985006a79ca25458159a4da1dffc457f9ae234e948b2d6df56ca5ebd2
 
-RUN python -m pip uninstall --yes pip
+# Les correctifs de sécurité qu'Alpine a publiés depuis la construction de la
+# base s'appliquent ici. Puis ce dont aucun service ne se sert sort de l'image :
+# pip, parce que rien ne s'installe dans une image qui tourne, et SQLite, parce
+# qu'AnswerLineage ne connaît que PostgreSQL. La bibliothèque SQLite du système
+# n'était là que pour le module sqlite3 de Python : sans lui, la liste des
+# bibliothèques que Python exige est réécrite sans elle, et apk la retire.
+# La dernière ligne échoue si le retrait a emporté autre chose.
+RUN apk upgrade --no-cache \
+    && python -m pip uninstall --yes pip \
+    && rm /usr/local/lib/python3.13/lib-dynload/_sqlite3.cpython-*.so \
+    && apk info --no-network --depends .python-rundeps | tr ' ' '\n' \
+        | grep '^so:' | grep -v '^so:libsqlite3' \
+        | xargs apk add --no-network --virtual .python-rundeps \
+    && ! apk info --no-network --installed sqlite-libs \
+    && python -c "import bz2, ctypes, hashlib, lzma, ssl, uuid, zlib"
 
 COPY --from=environment /opt/answerlineage /opt/answerlineage
 COPY --from=explorer /ui/dist /opt/answerlineage-ui
