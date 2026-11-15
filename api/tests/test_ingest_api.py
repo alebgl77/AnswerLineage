@@ -39,6 +39,11 @@ async def stored(engine: AsyncEngine) -> list[tuple[Any, ...]]:
         return [tuple(row) for row in result]
 
 
+async def queued(engine: AsyncEngine) -> int:
+    async with engine.connect() as conn:
+        return int((await conn.execute(text("SELECT count(*) FROM ingest_queue"))).scalar_one())
+
+
 async def test_batch_of_500_valid_events_is_accepted_and_recorded(
     client: httpx.AsyncClient, engine: AsyncEngine
 ) -> None:
@@ -55,6 +60,8 @@ async def test_batch_of_500_valid_events_is_accepted_and_recorded(
     assert (event_type, producer) == ("COMPLETE", events[0]["producer"])
     # L'événement est conservé tel quel, rejouable.
     assert payload == events[0]
+    # Chaque événement nouveau attend d'être projeté dans le graphe.
+    assert await queued(engine) == 500
 
 
 async def test_invalid_event_is_rejected_with_its_faulty_path_and_the_rest_is_accepted(
@@ -104,6 +111,7 @@ async def test_replayed_events_are_recorded_once(
     assert second.status_code == 202
     assert second.json() == {"accepted": 4, "duplicates": 3, "rejected": []}
     assert len(await stored(engine)) == 3
+    assert await queued(engine) == 3
 
 
 @pytest.mark.parametrize(

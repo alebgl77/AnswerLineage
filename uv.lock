@@ -16,6 +16,7 @@ members = [
     "answerlineage",
     "answerlineage-api",
     "answerlineage-proxy",
+    "answerlineage-workers",
 ]
 
 [[package]]
@@ -127,6 +128,21 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "sqlglot", specifier = ">=27.0" },
     { name = "uvicorn", specifier = ">=0.38" },
+]
+
+[[package]]
+name = "answerlineage-workers"
+version = "0.0.0"
+source = { editable = "workers" }
+dependencies = [
+    { name = "answerlineage-api" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "answerlineage-api", editable = "api" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.40" },
 ]
 
 [[package]]

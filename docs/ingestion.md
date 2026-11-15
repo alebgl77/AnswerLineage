@@ -49,6 +49,8 @@ Deux textes que PostgreSQL ne peut pas conserver sont rejetés (`unstorable_text
 
 L'identifiant d'un événement est l'empreinte SHA-256 de sa forme canonique. Un événement déjà reçu n'est pas enregistré une seconde fois : il est compté dans `duplicates`.
 
+Chaque événement nouveau entre dans la file de traitement, d'où un [worker](workers.md) le projette dans le graphe.
+
 ## Limites connues
 
 - Les émetteurs ne sont pas authentifiés : l'API ne s'expose pas hors d'un réseau de confiance.

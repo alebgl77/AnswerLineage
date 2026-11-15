@@ -41,7 +41,8 @@ Le proxy se place devant un serveur [MCP](https://modelcontextprotocol.io) exist
 | Tables et colonnes lues, déduites des requêtes SQL (BigQuery, Snowflake, PostgreSQL) | Disponible |
 | API d'ingestion OpenLineage, par événement ou par lot | Disponible |
 | Schéma du graphe de lignage dans PostgreSQL, avec ses migrations | Disponible |
-| Envoi des événements du proxy vers l'API, alimentation du graphe | À venir |
+| Alimentation du graphe à partir des événements reçus, par des workers concurrents | Disponible |
+| Envoi des événements du proxy vers l'API | À venir |
 | Remontée d'une réponse à ses sources, propagation d'un incident | À venir |
 | Explorateur visuel, rappel des destinataires | À venir |
 
@@ -89,6 +90,20 @@ curl -X POST http://127.0.0.1:8000/api/v1/lineage -H 'content-type: application/
 
 L'API répond `201` avec l'identifiant de l'événement. Le même envoi répété répond `"duplicate": true` : un événement rejoué n'est enregistré qu'une fois. Un événement invalide est rejeté avec le chemin de chaque champ fautif. La description complète de l'API est servie sur `/api/v1/openapi.json`.
 
+### Le graphe
+
+Dans un troisième terminal, avec la même variable `ANSWERLINEAGE_DATABASE_URL`, un worker projette les événements reçus dans le graphe de lignage :
+
+```bash
+uv run answerlineage-worker
+```
+
+Le run et la table qu'il a lue sont maintenant dans le graphe :
+
+```bash
+docker exec answerlineage-postgres psql -U postgres -c "SELECT d.namespace, d.name, e.precision, r.state FROM read_edge e JOIN dataset d ON d.id = e.dataset_id JOIN run r ON r.run_id = e.run_id"
+```
+
 ### Le proxy MCP
 
 Devant un serveur MCP qui écoute sur le port 9000 et expose un outil `execute_sql` dont l'argument `query` porte du SQL BigQuery :
@@ -103,6 +118,7 @@ L'agent se connecte alors à `http://127.0.0.1:8717` au lieu du serveur : rien d
 
 - [Proxy MCP](docs/proxy.md) : ce qui est relayé, ce qui est lu, analyse du SQL, limites connues
 - [API d'ingestion](docs/ingestion.md) : routes, lots, validation, rejeu
+- [Workers](docs/workers.md) : file de traitement, garanties, projection dans le graphe
 - [Schéma du graphe](docs/schema.md) : tables, écritures, migrations
 - [Pipeline d'intégration continue](docs/ci.md) : contrôles, chaîne d'approvisionnement
 

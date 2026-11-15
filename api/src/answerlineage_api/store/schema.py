@@ -19,6 +19,7 @@ from sqlalchemy import (
     ForeignKey,
     Identity,
     Index,
+    Integer,
     MetaData,
     PrimaryKeyConstraint,
     Table,
@@ -220,4 +221,21 @@ event_raw = Table(
     _recorded_at(),
     Index(None, "run_id"),
     Index(None, "recorded_at"),
+)
+
+# File de traitement : une ligne par événement à projeter dans le graphe. Elle
+# est écrite dans la transaction qui enregistre l'événement et retirée dans
+# celle qui le projette : aucun événement n'est perdu ni traité deux fois.
+ingest_queue = Table(
+    "ingest_queue",
+    metadata,
+    Column("id", BigInteger, Identity(always=True), primary_key=True),
+    Column("event_id", Text, ForeignKey("event_raw.event_id"), nullable=False),
+    Column("enqueued_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("available_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    # Classe de la dernière erreur, jamais son message.
+    Column("last_error", Text),
+    UniqueConstraint("event_id"),
+    Index(None, "available_at", "id"),
 )

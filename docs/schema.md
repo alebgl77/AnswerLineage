@@ -23,6 +23,7 @@ write_edge   agent, tool
 | `delivery` | réponse, canal, référence du message | Diffusion de la réponse |
 | `recipient` | pseudonyme | Destinataire pseudonymisé, sans table de correspondance |
 | `event_raw` | empreinte de l'événement | Événement OpenLineage reçu tel quel, rejouable |
+| `ingest_queue` | événement | File de traitement : événements à projeter dans le graphe |
 
 Chaque arête porte `event_time`, l'heure déclarée par l'émetteur, et `recorded_at`, l'heure posée par la base.
 

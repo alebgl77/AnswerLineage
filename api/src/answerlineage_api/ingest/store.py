@@ -43,7 +43,11 @@ def event_identifier(payload: Mapping[str, Any]) -> str:
 
 
 async def store_events(conn: AsyncConnection, events: Sequence[AcceptedEvent]) -> int:
-    """Enregistre les événements et renvoie le nombre de ceux qui étaient nouveaux."""
+    """Enregistre les événements et renvoie le nombre de ceux qui étaient nouveaux.
+
+    Chaque événement nouveau entre dans la file de traitement dans la même
+    transaction : il sera projeté dans le graphe, une fois et une seule.
+    """
     if not events:
         return 0
     rows = [
@@ -63,4 +67,9 @@ async def store_events(conn: AsyncConnection, events: Sequence[AcceptedEvent]) -
         .on_conflict_do_nothing(index_elements=[schema.event_raw.c.event_id])
         .returning(schema.event_raw.c.event_id)
     )
-    return len((await conn.execute(statement)).all())
+    stored = [row.event_id for row in (await conn.execute(statement)).all()]
+    if stored:
+        await conn.execute(
+            insert(schema.ingest_queue).values([{"event_id": event_id} for event_id in stored])
+        )
+    return len(stored)

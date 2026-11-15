@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 DEFAULT_POSTGRES_IMAGE = "postgres:18"
 _TEMPLATE = "answerlineage_template"
@@ -98,3 +99,15 @@ def database(postgres_server: URL, migrated_template: str) -> Iterator[URL]:
         yield url
     finally:
         _drop_database(postgres_server, url)
+
+
+@pytest.fixture
+async def engine(database: URL) -> AsyncIterator[AsyncEngine]:
+    """Moteur asynchrone sur une base migrée propre au test."""
+    from answerlineage_api.store.engine import create_engine
+
+    engine = create_engine(database)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
