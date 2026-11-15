@@ -9,6 +9,7 @@ L'API de lecture interroge le graphe de lignage. Elle est versionnée sous `/api
 | `GET /api/v1/impact?namespace=…&name=…&from=…&to=…` | Les réponses et les destinataires touchés par un jeu de données faux pendant une fenêtre |
 | `GET /api/v1/graph` | Le graphe en cinq colonnes des réponses les plus récentes, ou d'une réponse |
 | `GET /api/v1/datasets` | Les jeux de données connus du graphe |
+| `GET /api/v1/coverage?from=…&to=…` | La couverture du lignage de chaque émetteur sur une période |
 
 ## Remonter d'une réponse à ses sources
 
@@ -111,7 +112,7 @@ curl "http://127.0.0.1:8000/api/v1/impact?namespace=bigquery&name=ventes.suivi.c
   "dataset": { "namespace": "bigquery", "name": "ventes.suivi.commandes", "kind": "table" },
   "window": { "from": "2026-11-11T06:00:00Z", "to": "2026-11-12T12:00:00Z" },
   "counts": { "answers": 16, "recipients": 13, "lower_bound": false },
-  "coverage": { "status": "unknown" },
+  "coverage": { "status": "unknown", "rate": null, "calls_seen": 0, "holes": [], "…": "…" },
   "graph": { "answers": ["…"], "recipients": ["…"], "…": "…" },
   "truncated": false
 }
@@ -123,7 +124,7 @@ Cet exemple est le premier incident de l'[entreprise synthétique](corpus.md) : 
 | --- | --- |
 | `counts` | Réponses touchées et destinataires distincts, sur tout l'incident. `lower_bound` vaut `true` quand le résultat est tronqué : ce sont alors des minimums |
 | `graph` | Les réponses touchées, les plus récentes d'abord, sous la forme du [graphe en cinq colonnes](#le-graphe-en-cinq-colonnes) : `graph.answers` porte chaque réponse et sa chaîne, `graph.recipients` les pseudonymes des destinataires |
-| `coverage` | Ce que l'on sait de la part des appels captés pendant la fenêtre. `unknown` : elle n'est pas encore mesurée, le résultat peut donc ignorer des réponses dont la lecture n'a pas été captée |
+| `coverage` | La [couverture du lignage](#couverture-du-lignage) sur la fenêtre de l'incident, tous émetteurs confondus : son état, son taux, les appels vus et les trous connus qui recoupent la fenêtre. Une réponse dont l'appel n'a pas été capté ne peut pas être trouvée : hors d'une couverture mesurée et sans trou, une liste vide ne prouve pas que rien n'est touché |
 | `truncated` | `true` quand la propagation dépasse une de ses bornes : le résultat est partiel ([Bornes et délais](#bornes-et-délais)) |
 
 ### Ce qui compte comme touché
@@ -139,6 +140,100 @@ Une réponse est touchée quand un run de son arbre a lu le jeu de données pend
 ### Mesure
 
 La propagation est mesurée sur un [corpus de vérité](corpus.md#corpus-de-vérité) : pour chaque scénario, toute réponse attendue au niveau table doit être renvoyée. Sur les incidents de l'entreprise synthétique, le résultat est exactement la vérité.
+
+## Couverture du lignage
+
+« Aucune réponse touchée » ne vaut que si l'on sait quelle part des appels a été vue. La couverture du lignage est la part des appels relayés par les émetteurs qui sont présents dans le graphe : les compteurs que chaque émetteur publie dans ses [relevés](ingestion.md#relevés-de-couverture), comparés au graphe.
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/coverage?from=2026-11-11T09:00:00Z&to=2026-11-11T09:01:00Z"
+```
+
+```json
+{
+  "window": { "from": "2026-11-11T09:00:00Z", "to": "2026-11-11T09:01:00Z" },
+  "emitters": [
+    {
+      "emitter": "mcp://entrepot",
+      "last_report_at": "2026-11-11T09:01:02Z",
+      "muted_since": null,
+      "coverage": {
+        "status": "measured",
+        "rate": 0.99,
+        "calls_seen": 1000,
+        "events_in_graph": 990,
+        "events_lost": 10,
+        "uninspected": 0,
+        "holes": [
+          {
+            "emitter": "mcp://entrepot",
+            "kind": "events_lost",
+            "window": { "from": "2026-11-11T09:00:00Z", "to": "2026-11-11T09:01:00Z" },
+            "count": 10
+          },
+          {
+            "emitter": "mcp://entrepot",
+            "kind": "missing_from_graph",
+            "window": { "from": "2026-11-11T09:00:00Z", "to": "2026-11-11T09:01:00Z" },
+            "count": 10
+          }
+        ],
+        "truncated": false
+      }
+    }
+  ],
+  "more": false
+}
+```
+
+### Le taux
+
+Pour chaque fenêtre d'un relevé, on compte les événements d'appel d'outil de l'émetteur (ceux qui portent la facette `answerlineage_toolCall`) reçus et déjà projetés par les workers, dont l'heure tombe dans la fenêtre. Ce nombre, plafonné aux appels vus de la fenêtre, est rapporté aux appels que l'émetteur déclare avoir vus. Le taux réunit les fenêtres : `events_in_graph / calls_seen`, de 0 à 1, nul quand aucun appel n'a été vu.
+
+- **Le graphe fait foi, pas l'émetteur.** Un événement perdu en route se voit, même si l'émetteur croit l'avoir émis : 1 000 appels vus, 1 000 émis, 990 arrivés donnent 99 %.
+- **Des événements, pas des runs.** Deux appels peuvent partager un run : chacun a son événement.
+- **Une fenêtre ne comble pas une autre.** Des événements en excès dans une fenêtre, d'un émetteur à l'horloge décalée par exemple, ne compensent pas un manque ailleurs.
+- **Un événement reçu mais pas encore projeté** n'est pas dans le graphe : juste après un envoi, la dernière fenêtre peut paraître incomplète le temps qu'un worker passe.
+- Un relevé qui déborde de la période compte en entier : la mesure se fait à la fenêtre près.
+
+### Trois états
+
+| `status` | Sens |
+| --- | --- |
+| `measured` | Des relevés couvrent toute la période. Le taux et les trous disent ce qui a été capté |
+| `partial` | Des relevés ne couvrent qu'une part de la période : les trous `silence` et `before_first_report` disent laquelle manque |
+| `unknown` | Aucun relevé ne recoupe la période : la couverture n'est pas mesurée. Le résultat peut ignorer des réponses dont l'appel n'a pas été capté |
+
+Une période sans relevé n'est jamais présentée comme couverte. La partie d'une période qui n'est pas encore passée n'est pas mesurable : elle n'est ni couverte ni un trou. Pour le résultat d'impact, les émetteurs pris en compte sont ceux qui ont publié un relevé commençant avant la fin de la fenêtre : un émetteur apparu après l'incident n'y compte pas, un émetteur muet pendant l'incident le rend partiel.
+
+### Lire un trou
+
+Chaque trou nomme son émetteur, sa nature, sa fenêtre, et un nombre quand il y en a un. Les trous d'une même nature qui se suivent sont réunis.
+
+| `kind` | Ce que le trou dit | `count` |
+| --- | --- | --- |
+| `events_lost` | L'émetteur déclare avoir perdu des événements dans cette fenêtre : c'est la fenêtre de la perte | Événements perdus |
+| `missing_from_graph` | Le graphe contient moins d'événements que d'appels vus, que l'émetteur ait vu la perte ou non | Événements manquants |
+| `uninspected` | L'émetteur a relayé des requêtes sans pouvoir les inspecter. Elles cachaient peut-être des appels, que le serveur a exécutés sans qu'aucun événement n'en sorte : on ne sait pas combien, le taux ne peut donc pas les compter, mais le trou est dit | Requêtes non inspectées |
+| `silence` | Aucun relevé, entre deux relevés d'un émetteur connu ou après son dernier : l'émetteur était arrêté, muet, ou ses relevés se sont perdus | nul |
+| `before_first_report` | La période commence avant le premier relevé de l'émetteur : rien n'est su de cette partie | nul |
+
+Une réponse qui s'appuie sur une lecture faite pendant un trou peut manquer au résultat d'impact. Pour un rappel, un trou dans la fenêtre d'un incident appelle une vérification à la source de l'émetteur nommé.
+
+### Émetteurs
+
+`GET /api/v1/coverage` rend chaque émetteur connu, c'est-à-dire qui a publié au moins un relevé, par identifiant, avec :
+
+| Champ | Contenu |
+| --- | --- |
+| `last_report_at` | Réception du dernier relevé qui a changé quelque chose |
+| `muted_since` | Quand le [contrôle des émetteurs muets](workers.md#émetteurs-muets) l'a signalé : l'heure de son dernier relevé. Nul dès qu'il republie |
+| `coverage` | Sa couverture sur la période, sous la même forme que dans le résultat d'impact |
+
+| Paramètre | Rôle | Défaut |
+| --- | --- | --- |
+| `from`, `to` | La période, début inclus, fin exclue (RFC 3339, avec fuseau) ; une période vide répond `422` | obligatoires |
+| `limit` | Nombre d'émetteurs, de 1 à 500 ; `more` vaut `true` quand d'autres suivent | 100 |
 
 ## Le graphe en cinq colonnes
 
@@ -196,6 +291,9 @@ Toute requête porte une borne sur les lignes qu'elle lit. Un dépassement se di
 | Graphe en cinq colonnes | 200 réponses par page ; pour leurs chaînes, 20 000 runs, 50 000 couples run et jeu de données lu, 50 000 liens de diffusion |
 | Propagation | 20 000 lectures du jeu de données dans la fenêtre, 20 000 runs parents, 100 000 réponses et 200 000 liens de diffusion comptés |
 | Jeux de données connus | 500 par page |
+| Couverture | 1 000 émetteurs pour un résultat d'impact, 500 par page ; 50 000 relevés lus ; 1 000 trous rendus ; dans chaque fenêtre, les événements comptés au plus jusqu'aux appels vus |
+
+Une couverture tronquée (`coverage.truncated`) n'est jamais donnée pour `measured` : ses trous peuvent être incomplets. Réduire la période la rend complète.
 
 ### Lire un résultat d'impact tronqué
 
@@ -217,4 +315,5 @@ Les réponses vont des plus récentes aux plus anciennes. Plusieurs réponses pe
 - Un appel d'outil n'est rattaché à une réponse que si son événement désigne le run de l'agent comme parent.
 - La propagation s'arrête au niveau table : elle renvoie tout lecteur de la fenêtre, y compris ceux qui n'ont lu que des colonnes, des lignes ou une version saines.
 - Elle ne suit pas encore ce qu'un run touché a écrit : une réponse fondée sur une note ou une table dérivée de la donnée fausse n'est pas renvoyée.
-- La couverture du lignage sur la fenêtre n'est pas encore mesurée.
+- La couverture du lignage ne voit que ce que voient les émetteurs qui publient des relevés : un appel qui ne passe par aucun d'eux n'est compté nulle part. Elle compte les appels d'outils, pas les runs d'agents.
+- Un émetteur retiré pour de bon reste connu : rien ne permet encore de le déclarer retiré, et son silence rend partielle la couverture de toute période qui suit son dernier relevé.

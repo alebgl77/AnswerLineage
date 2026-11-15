@@ -237,19 +237,201 @@
         "type": "object"
       },
       "Coverage": {
-        "description": "Ce que l'on sait de la part des appels captés pendant la fenêtre.",
+        "description": "Part des appels relayés présents dans le graphe, et trous connus, sur une période.",
         "properties": {
+          "calls_seen": {
+            "description": "Appels vus par les émetteurs, sur leurs relevés.",
+            "title": "Calls Seen",
+            "type": "integer"
+          },
+          "events_in_graph": {
+            "description": "Événements de ces appels présents dans le graphe.",
+            "title": "Events In Graph",
+            "type": "integer"
+          },
+          "events_lost": {
+            "description": "Événements déclarés perdus par les émetteurs.",
+            "title": "Events Lost",
+            "type": "integer"
+          },
+          "holes": {
+            "description": "Trous connus, par heure de début.",
+            "items": {
+              "$ref": "#/components/schemas/CoverageHole"
+            },
+            "title": "Holes",
+            "type": "array"
+          },
+          "rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Part des appels vus présents dans le graphe, de 0 à 1 : dans chaque fenêtre, les événements comptés ne dépassent pas les appels vus. Nulle quand aucun appel n'a été vu.",
+            "title": "Rate"
+          },
           "status": {
-            "const": "unknown",
-            "description": "« unknown » : la couverture du lignage n'est pas encore mesurée.",
+            "description": "« measured » : toute la période est couverte par des relevés. « partial » : une partie seulement, les trous disent laquelle manque. « unknown » : aucun relevé, la couverture n'est pas mesurée.",
+            "enum": [
+              "measured",
+              "partial",
+              "unknown"
+            ],
             "title": "Status",
             "type": "string"
+          },
+          "truncated": {
+            "description": "Vrai quand les relevés ou les trous dépassent leur borne : la mesure est partielle, et elle n'est jamais donnée pour complète.",
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "uninspected": {
+            "description": "Requêtes relayées sans pouvoir être inspectées.",
+            "title": "Uninspected",
+            "type": "integer"
           }
         },
         "required": [
-          "status"
+          "status",
+          "rate",
+          "calls_seen",
+          "events_in_graph",
+          "events_lost",
+          "uninspected",
+          "holes",
+          "truncated"
         ],
         "title": "Coverage",
+        "type": "object"
+      },
+      "CoverageHole": {
+        "description": "Un trou connu du lignage : une fenêtre où des appels ont pu échapper au graphe.",
+        "properties": {
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Événements perdus ou manquants, requêtes non inspectées ; nul pour un silence, où rien n'est compté.",
+            "title": "Count"
+          },
+          "emitter": {
+            "description": "Émetteur concerné, l'espace de noms de ses jobs.",
+            "title": "Emitter",
+            "type": "string"
+          },
+          "kind": {
+            "description": "« events_lost » : l'émetteur déclare des événements perdus. « uninspected » : il a relayé des requêtes sans pouvoir les inspecter, qui cachent peut-être des appels, en nombre inconnu. « missing_from_graph » : le graphe contient moins d'événements que d'appels vus. « silence » : aucun relevé, entre deux relevés ou après le dernier. « before_first_report » : la période commence avant le premier relevé de l'émetteur.",
+            "enum": [
+              "events_lost",
+              "uninspected",
+              "missing_from_graph",
+              "silence",
+              "before_first_report"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/Window"
+          }
+        },
+        "required": [
+          "emitter",
+          "kind",
+          "window",
+          "count"
+        ],
+        "title": "CoverageHole",
+        "type": "object"
+      },
+      "CoverageList": {
+        "description": "La couverture du lignage par émetteur, sur une période.",
+        "properties": {
+          "emitters": {
+            "description": "Par identifiant d'émetteur.",
+            "items": {
+              "$ref": "#/components/schemas/EmitterCoverage"
+            },
+            "title": "Emitters",
+            "type": "array"
+          },
+          "more": {
+            "description": "Vrai quand d'autres émetteurs suivent la borne demandée.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "window": {
+            "$ref": "#/components/schemas/Window"
+          }
+        },
+        "required": [
+          "window",
+          "emitters",
+          "more"
+        ],
+        "title": "CoverageList",
+        "type": "object"
+      },
+      "CoverageReport": {
+        "description": "Ce qu'un émetteur a vu pendant une fenêtre.",
+        "properties": {
+          "calls_seen": {
+            "description": "Appels d'outils vus pendant la fenêtre.",
+            "maximum": 1000000000.0,
+            "minimum": 0.0,
+            "title": "Calls Seen",
+            "type": "integer"
+          },
+          "emitter": {
+            "description": "Identifiant de l'émetteur : l'espace de noms de ses jobs, « mcp://entrepot » pour le proxy placé devant ce serveur.",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Emitter",
+            "type": "string"
+          },
+          "events_emitted": {
+            "description": "Événements remis à leur destination.",
+            "maximum": 1000000000.0,
+            "minimum": 0.0,
+            "title": "Events Emitted",
+            "type": "integer"
+          },
+          "events_lost": {
+            "description": "Événements que l'émetteur n'a pas pu remettre.",
+            "maximum": 1000000000.0,
+            "minimum": 0.0,
+            "title": "Events Lost",
+            "type": "integer"
+          },
+          "uninspected": {
+            "default": 0,
+            "description": "Requêtes relayées sans pouvoir être inspectées : elles cachent peut-être des appels.",
+            "maximum": 1000000000.0,
+            "minimum": 0.0,
+            "title": "Uninspected",
+            "type": "integer"
+          },
+          "window": {
+            "$ref": "#/components/schemas/ReportWindow"
+          }
+        },
+        "required": [
+          "emitter",
+          "window",
+          "calls_seen",
+          "events_emitted",
+          "events_lost"
+        ],
+        "title": "CoverageReport",
         "type": "object"
       },
       "DatasetList": {
@@ -435,6 +617,46 @@
           "duplicates"
         ],
         "title": "DuplicateList",
+        "type": "object"
+      },
+      "EmitterCoverage": {
+        "description": "Un émetteur connu et sa couverture sur la période.",
+        "properties": {
+          "coverage": {
+            "$ref": "#/components/schemas/Coverage"
+          },
+          "emitter": {
+            "description": "Identifiant de l'émetteur, l'espace de noms de ses jobs.",
+            "title": "Emitter",
+            "type": "string"
+          },
+          "last_report_at": {
+            "description": "Réception du dernier relevé qui a changé quelque chose.",
+            "format": "date-time",
+            "title": "Last Report At",
+            "type": "string"
+          },
+          "muted_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Signalé muet par le contrôle des émetteurs : aucun relevé depuis cette heure. Nul quand l'émetteur publie.",
+            "title": "Muted Since"
+          }
+        },
+        "required": [
+          "emitter",
+          "last_report_at",
+          "muted_since",
+          "coverage"
+        ],
+        "title": "EmitterCoverage",
         "type": "object"
       },
       "EventRejected": {
@@ -632,7 +854,8 @@
             "$ref": "#/components/schemas/ImpactCounts"
           },
           "coverage": {
-            "$ref": "#/components/schemas/Coverage"
+            "$ref": "#/components/schemas/Coverage",
+            "description": "Couverture du lignage sur la fenêtre de l'incident, tous émetteurs confondus : une réponse dont l'appel n'a pas été capté ne peut pas être trouvée."
           },
           "dataset": {
             "$ref": "#/components/schemas/DatasetName"
@@ -816,6 +1039,29 @@
           "errors"
         ],
         "title": "Rejection",
+        "type": "object"
+      },
+      "ReportWindow": {
+        "description": "Fenêtre d'un relevé : début inclus, fin exclue.",
+        "properties": {
+          "from": {
+            "description": "Début, inclus (RFC 3339, avec fuseau).",
+            "format": "date-time",
+            "title": "From",
+            "type": "string"
+          },
+          "to": {
+            "description": "Fin, exclue (RFC 3339, avec fuseau).",
+            "format": "date-time",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "ReportWindow",
         "type": "object"
       },
       "RequestRefused": {
@@ -1211,6 +1457,158 @@
         "summary": "Remonte d'une réponse à ses sources",
         "tags": [
           "lignage"
+        ]
+      }
+    },
+    "/api/v1/coverage": {
+      "get": {
+        "description": "Part des appels vus présents dans le graphe, trous connus, émetteurs muets.",
+        "operationId": "coverage_by_emitter_api_v1_coverage_get",
+        "parameters": [
+          {
+            "description": "Début de la période, inclus (RFC 3339, avec fuseau).",
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "description": "Début de la période, inclus (RFC 3339, avec fuseau).",
+              "format": "date-time",
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Fin de la période, exclue (RFC 3339, avec fuseau).",
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "description": "Fin de la période, exclue (RFC 3339, avec fuseau).",
+              "format": "date-time",
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Nombre maximal d'émetteurs renvoyés.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "description": "Nombre maximal d'émetteurs renvoyés.",
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverageList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Donne la couverture du lignage de chaque émetteur sur une période",
+        "tags": [
+          "lignage"
+        ]
+      },
+      "post": {
+        "description": "Rend l'état de la fenêtre après fusion : un relevé rejoué ne change rien.\n\nLe corps est lu comme celui des événements : borné, et compressé ou non (``gzip``).",
+        "operationId": "publish_report_api_v1_coverage_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoverageReport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverageReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`)."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Le relevé est invalide."
+          }
+        },
+        "summary": "Publie le relevé de couverture d'un émetteur pour une fenêtre",
+        "tags": [
+          "ingestion"
         ]
       }
     },

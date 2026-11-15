@@ -14,16 +14,19 @@ ce qui mène aux réponses passe d'abord :
   à rien (ni réponse, ni run parent) n'y compte pas ;
 - la remontée aux runs parents a la sienne : les lecteurs ne l'épuisent jamais
   avant elle. Elle va d'abord aux runs les plus proches des lectures.
+
+Le résultat dit aussi ce que la propagation n'a pas pu voir : la couverture du
+lignage sur la fenêtre de l'incident et ses trous connus (``coverage.py``).
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import TextClause, text
 
+from answerlineage_api.lineage import coverage
 from answerlineage_api.lineage.models import (
-    Coverage,
     DatasetName,
     ImpactCounts,
     ImpactResult,
@@ -118,8 +121,14 @@ async def propagate(
     end: datetime,
     limit: int,
     cursor: Cursor | None,
+    now: datetime | None = None,
 ) -> ImpactResult | None:
-    """Réponses et destinataires touchés ; ``None`` quand le jeu de données est inconnu."""
+    """Réponses et destinataires touchés ; ``None`` quand le jeu de données est inconnu.
+
+    Le résultat porte la couverture du lignage sur la fenêtre, et ses trous
+    connus : ce que la propagation n'a pas pu voir. ``now`` borne la partie de
+    la fenêtre qui peut être mesurée ; par défaut, l'heure courante.
+    """
     found = await reader.fetch(_DATASET, {"namespace": namespace, "name": name}, limit=1)
     if not found.rows:
         return None
@@ -157,7 +166,9 @@ async def propagate(
         counts=ImpactCounts(
             answers=counts.answers, recipients=counts.recipients, lower_bound=truncated
         ),
-        coverage=Coverage(status="unknown"),
+        coverage=await coverage.over_period(
+            reader, start=start, end=end, now=now or datetime.now(UTC)
+        ),
         graph=await view_of(reader, picked.rows, more=picked.truncated),
         truncated=truncated,
     )

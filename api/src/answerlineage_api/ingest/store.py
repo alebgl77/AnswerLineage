@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from answerlineage_api.ingest.duplicates import count_duplicates, emitter_of
-from answerlineage_api.ingest.models import RunEvent
+from answerlineage_api.ingest.models import TOOL_CALL_FACET, RunEvent
 from answerlineage_api.store import schema
 
 
@@ -66,6 +66,8 @@ async def store_events(conn: AsyncConnection, events: Sequence[AcceptedEvent]) -
             "event_time": accepted.event.event_time,
             "producer": str(accepted.event.producer),
             "payload": accepted.payload,
+            "emitter": emitter_of(accepted.event),
+            "tool_call": TOOL_CALL_FACET in accepted.event.run.facets,
         }
         for accepted in distinct.values()
     ]

@@ -11,8 +11,9 @@ ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run 
 | `POST /api/v1/lineage` | Un événement | `201` avec son identifiant, `422` avec les champs fautifs |
 | `POST /api/v1/lineage/batch` | Un tableau d'événements, 1 000 au plus | `202` avec le bilan du lot |
 | `GET /api/v1/ingestion/duplicates` | Aucun | Les doublons reçus, par émetteur et par jour |
+| `POST /api/v1/coverage` | Un relevé de couverture | `201` avec l'état de sa fenêtre, `422` avec les champs fautifs |
 
-`/api/v1/lineage` est le point d'entrée standard d'OpenLineage : un émetteur conforme s'y branche sans adaptation.
+`/api/v1/lineage` est le point d'entrée standard d'OpenLineage : un émetteur conforme s'y branche sans adaptation. `/api/v1/coverage` reçoit ce que chaque émetteur a vu, pour mesurer la part du trafic réellement captée ([Relevés de couverture](#relevés-de-couverture)).
 
 ## Lots
 
@@ -178,6 +179,57 @@ Les lignes vont du jour le plus récent au plus ancien, puis par émetteur. Un p
 
 Chaque événement nouveau entre dans la file de traitement, d'où un [worker](workers.md) le projette dans le graphe.
 
+## Relevés de couverture
+
+Un outil de rappel qui ne dit pas ce qu'il ignore rassure à tort : « aucune réponse touchée » ne vaut que si l'on sait quelle part des appels a été vue. Chaque émetteur publie donc, fenêtre par fenêtre, ce qu'il a vu :
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/coverage -H 'content-type: application/json' -d '{
+  "emitter": "mcp://entrepot",
+  "window": { "from": "2026-11-11T09:00:00Z", "to": "2026-11-11T09:01:00Z" },
+  "calls_seen": 1000,
+  "events_emitted": 990,
+  "events_lost": 10,
+  "uninspected": 0
+}'
+```
+
+| Champ | Contenu |
+| --- | --- |
+| `emitter` | L'émetteur, sous la même définition que le [compteur de doublons](#compteur-de-doublons) : l'espace de noms de ses jobs, `mcp://entrepot` pour le proxy placé devant ce serveur |
+| `window` | La fenêtre du relevé, début inclus, fin exclue (RFC 3339, avec fuseau) |
+| `calls_seen` | Appels d'outils vus pendant la fenêtre |
+| `events_emitted` | Événements remis à leur destination |
+| `events_lost` | Événements que l'émetteur n'a pas pu remettre |
+| `uninspected` | Facultatif, zéro par défaut : requêtes relayées sans pouvoir être inspectées, qui cachent peut-être des appels (voir le [proxy](proxy.md#ce-que-le-proxy-ne-peut-pas-inspecter)). Un adaptateur n'en a pas |
+
+Un appel compte dans la fenêtre où tombe l'heure de son événement. Une fenêtre sans appel se publie aussi : c'est le battement qui prouve que l'émetteur n'est pas muet ([contrôle des émetteurs muets](workers.md#émetteurs-muets)).
+
+### Validation
+
+Le relevé est une entrée hostile comme une autre. Chaque faute est rapportée par son chemin, un code et un motif fixe, jamais la valeur reçue, et toutes le sont ensemble :
+
+| Code | Motif |
+| --- | --- |
+| `identifier_…` | L'émetteur n'a pas la forme d'un [identifiant](#identifiants) d'espace de noms (512 caractères au plus) |
+| `window_inverted` | La fin de la fenêtre ne suit pas son début |
+| `window_too_long` | La fenêtre dure plus d'un jour |
+| `window_out_of_range` | La fenêtre commence avant le 1er janvier 1970 |
+| `window_in_future` | La fenêtre s'achève plus d'un jour après la réception du relevé : la tolérance de l'[heure des événements](#heure-de-lévénement) |
+| `int_type`, `greater_than_equal`, `less_than_equal` | Un compteur n'est pas un entier (ni booléen, ni nombre à virgule), est négatif ou dépasse un milliard |
+| `counts_inconsistent` | Les événements émis et perdus dépassent les appels vus |
+| `missing` | Un champ obligatoire manque |
+
+Un champ inconnu est ignoré. Le corps est lu comme celui des événements : mêmes [limites](#limites) de taille, de compression et de profondeur, mêmes refus `400`, `413` et `415`.
+
+### Fusion
+
+Les relevés se rangent dans la table `coverage_report` ([schéma](schema.md#couverture-du-lignage)), un par émetteur et par fenêtre. Deux relevés de la même fenêtre se fusionnent compteur par compteur, au plus grand : un relevé rejoué ne change rien, deux relevés arrivés dans un ordre ou dans l'autre donnent le même état, et un émetteur peut republier une fenêtre complétée. La réponse rend l'état de la fenêtre après fusion.
+
+Un relevé qui ouvre une fenêtre ou fait grandir un compteur date le dernier relevé de son émetteur : c'est ce que surveille le contrôle des émetteurs muets. Un rejeu ne ranime pas un émetteur muet.
+
+La couverture qui s'en déduit se lit par `GET /api/v1/coverage` et dans chaque résultat d'impact ([API de lecture](lecture.md#couverture-du-lignage)).
+
 ## Limites
 
 Tout ce que l'ingestion reçoit est borné, pour qu'une entrée piégée ne puisse pas épuiser le service : la mémoire et le temps d'une requête restent proportionnels à la taille maximale du corps.
@@ -217,3 +269,5 @@ Tout ce que l'ingestion reçoit est borné, pour qu'une entrée piégée ne puis
 - La forme NFC ne confond pas les caractères qui se ressemblent : `а` cyrillique et `a` latin font deux noms distincts.
 - L'heure d'un événement est bornée par l'horloge de l'API : le corpus synthétique, daté à partir du 2 novembre 2026, voit refuser ses événements qui tombent plus d'un jour après la date du jour (`--days` élevé).
 - L'API n'exporte pas encore de métriques.
+- Un relevé n'est pas authentifié plus qu'un événement : un émetteur mal réglé, ou qui en usurpe un autre, peut gonfler les appels vus d'une fenêtre, et la fusion au plus grand ne peut pas le défaire.
+- Plusieurs instances d'un même émetteur, des répliques du proxy devant un même serveur, publient sous le même identifiant : leurs relevés d'une même fenêtre se fusionnent au plus grand au lieu de s'additionner, et la couverture est alors surestimée. Une instance par émetteur, en attendant un identifiant d'instance.

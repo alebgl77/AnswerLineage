@@ -16,6 +16,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -23,12 +24,16 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from answerlineage_api.store.graph import record_run
 from answerlineage_workers.projection import project
+from answerlineage_workers.silence import DEFAULT_SILENCE, check_silent_emitters
 
 logger = logging.getLogger("answerlineage_workers")
 
 Handler = Callable[[AsyncConnection, Mapping[str, Any]], Awaitable[None]]
 
 DEFAULT_BATCH_SIZE = 100
+# Le contrôle des émetteurs muets revient chaque minute : un silence est
+# signalé au plus une minute après avoir passé le seuil.
+DEFAULT_SILENCE_CHECK_EVERY = timedelta(minutes=1)
 RETRY_BASE_SECONDS = 5.0
 RETRY_CAP_SECONDS = 3600.0
 
@@ -106,6 +111,10 @@ async def process_batch(
     return BatchResult(processed=len(done), postponed=postponed)
 
 
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
 async def run_worker(
     engine: AsyncEngine,
     stop: asyncio.Event,
@@ -114,9 +123,25 @@ async def run_worker(
     idle_delay: float = 0.5,
     error_delay: float = 5.0,
     handler: Handler = record_event,
+    silence_threshold: timedelta = DEFAULT_SILENCE,
+    silence_every: timedelta = DEFAULT_SILENCE_CHECK_EVERY,
+    clock: Callable[[], datetime] = _now,
 ) -> None:
-    """Traite la file jusqu'à ce que ``stop`` soit levé."""
+    """Traite la file jusqu'à ce que ``stop`` soit levé.
+
+    Au démarrage, puis toutes les ``silence_every`` sur l'horloge ``clock``, le
+    worker contrôle les émetteurs muets depuis plus que ``silence_threshold``.
+    """
+    next_check: datetime | None = None
     while not stop.is_set():
+        now = clock()
+        if next_check is None or now >= next_check:
+            next_check = now + silence_every
+            try:
+                await check_silent_emitters(engine, now=now, threshold=silence_threshold)
+            except Exception as error:
+                # Le contrôle reprendra au prochain passage ; la file n'attend pas.
+                logger.error("Contrôle des émetteurs muets en échec (%s).", type(error).__name__)
         delay = 0.0
         try:
             result = await process_batch(engine, batch_size=batch_size, handler=handler)

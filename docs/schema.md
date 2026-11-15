@@ -25,6 +25,8 @@ write_edge   agent, tool
 | `event_raw` | empreinte de l'événement | Événement OpenLineage reçu tel quel, rejouable |
 | `ingest_queue` | événement | File de traitement : événements à projeter dans le graphe |
 | `ingest_duplicate` | émetteur et jour | Nombre d'événements reçus en double, par émetteur et par jour UTC |
+| `coverage_report` | émetteur, début et fin de fenêtre | Relevé de couverture : appels vus, événements émis et perdus, requêtes non inspectées |
+| `coverage_emitter` | émetteur | Émetteur connu : réception de son dernier relevé, silence signalé |
 
 Chaque arête porte `event_time`, l'heure déclarée par l'émetteur, et `recorded_at`, l'heure posée par la base.
 
@@ -35,6 +37,16 @@ Chaque arête porte `event_time`, l'heure déclarée par l'émetteur, et `record
 ## Compteur de doublons
 
 `ingest_duplicate` compte les événements reçus alors qu'ils étaient déjà connus. Sa clé est l'émetteur (l'espace de noms du job, sous sa forme normalisée) et le jour UTC de réception ; `duplicates` est strictement positif : une ligne n'existe qu'à partir du premier doublon. L'API l'écrit dans la transaction qui reçoit l'événement, par un ajout atomique (`INSERT … ON CONFLICT DO UPDATE`), et le lit par `GET /api/v1/ingestion/duplicates` (voir [API d'ingestion](ingestion.md)). Un index range les jours du plus récent au plus ancien. La table n'est pas purgée.
+
+## Couverture du lignage
+
+Les [relevés de couverture](ingestion.md#relevés-de-couverture) des émetteurs se rangent dans `coverage_report`, un par émetteur (sous sa forme normalisée) et par fenêtre. Deux relevés de la même fenêtre se fusionnent par un ajout atomique (`INSERT … ON CONFLICT DO UPDATE`), compteur par compteur, au plus grand : l'écriture est idempotente et commutative. Les compteurs sont positifs et la fenêtre non vide, contraintes nommées comprises.
+
+`coverage_emitter` tient un émetteur par ligne, dès son premier relevé : `last_report_at`, la réception de son dernier relevé qui a changé quelque chose, et, posés par le [contrôle des émetteurs muets](workers.md#émetteurs-muets), `silent_since` (l'heure de ce dernier relevé quand le silence a été signalé) et `signalled_at`. Un émetteur est muet tant que `silent_since` égale `last_report_at`.
+
+Pour comparer ces relevés au graphe, `event_raw` porte l'émetteur de chaque événement (`emitter`, l'espace de noms de son job sous sa forme NFC) et `tool_call`, vrai pour l'événement d'un appel d'outil. Un index partiel range les appels par émetteur et par heure. La migration `0006` remplit ces colonnes pour les événements reçus avant elle. Un événement est dans le graphe quand il n'est plus dans `ingest_queue`.
+
+Ces tables ne sont pas purgées : un relevé par minute et par émetteur fait 1 440 lignes par jour.
 
 ## Migrations
 

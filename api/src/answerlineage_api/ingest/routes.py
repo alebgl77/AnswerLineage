@@ -65,7 +65,8 @@ def _not_a_number(_: str) -> Any:
     raise ValueError("NaN et Infinity ne sont pas du JSON")
 
 
-async def _read_json(request: Request) -> tuple[Any, JSONResponse | None]:
+async def read_json(request: Request) -> tuple[Any, JSONResponse | None]:
+    """Le corps JSON d'une requête d'ingestion, lu borné ; ou la réponse qui le refuse."""
     try:
         body = await read_body(request.stream(), request.headers, request.app.state.max_body_bytes)
     except BodyRefusedError as refusal:
@@ -84,14 +85,12 @@ async def _read_json(request: Request) -> tuple[Any, JSONResponse | None]:
         return None, refused(400, "invalid_json")
 
 
-_REFUSED_400 = (
+REFUSED_400 = (
     "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale "
     "(`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
 )
-_REFUSED_413 = (
-    "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`)."
-)
-_REFUSED_415 = (
+REFUSED_413 = "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`)."
+REFUSED_415 = (
     "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
 )
 
@@ -118,15 +117,15 @@ def _accept(raw: object, received_at: datetime) -> tuple[AcceptedEvent | None, l
     responses={
         400: {
             "model": RequestRefused,
-            "description": _REFUSED_400 + " Ou bien ce n'est pas un tableau "
+            "description": REFUSED_400 + " Ou bien ce n'est pas un tableau "
             "(`batch_must_be_an_array`).",
         },
         413: {
             "model": RequestRefused,
-            "description": _REFUSED_413 + " Ou bien le lot compte plus d'événements que "
+            "description": REFUSED_413 + " Ou bien le lot compte plus d'événements que "
             "le maximum (`batch_too_large`).",
         },
-        415: {"model": RequestRefused, "description": _REFUSED_415},
+        415: {"model": RequestRefused, "description": REFUSED_415},
         422: {"model": BatchResult, "description": "Aucun événement du lot n'est valide."},
     },
     openapi_extra={
@@ -141,7 +140,7 @@ async def ingest_batch(request: Request) -> JSONResponse:
     avec le chemin de ses champs fautifs, le reste du lot est accepté.
 
     Le corps peut être compressé (``Content-Encoding: gzip``)."""
-    body, refusal = await _read_json(request)
+    body, refusal = await read_json(request)
     if refusal is not None:
         return refusal
     if not isinstance(body, list):
@@ -176,9 +175,9 @@ async def ingest_batch(request: Request) -> JSONResponse:
     response_model=EventResult,
     summary="Envoie un RunEvent OpenLineage",
     responses={
-        400: {"model": RequestRefused, "description": _REFUSED_400},
-        413: {"model": RequestRefused, "description": _REFUSED_413},
-        415: {"model": RequestRefused, "description": _REFUSED_415},
+        400: {"model": RequestRefused, "description": REFUSED_400},
+        413: {"model": RequestRefused, "description": REFUSED_413},
+        415: {"model": RequestRefused, "description": REFUSED_415},
         422: {"model": EventRejected, "description": "L'événement est invalide."},
     },
     openapi_extra={
@@ -192,7 +191,7 @@ async def ingest_event(request: Request) -> JSONResponse:
     """Point d'entrée standard d'OpenLineage : un émetteur conforme s'y branche tel quel.
 
     Le corps peut être compressé (``Content-Encoding: gzip``)."""
-    body, refusal = await _read_json(request)
+    body, refusal = await read_json(request)
     if refusal is not None:
         return refusal
     event, errors = _accept(body, datetime.now(UTC))

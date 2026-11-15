@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import URL
 
 from answerlineage_api.store import schema
@@ -126,6 +127,44 @@ def test_missing_database_url_is_reported(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.delenv("ANSWERLINEAGE_DATABASE_URL", raising=False)
     with pytest.raises(DatabaseConfigurationError, match="ANSWERLINEAGE_DATABASE_URL"):
         database_url_from_environment()
+
+
+def test_events_received_before_the_coverage_get_their_emitter_and_kind(
+    empty_database: URL,
+) -> None:
+    """Reprise des événements déjà reçus : émetteur sous sa forme NFC, appel d'outil ou non."""
+    upgrade(empty_database, "0005")
+    insert = text(
+        """
+        INSERT INTO event_raw (event_id, run_id, event_type, event_time, producer, payload)
+        VALUES (:event_id, gen_random_uuid(), 'COMPLETE', now(), 'https://exemple.fr', :payload)
+        """
+    ).bindparams(bindparam("payload", type_=JSONB))
+    events = {
+        "appel": {
+            "job": {"namespace": "mcp://société", "name": "execute_sql"},
+            "run": {"facets": {"answerlineage_toolCall": {"server": "x"}}},
+        },
+        "agent": {"job": {"namespace": "agent://ventes", "name": "a"}, "run": {"facets": {}}},
+        "sans-facette": {"job": {"namespace": "agent://ventes", "name": "a"}, "run": {}},
+    }
+    engine = create_engine(empty_database)
+    try:
+        with engine.begin() as connection:
+            for event_id, payload in events.items():
+                connection.execute(insert, {"event_id": event_id, "payload": payload})
+        upgrade(empty_database)
+        with engine.connect() as connection:
+            found = connection.execute(
+                text("SELECT event_id, emitter, tool_call FROM event_raw ORDER BY event_id")
+            ).all()
+    finally:
+        engine.dispose()
+    assert [tuple(row) for row in found] == [
+        ("agent", "agent://ventes", False),
+        ("appel", "mcp://société", True),
+        ("sans-facette", "agent://ventes", False),
+    ]
 
 
 def test_only_postgresql_is_accepted() -> None:

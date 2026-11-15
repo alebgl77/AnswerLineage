@@ -6,6 +6,7 @@ répond ``503`` et ``query_timeout``.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Query, Request
@@ -13,13 +14,15 @@ from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime
 
 from answerlineage_api.ingest.models import FieldError
-from answerlineage_api.lineage import impact, overview, trace
+from answerlineage_api.lineage import coverage, impact, overview, trace
 from answerlineage_api.lineage.models import (
     AnswerList,
+    CoverageList,
     DatasetList,
     GraphView,
     ImpactResult,
     Sources,
+    Window,
 )
 from answerlineage_api.lineage.paging import CURSOR_PATTERN, Cursor, CursorError
 from answerlineage_api.lineage.reading import TIMED_OUT, reading
@@ -232,3 +235,35 @@ async def propagate(
             reader, namespace=namespace, name=name, start=start, end=end, limit=limit, cursor=cursor
         )
     return result if result is not None else refused(404, "unknown_dataset")
+
+
+EmitterLimit = Annotated[
+    int, Query(ge=1, le=500, description="Nombre maximal d'émetteurs renvoyés.")
+]
+PeriodStart = Annotated[
+    AwareDatetime,
+    Query(alias="from", description="Début de la période, inclus (RFC 3339, avec fuseau)."),
+]
+PeriodEnd = Annotated[
+    AwareDatetime,
+    Query(alias="to", description="Fin de la période, exclue (RFC 3339, avec fuseau)."),
+]
+
+
+@router.get(
+    "/coverage",
+    response_model=CoverageList,
+    summary="Donne la couverture du lignage de chaque émetteur sur une période",
+    responses={**_INVALID, **TIMED_OUT},
+)
+async def coverage_by_emitter(
+    request: Request, start: PeriodStart, end: PeriodEnd, limit: EmitterLimit = 100
+) -> CoverageList | JSONResponse:
+    """Part des appels vus présents dans le graphe, trous connus, émetteurs muets."""
+    if end <= start:
+        return _rejected("/query/to", "window_empty", "La fin de la période doit suivre son début.")
+    async with reading(request) as reader:
+        emitters, more = await coverage.by_emitter(
+            reader, start=start, end=end, now=datetime.now(UTC), limit=limit
+        )
+    return CoverageList(window=Window(start=start, end=end), emitters=emitters, more=more)

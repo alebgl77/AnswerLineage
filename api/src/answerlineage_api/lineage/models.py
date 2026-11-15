@@ -164,11 +164,62 @@ class ImpactCounts(BaseModel):
     )
 
 
-class Coverage(BaseModel):
-    """Ce que l'on sait de la part des appels captés pendant la fenêtre."""
+CoverageStatus = Literal["measured", "partial", "unknown"]
+HoleKind = Literal[
+    "events_lost", "uninspected", "missing_from_graph", "silence", "before_first_report"
+]
 
-    status: Literal["unknown"] = Field(
-        description="« unknown » : la couverture du lignage n'est pas encore mesurée."
+
+class CoverageHole(BaseModel):
+    """Un trou connu du lignage : une fenêtre où des appels ont pu échapper au graphe."""
+
+    emitter: str = Field(description="Émetteur concerné, l'espace de noms de ses jobs.")
+    kind: HoleKind = Field(
+        description=(
+            "« events_lost » : l'émetteur déclare des événements perdus."
+            " « uninspected » : il a relayé des requêtes sans pouvoir les inspecter, qui cachent"
+            " peut-être des appels, en nombre inconnu."
+            " « missing_from_graph » : le graphe contient moins d'événements que d'appels vus."
+            " « silence » : aucun relevé, entre deux relevés ou après le dernier."
+            " « before_first_report » : la période commence avant le premier relevé de l'émetteur."
+        )
+    )
+    window: Window
+    count: int | None = Field(
+        description=(
+            "Événements perdus ou manquants, requêtes non inspectées ;"
+            " nul pour un silence, où rien n'est compté."
+        )
+    )
+
+
+class Coverage(BaseModel):
+    """Part des appels relayés présents dans le graphe, et trous connus, sur une période."""
+
+    status: CoverageStatus = Field(
+        description=(
+            "« measured » : toute la période est couverte par des relevés."
+            " « partial » : une partie seulement, les trous disent laquelle manque."
+            " « unknown » : aucun relevé, la couverture n'est pas mesurée."
+        )
+    )
+    rate: float | None = Field(
+        description=(
+            "Part des appels vus présents dans le graphe, de 0 à 1 : dans chaque fenêtre, les"
+            " événements comptés ne dépassent pas les appels vus. Nulle quand aucun appel n'a"
+            " été vu."
+        )
+    )
+    calls_seen: int = Field(description="Appels vus par les émetteurs, sur leurs relevés.")
+    events_in_graph: int = Field(description="Événements de ces appels présents dans le graphe.")
+    events_lost: int = Field(description="Événements déclarés perdus par les émetteurs.")
+    uninspected: int = Field(description="Requêtes relayées sans pouvoir être inspectées.")
+    holes: list[CoverageHole] = Field(description="Trous connus, par heure de début.")
+    truncated: bool = Field(
+        description=(
+            "Vrai quand les relevés ou les trous dépassent leur borne : la mesure est partielle,"
+            " et elle n'est jamais donnée pour complète."
+        )
     )
 
 
@@ -178,7 +229,12 @@ class ImpactResult(BaseModel):
     dataset: DatasetName
     window: Window
     counts: ImpactCounts
-    coverage: Coverage
+    coverage: Coverage = Field(
+        description=(
+            "Couverture du lignage sur la fenêtre de l'incident, tous émetteurs confondus :"
+            " une réponse dont l'appel n'a pas été capté ne peut pas être trouvée."
+        )
+    )
     graph: GraphView = Field(
         description="Les réponses touchées, les plus récentes d'abord, avec leur chaîne."
     )
@@ -188,6 +244,30 @@ class ImpactResult(BaseModel):
             " réponses peuvent être touchées, et les décomptes sont des minimums."
         )
     )
+
+
+class EmitterCoverage(BaseModel):
+    """Un émetteur connu et sa couverture sur la période."""
+
+    emitter: str = Field(description="Identifiant de l'émetteur, l'espace de noms de ses jobs.")
+    last_report_at: AwareDatetime = Field(
+        description="Réception du dernier relevé qui a changé quelque chose."
+    )
+    muted_since: AwareDatetime | None = Field(
+        description=(
+            "Signalé muet par le contrôle des émetteurs : aucun relevé depuis cette heure."
+            " Nul quand l'émetteur publie."
+        )
+    )
+    coverage: Coverage
+
+
+class CoverageList(BaseModel):
+    """La couverture du lignage par émetteur, sur une période."""
+
+    window: Window
+    emitters: list[EmitterCoverage] = Field(description="Par identifiant d'émetteur.")
+    more: bool = Field(description="Vrai quand d'autres émetteurs suivent la borne demandée.")
 
 
 class DatasetList(BaseModel):

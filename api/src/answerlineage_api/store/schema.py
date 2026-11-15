@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Column,
     Date,
@@ -221,9 +222,20 @@ event_raw = Table(
     Column("event_time", DateTime(timezone=True), nullable=False),
     Column("producer", Text, nullable=False),
     Column("payload", JSONB, nullable=False),
+    # Émetteur : l'espace de noms du job, sous sa forme normalisée.
+    Column("emitter", Text, nullable=False),
+    # Vrai pour l'événement d'un appel d'outil (facette ``answerlineage_toolCall``).
+    Column("tool_call", Boolean, nullable=False),
     _recorded_at(),
     Index(None, "run_id"),
     Index(None, "recorded_at"),
+)
+# Les appels d'un émetteur par heure, comptés pour mesurer la couverture du lignage.
+Index(
+    "ix_event_raw_emitter_event_time",
+    event_raw.c.emitter,
+    event_raw.c.event_time,
+    postgresql_where=event_raw.c.tool_call,
 )
 
 # File de traitement : une ligne par événement à projeter dans le graphe. Elle
@@ -256,3 +268,39 @@ ingest_duplicate = Table(
 )
 # Les jours les plus récents d'abord, pour la route de lecture.
 Index("ix_ingest_duplicate_day_emitter", ingest_duplicate.c.day.desc(), ingest_duplicate.c.emitter)
+
+# Relevés de couverture : ce qu'un émetteur a vu pendant une fenêtre. Deux
+# relevés de la même fenêtre se fusionnent compteur par compteur, au plus grand :
+# l'écriture est idempotente et commutative.
+coverage_report = Table(
+    "coverage_report",
+    metadata,
+    Column("emitter", Text, nullable=False),
+    Column("window_start", DateTime(timezone=True), nullable=False),
+    Column("window_end", DateTime(timezone=True), nullable=False),
+    Column("calls_seen", BigInteger, nullable=False),
+    Column("events_emitted", BigInteger, nullable=False),
+    Column("events_lost", BigInteger, nullable=False),
+    # Requêtes relayées sans pouvoir être inspectées : elles cachent peut-être des appels.
+    Column("uninspected", BigInteger, nullable=False),
+    _recorded_at(),
+    PrimaryKeyConstraint("emitter", "window_start", "window_end"),
+    CheckConstraint("window_start < window_end", name="window"),
+    CheckConstraint(
+        "calls_seen >= 0 AND events_emitted >= 0 AND events_lost >= 0 AND uninspected >= 0",
+        name="counts",
+    ),
+)
+
+# Émetteurs connus : ceux qui ont publié au moins un relevé. ``last_report_at``
+# est l'heure de réception du dernier relevé qui a changé quelque chose ; le
+# contrôle des émetteurs muets pose ``silent_since`` à cette heure quand il
+# signale un silence, une fois par épisode.
+coverage_emitter = Table(
+    "coverage_emitter",
+    metadata,
+    Column("emitter", Text, primary_key=True),
+    Column("last_report_at", DateTime(timezone=True), nullable=False),
+    Column("silent_since", DateTime(timezone=True)),
+    Column("signalled_at", DateTime(timezone=True)),
+)

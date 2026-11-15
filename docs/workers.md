@@ -35,6 +35,31 @@ Chaque identifiant recopié dans le graphe (agent, outil, jeu de données, versi
 
 L'ordre d'arrivée ne compte pas : deux événements d'un même run reçus dans le désordre donnent le même graphe.
 
+## Émetteurs muets
+
+Un émetteur publie ses [relevés de couverture](ingestion.md#relevés-de-couverture) fenêtre par fenêtre, y compris une fenêtre sans appel : c'est le battement qui prouve qu'il n'est pas muet. Un émetteur qui se tait ne capte plus rien, et rien d'autre ne le dirait.
+
+Au démarrage puis chaque minute, la boucle du worker contrôle les émetteurs connus, ceux qui ont publié au moins un relevé. Un émetteur dont le dernier relevé a été reçu il y a plus de dix minutes est signalé :
+
+- une ligne de journal qui le nomme, par son identifiant contrôlé à la réception, jamais par un contenu :
+
+  ```text
+  WARNING answerlineage_workers Émetteur muet : mcp://entrepot, aucun relevé depuis 2026-11-11T09:01:02+00:00.
+  ```
+
+- un état que lit l'API : `muted_since`, l'heure de son dernier relevé, dans `GET /api/v1/coverage` ([API de lecture](lecture.md#émetteurs)).
+
+Un épisode de silence est signalé une fois, pas à chaque passage : l'état retient le relevé après lequel le silence a commencé. Un émetteur qui republie cesse d'être muet, aussitôt pour l'API ; s'il se tait de nouveau, c'est un nouvel épisode, signalé à son tour. Un relevé rejoué ne ranime pas un émetteur.
+
+Plusieurs workers contrôlent en même temps sans signaler deux fois le même épisode ni s'attendre : le contrôle prend un verrou consultatif de PostgreSQL sans l'attendre, et un worker qui le trouve pris passe son tour. La mise à jour ne retient d'ailleurs qu'un épisode pas encore signalé.
+
+| Réglage | Option | Défaut |
+| --- | --- | --- |
+| Silence au-delà duquel un émetteur est signalé | `--silence-minutes` | 10 minutes (1 à 10 080) |
+
+L'horloge du contrôle est celle du worker, comparée à l'heure de réception posée par la base : des horloges très décalées avancent ou retardent le signalement d'autant. Un contrôle en échec, base injoignable par exemple, est journalisé par la classe de l'erreur et repris au passage suivant ; la file n'attend pas.
+
 ## Limites connues
 
 - Un événement toujours fautif reste dans la file, de plus en plus espacé : il n'y a pas encore de file de rebut à consulter et à rejouer.
+- Un émetteur retiré pour de bon est signalé muet une fois, puis le reste : rien ne permet encore de le déclarer retiré, ni de l'oublier. Sa dernière couverture reste lisible, et son silence rend partielle la couverture des périodes qui suivent.

@@ -134,7 +134,8 @@ async def test_answers_and_recipients_reached_by_a_wrong_table_during_a_window(
     }
     assert result["window"] == {"from": "2026-11-03T06:00:00Z", "to": "2026-11-03T16:00:00Z"}
     assert result["counts"] == {"answers": 2, "recipients": 3, "lower_bound": False}
-    assert result["coverage"] == {"status": "unknown"}
+    # Sans relevé d'aucun émetteur, la couverture n'est pas mesurée.
+    assert result["coverage"]["status"] == "unknown"
     graph = result["graph"]
     assert [answer["fingerprint"] for answer in graph["answers"]] == [
         fingerprint(2),
