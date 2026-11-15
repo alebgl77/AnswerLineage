@@ -393,6 +393,50 @@
         "title": "DatasetSource",
         "type": "object"
       },
+      "DuplicateCount": {
+        "description": "Doublons reçus d'un émetteur, un jour.",
+        "properties": {
+          "count": {
+            "description": "Événements reçus alors qu'ils étaient déjà connus.",
+            "title": "Count",
+            "type": "integer"
+          },
+          "day": {
+            "description": "Jour UTC de réception.",
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "emitter": {
+            "description": "Espace de noms du job des événements.",
+            "title": "Emitter",
+            "type": "string"
+          }
+        },
+        "required": [
+          "emitter",
+          "day",
+          "count"
+        ],
+        "title": "DuplicateCount",
+        "type": "object"
+      },
+      "DuplicateList": {
+        "properties": {
+          "duplicates": {
+            "items": {
+              "$ref": "#/components/schemas/DuplicateCount"
+            },
+            "title": "Duplicates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "duplicates"
+        ],
+        "title": "DuplicateList",
+        "type": "object"
+      },
       "EventRejected": {
         "properties": {
           "errors": {
@@ -1369,6 +1413,54 @@
         "summary": "Propage un incident de données jusqu'aux réponses et aux destinataires",
         "tags": [
           "lignage"
+        ]
+      }
+    },
+    "/api/v1/ingestion/duplicates": {
+      "get": {
+        "description": "Du jour le plus récent au plus ancien. Sans doublon, un émetteur n'a pas de ligne.",
+        "operationId": "duplicates_api_v1_ingestion_duplicates_get",
+        "parameters": [
+          {
+            "description": "Nombre maximal de lignes (émetteur et jour) renvoyées.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "description": "Nombre maximal de lignes (émetteur et jour) renvoyées.",
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicateList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          }
+        },
+        "summary": "Compte les événements reçus en double, par émetteur et par jour",
+        "tags": [
+          "ingestion"
         ]
       }
     },

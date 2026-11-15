@@ -15,6 +15,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     ForeignKey,
     Identity,
@@ -241,3 +242,17 @@ ingest_queue = Table(
     UniqueConstraint("event_id"),
     Index(None, "available_at", "id"),
 )
+
+# Doublons reçus, par émetteur et par jour (date UTC de réception). Une ligne
+# n'existe qu'à partir du premier doublon : un envoi sans doublon n'y touche pas.
+ingest_duplicate = Table(
+    "ingest_duplicate",
+    metadata,
+    Column("emitter", Text, nullable=False),
+    Column("day", Date, nullable=False),
+    Column("duplicates", BigInteger, nullable=False),
+    PrimaryKeyConstraint("emitter", "day"),
+    CheckConstraint("duplicates > 0", name="positive"),
+)
+# Les jours les plus récents d'abord, pour la route de lecture.
+Index("ix_ingest_duplicate_day_emitter", ingest_duplicate.c.day.desc(), ingest_duplicate.c.emitter)

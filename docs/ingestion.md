@@ -10,6 +10,7 @@ ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run 
 | --- | --- | --- |
 | `POST /api/v1/lineage` | Un événement | `201` avec son identifiant, `422` avec les champs fautifs |
 | `POST /api/v1/lineage/batch` | Un tableau d'événements, 1 000 au plus | `202` avec le bilan du lot |
+| `GET /api/v1/ingestion/duplicates` | Aucun | Les doublons reçus, par émetteur et par jour |
 
 `/api/v1/lineage` est le point d'entrée standard d'OpenLineage : un émetteur conforme s'y branche sans adaptation.
 
@@ -127,9 +128,42 @@ Une requête refusée reçoit `403` avec `{"error":"host_not_allowed"}`, `{"erro
 
 Toute réponse de l'application, route de l'API, fichier de l'explorateur, refus ou erreur, porte les mêmes en-têtes de sécurité : la politique de sécurité du contenu de l'[explorateur](explorateur.md), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy: same-origin` et `Cross-Origin-Resource-Policy: same-origin`.
 
-## Rejeu
+## Idempotence
 
-L'identifiant d'un événement est l'empreinte SHA-256 de sa forme canonique. Un événement déjà reçu n'est pas enregistré une seconde fois : il est compté dans `duplicates`.
+Un événement rejoué n'a aucun effet : les reprises d'envoi sont sans risque. Trois choses le garantissent.
+
+**Identité.** L'identifiant d'un événement est l'empreinte SHA-256 de sa forme canonique (clés triées, sans espace superflu). Deux envois du même contenu sont le même événement, quel que soit l'ordre des clés. Un événement dont un seul champ diffère est un autre événement.
+
+**Rejeu.** Un événement déjà reçu n'est pas enregistré une seconde fois et n'entre pas dans la file de traitement : le graphe ne change pas, il garde une seule arête. Le rejeu est compté, jamais ignoré en silence. Dans un lot, un événement présent *n* fois et inconnu jusque-là compte *n* − 1 doublons ; déjà connu, il en compte *n*. La réponse (`duplicates` pour un lot, `duplicate` pour un événement seul) dit la même chose que le compteur.
+
+**Ordre d'arrivée.** Les événements d'un même run peuvent arriver dans n'importe quel ordre, rejeux intercalés : l'écriture du graphe est commutative (voir [Schéma du graphe](schema.md)) et le graphe obtenu est le même. Les [workers](workers.md) projettent chaque événement nouveau, une fois.
+
+## Compteur de doublons
+
+Les services sont sans état et PostgreSQL est la seule dépendance : le compteur est la table `ingest_duplicate`, mise à jour dans la transaction qui reçoit l'événement. Il se tient par **émetteur** et par **jour** (date UTC de réception, posée par la base). L'émetteur est l'espace de noms du job de l'événement : `mcp://entrepot` pour le proxy placé devant ce serveur, `agent://ventes` pour un adaptateur d'agents. C'est la maille à laquelle chercher d'où vient une tempête de rejeux.
+
+Le chemin normal ne paie rien : un envoi sans doublon ne lit ni n'écrit la table, aucune ligne chaude n'est disputée par tous les envois. Une ligne n'existe qu'à partir du premier doublon de l'émetteur ce jour-là.
+
+L'émetteur est recopié sous la forme que l'ingestion admet et que le graphe retient : un [identifiant](#identifiants) borné, normalisé (NFC). Un événement dont l'espace de noms n'a pas la forme d'un nom est rejeté avant d'être compté.
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/ingestion/duplicates?limit=30"
+```
+
+```json
+{
+  "duplicates": [
+    { "emitter": "agent://ventes", "day": "2026-11-15", "count": 1 },
+    { "emitter": "mcp://entrepot", "day": "2026-11-15", "count": 3 }
+  ]
+}
+```
+
+| Paramètre | Rôle |
+| --- | --- |
+| `limit` | Nombre maximal de lignes (émetteur et jour), de 1 à 1 000, 100 par défaut |
+
+Les lignes vont du jour le plus récent au plus ancien, puis par émetteur. Un paramètre invalide répond `422` avec son chemin et son motif, jamais la valeur reçue.
 
 Chaque événement nouveau entre dans la file de traitement, d'où un [worker](workers.md) le projette dans le graphe.
 

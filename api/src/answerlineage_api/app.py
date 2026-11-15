@@ -20,6 +20,7 @@ from starlette.types import ASGIApp
 from answerlineage_api.explorer import explorer_files
 from answerlineage_api.guard import HostOriginMiddleware, guard_from_settings
 from answerlineage_api.headers import SecurityHeadersMiddleware
+from answerlineage_api.ingest.duplicates import router as duplicates_router
 from answerlineage_api.ingest.models import run_event_json_schema
 from answerlineage_api.ingest.routes import router as ingestion_router
 from answerlineage_api.lineage.routes import router as lineage_router
@@ -87,6 +88,7 @@ def create_app(
     app.state.engine = engine
     app.state.max_batch_events = max_batch_events
     app.include_router(ingestion_router)
+    app.include_router(duplicates_router)
     app.include_router(lineage_router)
     app.add_exception_handler(RequestValidationError, reject_invalid_request)
     app.add_middleware(HostOriginMiddleware, guard=guard)

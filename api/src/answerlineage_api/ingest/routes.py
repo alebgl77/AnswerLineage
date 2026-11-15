@@ -105,21 +105,21 @@ async def ingest_batch(request: Request) -> JSONResponse:
         return refused(413, "batch_too_large")
 
     received_at = datetime.now(UTC)
-    accepted: dict[str, AcceptedEvent] = {}
-    valid = 0
+    accepted: list[AcceptedEvent] = []
     rejected: list[Rejection] = []
     for index, raw in enumerate(body):
         event, errors = _accept(raw, received_at)
         if event is None:
             rejected.append(Rejection(index=index, errors=errors))
         else:
-            valid += 1
-            accepted.setdefault(event.event_id, event)
+            accepted.append(event)
 
+    # Le compteur de doublons se tient dans cette transaction : il dit ce que dit la réponse.
     engine: AsyncEngine = request.app.state.engine
     async with engine.begin() as conn:
-        stored = await store_events(conn, list(accepted.values()))
+        stored = await store_events(conn, accepted)
 
+    valid = len(accepted)
     result = BatchResult(accepted=valid, duplicates=valid - stored, rejected=rejected)
     status = 422 if body and valid == 0 else 202
     return JSONResponse(status_code=status, content=result.model_dump())

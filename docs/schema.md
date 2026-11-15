@@ -24,12 +24,17 @@ write_edge   agent, tool
 | `recipient` | pseudonyme | Destinataire pseudonymisé, sans table de correspondance |
 | `event_raw` | empreinte de l'événement | Événement OpenLineage reçu tel quel, rejouable |
 | `ingest_queue` | événement | File de traitement : événements à projeter dans le graphe |
+| `ingest_duplicate` | émetteur et jour | Nombre d'événements reçus en double, par émetteur et par jour UTC |
 
 Chaque arête porte `event_time`, l'heure déclarée par l'émetteur, et `recorded_at`, l'heure posée par la base.
 
 ## Écrire dans le graphe
 
 `answerlineage_api.store.graph.record_run` enregistre un run et ses arêtes dans la transaction en cours. L'écriture est idempotente et commutative : rejouer un enregistrement, ou recevoir deux événements d'un même run dans le désordre, donne le même graphe. Deux lectures d'un jeu de données par un même run se fusionnent en une arête ; la précision la plus fine l'emporte et les colonnes s'additionnent.
+
+## Compteur de doublons
+
+`ingest_duplicate` compte les événements reçus alors qu'ils étaient déjà connus. Sa clé est l'émetteur (l'espace de noms du job, sous sa forme normalisée) et le jour UTC de réception ; `duplicates` est strictement positif : une ligne n'existe qu'à partir du premier doublon. L'API l'écrit dans la transaction qui reçoit l'événement, par un ajout atomique (`INSERT … ON CONFLICT DO UPDATE`), et le lit par `GET /api/v1/ingestion/duplicates` (voir [API d'ingestion](ingestion.md)). Un index range les jours du plus récent au plus ancien. La table n'est pas purgée.
 
 ## Migrations
 

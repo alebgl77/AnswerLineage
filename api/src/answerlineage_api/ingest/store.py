@@ -1,7 +1,8 @@
 """Enregistrement des événements bruts.
 
 L'identifiant d'un événement est l'empreinte de sa forme canonique : le même
-événement reçu deux fois n'est enregistré qu'une fois.
+événement reçu deux fois n'est enregistré qu'une fois, et chaque réception en
+trop est comptée comme un doublon.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from typing import Any
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from answerlineage_api.ingest.duplicates import count_duplicates, emitter_of
 from answerlineage_api.ingest.models import RunEvent
 from answerlineage_api.store import schema
 
@@ -45,11 +47,17 @@ def event_identifier(payload: Mapping[str, Any]) -> str:
 async def store_events(conn: AsyncConnection, events: Sequence[AcceptedEvent]) -> int:
     """Enregistre les événements et renvoie le nombre de ceux qui étaient nouveaux.
 
+    Un événement présent plusieurs fois dans la liste n'est enregistré qu'une
+    fois. Les réceptions qui ne sont pas nouvelles (n - 1 pour un événement
+    inconnu présent n fois, n pour un événement déjà connu) sont comptées dans
+    la même transaction, par émetteur. Sans doublon, le compteur n'est pas touché.
+
     Chaque événement nouveau entre dans la file de traitement dans la même
     transaction : il sera projeté dans le graphe, une fois et une seule.
     """
     if not events:
         return 0
+    distinct = {accepted.event_id: accepted for accepted in events}
     rows = [
         {
             "event_id": accepted.event_id,
@@ -59,7 +67,7 @@ async def store_events(conn: AsyncConnection, events: Sequence[AcceptedEvent]) -
             "producer": str(accepted.event.producer),
             "payload": accepted.payload,
         }
-        for accepted in events
+        for accepted in distinct.values()
     ]
     statement = (
         insert(schema.event_raw)
@@ -67,9 +75,21 @@ async def store_events(conn: AsyncConnection, events: Sequence[AcceptedEvent]) -
         .on_conflict_do_nothing(index_elements=[schema.event_raw.c.event_id])
         .returning(schema.event_raw.c.event_id)
     )
-    stored = [row.event_id for row in (await conn.execute(statement)).all()]
+    stored = {row.event_id for row in (await conn.execute(statement)).all()}
     if stored:
         await conn.execute(
-            insert(schema.ingest_queue).values([{"event_id": event_id} for event_id in stored])
+            # Dans l'ordre de réception : la file se traite dans cet ordre.
+            insert(schema.ingest_queue).values(
+                [{"event_id": event_id} for event_id in distinct if event_id in stored]
+            )
         )
+    # La première réception d'un événement nouveau n'est pas un doublon.
+    unseen = set(stored)
+    repeated: list[str] = []
+    for accepted in events:
+        if accepted.event_id in unseen:
+            unseen.discard(accepted.event_id)
+        else:
+            repeated.append(emitter_of(accepted.event))
+    await count_duplicates(conn, repeated)
     return len(stored)
