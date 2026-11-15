@@ -41,6 +41,19 @@ fail() {
   exit 1
 }
 
+# Un registre public limite parfois le débit des tirages anonymes : la commande
+# est retentée deux fois avant d'être tenue pour un échec.
+retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    "$@" && return 0
+    [ "$attempt" -lt 3 ] || break
+    echo "Échec (essai $attempt sur 3), nouvel essai dans $((attempt * 20)) s." >&2
+    sleep $((attempt * 20))
+  done
+  return 1
+}
+
 # Un outil lancé depuis son image : aucun privilège, aucun socket Docker.
 tool() {
   docker run --rm --cap-drop ALL --security-opt no-new-privileges "$@"
@@ -54,7 +67,8 @@ grype() {
 build() {
   echo "Construction de l'image $IMAGE depuis deploy/Dockerfile."
   # Sans attestation de provenance : l'image poussée est celle-ci, telle qu'analysée.
-  docker build --provenance=false --file deploy/Dockerfile --tag "$IMAGE" .
+  retry docker build --provenance=false --file deploy/Dockerfile --tag "$IMAGE" . \
+    || fail "l'image ne se construit pas"
   docker save --output "$ARCHIVE" "$IMAGE"
   chmod a+r "$ARCHIVE"
   echo "Image $IMAGE exportée dans $ARCHIVE ($(du -h "$ARCHIVE" | cut -f 1))."

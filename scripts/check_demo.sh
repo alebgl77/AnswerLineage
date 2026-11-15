@@ -36,6 +36,19 @@ fetch() {
   curl --silent --fail --max-time 5 "$@"
 }
 
+# Un registre public limite parfois le débit des tirages anonymes : la commande
+# est retentée deux fois avant d'être tenue pour un échec.
+retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    "$@" && return 0
+    [ "$attempt" -lt 3 ] || break
+    echo "Échec (essai $attempt sur 3), nouvel essai dans $((attempt * 20)) s." >&2
+    sleep $((attempt * 20))
+  done
+  return 1
+}
+
 # La vérité du premier incident, établie par le générateur sans passer par l'API :
 # la requête qui le propage, et les nombres de réponses et de destinataires touchés.
 load_truth() {
@@ -102,7 +115,11 @@ network_address() {
 up() {
   local started elapsed page
   started=$(date +%s)
-  $COMPOSE up --build --detach
+  # shellcheck disable=SC2086 # COMPOSE est une commande et ses arguments.
+  retry $COMPOSE build || fail "l'image de la démonstration ne se construit pas"
+  # shellcheck disable=SC2086
+  retry $COMPOSE pull --quiet postgres || fail "l'image de PostgreSQL ne se tire pas"
+  $COMPOSE up --detach
   load_truth
   wait_for_the_graph
   page=$(fetch "$URL/") || fail "l'explorateur n'est pas servi"
