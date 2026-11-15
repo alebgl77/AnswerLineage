@@ -28,13 +28,22 @@ GUARD = RequestGuard.create([*LOOPBACK_HOSTS, "mcp.exemple.fr"], ["https://conso
 
 
 def headers(
-    host: str | None = "127.0.0.1:8717", origin: str | None = None
+    host: str | None = "127.0.0.1:8717",
+    origin: str | None = None,
+    fetch_site: str | None = None,
+    fetch_mode: str | None = None,
+    fetch_dest: str | None = None,
 ) -> list[tuple[bytes, bytes]]:
     items = [(b"content-type", b"application/json")]
-    if host is not None:
-        items.append((b"Host", host.encode("latin-1")))
-    if origin is not None:
-        items.append((b"Origin", origin.encode("latin-1")))
+    for name, value in (
+        (b"Host", host),
+        (b"Origin", origin),
+        (b"Sec-Fetch-Site", fetch_site),
+        (b"Sec-Fetch-Mode", fetch_mode),
+        (b"Sec-Fetch-Dest", fetch_dest),
+    ):
+        if value is not None:
+            items.append((name, value.encode("latin-1")))
     return items
 
 
@@ -123,10 +132,48 @@ def test_two_origin_headers_are_refused() -> None:
     assert GUARD.refusal(twice) == "origin_not_allowed"
 
 
+@pytest.mark.parametrize(
+    "fetch_site", ["cross-site", "Cross-Site", " cross-site ", "same-site", "autre-valeur"]
+)
+def test_a_request_from_another_page_without_origin_is_refused(fetch_site: str) -> None:
+    """Une balise ``<img>`` ou ``<script>`` d'une autre page n'envoie pas Origin.
+
+    Elle ne lit pas la réponse, mais en apprendrait le statut : la ressource existe ou non.
+    Une page d'un autre nom du même site, un sous-domaine voisin, n'est pas mieux placée.
+    """
+    assert GUARD.refusal(headers(fetch_site=fetch_site)) == "cross_site_not_allowed"
+    tag = headers(fetch_site=fetch_site, fetch_mode="no-cors", fetch_dest="image")
+    assert GUARD.refusal(tag) == "cross_site_not_allowed"
+
+
+@pytest.mark.parametrize("fetch_site", ["cross-site", "same-site"])
+def test_a_link_followed_from_another_page_is_a_navigation(fetch_site: str) -> None:
+    """Une adresse partagée, suivie depuis une messagerie web ou un wiki, ouvre la page."""
+    link = headers(fetch_site=fetch_site, fetch_mode="navigate", fetch_dest="document")
+    assert GUARD.refusal(link) is None
+    framed = headers(fetch_site=fetch_site, fetch_mode="navigate", fetch_dest="iframe")
+    assert GUARD.refusal(framed) == "cross_site_not_allowed"
+    twice = [*link, (b"sec-fetch-dest", b"image")]
+    assert GUARD.refusal(twice) == "cross_site_not_allowed"
+
+
+def test_a_cross_site_request_from_an_expected_origin_is_accepted() -> None:
+    console = headers(origin="https://console.exemple.fr", fetch_site="cross-site")
+    assert GUARD.refusal(console) is None
+    foreign = headers(origin="https://attaquant.example", fetch_site="cross-site")
+    assert GUARD.refusal(foreign) == "origin_not_allowed"
+
+
+@pytest.mark.parametrize("fetch_site", [None, "same-origin", "none"])
+def test_a_request_from_the_page_itself_or_its_user_needs_no_origin(fetch_site: str | None) -> None:
+    assert GUARD.refusal(headers(fetch_site=fetch_site)) is None
+
+
 def test_the_operator_can_accept_every_host() -> None:
     open_guard = RequestGuard.create(["*"])
     assert open_guard.refusal(headers("attaquant.example", "https://attaquant.example")) is None
     assert open_guard.refusal(headers(None)) is None
+    assert open_guard.refusal(headers(fetch_site="cross-site")) is None
 
 
 @pytest.mark.parametrize(
@@ -150,6 +197,30 @@ def test_settings_refuse_malformed_hosts_and_origins() -> None:
         ProxySettings.create("https://mcp.exemple.fr", allowed_hosts=("exemple.fr:80",))
     with pytest.raises(ProxyConfigurationError, match="origine"):
         ProxySettings.create("https://mcp.exemple.fr", allowed_origins=("exemple.fr",))
+
+
+@pytest.mark.parametrize(
+    ("upstream", "named"),
+    [
+        ("http://[2001:db8::1]:9000/base", "[2001:db8::1]:9000"),
+        ("http://[::1]:9000", "[::1]"),
+        ("https://café.exemple", "xn--caf-dma.exemple"),
+        ("https://MCP.exemple.fr", "mcp.exemple.fr:443"),
+    ],
+)
+def test_the_mcp_server_is_named_in_host_as_a_client_writes_it(upstream: str, named: str) -> None:
+    """Une adresse IPv6 s'écrit entre crochets dans Host, un nom accentué en punycode."""
+    guard = ProxySettings.create(upstream, "meteo").guard()
+    assert guard.refusal(headers(named)) is None
+    assert guard.refusal(headers("attaquant.example")) == "host_not_allowed"
+
+
+@pytest.mark.parametrize(
+    "upstream", ["http://[fe80::1%25eth0]:9000", "http://mcp~interne:9000", "http://a!b/"]
+)
+def test_an_mcp_server_that_host_cannot_name_is_a_configuration_error(upstream: str) -> None:
+    with pytest.raises(ProxyConfigurationError, match="serveur MCP"):
+        ProxySettings.create(upstream, "meteo")
 
 
 def test_hosts_and_origins_come_from_the_command_line_or_the_environment() -> None:
@@ -217,6 +288,32 @@ async def test_a_page_from_another_origin_cannot_call_a_tool_through_the_proxy(
         assert b.upstream.requests == []
         assert b.proxy.stats.refused == 2
         assert "attaquant" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_a_page_from_another_site_cannot_probe_the_proxy_without_origin(
+    bench: BenchFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    probe = [("sec-fetch-site", "cross-site"), ("sec-fetch-mode", "no-cors")]
+    async with bench(allowed_origins=("https://console.exemple.fr",)) as b:
+        with caplog.at_level(logging.DEBUG):
+            refused = await exchange("GET", b.proxy_url + "/mcp", headers=probe)
+            console = await exchange(
+                "POST",
+                b.proxy_url + "/mcp",
+                headers=[
+                    *MODERN_HEADERS,
+                    ("sec-fetch-site", "cross-site"),
+                    ("origin", "https://console.exemple.fr"),
+                ],
+                content=tool_call(**MODERN_META),
+            )
+
+        assert (refused.status, refused.body) == (403, b'{"error":"cross_site_not_allowed"}')
+        assert (console.status, console.body) == (200, TOOL_RESULT)
+        assert len(b.upstream.requests) == 1
+        assert b.proxy.stats.refused == 1
+        assert "Sec-Fetch-Site" in caplog.text
 
 
 @pytest.mark.anyio

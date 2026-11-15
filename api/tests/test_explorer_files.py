@@ -8,10 +8,17 @@ import httpx
 import pytest
 
 from answerlineage_api.app import create_app
-from answerlineage_api.explorer import CONTENT_SECURITY_POLICY
+from answerlineage_api.headers import CONTENT_SECURITY_POLICY
 
 pytestmark = pytest.mark.anyio
 
+SECURITY_HEADERS = (
+    "content-security-policy",
+    "x-content-type-options",
+    "referrer-policy",
+    "cross-origin-opener-policy",
+    "cross-origin-resource-policy",
+)
 INDEX = b'<!doctype html><html lang="fr"><body><div id="root"></div></body></html>'
 SCRIPT = b"console.log('explorateur');"
 
@@ -25,10 +32,28 @@ def built(tmp_path: Path) -> Path:
     return tmp_path
 
 
-async def get(path: str, ui_directory: Path | None = None) -> httpx.Response:
+async def get(
+    path: str,
+    ui_directory: Path | None = None,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+) -> httpx.Response:
     transport = httpx.ASGITransport(app=create_app(ui_directory=ui_directory))
     async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
-        return await client.get(path)
+        return await client.request(method, path, headers=headers)
+
+
+def assert_secured(response: httpx.Response) -> None:
+    for name in SECURITY_HEADERS:
+        # Une seule fois chacun : deux politiques se cumuleraient.
+        assert len(response.headers.get_list(name)) == 1
+    assert response.headers["content-security-policy"] == CONTENT_SECURITY_POLICY
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["cross-origin-opener-policy"] == "same-origin"
+    # Une page d'un autre site ne peut charger aucune réponse par <img> ou <script>.
+    assert response.headers["cross-origin-resource-policy"] == "same-origin"
 
 
 async def test_the_explorer_is_served_at_the_root_under_a_strict_content_policy(
@@ -37,9 +62,7 @@ async def test_the_explorer_is_served_at_the_root_under_a_strict_content_policy(
     response = await get("/", built)
     assert (response.status_code, response.content) == (200, INDEX)
     assert response.headers["content-type"].startswith("text/html")
-    assert response.headers["content-security-policy"] == CONTENT_SECURITY_POLICY
-    assert response.headers["x-content-type-options"] == "nosniff"
-    assert response.headers["referrer-policy"] == "no-referrer"
+    assert_secured(response)
     assert response.headers["cache-control"] == "no-cache"
 
 
@@ -62,7 +85,7 @@ async def test_a_built_asset_is_served_and_kept_by_the_browser(built: Path) -> N
     assert (response.status_code, response.content) == (200, SCRIPT)
     assert "javascript" in response.headers["content-type"]
     assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
-    assert response.headers["content-security-policy"] == CONTENT_SECURITY_POLICY
+    assert_secured(response)
 
 
 @pytest.mark.parametrize(
@@ -91,6 +114,43 @@ async def test_the_directory_comes_from_the_environment(
 ) -> None:
     monkeypatch.setenv("ANSWERLINEAGE_UI_DIR", str(built))
     assert (await get("/")).content == INDEX
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "headers", "status"),
+    [
+        ("GET", "/absent.js", {}, 404),
+        ("POST", "/", {}, 405),
+        ("GET", "/assets/index-abc123.js", {"range": "bytes=999-1000"}, 416),
+        ("GET", "/api/v1/openapi.json", {}, 200),
+        ("GET", "/api/v1/absente", {}, 404),
+        ("GET", "/api/v1/answers", {}, 422),
+        ("GET", "/", {"host": "attaquant.example"}, 403),
+        ("GET", "/", {"origin": "https://attaquant.example"}, 403),
+        ("GET", "/api/v1/openapi.json", {"sec-fetch-site": "cross-site"}, 403),
+    ],
+)
+async def test_every_response_carries_the_security_headers(
+    built: Path, method: str, path: str, headers: dict[str, str], status: int
+) -> None:
+    """Fichiers et API, succès comme erreur : Starlette lève 404, 405 et 416 hors de toute route."""
+    response = await get(path, built, method=method, headers=headers)
+    assert response.status_code == status
+    assert_secured(response)
+
+
+async def test_an_unexpected_failure_carries_the_security_headers() -> None:
+    app = create_app()
+
+    @app.get("/api/v1/panne")
+    async def failing() -> None:
+        raise RuntimeError
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+        response = await client.get("/api/v1/panne")
+    assert response.status_code == 500
+    assert_secured(response)
 
 
 def test_a_directory_without_the_explorer_stops_the_application_from_starting(

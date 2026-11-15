@@ -18,13 +18,13 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mutabl
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import unquote_to_bytes
 from uuid import UUID, uuid4
 
 import httpx
 
 from answerlineage_proxy.config import ProxySettings, SqlTool
 from answerlineage_proxy.events import Outcome, build_tool_call_event
-from answerlineage_proxy.guard import LOOPBACK_HOSTS, RequestGuard
 from answerlineage_proxy.inspection import (
     HEADER_METHOD,
     HEADER_NAME,
@@ -66,8 +66,20 @@ _BAD_REQUEST_BODY = b'{"error":"invalid_request_target"}'
 _FORBIDDEN_BODIES = {
     "host_not_allowed": b'{"error":"host_not_allowed"}',
     "origin_not_allowed": b'{"error":"origin_not_allowed"}',
+    "cross_site_not_allowed": b'{"error":"cross_site_not_allowed"}',
 }
-_REFUSED_HEADERS = {"host_not_allowed": "Host", "origin_not_allowed": "Origin"}
+_REFUSED_HEADERS = {
+    "host_not_allowed": "Host",
+    "origin_not_allowed": "Origin",
+    "cross_site_not_allowed": "Sec-Fetch-Site",
+}
+# Segments « . » et « .. », même encodés : le client HTTP les résoudrait, et une
+# requête sortirait du préfixe du serveur MCP.
+_DOT_SEGMENTS = frozenset({b".", b".."})
+
+
+def _has_dot_segment(raw_path: bytes) -> bool:
+    return any(segment in _DOT_SEGMENTS for segment in unquote_to_bytes(raw_path).split(b"/"))
 
 
 # httpx journalise l'URL complète de chaque requête, paramètres compris, et
@@ -165,10 +177,7 @@ class McpProxy:
         self._new_run_id = new_run_id
         self._prefix = settings.upstream.raw_path.rstrip(b"/")
         self._sql_arguments = {tool: rule.argument for tool, rule in settings.sql_tools.items()}
-        self._guard = RequestGuard.create(
-            [*LOOPBACK_HOSTS, settings.upstream.host, *settings.allowed_hosts],
-            settings.allowed_origins,
-        )
+        self._guard = settings.guard()
         # Analyses de SQL en cours, menées après la réponse, hors du chemin de l'appel.
         self._pending: set[asyncio.Task[None]] = set()
 
@@ -315,7 +324,7 @@ class McpProxy:
         stream: AsyncIterator[bytes] | None,
     ) -> httpx.Request | None:
         raw_path: bytes = scope.get("raw_path") or scope["path"].encode("utf-8")
-        if not raw_path.startswith(b"/"):
+        if not raw_path.startswith(b"/") or _has_dot_segment(raw_path):
             return None
         target = self._prefix + raw_path
         query: bytes = scope.get("query_string", b"")

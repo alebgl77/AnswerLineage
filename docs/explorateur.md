@@ -39,7 +39,7 @@ Survoler ou choisir un nœud met sa chaîne en évidence. Depuis une donnée, on
 
 L'explorateur ne lit que l'[API de lecture](lecture.md) : il n'affiche aucun contenu de prompt, de résultat d'outil ou de réponse, parce que l'API n'en a pas. Une réponse est une heure et une empreinte, un destinataire est un pseudonyme.
 
-Il ne charge rien d'ailleurs. L'API le sert sous une politique de sécurité du contenu qui n'autorise que ses propres fichiers : ni script ni style en ligne, aucune ressource tierce, aucune inclusion dans une autre page.
+Il ne charge rien d'ailleurs. L'API le sert sous une politique de sécurité du contenu qui n'autorise que ses propres fichiers : ni script ni style en ligne, aucune ressource tierce, aucune inclusion dans une autre page. L'application pose cette politique et ses autres en-têtes de sécurité sur toute réponse, page d'erreur comprise (fichier absent, méthode refusée, plage d'octets impossible) ; seule la durée de conservation est propre aux fichiers : les fichiers à empreinte de `assets/` sont gardés un an, la page n'est jamais gardée.
 
 ## Développer l'interface
 

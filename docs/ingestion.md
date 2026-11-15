@@ -60,9 +60,13 @@ L'API, ingestion et lecture, n'accepte une requête que si son en-tête `Host` d
 | `ANSWERLINEAGE_ALLOWED_HOSTS` | Noms d'hôte sous lesquels l'API est jointe, séparés par des virgules | aucun |
 | `ANSWERLINEAGE_ALLOWED_ORIGINS` | Origines de pages autorisées à appeler l'API, sous la forme `https://console.exemple.fr` | aucune |
 
-La boucle locale (`127.0.0.1`, `localhost`, `[::1]`) est toujours acceptée, et une origine dont l'hôte est accepté l'est aussi. Le port d'un hôte n'est pas comparé. `*` accepte tout hôte et toute origine : à réserver à une API placée derrière un autre contrôle.
+La boucle locale (`127.0.0.1`, `localhost`, `[::1]`) est toujours acceptée, et une origine dont l'hôte est accepté l'est aussi. Le port d'un hôte n'est pas comparé. `*` accepte tout hôte, toute origine et toute requête inter-sites : à réserver à une API placée derrière un autre contrôle.
 
-Une requête refusée reçoit `403` avec `{"error":"host_not_allowed"}` ou `{"error":"origin_not_allowed"}`. Un réglage mal formé empêche l'application de démarrer.
+Une autre page peut aussi viser l'API par une balise `<img>` ou `<script>`, qui n'envoie pas `Origin`. Elle ne lit pas la réponse, mais en apprendrait le statut : `200` ou `404` sur `/api/v1/impact?namespace=…&name=…` dit si un jeu de données existe. Le navigateur dit d'où vient une requête (`Sec-Fetch-Site`) et ce qu'elle charge (`Sec-Fetch-Mode`, `Sec-Fetch-Dest`). Sans origine acceptée, une requête venue d'une autre page est refusée, qu'elle vienne d'un autre site ou d'un autre nom du même site, un sous-domaine voisin par exemple. Deux cas restent admis : la page elle-même et son utilisateur qui saisit l'adresse (`same-origin`, `none`), et la navigation d'un lien suivi depuis une autre page (`navigate` vers `document`), pour qu'une adresse de l'explorateur partagée dans une messagerie web ou un wiki s'ouvre ; une page chargée dans un cadre n'en fait pas partie. Une console déclarée dans `ANSWERLINEAGE_ALLOWED_ORIGINS` reste admise, et un client qui n'est pas un navigateur, qui n'envoie pas ces en-têtes, ne voit aucun changement. Toute réponse porte en plus `Cross-Origin-Resource-Policy: same-origin` : le navigateur ne la livre à aucune page d'une autre origine qui la chargerait par une balise.
+
+Une requête refusée reçoit `403` avec `{"error":"host_not_allowed"}`, `{"error":"origin_not_allowed"}` ou `{"error":"cross_site_not_allowed"}`. Un réglage mal formé empêche l'application de démarrer.
+
+Toute réponse de l'application, route de l'API, fichier de l'explorateur, refus ou erreur, porte les mêmes en-têtes de sécurité : la politique de sécurité du contenu de l'[explorateur](explorateur.md), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy: same-origin` et `Cross-Origin-Resource-Policy: same-origin`.
 
 ## Rejeu
 

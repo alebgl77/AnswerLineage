@@ -9,7 +9,7 @@ from typing import cast
 
 import httpx
 
-from answerlineage_proxy.guard import RequestGuard
+from answerlineage_proxy.guard import LOOPBACK_HOSTS, RequestGuard
 from answerlineage_proxy.sql import DIALECTS, Dialect
 
 ENV_UPSTREAM = "ANSWERLINEAGE_PROXY_UPSTREAM"
@@ -112,7 +112,9 @@ class ProxySettings:
             )
         if not _SERVER_NAME.fullmatch(self.server_name):
             raise ProxyConfigurationError(
-                "Le nom du serveur accepte 1 à 128 lettres, chiffres, points, tirets et soulignés."
+                "Le nom du serveur accepte 1 à 128 lettres, chiffres, points, tirets et "
+                f"soulignés ; sans --server-name ni {ENV_SERVER_NAME}, il est tiré de l'hôte "
+                "du serveur MCP."
             )
         if not 0 <= self.port <= 65535:
             raise ProxyConfigurationError("Le port doit être compris entre 0 et 65535.")
@@ -121,9 +123,31 @@ class ProxySettings:
         if not all(_TOOL_NAME.fullmatch(tool) for tool in self.sql_tools):
             raise ProxyConfigurationError("Un nom d'outil SQL est invalide.")
         try:
+            RequestGuard.create([self.upstream_host])
+        except ValueError as error:
+            raise ProxyConfigurationError(
+                "L'hôte du serveur MCP doit être un nom d'hôte ou une adresse IP, "
+                "tel qu'un client l'écrit dans l'en-tête Host."
+            ) from error
+        try:
             RequestGuard.create(self.allowed_hosts, self.allowed_origins)
         except ValueError as error:
             raise ProxyConfigurationError(str(error)) from error
+
+    @property
+    def upstream_host(self) -> str:
+        """L'hôte du serveur MCP tel qu'un client l'écrit dans l'en-tête Host.
+
+        Une adresse IPv6 s'y écrit entre crochets, un nom accentué en punycode.
+        """
+        host = self.upstream.raw_host.decode("ascii", errors="replace")
+        return f"[{host}]" if ":" in host else host
+
+    def guard(self) -> RequestGuard:
+        """Contrôle des requêtes : la boucle locale, le serveur MCP et les hôtes ajoutés."""
+        return RequestGuard.create(
+            [*LOOPBACK_HOSTS, self.upstream_host, *self.allowed_hosts], self.allowed_origins
+        )
 
     @classmethod
     def create(

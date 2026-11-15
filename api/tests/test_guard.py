@@ -25,6 +25,8 @@ async def call(
     *,
     host: str = "127.0.0.1:8000",
     origin: str | None = None,
+    fetch_site: str | None = None,
+    navigation: bool = False,
     json: Any = None,
     allowed_hosts: Sequence[str] | None = None,
     allowed_origins: Sequence[str] | None = None,
@@ -32,6 +34,10 @@ async def call(
     headers = {"host": host}
     if origin is not None:
         headers["origin"] = origin
+    if fetch_site is not None:
+        headers["sec-fetch-site"] = fetch_site
+    if navigation:
+        headers |= {"sec-fetch-mode": "navigate", "sec-fetch-dest": "document"}
     app = create_app(engine, allowed_hosts=allowed_hosts, allowed_origins=allowed_origins)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8000") as client:
@@ -80,6 +86,37 @@ async def test_a_page_from_another_origin_cannot_send_events(
     accepted = await call(engine, "POST", "/api/v1/lineage", json=run_event())
     assert accepted.status_code == 201
     assert await stored(engine) == 1
+
+
+async def test_a_page_from_another_site_cannot_probe_a_resource_without_origin(
+    engine: AsyncEngine,
+) -> None:
+    """Une balise <img> d'une autre page n'envoie pas Origin, mais apprendrait le statut."""
+    probe = "/api/v1/impact?namespace=postgres%3A%2F%2Fentrepot&name=public.clients"
+    refused = await call(engine, "GET", probe, fetch_site="cross-site")
+    assert (refused.status_code, refused.json()) == (403, {"error": "cross_site_not_allowed"})
+    assert refused.headers["cross-origin-resource-policy"] == "same-origin"
+
+    # Une console déclarée reste admise, et un client qui n'est pas un navigateur ne
+    # dit pas d'où il vient.
+    console = await call(
+        engine,
+        "GET",
+        SEARCH,
+        origin="https://console.exemple.fr",
+        fetch_site="cross-site",
+        allowed_origins=["https://console.exemple.fr"],
+    )
+    assert console.status_code == 200
+    assert (await call(engine, "GET", SEARCH, fetch_site="same-origin")).status_code == 200
+    assert (await call(engine, "GET", SEARCH)).status_code == 200
+    # Un sous-domaine voisin n'est pas mieux placé qu'un autre site.
+    assert (await call(engine, "GET", probe, fetch_site="same-site")).status_code == 403
+    # Un lien suivi depuis une autre page est une navigation : il ouvre ce qu'il désigne.
+    followed = await call(engine, "GET", SEARCH, fetch_site="cross-site", navigation=True)
+    assert followed.status_code == 200
+    anything = await call(engine, "GET", SEARCH, fetch_site="cross-site", allowed_hosts=["*"])
+    assert anything.status_code == 200
 
 
 async def test_the_operator_names_the_hosts_and_origins_of_a_deployment(

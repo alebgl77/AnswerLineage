@@ -18,11 +18,11 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrep
 | Taille de corps lue | `--max-inspected-bytes` | | 1 Mo |
 | Outil dont un argument porte du SQL | `--sql-tool` | | aucun |
 
-L'adresse du serveur MCP ne porte ni identifiant ni paramètre : elle peut apparaître dans la configuration.
+L'adresse du serveur MCP ne porte ni identifiant ni paramètre : elle peut apparaître dans la configuration. Son hôte peut être une adresse IPv6, entre crochets (`http://[2001:db8::1]:9000`) ; une adresse IPv6 ne faisant pas un nom de serveur, `--server-name` est alors obligatoire. Un réglage invalide arrête le proxy avec le message « Configuration invalide : … » et le code de sortie 2.
 
 ## Ce qui est relayé
 
-- Toutes les méthodes HTTP, le chemin et les paramètres tels que reçus. Les révisions 2026-07-28 (sans session) et 2025-11-25 (session, flux `GET`, clôture par `DELETE`) de MCP fonctionnent sans réglage.
+- Toutes les méthodes HTTP, le chemin et les paramètres tels que reçus, le chemin à la suite de celui de l'adresse du serveur MCP. Un chemin qui contient un segment `.` ou `..`, même encodé (`%2e`), sortirait de ce préfixe une fois résolu : il est refusé en `400` avec `{"error":"invalid_request_target"}`, sans être relayé. Les révisions 2026-07-28 (sans session) et 2025-11-25 (session, flux `GET`, clôture par `DELETE`) de MCP fonctionnent sans réglage.
 - Tous les en-têtes, dans leur ordre, sauf ceux qui sont propres à une connexion (RFC 9110, section 7.6.1). Le proxy n'en ajoute aucun : ni `Server`, ni `Date`, ni `Forwarded`.
 - Le corps de la réponse, octet pour octet et au fil de l'eau : rien n'est décompressé ni retenu, un flux SSE arrive événement par événement.
 - La fermeture du flux par le client : le proxy ferme aussitôt sa connexion au serveur MCP, ce qui annule l'appel.
@@ -33,14 +33,19 @@ Si le serveur MCP est injoignable, le proxy répond `502` avec un corps fixe. Si
 
 Le proxy écoute par défaut sur la boucle locale. Une page web ouverte sur le même poste peut pourtant l'atteindre : par réassociation DNS, un nom d'hôte de l'attaquant finit par désigner `127.0.0.1`. Le navigateur envoie alors ce nom dans l'en-tête `Host`, et l'adresse de la page dans `Origin`.
 
-Le proxy refuse donc, avant tout relais, une requête dont l'un de ces deux en-têtes n'est pas attendu. Rien n'atteint le serveur MCP et aucun événement n'est émis.
+Une autre page peut aussi le viser par une balise `<img>` ou `<script>`, qui n'envoie pas `Origin` : elle ne lit pas la réponse, mais en apprend le statut. Le navigateur dit d'où vient une requête (`Sec-Fetch-Site`) et ce qu'elle charge (`Sec-Fetch-Mode`, `Sec-Fetch-Dest`).
+
+Le proxy refuse donc, avant tout relais, une requête dont l'un de ces en-têtes n'est pas attendu. Rien n'atteint le serveur MCP et aucun événement n'est émis.
 
 | En-tête | Valeurs acceptées |
 | --- | --- |
-| `Host` | `127.0.0.1`, `localhost`, `[::1]`, l'hôte du serveur MCP et les noms ajoutés par `--allow-host`. Le port n'est pas comparé. |
+| `Host` | `127.0.0.1`, `localhost`, `[::1]`, l'hôte du serveur MCP (entre crochets pour une adresse IPv6) et les noms ajoutés par `--allow-host`. Le port n'est pas comparé. |
 | `Origin` | Absent, ou une origine dont l'hôte est accepté, ou une origine ajoutée par `--allow-origin` |
+| `Sec-Fetch-Site` | Absent, `same-origin` ou `none`. Toute autre valeur (`cross-site`, `same-site`) désigne une autre page : sans origine acceptée, elle n'est admise que pour la navigation d'un lien suivi (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`). |
 
-Une requête refusée reçoit `403` avec `{"error":"host_not_allowed"}` ou `{"error":"origin_not_allowed"}`. Le journal cite le nom de l'en-tête, jamais sa valeur.
+Un client qui n'est pas un navigateur n'envoie ni `Origin` ni ces en-têtes : rien ne change pour lui.
+
+Une requête refusée reçoit `403` avec `{"error":"host_not_allowed"}`, `{"error":"origin_not_allowed"}` ou `{"error":"cross_site_not_allowed"}`. Le journal cite le nom de l'en-tête, jamais sa valeur.
 
 Un proxy joint sous un autre nom, par exemple derrière un service Kubernetes, déclare ce nom :
 
@@ -48,7 +53,7 @@ Un proxy joint sous un autre nom, par exemple derrière un service Kubernetes, d
 uv run answerlineage-proxy --upstream http://mcp.interne:9000 --host 0.0.0.0 --allow-host proxy.interne
 ```
 
-`--allow-host '*'` accepte tout hôte et toute origine : à réserver à un proxy placé derrière un autre contrôle. Les variables d'environnement prennent une liste séparée par des virgules.
+`--allow-host '*'` accepte tout hôte, toute origine et toute requête inter-sites : à réserver à un proxy placé derrière un autre contrôle. Les variables d'environnement prennent une liste séparée par des virgules.
 
 ## Ce qui est lu
 

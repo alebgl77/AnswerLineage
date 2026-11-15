@@ -449,3 +449,77 @@ async def test_client_gone_during_a_streamed_upload_aborts_the_call(bench: Bench
         # présenté comme complet.
         await eventually(lambda: b.upstream.aborted == 1)
         assert b.upstream.requests == []
+
+
+class _Body(httpx.AsyncByteStream):
+    async def __aiter__(self) -> Any:
+        yield TOOL_RESULT
+
+
+def recording_client(seen: list[httpx.Request]) -> httpx.AsyncClient:
+    """Client dont le transport note chaque requête relayée et répond 200."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        # Un corps en flux : le relais le lit comme celui d'un vrai serveur.
+        return httpx.Response(200, stream=_Body())
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(respond))
+
+
+async def relay_through(
+    upstream: str, scope: dict[str, Any]
+) -> tuple[list[Message], list[httpx.Request]]:
+    """Relaie une requête brute, sans client HTTP qui normaliserait son chemin."""
+    seen: list[httpx.Request] = []
+    async with recording_client(seen) as client:
+        proxy = McpProxy(ProxySettings.create(upstream, "meteo"), MemorySink(), client=client)
+        sent = await run_asgi(
+            proxy, scope, [{"type": "http.request", "body": tool_call(), "more_body": False}]
+        )
+        await proxy.drain()
+    return sent, seen
+
+
+@pytest.mark.parametrize("prefix", ["", "/base"])
+@pytest.mark.parametrize(
+    "raw_path",
+    [
+        b"/../x",
+        b"/mcp/../../x",
+        b"/%2e%2e/x",
+        b"/%2E%2E/x",
+        b"/.%2e/x",
+        b"/%2e%2e%2fx",
+        b"/./x",
+        b"/mcp/%2e/x",
+        b"/mcp/..",
+    ],
+)
+async def test_a_dot_segment_cannot_leave_the_prefix_of_the_mcp_server(
+    prefix: str, raw_path: bytes
+) -> None:
+    """Le client HTTP du proxy résoudrait ``..`` : ``/base/../x`` deviendrait ``/x``."""
+    sent, seen = await relay_through("https://amont.exemple" + prefix, http_scope(raw_path))
+    assert (sent[0]["status"], sent[1]["body"]) == (400, b'{"error":"invalid_request_target"}')
+    assert seen == []
+
+
+@pytest.mark.parametrize(
+    "raw_path", [b"/mcp/...", b"/mcp/.well-known/x", b"/a..b/c.", b"/mcp/%2e%2e%2e"]
+)
+async def test_a_name_made_of_dots_is_not_a_dot_segment(raw_path: bytes) -> None:
+    sent, seen = await relay_through("https://amont.exemple/base", http_scope(raw_path))
+    assert sent[0]["status"] == 200
+    (request,) = seen
+    assert request.url.raw_path == b"/base" + raw_path
+
+
+async def test_an_ipv6_mcp_server_is_relayed_and_named_in_brackets() -> None:
+    scope = http_scope()
+    scope["headers"] = [(b"host", b"[2001:db8::1]:9000")]
+    sent, seen = await relay_through("http://[2001:db8::1]:9000/base", scope)
+    assert sent[0]["status"] == 200
+    (request,) = seen
+    assert str(request.url) == "http://[2001:db8::1]:9000/base/mcp"
+    assert request.headers["host"] == "[2001:db8::1]:9000"

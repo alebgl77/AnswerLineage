@@ -241,6 +241,29 @@ def test_main_reports_an_invalid_configuration(
     assert "Configuration invalide" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("upstream", ["http://[fe80::1%25eth0]:9000", "http://mcp~interne:9000"])
+def test_main_reports_an_mcp_server_that_host_cannot_name(
+    upstream: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("uvicorn.run", lambda app, **options: None)
+    assert cli.main(["--upstream", upstream, "--server-name", "meteo"]) == 2
+    error = capsys.readouterr().err
+    assert error.startswith("Configuration invalide : L'hôte du serveur MCP")
+    assert "Traceback" not in error
+
+
+def test_main_serves_an_ipv6_mcp_server(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    served: dict[str, Any] = {}
+    monkeypatch.setattr("uvicorn.run", lambda app, **options: served.update(app=app))
+    assert cli.main(["--upstream", "http://[::1]:9000", "--server-name", "meteo"]) == 0
+    assert isinstance(served["app"], McpProxy)
+    # Une adresse IPv6 ne fait pas un nom de serveur : le message dit comment en donner un.
+    assert cli.main(["--upstream", "http://[::1]:9000"]) == 2
+    assert "--server-name" in capsys.readouterr().err
+
+
 def test_http_client_logs_cannot_cite_urls_or_headers() -> None:
     """httpx cite l'URL complète au niveau INFO, httpcore les en-têtes au niveau DEBUG."""
     root_level = logging.getLogger().level

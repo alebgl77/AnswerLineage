@@ -15,9 +15,11 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from sqlalchemy.ext.asyncio import AsyncEngine
+from starlette.types import ASGIApp
 
 from answerlineage_api.explorer import explorer_files
 from answerlineage_api.guard import HostOriginMiddleware, guard_from_settings
+from answerlineage_api.headers import SecurityHeadersMiddleware
 from answerlineage_api.ingest.models import run_event_json_schema
 from answerlineage_api.ingest.routes import router as ingestion_router
 from answerlineage_api.lineage.routes import router as lineage_router
@@ -27,6 +29,17 @@ from answerlineage_api.store.engine import create_engine, database_url_from_envi
 # L'API a son propre numéro de version, distinct de celui du produit.
 API_VERSION = "1.0.0"
 DEFAULT_MAX_BATCH_EVENTS = 1000
+
+
+class _Application(FastAPI):
+    """L'application, dont toute réponse porte les en-têtes de sécurité.
+
+    Ils sont posés autour de toute la pile, au-delà du middleware qui répond 500
+    à une panne : un middleware ajouté par ``add_middleware`` resterait en deçà.
+    """
+
+    def build_middleware_stack(self) -> ASGIApp:
+        return SecurityHeadersMiddleware(super().build_middleware_stack())
 
 
 def create_app(
@@ -61,7 +74,7 @@ def create_app(
                 await app.state.engine.dispose()
                 app.state.engine = None
 
-    app = FastAPI(
+    app = _Application(
         title="AnswerLineage",
         version=API_VERSION,
         summary="Lignage et rappel des réponses d'agents",
