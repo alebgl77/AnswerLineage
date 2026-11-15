@@ -27,7 +27,7 @@ from sqlalchemy import (
     Uuid,
     func,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 NAMING_CONVENTION = {
     "ix": "ix_%(table_name)s_%(column_0_N_name)s",
@@ -204,4 +204,20 @@ delivery_recipient = Table(
     _recorded_at(),
     PrimaryKeyConstraint("delivery_id", "recipient_id"),
     Index(None, "recipient_id"),
+)
+
+# Événement reçu tel quel, rejouable. Son identifiant est l'empreinte de sa
+# forme canonique : un événement rejoué ne s'enregistre qu'une fois.
+event_raw = Table(
+    "event_raw",
+    metadata,
+    Column("event_id", Text, primary_key=True),
+    Column("run_id", Uuid, nullable=False),
+    Column("event_type", Text, nullable=False),
+    Column("event_time", DateTime(timezone=True), nullable=False),
+    Column("producer", Text, nullable=False),
+    Column("payload", JSONB, nullable=False),
+    _recorded_at(),
+    Index(None, "run_id"),
+    Index(None, "recorded_at"),
 )

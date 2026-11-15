@@ -22,6 +22,7 @@ write_edge   agent, tool
 | `answer` | run et empreinte | Empreinte de la réponse, jamais son contenu (ADR-004) |
 | `delivery` | réponse, canal, référence du message | Diffusion de la réponse |
 | `recipient` | pseudonyme | Destinataire pseudonymisé (ENF-CONF-02) |
+| `event_raw` | empreinte de l'événement | Événement OpenLineage reçu tel quel, rejouable |
 
 Chaque arête porte `event_time`, l'heure déclarée par l'émetteur, et `recorded_at`, l'heure posée par la base.
 
