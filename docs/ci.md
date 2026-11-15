@@ -62,7 +62,7 @@ soit son statut (bloquante, ou sous exception avec sa date de revue et son motif
 ```toml
 [[exception]]
 vulnerability = "CVE-2025-0001"   # l'identifiant affiché, ou l'un de ses alias
-package = "libc6"                 # facultatif : restreint l'exception à ce paquet
+package = "libexemple"            # facultatif : restreint l'exception à ce paquet
 reason = "La fonction vulnérable n'est jamais appelée par les services de l'image."
 review-by = 2026-12-31
 ```
