@@ -51,5 +51,7 @@ def test_non_python_component_directory_exists(directory: str) -> None:
 
 def test_mypy_checks_every_component() -> None:
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    files: list[str] = config["tool"]["mypy"]["files"]
-    assert {f"{member}/src" for member in MEMBERS} <= set(files)
+    mypy = config["tool"]["mypy"]
+    assert mypy["strict"] is True
+    assert set(MEMBERS) <= set(mypy["files"])
+    assert {f"{member}/src" for member in MEMBERS} <= set(mypy["mypy_path"])

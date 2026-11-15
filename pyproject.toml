@@ -8,12 +8,14 @@ dependencies = []
 
 [dependency-groups]
 dev = [
+    "anyio>=4.9",
     "mypy>=1.18",
     "pre-commit>=4.3",
     "pytest>=8.4",
     "pytest-cov>=7.0",
     "pyyaml>=6.0",
     "ruff>=0.14",
+    "testcontainers[postgres]>=4.10",
     "types-pyyaml>=6.0",
 ]
 
@@ -28,6 +30,7 @@ members = ["proxy", "adapters", "collector", "api", "workers", "mcp-server"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+src = ["proxy/src", "adapters/src", "collector/src", "api/src", "workers/src", "mcp-server/src", "."]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "S", "C4", "SIM", "PTH", "RUF"]
@@ -40,22 +43,43 @@ select = ["E", "F", "W", "I", "B", "UP", "N", "S", "C4", "SIM", "PTH", "RUF"]
 python_version = "3.13"
 strict = true
 warn_unreachable = true
-files = [
+# Chaque composant est une base de paquets : ses sources s'importent sous leur
+# nom de distribution, ses tests sous <composant>.tests.
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = [
     "proxy/src",
     "adapters/src",
     "collector/src",
     "api/src",
     "workers/src",
     "mcp-server/src",
+    ".",
+]
+files = [
+    "proxy",
+    "adapters",
+    "collector",
+    "api",
+    "workers",
+    "mcp-server",
     "scripts",
     "tests",
+    "conftest.py",
 ]
+
+[[tool.mypy.overrides]]
+module = ["testcontainers.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config", "-ra"]
 pythonpath = ["."]
 testpaths = ["tests", "proxy", "adapters", "collector", "api", "workers", "mcp-server"]
 xfail_strict = true
+markers = [
+    "integration: test sur un PostgreSQL réel, démarré par Testcontainers (Docker requis)",
+]
 
 [tool.coverage.run]
 branch = true
