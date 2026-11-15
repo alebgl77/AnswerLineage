@@ -667,12 +667,22 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/Facet"
             },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
+            },
             "title": "Facets",
             "type": "object"
           },
           "inputFacets": {
             "additionalProperties": {
               "$ref": "#/components/schemas/Facet"
+            },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
             },
             "title": "Inputfacets",
             "type": "object"
@@ -699,6 +709,11 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/Facet"
             },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
+            },
             "title": "Facets",
             "type": "object"
           },
@@ -724,6 +739,11 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/Facet"
             },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
+            },
             "title": "Facets",
             "type": "object"
           },
@@ -738,6 +758,11 @@
           "outputFacets": {
             "additionalProperties": {
               "$ref": "#/components/schemas/Facet"
+            },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
             },
             "title": "Outputfacets",
             "type": "object"
@@ -830,6 +855,11 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/Facet"
             },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
+            },
             "title": "Facets",
             "type": "object"
           },
@@ -870,6 +900,7 @@
             "items": {
               "$ref": "#/components/schemas/InputDataset"
             },
+            "maxItems": 1000,
             "title": "Inputs",
             "type": "array"
           },
@@ -880,6 +911,7 @@
             "items": {
               "$ref": "#/components/schemas/OutputDataset"
             },
+            "maxItems": 1000,
             "title": "Outputs",
             "type": "array"
           },
@@ -1545,7 +1577,7 @@
     },
     "/api/v1/lineage": {
       "post": {
-        "description": "Point d'entrée standard d'OpenLineage : un émetteur conforme s'y branche tel quel.",
+        "description": "Point d'entrée standard d'OpenLineage : un émetteur conforme s'y branche tel quel.\n\nLe corps peut être compressé (``Content-Encoding: gzip``).",
         "operationId": "ingest_event_api_v1_lineage_post",
         "requestBody": {
           "content": {
@@ -1576,7 +1608,27 @@
                 }
               }
             },
-            "description": "Le corps n'est pas du JSON."
+            "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`)."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
           },
           "422": {
             "content": {
@@ -1597,7 +1649,7 @@
     },
     "/api/v1/lineage/batch": {
       "post": {
-        "description": "Chaque événement est validé séparément : un événement invalide est rejeté\navec le chemin de ses champs fautifs, le reste du lot est accepté.",
+        "description": "Chaque événement est validé séparément : un événement invalide est rejeté\navec le chemin de ses champs fautifs, le reste du lot est accepté.\n\nLe corps peut être compressé (``Content-Encoding: gzip``).",
         "operationId": "ingest_batch_api_v1_lineage_batch_post",
         "requestBody": {
           "content": {
@@ -1631,7 +1683,7 @@
                 }
               }
             },
-            "description": "Le corps n'est pas un tableau JSON."
+            "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`). Ou bien ce n'est pas un tableau (`batch_must_be_an_array`)."
           },
           "413": {
             "content": {
@@ -1641,7 +1693,17 @@
                 }
               }
             },
-            "description": "Le lot dépasse la taille maximale."
+            "description": "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`). Ou bien le lot compte plus d'événements que le maximum (`batch_too_large`)."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
           },
           "422": {
             "content": {

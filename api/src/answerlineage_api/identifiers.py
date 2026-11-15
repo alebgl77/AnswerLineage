@@ -3,7 +3,10 @@
 Un identifiant (espace de noms, nom de jeu de données, d'outil, d'agent, canal,
 référence de message, destinataire, empreinte, colonne, version) vient d'un
 émetteur et finit dans le graphe, l'explorateur et les gabarits de rappel. Il
-n'y entre que s'il a la forme d'un nom :
+n'y entre que s'il a la forme d'un nom. Le nom d'une facette suit la même
+règle : c'est une clé reçue, qu'une erreur de validation citerait.
+
+La forme d'un nom :
 
 - lettres, marques et chiffres Unicode, plus la ponctuation des noms de
   données (``PUNCTUATION``), utile aux chemins, aux URI et aux sujets Kafka ;
@@ -53,6 +56,9 @@ CHANNEL_MAX: Final = 64
 MESSAGE_REF_MAX: Final = 512
 RECIPIENT_MAX: Final = 255
 FINGERPRINT_MAX: Final = 255
+# Nom d'une facette, choisi par l'émetteur : ``answerlineage_toolCall``,
+# ``spark.logicalPlan``, ``environment-properties``.
+FACET_NAME_MAX: Final = 128
 
 FaultCode = Literal[
     "identifier_empty",

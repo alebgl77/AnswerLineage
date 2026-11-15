@@ -35,10 +35,11 @@ Chaque événement d'un lot est validé séparément. Un événement invalide es
 | --- | --- |
 | `202` | Au moins un événement valide, ou lot vide |
 | `422` | Aucun événement valide |
-| `400` | Le corps n'est pas un tableau JSON (`invalid_json`, `batch_must_be_an_array`) |
-| `413` | Plus d'événements que la taille maximale (`batch_too_large`) |
+| `400` | Le corps n'est pas un tableau JSON (`invalid_json`, `json_too_deep`, `invalid_gzip`, `batch_must_be_an_array`) |
+| `413` | Le corps ou le lot dépasse sa taille maximale (`body_too_large`, `batch_too_large`) |
+| `415` | Le corps porte un autre encodage que gzip (`unsupported_content_encoding`) |
 
-`path` est un pointeur JSON (RFC 6901). Un rejet ne renvoie jamais la valeur reçue : seulement le chemin, un code et un motif.
+`path` est un pointeur JSON (RFC 6901). Un rejet ne renvoie jamais la valeur reçue : seulement le chemin, un code et un motif. Les bornes de taille, de profondeur et de nombre sont décrites plus bas, dans [Limites](#limites).
 
 ## Validation
 
@@ -76,6 +77,7 @@ Un identifiant reçu finit dans le graphe, l'explorateur et les gabarits de rapp
 | Même facette : `channel` | 64 |
 | Même facette : `messageRef` | 512 |
 | Même facette : `recipients[]` | 255 |
+| Nom d'une facette : clé de `run.facets`, `job.facets`, `facets`, `inputFacets` ou `outputFacets` | 128 |
 
 La longueur se compte en caractères de la forme normalisée. Un identifiant contient des lettres, des marques et des chiffres de toute écriture, et ces signes : `. _ - / : @ = + ~ % , # $ * [ ]`. Ils suffisent aux conventions de nommage d'OpenLineage : `postgres://crm:5432`, `gs://seau/chemin/fichier.csv`, `kafka://broker1:9092,broker2:9092`, `abfss://conteneur@compte.dfs.core.windows.net`, `référentiel.société.coût_unitaire`, `projet.jeu.evenements_2026*`.
 
@@ -101,6 +103,14 @@ Un nom fait d'une phrase est refusé parce qu'il contient des espaces : une inst
 Un nom réel qui contient des espaces, celui d'un document par exemple, s'envoie encodé (`Politique%20voyages%202026.pdf`) : `%` est admis, et le nom reste lisible. Les schémas publiés des [facettes](facettes.md) portent les mêmes longueurs maximales que ce tableau.
 
 Une facette inconnue, et un champ d'une facette connue qui n'est pas dans ce tableau, ne sont pas contrôlés : ils n'entrent pas dans le graphe. Une valeur de ces champs qui n'est pas un texte est tolérée : la projection l'ignore.
+
+Le nom d'une facette est choisi par l'émetteur, et une erreur de validation le citerait dans son chemin (`/run/facets/<nom>/_producer`). Il suit donc la règle des identifiants : un nom qui n'en a pas la forme rejette l'événement, et l'erreur désigne l'objet qui le porte sans le citer. Les erreurs internes à cette facette ne sont pas rapportées : le nom suffit au rejet.
+
+```json
+{ "path": "/run/facets", "type": "identifier_markup", "message": "Un identifiant ne contient ni chevron, ni guillemet, ni accent grave : rien qui puisse former une balise." }
+```
+
+Les noms des émetteurs réels ont cette forme : `spark.logicalPlan`, `environment-properties`, `answerlineage_toolCall`. Aucune autre clé reçue n'apparaît dans un chemin : les champs d'une facette sont admis tels quels, sans être validés un à un, et une clé inconnue d'un objet de l'événement est ignorée.
 
 ### Forme normalisée
 
@@ -168,10 +178,41 @@ Les lignes vont du jour le plus récent au plus ancien, puis par émetteur. Un p
 
 Chaque événement nouveau entre dans la file de traitement, d'où un [worker](workers.md) le projette dans le graphe.
 
+## Limites
+
+Tout ce que l'ingestion reçoit est borné, pour qu'une entrée piégée ne puisse pas épuiser le service : la mémoire et le temps d'une requête restent proportionnels à la taille maximale du corps.
+
+| Limite | Valeur par défaut | Réglage | Réponse |
+| --- | --- | --- | --- |
+| Taille du corps, en octets reçus | 16 Mio | `ANSWERLINEAGE_MAX_BODY_BYTES`, `create_app(max_body_bytes=…)` | `413` `body_too_large` |
+| Taille du corps, en octets déployés d'un corps gzip | La même | La même | `413` `body_too_large` |
+| Encodage du corps | Aucun, ou `gzip` seul | Fixe | `415` `unsupported_content_encoding` ; `400` `invalid_gzip` pour un flux corrompu ou tronqué |
+| Profondeur d'imbrication, objets et tableaux confondus | 64 niveaux | Fixe | `400` `json_too_deep` |
+| Événements d'un lot | 1 000 | `create_app(max_batch_events=…)` | `413` `batch_too_large` |
+| Jeux de données en entrée (`inputs`) | 1 000 | Fixe | Événement rejeté, `too_many_items` |
+| Jeux de données en sortie (`outputs`) | 1 000 | Fixe | Événement rejeté, `too_many_items` |
+| Facettes d'un objet (`run.facets`, `job.facets`, `facets`, `inputFacets`, `outputFacets`) | 100 | Fixe | Événement rejeté, `too_many_items` |
+| Champs d'une facette `schema` d'un jeu de données | 10 000 | Fixe | Événement rejeté, `too_many_items` |
+| Destinataires d'une facette `answerlineage_delivery` | 10 000 | Fixe | Événement rejeté, `too_many_items` |
+| Longueur d'un nom de facette | 128 caractères | Fixe | Événement rejeté, `identifier_too_long` |
+
+**Taille.** Le corps est lu morceau par morceau. Un `Content-Length` qui annonce plus que le maximum est refusé sans qu'un octet soit lu ; sinon la lecture s'arrête dès que le maximum est franchi, que le corps arrive par morceaux ou que son `Content-Length` mente. Un lot de 1 000 événements réels pèse de 1 à 3 Mio : les événements du corpus synthétique font de 0,6 à 2,5 Kio, et un appel d'outil qui lit vingt tables de trente colonnes environ 30 Kio. 16 Mio laissent plus de 16 Kio par événement d'un lot plein, soit cinq fois le plus lourd du corpus, ou plus de 500 de ces appels larges en un lot, et bornent la mémoire d'une requête : le document analysé occupe quelques fois la taille du corps. Un réglage qui n'est pas un nombre d'octets positif empêche l'application de démarrer.
+
+**Compression.** Le transport HTTP d'OpenLineage sait compresser ses envois : `Content-Encoding: gzip` est accepté, plusieurs membres gzip à la suite formant un seul corps. Le déploiement suit la lecture et s'arrête dès que le maximum est dépassé : une bombe (un gigaoctet de zéros tient en un mégaoctet) est refusée après avoir produit au plus un octet de plus que le maximum. La limite vaut pour les octets reçus comme pour les octets déployés. Tout autre encodage, `identity` compris, ou plusieurs encodages empilés sont refusés avant toute lecture.
+
+**Profondeur.** L'analyseur JSON est récursif. Avant qu'il ne s'y engage, un parcours linéaire des octets mesure l'imbrication, en écartant les chaînes et leurs échappements : un crochet écrit dans un texte ne compte pas. Un lot de RunEvents atteint 7 niveaux pour les colonnes d'une facette `schema`, 12 pour la facette standard `columnLineage` ; 64 laissent encore 28 niveaux de structures imbriquées dans un schéma, au-delà des 15 qu'admet BigQuery. Le corps est de l'UTF-8 (RFC 8259), sans marque d'ordre : tout autre codage est refusé (`invalid_json`).
+
+**Nombre d'éléments.** Ce qui se répète dans un événement, et que la validation et la [projection](workers.md) parcourent, est borné. Un dépassement rejette l'événement, avec le chemin du champ et un motif qui cite la borne, jamais le nombre reçu ; un tableau trop long n'est pas parcouru, et rien d'autre n'est rapporté pour cet événement. Le contrat publié porte ces bornes (`maxItems`, `maxProperties`). La borne des destinataires est celle du schéma publié de la [facette de diffusion](facettes.md).
+
+```json
+{ "path": "/inputs/0/facets/schema/fields", "type": "too_many_items", "message": "Ce champ compte au plus 10000 éléments." }
+```
+
 ## Limites connues
 
 - Les émetteurs ne sont pas authentifiés : l'API ne s'expose pas hors d'un réseau de confiance.
-- Le corps est lu en entier avant d'être contrôlé ; seules la taille du lot et la longueur des identifiants sont bornées, pas le nombre d'entrées, de colonnes ou de destinataires d'un événement.
+- Aucune limite de débit par émetteur : la taille d'une requête est bornée, pas leur nombre.
+- Le corps est déployé puis analysé en mémoire, jusqu'à sa taille maximale : l'analyse JSON n'est pas incrémentale.
 - Le contrôle des identifiants porte sur leur forme, pas sur leur sens : une instruction écrite sans espace (`ignore_les_consignes`) a la forme d'un nom et passe. Aucun texte reçu n'atteint un modèle ni un destinataire autrement que dans un gabarit fixe.
 - La forme NFC ne confond pas les caractères qui se ressemblent : `а` cyrillique et `a` latin font deux noms distincts.
 - L'heure d'un événement est bornée par l'horloge de l'API : le corpus synthétique, daté à partir du 2 novembre 2026, voit refuser ses événements qui tombent plus d'un jour après la date du jour (`--days` élevé).

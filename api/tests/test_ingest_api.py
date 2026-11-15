@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from collections.abc import AsyncIterator
 from typing import Any
@@ -122,7 +123,7 @@ async def test_replayed_events_are_recorded_once(
         (b'[{"x": NaN}]', "invalid_json"),
         (b'{"events": []}', "batch_must_be_an_array"),
         (b'"texte"', "batch_must_be_an_array"),
-        (b"[" * 100_000, "invalid_json"),
+        (b"[" * 100_000, "json_too_deep"),
     ],
 )
 async def test_body_that_is_not_a_json_array_is_refused(
@@ -141,6 +142,43 @@ async def test_batch_larger_than_the_limit_is_refused(engine: AsyncEngine) -> No
     assert allowed.status_code == 202
     assert (refused.status_code, refused.json()) == (413, {"error": "batch_too_large"})
     assert len(await stored(engine)) == 3
+
+
+async def test_a_compressed_batch_is_recorded_as_it_was_before_compression(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    """Le transport HTTP d'OpenLineage sait compresser ses envois en gzip."""
+    events = [run_event(index) for index in range(50)]
+    response = await client.post(
+        BATCH,
+        content=gzip.compress(json.dumps(events).encode()),
+        headers={"content-encoding": "gzip"},
+    )
+    assert response.status_code == 202
+    assert response.json() == {"accepted": 50, "duplicates": 0, "rejected": []}
+    assert [row[4] for row in await stored(engine)] == events
+    single = await client.post(
+        SINGLE,
+        content=gzip.compress(json.dumps(minimal_event()).encode()),
+        headers={"content-encoding": "gzip"},
+    )
+    assert single.status_code == 201
+
+
+async def test_a_body_beyond_the_maximum_size_is_refused_and_nothing_is_recorded(
+    engine: AsyncEngine,
+) -> None:
+    events = [run_event(index) for index in range(20)]
+    content = json.dumps(events).encode()
+    transport = httpx.ASGITransport(app=create_app(engine, max_body_bytes=len(content) - 1))
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+        plain = await client.post(BATCH, content=content)
+        compressed = await client.post(
+            BATCH, content=gzip.compress(content), headers={"content-encoding": "gzip"}
+        )
+    assert (plain.status_code, plain.json()) == (413, {"error": "body_too_large"})
+    assert (compressed.status_code, compressed.json()) == (413, {"error": "body_too_large"})
+    assert await stored(engine) == []
 
 
 async def test_text_that_the_database_cannot_store_is_rejected_not_crashed(
@@ -199,13 +237,13 @@ async def test_api_is_versioned_and_described_by_an_openapi_document(
     assert all(path.startswith("/api/v1/") for path in document["paths"])
 
     batch = document["paths"][BATCH]["post"]
-    assert set(batch["responses"]) == {"202", "400", "413", "422"}
+    assert set(batch["responses"]) == {"202", "400", "413", "415", "422"}
     assert batch["requestBody"]["content"]["application/json"]["schema"] == {
         "type": "array",
         "items": {"$ref": "#/components/schemas/RunEvent"},
     }
     single = document["paths"][SINGLE]["post"]
-    assert set(single["responses"]) == {"201", "400", "422"}
+    assert set(single["responses"]) == {"201", "400", "413", "415", "422"}
 
     schemas = document["components"]["schemas"]
     run_event_schema = schemas["RunEvent"]

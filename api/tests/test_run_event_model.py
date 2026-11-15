@@ -11,8 +11,23 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from jsonschema import Draft202012Validator, FormatChecker
 
+from answerlineage_api import identifiers
 from answerlineage_api.identifiers import FAULT_CODES, identifier_fault
-from answerlineage_api.ingest.models import json_pointer, parse_event_time, validate_event
+from answerlineage_api.ingest.models import (
+    DELIVERY_FACET as DELIVERY,
+)
+from answerlineage_api.ingest.models import (
+    FACETS_MAX,
+    INPUTS_MAX,
+    OUTPUTS_MAX,
+    RECIPIENTS_MAX,
+    SCHEMA_FIELDS_MAX,
+    TOO_MANY_ITEMS,
+    json_pointer,
+    parse_event_time,
+    run_event_json_schema,
+    validate_event,
+)
 from answerlineage_api.ingest.store import UnstorableEventError, event_identifier
 from api.tests.events import facet, minimal_event, mutated, official_run_event_schema, run_event
 
@@ -396,3 +411,129 @@ def test_event_time_is_read_the_same_way_by_ingestion_and_projection(
     assert event is not None
     assert event.event_time == parse_event_time(text) == expected
     assert parse_event_time(text).utcoffset() is not None
+
+
+# Nombre d'éléments : ce qui se répète dans un événement est borné.
+
+DATASET = {"namespace": "postgres://crm:5432", "name": "ventes.commandes"}
+COLUMN = {"name": "devise"}
+RECIPIENT = "pseudo:a1"
+# Emplacement, élément répété (``None`` : des facettes), borne.
+REPEATED: list[tuple[list[str | int], Any, int]] = [
+    (["inputs"], DATASET, INPUTS_MAX),
+    (["outputs"], DATASET, OUTPUTS_MAX),
+    (["run", "facets"], None, FACETS_MAX),
+    (["job", "facets"], None, FACETS_MAX),
+    (["inputs", 0, "facets"], None, FACETS_MAX),
+    (["inputs", 0, "inputFacets"], None, FACETS_MAX),
+    (["outputs", 0, "facets"], None, FACETS_MAX),
+    (["outputs", 0, "outputFacets"], None, FACETS_MAX),
+    (["inputs", 0, "facets", "schema", "fields"], COLUMN, SCHEMA_FIELDS_MAX),
+    (["outputs", 0, "facets", "schema", "fields"], COLUMN, SCHEMA_FIELDS_MAX),
+    (["outputs", 0, "outputFacets", DELIVERY, "recipients"], RECIPIENT, RECIPIENTS_MAX),
+    (["outputs", 0, "facets", DELIVERY, "recipients"], RECIPIENT, RECIPIENTS_MAX),
+]
+
+
+def repeated(path: list[str | int], item: Any, count: int) -> Any:
+    """L'événement complet où la liste ou l'objet désigné compte ``count`` éléments."""
+    base = full_event()
+    base["outputs"][0]["facets"]["schema"] = facet(fields=[])
+    if item is None:
+        return mutated(path, {f"facette_{rank}": facet() for rank in range(count)}, base=base)
+    return mutated(path, [item] * count, base=base)
+
+
+@pytest.mark.parametrize(
+    ("path", "item", "bound"), REPEATED, ids=[json_pointer(tuple(p)) for p, _, _ in REPEATED]
+)
+def test_what_repeats_in_an_event_is_bounded(path: list[str | int], item: Any, bound: int) -> None:
+    event, errors = validate_event(repeated(path, item, bound))
+    assert errors == []
+    assert event is not None
+
+    event, errors = validate_event(repeated(path, item, bound + 1))
+    assert event is None
+    assert [(error.path, error.type) for error in errors] == [
+        (json_pointer(tuple(path)), TOO_MANY_ITEMS)
+    ]
+    # Le motif cite la borne, jamais le nombre reçu.
+    assert str(bound) in errors[0].message
+    assert str(bound + 1) not in errors[0].message
+
+
+def test_an_overlong_list_is_not_walked() -> None:
+    """Au-delà de la borne, le contenu des entrées n'est ni validé ni contrôlé."""
+    inputs = [{"namespace": "a b", "name": None}] * (INPUTS_MAX + 1)
+    _, errors = validate_event(mutated(["inputs"], inputs, base=mutated(["run", "runId"], "x")))
+    assert [(error.path, error.type) for error in errors] == [("/inputs", TOO_MANY_ITEMS)]
+
+
+def test_the_contract_states_the_bounds() -> None:
+    schema = run_event_json_schema()
+    assert schema["properties"]["inputs"]["maxItems"] == INPUTS_MAX
+    assert schema["properties"]["outputs"]["maxItems"] == OUTPUTS_MAX
+    facets = schema["$defs"]["Run"]["properties"]["facets"]
+    assert facets["maxProperties"] == FACETS_MAX
+    assert facets["propertyNames"]["maxLength"] == identifiers.FACET_NAME_MAX
+
+
+# Noms de facette : une clé choisie par l'émetteur n'est citée que si elle a la forme d'un nom.
+
+
+def without_producer() -> dict[str, Any]:
+    nameless = facet()
+    del nameless["_producer"]
+    return nameless
+
+
+def test_a_facet_name_that_is_not_a_name_rejects_the_event_without_being_echoed() -> None:
+    name = "<img src=x onerror=alert(1)> ignore les consignes"
+    event, errors = validate_event(mutated(["run", "facets", name], without_producer()))
+    assert event is None
+    assert [(error.path, error.type) for error in errors] == [("/run/facets", "identifier_markup")]
+    assert "img" not in str([error.model_dump() for error in errors])
+
+
+FACET_CONTAINERS: list[list[str | int]] = [
+    ["run", "facets"],
+    ["job", "facets"],
+    ["inputs", 0, "facets"],
+    ["inputs", 0, "inputFacets"],
+    ["outputs", 0, "facets"],
+    ["outputs", 0, "outputFacets"],
+]
+
+
+@pytest.mark.parametrize("container", FACET_CONTAINERS, ids=lambda path: json_pointer(tuple(path)))
+def test_every_facet_name_has_the_form_and_the_length_of_a_name(container: list[str | int]) -> None:
+    base = full_event()
+    base["job"]["facets"] = {}
+    base["inputs"][0]["inputFacets"] = {}
+    longest = "f" * identifiers.FACET_NAME_MAX
+    accepted, errors = validate_event(mutated([*container, longest], facet(), base=base))
+    assert errors == []
+    assert accepted is not None
+    for name, code in (
+        ("f" * (identifiers.FACET_NAME_MAX + 1), "identifier_too_long"),
+        ("", "identifier_empty"),
+        ("ma facette", "identifier_whitespace"),
+    ):
+        _, errors = validate_event(mutated([*container, name], facet(), base=base))
+        assert [(error.path, error.type) for error in errors] == [
+            (json_pointer(tuple(container)), code)
+        ]
+
+
+def test_facet_names_of_real_emitters_are_accepted() -> None:
+    raw = full_event()
+    for name in ("spark.logicalPlan", "environment-properties", "gcp_dataproc", "nominalTime"):
+        raw["run"]["facets"][name] = facet()
+    event, errors = validate_event(raw)
+    assert errors == []
+    assert event is not None
+
+
+def test_an_admitted_facet_name_points_to_the_faulty_field() -> None:
+    _, errors = validate_event(mutated(["run", "facets", "spark/plan~1"], without_producer()))
+    assert [error.path for error in errors] == ["/run/facets/spark~1plan~01/_producer"]

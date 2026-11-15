@@ -20,6 +20,7 @@ from starlette.types import ASGIApp
 from answerlineage_api.explorer import explorer_files
 from answerlineage_api.guard import HostOriginMiddleware, guard_from_settings
 from answerlineage_api.headers import SecurityHeadersMiddleware
+from answerlineage_api.ingest.body import max_body_bytes_from_settings
 from answerlineage_api.ingest.duplicates import router as duplicates_router
 from answerlineage_api.ingest.models import run_event_json_schema
 from answerlineage_api.ingest.routes import router as ingestion_router
@@ -52,6 +53,7 @@ def create_app(
     engine: AsyncEngine | None = None,
     *,
     max_batch_events: int = DEFAULT_MAX_BATCH_EVENTS,
+    max_body_bytes: int | None = None,
     allowed_hosts: Sequence[str] | None = None,
     allowed_origins: Sequence[str] | None = None,
     ui_directory: str | os.PathLike[str] | None = None,
@@ -68,8 +70,11 @@ def create_app(
     ``read_timeout_ms`` est le délai maximal d'une lecture du graphe, en
     millisecondes ; sans lui, il vient de ``ANSWERLINEAGE_READ_TIMEOUT_MS``,
     et vaut 5 secondes quand la variable n'est pas donnée.
+    ``max_body_bytes`` borne en octets le corps d'une requête d'ingestion, reçu
+    comme déployé ; sans lui, il vient de ``ANSWERLINEAGE_MAX_BODY_BYTES``.
     """
     guard = guard_from_settings(allowed_hosts, allowed_origins, os.environ)
+    body_limit = max_body_bytes_from_settings(max_body_bytes, os.environ)
     explorer = explorer_files(ui_directory, os.environ)
     read_timeout = read_timeout_from_settings(read_timeout_ms, os.environ)
 
@@ -98,6 +103,7 @@ def create_app(
     app.state.engine = engine
     app.state.max_batch_events = max_batch_events
     app.state.read_timeout_ms = read_timeout
+    app.state.max_body_bytes = body_limit
     app.include_router(ingestion_router)
     app.include_router(duplicates_router)
     app.include_router(lineage_router)

@@ -8,11 +8,14 @@ graphe attendu.
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 
+from answerlineage_api.app import DEFAULT_MAX_BATCH_EVENTS
+from answerlineage_api.ingest.body import DEFAULT_MAX_BODY_BYTES, MAX_DEPTH, nesting_depth
 from answerlineage_api.ingest.models import validate_event
 from answerlineage_api.store.graph import (
     AgentRef,
@@ -209,3 +212,17 @@ def test_every_event_of_the_truth_corpus_is_accepted_and_projected() -> None:
             assert [answer.fingerprint for answer in record.answers] == (
                 [] if run.answer is None else [run.answer.fingerprint]
             )
+
+
+def test_a_full_batch_of_the_heaviest_corpus_events_fits_the_ingestion_limits(
+    enterprise: Enterprise,
+) -> None:
+    """Un lot plein du plus lourd des événements de l'entreprise et du corpus de vérité
+    passe largement, en taille comme en profondeur."""
+    events = render(enterprise) + [
+        event for scenario in load_corpus() for event in scenario.events()
+    ]
+    heaviest = sorted(events, key=lambda event: len(json.dumps(event)))[-1:]
+    batch = json.dumps(heaviest * DEFAULT_MAX_BATCH_EVENTS).encode()
+    assert len(batch) * 4 < DEFAULT_MAX_BODY_BYTES
+    assert nesting_depth(batch) * 4 < MAX_DEPTH

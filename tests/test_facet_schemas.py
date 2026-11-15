@@ -22,6 +22,7 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 from answerlineage_api import identifiers
+from answerlineage_api.ingest.models import RECIPIENTS_MAX
 from answerlineage_corpus.enterprise import generate
 from answerlineage_corpus.events import render
 from answerlineage_corpus.scenarios import load_corpus
@@ -284,6 +285,15 @@ def test_a_schema_bounds_a_recipient_where_ingestion_does() -> None:
     minimal = EXAMPLES[name]["minimal"]
     at_the_bound = facet(name, **{**minimal, "recipients": ["a" * identifiers.RECIPIENT_MAX]})
     beyond = facet(name, **{**minimal, "recipients": ["a" * (identifiers.RECIPIENT_MAX + 1)]})
+    assert list(validator(name).iter_errors(at_the_bound)) == []
+    assert list(validator(name).iter_errors(beyond)) != []
+
+
+def test_a_schema_bounds_the_number_of_recipients_where_ingestion_does() -> None:
+    name = "DeliveryOutputDatasetFacet"
+    minimal = EXAMPLES[name]["minimal"]
+    at_the_bound = facet(name, **{**minimal, "recipients": ["a"] * RECIPIENTS_MAX})
+    beyond = facet(name, **{**minimal, "recipients": ["a"] * (RECIPIENTS_MAX + 1)})
     assert list(validator(name).iter_errors(at_the_bound)) == []
     assert list(validator(name).iter_errors(beyond)) != []
 

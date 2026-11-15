@@ -43,6 +43,19 @@ DELIVERY_FACET: Final = "answerlineage_delivery"
 EVENT_TIME_EARLIEST: Final = datetime(1970, 1, 1, tzinfo=UTC)
 EVENT_TIME_AHEAD: Final = timedelta(days=1)
 
+# Nombre d'éléments de ce qui se répète dans un événement, et que la validation
+# et la projection parcourent. Larges pour l'usage réel, mais finis.
+# Une requête d'agent lit au plus quelques dizaines de tables.
+INPUTS_MAX: Final = 1_000
+OUTPUTS_MAX: Final = 1_000
+# OpenLineage définit une trentaine de facettes standard par objet.
+FACETS_MAX: Final = 100
+# BigQuery admet 10 000 colonnes par table, PostgreSQL 1 600.
+SCHEMA_FIELDS_MAX: Final = 10_000
+# La borne du schéma publié de la facette de diffusion.
+RECIPIENTS_MAX: Final = 10_000
+TOO_MANY_ITEMS: Final = "too_many_items"
+
 _RFC_3339 = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})"
 )
@@ -76,11 +89,23 @@ class Facet(BaseModel):
     schema_url: AnyUrl = Field(alias="_schemaURL")
 
 
+# Les bornes figurent dans le contrat publié ; ``count_errors`` et
+# ``facet_name_errors`` les appliquent, avec un code stable.
+_FACETS_SCHEMA: Final[dict[str, Any]] = {
+    "maxProperties": FACETS_MAX,
+    "propertyNames": {"minLength": 1, "maxLength": identifiers.FACET_NAME_MAX},
+}
+
+
+def _facets(alias: str | None = None) -> Any:
+    return Field(default_factory=dict, alias=alias, json_schema_extra=_FACETS_SCHEMA)
+
+
 class Run(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     run_id: RunId = Field(alias="runId")
-    facets: dict[str, Facet] = Field(default_factory=dict)
+    facets: dict[str, Facet] = _facets()
 
 
 class Job(BaseModel):
@@ -88,7 +113,7 @@ class Job(BaseModel):
 
     namespace: str
     name: str
-    facets: dict[str, Facet] = Field(default_factory=dict)
+    facets: dict[str, Facet] = _facets()
 
 
 class InputDataset(BaseModel):
@@ -96,8 +121,8 @@ class InputDataset(BaseModel):
 
     namespace: str
     name: str
-    facets: dict[str, Facet] = Field(default_factory=dict)
-    input_facets: dict[str, Facet] = Field(default_factory=dict, alias="inputFacets")
+    facets: dict[str, Facet] = _facets()
+    input_facets: dict[str, Facet] = _facets("inputFacets")
 
 
 class OutputDataset(BaseModel):
@@ -105,8 +130,8 @@ class OutputDataset(BaseModel):
 
     namespace: str
     name: str
-    facets: dict[str, Facet] = Field(default_factory=dict)
-    output_facets: dict[str, Facet] = Field(default_factory=dict, alias="outputFacets")
+    facets: dict[str, Facet] = _facets()
+    output_facets: dict[str, Facet] = _facets("outputFacets")
 
 
 class RunEvent(BaseModel):
@@ -120,8 +145,12 @@ class RunEvent(BaseModel):
     event_type: EventType = Field(default="OTHER", alias="eventType")
     run: Run
     job: Job
-    inputs: list[InputDataset] = Field(default_factory=list)
-    outputs: list[OutputDataset] = Field(default_factory=list)
+    inputs: list[InputDataset] = Field(
+        default_factory=list, json_schema_extra={"maxItems": INPUTS_MAX}
+    )
+    outputs: list[OutputDataset] = Field(
+        default_factory=list, json_schema_extra={"maxItems": OUTPUTS_MAX}
+    )
 
     @field_validator("event_time")
     @classmethod
@@ -234,28 +263,122 @@ def identifier_errors(raw: Mapping[str, Any]) -> list[FieldError]:
     return errors
 
 
+def _facet_containers(raw: Mapping[str, Any]) -> Iterator[tuple[Location, object]]:
+    """Les objets d'un événement dont les clés sont des noms de facette."""
+    yield ("run", "facets"), _mapping(raw.get("run")).get("facets")
+    yield ("job", "facets"), _mapping(raw.get("job")).get("facets")
+    for side, own in (("inputs", "inputFacets"), ("outputs", "outputFacets")):
+        for index, item in enumerate(_items(raw.get(side))):
+            dataset = _mapping(item)
+            for container in ("facets", own):
+                yield (side, index, container), dataset.get(container)
+
+
+def _too_many(location: Location, bound: int) -> FieldError:
+    # Le motif cite la borne, jamais le nombre reçu.
+    return FieldError(
+        path=json_pointer(location),
+        type=TOO_MANY_ITEMS,
+        message=f"Ce champ compte au plus {bound} éléments.",
+    )
+
+
+def _over(value: object, bound: int) -> bool:
+    return isinstance(value, list | dict) and len(value) > bound
+
+
+def count_errors(raw: Mapping[str, Any]) -> list[FieldError]:
+    """Ce qui se répète au-delà de sa borne : entrées, sorties, facettes, colonnes, destinataires.
+
+    Un tableau trop long n'est pas parcouru : ce qu'il contient n'est pas contrôlé.
+    """
+    errors = [
+        _too_many((side,), bound)
+        for side, bound in (("inputs", INPUTS_MAX), ("outputs", OUTPUTS_MAX))
+        if _over(raw.get(side), bound)
+    ]
+    if errors:
+        return errors
+    errors = [
+        _too_many(location, FACETS_MAX)
+        for location, facets in _facet_containers(raw)
+        if _over(facets, FACETS_MAX)
+    ]
+    for side in ("inputs", "outputs"):
+        for index, item in enumerate(_items(raw.get(side))):
+            dataset = _mapping(item)
+            fields = _mapping(_mapping(dataset.get("facets")).get("schema")).get("fields")
+            if _over(fields, SCHEMA_FIELDS_MAX):
+                at: Location = (side, index, "facets", "schema", "fields")
+                errors.append(_too_many(at, SCHEMA_FIELDS_MAX))
+            if side == "inputs":
+                continue
+            for container in ("facets", "outputFacets"):
+                delivery = _mapping(_mapping(dataset.get(container)).get(DELIVERY_FACET))
+                if _over(delivery.get("recipients"), RECIPIENTS_MAX):
+                    at = (side, index, container, DELIVERY_FACET, "recipients")
+                    errors.append(_too_many(at, RECIPIENTS_MAX))
+    return errors
+
+
+def facet_name_errors(raw: Mapping[str, Any]) -> list[FieldError]:
+    """Noms de facette qui n'ont pas la forme d'un nom.
+
+    Le nom est choisi par l'émetteur : il n'est jamais cité. L'erreur désigne
+    l'objet qui le porte, avec le code et le motif fixes de l'identifiant.
+    """
+    found: dict[tuple[str, str], FieldError] = {}
+    for location, facets in _facet_containers(raw):
+        for name in _mapping(facets):
+            fault = identifier_fault(name, max_length=identifiers.FACET_NAME_MAX)
+            if fault is not None:
+                path = json_pointer(location)
+                found[path, fault.code] = FieldError(
+                    path=path, type=fault.code, message=fault.message
+                )
+    return list(found.values())
+
+
+def _admitted(location: Location) -> bool:
+    """Vrai si chaque clé d'un emplacement a la forme d'un nom, et peut donc être citée."""
+    return all(
+        not isinstance(part, str)
+        or identifier_fault(part, max_length=identifiers.FACET_NAME_MAX) is None
+        for part in location
+    )
+
+
 def validate_event(
     raw: object, *, received_at: datetime | None = None
 ) -> tuple[RunEvent | None, list[FieldError]]:
     """Valide un événement. Renvoie l'événement, ou la liste de ses champs fautifs.
 
     L'heure de l'événement est bornée par ``received_at``, l'heure de sa
-    réception ; à défaut, par l'heure courante.
+    réception ; à défaut, par l'heure courante. Un événement qui dépasse une
+    borne de nombre n'est pas validé plus avant : seul ce dépassement est
+    rapporté.
     """
     if not isinstance(raw, dict):
         return None, [
             FieldError(path="", type="not_an_object", message="Un événement est un objet JSON.")
         ]
+    counted = count_errors(raw)
+    if counted:
+        return None, counted
     event: RunEvent | None = None
     errors: list[FieldError] = []
     try:
         event = _RUN_EVENT.validate_python(raw, context={"received_at": received_at})
     except ValidationError as error:
         # Ni la valeur reçue ni son contexte ne sont renvoyés : chemin, code, motif.
+        # Les seules clés reçues d'un chemin sont des noms de facette ; une erreur
+        # sous un nom refusé n'est pas rapportée, le nom suffit à rejeter l'événement.
         errors = [
             FieldError(path=json_pointer(item["loc"]), type=item["type"], message=item["msg"])
             for item in error.errors(include_url=False, include_input=False, include_context=False)
+            if _admitted(item["loc"])
         ]
+    errors.extend(facet_name_errors(raw))
     errors.extend(identifier_errors(raw))
     if errors:
         return None, errors
