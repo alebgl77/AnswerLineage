@@ -33,13 +33,14 @@ from proxy.tests.conftest import (
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-TOKEN = "canari-jeton-9f27c1"  # noqa: S105 — canari de test, pas un secret.
+# Canaris : des valeurs inventées, reconnaissables, qui ne sont pas des secrets.
+BEARER = "canari-jeton-9f27c1"
 COOKIE = "canari-cookie-55aa"
 PARAMETER = "canari-parametre-71be"
-URL_KEY = "canari-url-0c4d"
+IN_URL = "canari-url-0c4d"
 ARGUMENT = "canari-argument-3e88"
 # Le résultat de l'outil est du contenu, au même titre que son argument.
-CANARIES = (TOKEN, COOKIE, PARAMETER, URL_KEY, ARGUMENT, "canari", "Séville", "Il fait beau")
+CANARIES = (BEARER, COOKIE, PARAMETER, IN_URL, ARGUMENT, "canari", "Séville", "Il fait beau")
 
 
 async def dump(engine: AsyncEngine) -> str:
@@ -69,7 +70,7 @@ async def test_a_token_crosses_the_whole_path_without_leaving_a_trace(
         ("mcp-method", "tools/call"),
         ("mcp-name", "execute_sql"),
         ("mcp-param-region", PARAMETER),
-        ("authorization", f"Bearer {TOKEN}"),
+        ("authorization", f"Bearer {BEARER}"),
         ("cookie", f"session={COOKIE}"),
     ]
     seen: list[str] = []
@@ -85,7 +86,7 @@ async def test_a_token_crosses_the_whole_path_without_leaving_a_trace(
             async with running(proxy, transparent=True) as proxy_url:
                 relayed = await exchange(
                     "POST",
-                    f"{proxy_url}/mcp?access_token={URL_KEY}",
+                    f"{proxy_url}/mcp?access_token={IN_URL}",
                     headers=headers,
                     content=tool_call("execute_sql", {"query": query}, **MODERN_META),
                 )
@@ -95,9 +96,9 @@ async def test_a_token_crosses_the_whole_path_without_leaving_a_trace(
         # Le jeton est bien passé : le serveur MCP l'a reçu, avec le reste de l'appel.
         assert (relayed.status, relayed.body) == (200, TOOL_RESULT)
         (received,) = upstream.requests
-        assert received.header("authorization") == [f"Bearer {TOKEN}"]
+        assert received.header("authorization") == [f"Bearer {BEARER}"]
         assert received.header("mcp-param-region") == [PARAMETER]
-        assert URL_KEY.encode() in received.query
+        assert IN_URL.encode() in received.query
         assert ARGUMENT.encode() in received.body
 
         events = list(sink.events)
@@ -111,7 +112,7 @@ async def test_a_token_crosses_the_whole_path_without_leaving_a_trace(
             while not (await process_batch(engine)).empty:
                 pass
             searched = await api.get(
-                "/api/v1/answers", params={"channel": "slack", "message_ref": TOKEN}
+                "/api/v1/answers", params={"channel": "slack", "message_ref": BEARER}
             )
             seen.extend([ingested.text, searched.text])
 

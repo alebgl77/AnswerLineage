@@ -1,0 +1,6 @@
+# Exceptions de la détection de secrets, une empreinte par ligne :
+# commit:fichier:règle:ligne. Chaque exception dit pourquoi elle existe.
+
+# Canari de test, pas un secret : une valeur inventée, que le test fait
+# traverser le proxy pour vérifier qu'elle ne laisse aucune trace.
+e089ebdf2e1983039dfad85e949440d9e770682f:tests/test_no_token_anywhere.py:generic-api-key:36

@@ -7,7 +7,7 @@ Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque me
 | `static` | Politique du dépôt, compatibilité de l'API avec le contrat publié, format, lint (ruff), typage strict (mypy) | `make policy contract format-check lint typecheck` |
 | `tests` | Tests et couverture de branches, sur la matrice Python 3.13 et 3.14, PostgreSQL 17 et 18 | `make test` |
 | `tests` | Porte de couverture : 85 % par composant, en branches et en lignes et branches | `make coverage-gate` |
-| `secrets` | Aucun secret dans tout l'historique (gitleaks), après un canari qui prouve que le détecteur bloque | `make secrets` |
+| `secrets` | Aucun secret dans tout l'historique (gitleaks), après un canari qui prouve que le détecteur bloque. Une trouvaille est affichée avec son fichier, sa ligne et sa règle, valeur masquée ; une exception se déclare dans `.gitleaksignore`, chemin protégé | `make secrets` |
 | `codeql` | Analyse de sécurité du code Python et des workflows (CodeQL, requêtes étendues) | |
 | `agent-config` | Une merge request qui modifie la configuration d'agents ou un garde-fou porte l'approbation d'un mainteneur | |
 | `devcontainer` | Le conteneur de développement se construit, installe le projet et passe les tests | |

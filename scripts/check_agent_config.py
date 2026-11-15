@@ -44,6 +44,9 @@ PROTECTED: tuple[str, ...] = (
     ".pre-commit-config.yaml",
     "renovate.json",
     "scripts/",
+    # Réglages et exceptions de la détection de secrets.
+    ".gitleaks.toml",
+    ".gitleaksignore",
 )
 
 _PRINTABLE = re.compile(r"[\w./ @+=,-]{1,300}")

@@ -22,3 +22,5 @@
 /.pre-commit-config.yaml          @alebgl77
 /renovate.json                    @alebgl77
 /scripts/                         @alebgl77
+/.gitleaks.toml                   @alebgl77
+/.gitleaksignore                  @alebgl77

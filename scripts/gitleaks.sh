@@ -5,7 +5,9 @@
 #   scripts/gitleaks.sh selftest  vérifie que le détecteur bloque bien un secret
 #
 # L'image est épinglée par empreinte. Elle tourne sans réseau, le dépôt monté
-# en lecture seule.
+# en lecture seule. Une trouvaille est affichée avec son fichier, sa ligne et
+# sa règle ; sa valeur est masquée. Une exception se déclare, avec son motif,
+# dans .gitleaksignore.
 set -euo pipefail
 
 CANARY_REPOSITORY=""
@@ -17,7 +19,8 @@ gitleaks_git() {
     --env GIT_CONFIG_COUNT=1 \
     --env GIT_CONFIG_KEY_0=safe.directory \
     --env GIT_CONFIG_VALUE_0='*' \
-    "$IMAGE" git --no-banner --redact --exit-code 1 /repo
+    "$IMAGE" git --no-banner --redact --verbose --exit-code 1 \
+    --gitleaks-ignore-path /repo /repo
 }
 
 scan() {
