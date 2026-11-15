@@ -1,0 +1,106 @@
+// Ce que l'API de lecture renvoie à l'explorateur.
+
+export interface DatasetNode {
+  id: string;
+  namespace: string;
+  name: string;
+  kind: string;
+}
+
+export interface ToolNode {
+  id: string;
+  server: string;
+  name: string;
+}
+
+export interface AgentNode {
+  id: string;
+  namespace: string;
+  name: string;
+}
+
+export interface RecipientNode {
+  id: string;
+  pseudonym: string;
+}
+
+export interface AnswerRead {
+  dataset: string;
+  tool: string | null;
+}
+
+export interface AnswerNode {
+  id: string;
+  fingerprint: string;
+  produced_at: string;
+  agent: string | null;
+  channels: string[];
+  recipients: string[];
+  tools: string[];
+  reads: AnswerRead[];
+}
+
+export interface GraphView {
+  datasets: DatasetNode[];
+  tools: ToolNode[];
+  agents: AgentNode[];
+  answers: AnswerNode[];
+  recipients: RecipientNode[];
+  more: boolean;
+  truncated: boolean;
+}
+
+export interface DatasetName {
+  namespace: string;
+  name: string;
+  kind: string;
+}
+
+export interface DatasetList {
+  datasets: DatasetName[];
+  more: boolean;
+}
+
+export interface ImpactResult {
+  dataset: DatasetName;
+  window: { from: string; to: string };
+  counts: { answers: number; recipients: number };
+  coverage: { status: "unknown" };
+  graph: GraphView;
+  truncated: boolean;
+}
+
+export const DEFAULT_LIMIT = 60;
+export const MAX_LIMIT = 200;
+
+// L'API a répondu, mais par un refus : le statut dit lequel.
+export class ApiError extends Error {
+  constructor(readonly status: number) {
+    super(`L'API a répondu ${status}.`);
+  }
+}
+
+export async function fetchJson<T>(path: string, signal: AbortSignal): Promise<T> {
+  const response = await fetch(path, { headers: { accept: "application/json" }, signal });
+  if (!response.ok) {
+    throw new ApiError(response.status);
+  }
+  return (await response.json()) as T;
+}
+
+export function graphPath(limit: number): string {
+  return `/api/v1/graph?limit=${limit}`;
+}
+
+export function answerPath(id: string): string {
+  return `/api/v1/graph?answer=${encodeURIComponent(id)}`;
+}
+
+export function datasetsPath(): string {
+  return "/api/v1/datasets?limit=500";
+}
+
+export function impactPath(namespace: string, name: string, from: string, to: string): string {
+  const query = new URLSearchParams({ namespace, name, from, to, limit: String(MAX_LIMIT) });
+  return `/api/v1/impact?${query.toString()}`;
+}

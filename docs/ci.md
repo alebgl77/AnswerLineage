@@ -11,9 +11,12 @@ Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque me
 | `codeql` | Analyse de sécurité du code Python et des workflows (CodeQL, requêtes étendues) | |
 | `agent-config` | Une merge request qui modifie la configuration d'agents ou un garde-fou porte l'approbation d'un mainteneur | |
 | `devcontainer` | Le conteneur de développement se construit, installe le projet et passe les tests | |
+| `explorer` | L'explorateur se construit, ses types sont justes, et ses tests de bout en bout passent dans Chromium | `make ui e2e` |
 | `ci-ok` | Toutes les étapes bloquantes sont vertes | |
 
 `make check` enchaîne sur le poste les contrôles des jobs `static` et `tests`.
+
+Les tests marqués `e2e` pilotent l'explorateur dans Chromium. Ils demandent l'interface construite (`make ui`, avec Node 22) et le navigateur (`uv run playwright install chromium`). Sur le poste, ils sont sautés quand l'un des deux manque ; en CI, ils échouent.
 
 ## Rejouer une case de la matrice sur le poste
 

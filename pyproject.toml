@@ -14,6 +14,7 @@ dev = [
     "jsonschema[format-nongpl]>=4.25",
     "mcp>=1.20",
     "mypy>=1.18",
+    "playwright>=1.55",
     "pre-commit>=4.3",
     "pytest-cov>=7.0",
     "pytest>=8.4",
@@ -98,6 +99,7 @@ testpaths = [
 xfail_strict = true
 markers = [
     "integration: test sur un PostgreSQL réel, démarré par Testcontainers (Docker requis)",
+    "e2e: test de bout en bout dans un navigateur (explorateur construit et Chromium requis)",
 ]
 
 [tool.coverage.run]

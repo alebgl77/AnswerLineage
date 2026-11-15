@@ -22,11 +22,13 @@ make test     # tests seuls, avec le rapport de couverture
 make policy   # politique du dépôt : workflows, scripts, Dockerfiles, conteneur de développement, propriétaires du code
 make openapi  # met à jour le contrat OpenAPI publié (spec/openapi/), à relancer dès qu'une route change
 make contract # compare le contrat à celui de la branche cible : un changement incompatible échoue
+make ui       # construit l'explorateur dans ui/dist (Node 22) : paquets verrouillés, types, construction
+make e2e      # pilote l'explorateur construit dans Chromium (uv run playwright install chromium)
 uv run pytest proxy/tests/test_sql.py::test_select_star_reads_the_whole_table   # un test isolé
 uv run pytest -m "not integration"                                              # sans PostgreSQL
 ```
 
-Les tests marqués `integration` démarrent un PostgreSQL réel avec Testcontainers : Docker doit tourner. `docs/ci.md` montre comment rejouer une case de la matrice (Python 3.13 et 3.14, PostgreSQL 17 et 18).
+Les tests marqués `integration` démarrent un PostgreSQL réel avec Testcontainers : Docker doit tourner. Les tests marqués `e2e` demandent en plus l'explorateur construit et Chromium ; ils sont sautés sur le poste quand l'un manque, et échouent en CI. `docs/ci.md` montre comment rejouer une case de la matrice (Python 3.13 et 3.14, PostgreSQL 17 et 18).
 
 Une dépendance s'ajoute dans le `pyproject.toml` du composant, puis `uv lock`. Le `pyproject.toml` racine impose un délai de carence de 7 jours (`exclude-newer`).
 
@@ -44,6 +46,7 @@ Des services sans état autour d'un seul PostgreSQL. Le flux : capture → évé
 | `api/` | Schéma du graphe, migrations, écriture du graphe, API d'ingestion OpenLineage, API de lecture du lignage | FastAPI, SQLAlchemy Core, Alembic, psycopg |
 | `workers/` | File de traitement dans PostgreSQL, projection des événements reçus dans le graphe | SQLAlchemy Core, psycopg |
 | `corpus/` | Entreprise synthétique à vérité connue : événements OpenLineage et vérité des incidents, déterminés par une graine | Bibliothèque standard seule |
+| `ui/` | Explorateur : le graphe en cinq colonnes, le mode Propager, les adresses partageables. Fichiers statiques servis par l'API | TypeScript, React, SVG, Vite |
 
 Chaque composant est un membre de l'espace de travail uv : sources dans `<composant>/src/answerlineage_<composant>/`, tests dans `<composant>/tests/` (importés sous `<composant>.tests`). Les tests qui croisent plusieurs composants sont dans `tests/`. Un nouveau composant s'ajoute au `pyproject.toml` racine à six endroits : membres de l'espace de travail, `src` de ruff, `mypy_path` et `files` de mypy, `testpaths` de pytest, `source` de coverage, chemins de la porte de couverture.
 
@@ -56,6 +59,7 @@ Ce qui demande de lire plusieurs fichiers :
 - **L'analyse du SQL échoue du côté sûr.** Elle ne liste les colonnes d'une table que si la liste est sûre d'être complète ; sinon la table est rendue en entier, ou la lecture est « non résolue ». Une colonne manquante ferait écarter à tort une réponse touchée.
 - **L'API publiée est un contrat.** `spec/openapi/answerlineage-v1.json` est la spécification servie par l'application ; un test échoue s'ils diffèrent, des tests générés (Schemathesis) vérifient que chaque route s'y conforme, et `scripts/check_openapi_compat.py` refuse un changement incompatible avec la branche cible.
 - **Lecture du lignage** (`api/.../lineage/`). Les sources d'une réponse sont les lectures de son run et de ses runs enfants (`trace.py`). La vue en cinq colonnes part des réponses les plus récentes et donne à chacune sa chaîne (`overview.py`). La propagation part des lectures d'un jeu de données dans une fenêtre et remonte aux runs parents (`impact.py`) ; `tests/test_truth_corpus_impact.py` la mesure sur le corpus de vérité. Toute lecture du graphe est bornée, et une route ne renvoie jamais la valeur reçue dans une erreur (`responses.py`).
+- **L'explorateur ne lit que l'API de lecture** (`ui/src/`). `graph.ts` déduit les liens et la chaîne d'un nœud de la vue reçue, `route.ts` fait de l'adresse l'état de la page. L'API le sert sous une politique de sécurité du contenu stricte (`api/.../explorer.py`) : ni script ni style en ligne, donc aucun attribut `style` dans les composants. `tests/test_explorer.py` compare ce que la page affiche à l'entreprise générée.
 - **Écritures du graphe idempotentes et commutatives** (`api/.../store/graph.py`) : rejouer un événement, ou recevoir deux événements d'un run dans le désordre, donne le même graphe.
 - **De l'événement au graphe.** L'ingestion écrit l'événement brut et une ligne de file dans la même transaction (`api/.../ingest/store.py`). Un worker réclame un lot avec `FOR UPDATE SKIP LOCKED`, projette chaque événement (`workers/.../projection.py`) et retire le lot de la file dans une seule transaction (`workers/.../queue.py`) : ni double traitement, ni perte. `workers` dépend de `api` pour le schéma et l'écriture du graphe.
 - **La vérité du corpus ne passe pas par le produit.** `corpus/.../enterprise.py` établit lui-même les réponses touchées par un incident, à partir de ce qu'il a généré : elle sert à mesurer le moteur, elle ne se calcule donc jamais avec lui. Ses tirages sont nommés (`_Dice`) : en ajouter un ne décale pas les autres. Le corpus de vérité (`scenarios.py`, `scenario_data/`) tient des scénarios à la vérité écrite à la main ; son contrôle la recoupe avec la description du scénario, et son empreinte est liée à son numéro de version.

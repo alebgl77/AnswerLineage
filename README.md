@@ -10,6 +10,8 @@ Un tableau de bord faux se corrige au rechargement suivant. Une réponse d'agent
 
 Le lignage est capté sans modifier les agents, normalisé au format [OpenLineage](https://openlineage.io) et rangé dans PostgreSQL.
 
+![L'explorateur d'AnswerLineage : une table fausse, les 16 réponses et les 13 destinataires touchés](docs/images/explorateur-propager.png)
+
 > Projet en cours de construction. Le tableau « État du projet » dit ce qui fonctionne aujourd'hui. Les interfaces peuvent changer avant la première version.
 
 ## Comment ça marche
@@ -47,12 +49,13 @@ Le proxy se place devant un serveur [MCP](https://modelcontextprotocol.io) exist
 | Propagation d'un incident : réponses et destinataires touchés par une table fausse sur une période | Disponible |
 | Entreprise synthétique et corpus de vérité, pour essayer et mesurer sans donnée réelle | Disponible |
 | Envoi des événements du proxy vers l'API | À venir |
+| Explorateur visuel : graphe en cinq colonnes, mode Propager, adresses partageables | Disponible |
 | Propagation fine (colonnes, lignes, versions) et transitive (mémoire, tables dérivées) | À venir |
-| Explorateur visuel, rappel des destinataires | À venir |
+| Rappel des destinataires après validation humaine | À venir |
 
 ## Essayer
 
-Prérequis : [uv](https://docs.astral.sh/uv/), Python 3.13 ou 3.14, Docker.
+Prérequis : [uv](https://docs.astral.sh/uv/), Python 3.13 ou 3.14, Docker, et Node 22 pour l'explorateur.
 
 ```bash
 git clone https://github.com/alebgl77/AnswerLineage.git && cd AnswerLineage && make setup
@@ -150,6 +153,26 @@ La réponse compte 16 réponses touchées et 13 destinataires, et donne la chaî
 uv run answerlineage-corpus truth
 ```
 
+### L'explorateur
+
+L'explorateur montre tout cela en cinq colonnes, des données aux personnes. Il se construit une fois :
+
+```bash
+make ui
+```
+
+Puis l'API se relance avec le dossier construit, à la place de la commande précédente :
+
+```bash
+ANSWERLINEAGE_UI_DIR=ui/dist uv run uvicorn --factory answerlineage_api.app:create_app
+```
+
+Le graphe est sur [http://127.0.0.1:8000/](http://127.0.0.1:8000/). L'incident propagé plus haut s'ouvre directement par son adresse, qui se partage telle quelle :
+
+```
+http://127.0.0.1:8000/#/propager?namespace=bigquery&name=ventes.suivi.commandes&from=2026-11-11T06:00:00Z&to=2026-11-12T12:00:00Z
+```
+
 ### Le proxy MCP
 
 Devant un serveur MCP qui écoute sur le port 9000 et expose un outil `execute_sql` dont l'argument `query` porte du SQL BigQuery :
@@ -165,6 +188,7 @@ L'agent se connecte alors à `http://127.0.0.1:8717` au lieu du serveur : rien d
 - [Proxy MCP](docs/proxy.md) : ce qui est relayé, ce qui est lu, analyse du SQL, limites connues
 - [API d'ingestion](docs/ingestion.md) : routes, lots, validation, rejeu
 - [API de lecture](docs/lecture.md) : retrouver une réponse, remonter à ses sources, propager un incident
+- [Explorateur](docs/explorateur.md) : le graphe en cinq colonnes, le mode Propager, les adresses partageables
 - [Workers](docs/workers.md) : file de traitement, garanties, projection dans le graphe
 - [Schéma du graphe](docs/schema.md) : tables, écritures, migrations
 - [Entreprise synthétique et corpus de vérité](docs/corpus.md) : ce qu'ils contiennent, leurs événements, la vérité des incidents

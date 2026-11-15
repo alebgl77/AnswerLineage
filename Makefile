@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check policy contract openapi format format-check lint typecheck test coverage-gate secrets
+.PHONY: help setup check policy contract openapi format format-check lint typecheck test coverage-gate secrets ui e2e
 
 help: ## Liste les cibles
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -33,7 +33,7 @@ typecheck:
 	uv run mypy
 
 test: ## Lance les tests avec la couverture de branches
-	uv run pytest --cov --cov-report=term-missing --cov-report=json
+	uv run pytest $(PYTEST_ARGS) --cov --cov-report=term-missing --cov-report=json
 
 coverage-gate: ## Vérifie le seuil de couverture par composant (après make test)
 	uv run python -m scripts.coverage_gate
@@ -41,3 +41,11 @@ coverage-gate: ## Vérifie le seuil de couverture par composant (après make tes
 secrets: ## Détection de secrets sur tout l'historique (gitleaks, Docker requis)
 	scripts/gitleaks.sh selftest
 	scripts/gitleaks.sh scan
+
+ui: ## Construit l'explorateur dans ui/dist (Node requis)
+	npm ci --prefix ui --ignore-scripts --no-audit --no-fund
+	npm run --prefix ui typecheck
+	npm run --prefix ui build
+
+e2e: ## Tests de bout en bout de l'explorateur dans Chromium (après make ui)
+	uv run pytest -m e2e

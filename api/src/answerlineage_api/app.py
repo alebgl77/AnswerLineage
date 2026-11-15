@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from answerlineage_api.explorer import explorer_files
 from answerlineage_api.guard import HostOriginMiddleware, guard_from_settings
 from answerlineage_api.ingest.models import run_event_json_schema
 from answerlineage_api.ingest.routes import router as ingestion_router
@@ -34,14 +35,19 @@ def create_app(
     max_batch_events: int = DEFAULT_MAX_BATCH_EVENTS,
     allowed_hosts: Sequence[str] | None = None,
     allowed_origins: Sequence[str] | None = None,
+    ui_directory: str | os.PathLike[str] | None = None,
 ) -> FastAPI:
     """Construit l'application. Sans moteur fourni, la base vient de l'environnement.
 
     ``allowed_hosts`` et ``allowed_origins`` nomment les hôtes et les origines
     attendus en plus de la boucle locale ; sans eux, ils viennent de
     ``ANSWERLINEAGE_ALLOWED_HOSTS`` et ``ANSWERLINEAGE_ALLOWED_ORIGINS``.
+    ``ui_directory`` est le dossier construit de l'explorateur, servi à la
+    racine ; sans lui, il vient de ``ANSWERLINEAGE_UI_DIR``, et l'API ne sert
+    aucune page quand il n'est pas donné.
     """
     guard = guard_from_settings(allowed_hosts, allowed_origins, os.environ)
+    explorer = explorer_files(ui_directory, os.environ)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -71,6 +77,9 @@ def create_app(
     app.include_router(lineage_router)
     app.add_exception_handler(RequestValidationError, reject_invalid_request)
     app.add_middleware(HostOriginMiddleware, guard=guard)
+    if explorer is not None:
+        # Monté en dernier : les routes de l'API passent avant les fichiers.
+        app.mount("/", explorer, name="explorer")
 
     def openapi() -> dict[str, Any]:
         if app.openapi_schema is None:

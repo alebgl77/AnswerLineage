@@ -70,7 +70,8 @@ jobs:
       - name: Installe l'environnement verrouillé
         run: uv sync --all-packages --locked
       - name: Tests et couverture de branches
-        run: make test
+        # Les tests dans le navigateur ont leur propre job : explorer.
+        run: make test PYTEST_ARGS='-m "not e2e"'
       - name: Porte de couverture (85 % par composant)
         run: make coverage-gate
 
@@ -146,12 +147,35 @@ jobs:
           docker run --rm --volume "$PWD:/src:ro" answerlineage-dev sh -c \
             'cp -r /src /tmp/projet && cd /tmp/projet && make setup && uv run pytest -m "not integration" -q'
 
+  explorer:
+    name: Explorateur
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Installe l'environnement verrouillé
+        run: uv sync --all-packages --locked
+      - name: Construit l'explorateur, après contrôle de ses types
+        run: make ui
+      - name: Installe Chromium
+        run: uv run playwright install --with-deps chromium
+      - name: Tests de bout en bout dans le navigateur
+        run: make e2e
+
   # Seul contrôle à exiger dans la protection de la branche principale : il
   # échoue dès qu'une étape bloquante échoue, est annulée ou est sautée.
   ci-ok:
     name: ci-ok
     if: ${{ always() }}
-    needs: [static, tests, secrets, codeql, agent-config, devcontainer]
+    needs: [static, tests, secrets, codeql, agent-config, devcontainer, explorer]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

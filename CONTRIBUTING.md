@@ -12,7 +12,7 @@ Ouvrez une issue pour tout changement qui dépasse une correction évidente : un
 
 ## Mise en place
 
-Prérequis : [uv](https://docs.astral.sh/uv/), Python 3.13 ou 3.14, Docker pour les tests d'intégration.
+Prérequis : [uv](https://docs.astral.sh/uv/), Python 3.13 ou 3.14, Docker pour les tests d'intégration, et Node 22 pour l'explorateur.
 
 ```bash
 make setup
@@ -34,6 +34,8 @@ Toute contribution passe `make check` : politique du dépôt, compatibilité de 
 | `make test` | Tests seuls, avec le rapport de couverture |
 | `uv run pytest -m "not integration"` | Tests sans PostgreSQL |
 | `make openapi` | Met à jour le contrat OpenAPI publié, quand une route change |
+| `make ui` | Construit l'explorateur dans `ui/dist` |
+| `make e2e` | Tests de l'explorateur dans Chromium, après `make ui` et `uv run playwright install chromium` |
 
 ## Ce qui est attendu d'un changement
 
@@ -58,7 +60,7 @@ Un changement qui rompt l'une d'elles est refusé, même si ses tests passent :
 
 ## Ce qui demande l'accord du mainteneur
 
-- **Une nouvelle dépendance.** Elle se discute dans une issue. Une fois acceptée, elle s'ajoute au `pyproject.toml` du composant, puis `uv lock`. Une version publiée depuis moins de 7 jours n'est pas adoptée.
+- **Une nouvelle dépendance.** Elle se discute dans une issue. Une fois acceptée, elle s'ajoute au `pyproject.toml` du composant, puis `uv lock` ; pour l'explorateur, à `ui/package.json` en version exacte, puis `npm install --package-lock-only`. Une version publiée depuis moins de 7 jours n'est pas adoptée.
 - **Les chemins protégés** : workflows, `scripts/`, `.devcontainer/`, configuration d'agents de code. Une merge request qui en modifie un échoue au contrôle `agent-config` tant que le mainteneur n'a pas posé le label `agent-config-approved`. Signalez-le dans la description plutôt que de contourner le contrôle.
 - **Un changement incompatible de l'API.** Le pipeline le refuse : une rupture demande une nouvelle version de l'API.
 
