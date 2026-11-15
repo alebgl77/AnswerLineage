@@ -18,10 +18,10 @@ Outcome = Literal["COMPLETE", "FAIL", "ABORT"]
 
 PRODUCER = f"https://github.com/alebgl77/AnswerLineage/tree/{__version__}/proxy"
 RUN_EVENT_SCHEMA = "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent"
-# Adresse provisoire : les schémas des facettes propres seront publiés à une URL immuable.
 TOOL_CALL_FACET = "answerlineage_toolCall"
+# Schéma publié de la facette, à une adresse qui ne change plus (spec/facets/1-0-0/).
 TOOL_CALL_FACET_SCHEMA = (
-    "https://github.com/alebgl77/AnswerLineage/blob/main/spec/facets/"
+    "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/"
     "ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
 )
 # Facette standard : les champs d'un jeu de données lu sont ceux que la requête lit.

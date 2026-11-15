@@ -31,8 +31,8 @@ _VERSION_SCHEMA = (
     _STANDARD + "1-0-1/DatasetVersionDatasetFacet.json#/$defs/DatasetVersionDatasetFacet"
 )
 _TYPE_SCHEMA = _STANDARD + "1-0-1/DatasetTypeDatasetFacet.json#/$defs/DatasetTypeDatasetFacet"
-# Adresses provisoires : les schémas des facettes propres seront publiés à une URL immuable.
-_OWN = "https://github.com/alebgl77/AnswerLineage/blob/main/spec/facets/"
+# Schémas publiés des facettes propres, à des adresses qui ne changent plus (spec/facets/1-0-0/).
+_OWN = "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/"
 _AGENT_SCHEMA = _OWN + "AgentRunFacet.json#/$defs/AgentRunFacet"
 _TOOL_CALL_SCHEMA = _OWN + "ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
 _DELIVERY_SCHEMA = _OWN + "DeliveryOutputDatasetFacet.json#/$defs/DeliveryOutputDatasetFacet"

@@ -13,8 +13,9 @@ check: policy contract format-check lint typecheck test coverage-gate ## Porte d
 policy: ## Politique du dépôt (actions et images épinglées, permissions minimales, agents de code)
 	uv run python -m scripts.check_policy
 
-contract: ## Compatibilité de l'API avec le contrat publié sur la branche cible
+contract: ## Compatibilité de l'API et des schémas de facettes avec ceux publiés sur la branche cible
 	uv run python -m scripts.check_openapi_compat
+	uv run python -m scripts.check_facets_compat
 
 openapi: ## Met à jour la spécification OpenAPI publiée
 	uv run python -m answerlineage_api.openapi > spec/openapi/answerlineage-v1.json

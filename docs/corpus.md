@@ -42,6 +42,8 @@ Chaque demande devient ce que des émetteurs réels enverraient :
 | L'agent répond | `COMPLETE` du run de l'agent ; la réponse est une sortie qui porte la facette `answerlineage_delivery` : empreinte, canal, référence du message, destinataires |
 | L'agent échoue | `FAIL` du run de l'agent, sans sortie |
 
+Les schémas des facettes `answerlineage_*` sont publiés (voir [Facettes OpenLineage](facettes.md)) : un test valide contre eux chaque événement du corpus.
+
 Un test vérifie que chaque événement respecte le schéma officiel d'OpenLineage, que l'API d'ingestion l'accepte, et qu'un appel d'outil est décrit exactement comme le proxy le décrit. Un autre envoie l'entreprise par l'API et les workers, puis compare le graphe obtenu à l'entreprise générée.
 
 ## La vérité
@@ -109,4 +111,3 @@ Les sous-ensembles et les clés d'une lecture sont décrits dans le scénario, m
 
 - Les agents ne se lisent pas entre eux : aucune réponse ne dépend d'une sortie d'un autre agent.
 - Tous les appels sont captés et toutes les lectures sont résolues : l'entreprise n'a pas de trou de lignage.
-- Les facettes `answerlineage_agent` et `answerlineage_delivery` n'ont pas encore de schéma publié ; leur forme peut changer.

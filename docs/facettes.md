@@ -1,0 +1,131 @@
+# Facettes OpenLineage d'AnswerLineage
+
+AnswerLineage reçoit des `RunEvent` OpenLineage ([schéma 2-0-2](../spec/openlineage/README.md)) et les enrichit de cinq facettes qui lui sont propres. Chacune a un schéma JSON versionné : on écrit un émetteur à partir de ces schémas, sans lire le code d'AnswerLineage.
+
+Aucune facette ne porte de contenu : ni prompt, ni argument, ni résultat, ni réponse. Seulement des noms, des empreintes, des tailles et des pseudonymes.
+
+## Où sont les schémas
+
+Un fichier par facette et par version, dans [`spec/facets/`](../spec/facets/1-0-0) :
+
+```text
+spec/facets/<version>/<NomDeLaFacette>.json
+```
+
+La première version est `1-0-0`. Le fichier suit la convention d'OpenLineage pour les facettes personnalisées :
+
+- `$schema` est JSON Schema 2020-12 ;
+- `$id` est l'adresse du fichier brut sur la branche principale :
+  `https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/<version>/<NomDeLaFacette>.json` ;
+- la définition est sous `$defs/<NomDeLaFacette>` et prolonge par `allOf` la définition de base d'OpenLineage (`RunFacet`, `InputDatasetFacet` ou `OutputDatasetFacet`, selon la portée) : `_producer` et `_schemaURL` restent obligatoires ;
+- le `_schemaURL` de la facette émise est l'adresse du fichier suivie de `#/$defs/<NomDeLaFacette>`.
+
+Suivre le `_schemaURL` d'une facette donne donc le schéma exact de la version dont elle se réclame.
+
+## Les cinq facettes
+
+Aucune facette ne ferme ses objets : un champ inconnu est admis, comme dans OpenLineage. Les champs de la colonne « Facultatifs » peuvent être absents.
+
+| Facette | Clé | Portée | Où la placer | Obligatoires |
+| --- | --- | --- | --- | --- |
+| [`AgentRunFacet`](../spec/facets/1-0-0/AgentRunFacet.json) | `answerlineage_agent` | Run | `run.facets` | aucun |
+| [`ToolCallRunFacet`](../spec/facets/1-0-0/ToolCallRunFacet.json) | `answerlineage_toolCall` | Run | `run.facets` | `server` |
+| [`QosRunFacet`](../spec/facets/1-0-0/QosRunFacet.json) | `answerlineage_qos` | Run | `run.facets` | aucun |
+| [`DeliveryOutputDatasetFacet`](../spec/facets/1-0-0/DeliveryOutputDatasetFacet.json) | `answerlineage_delivery` | Jeu de données de sortie | `outputs[].outputFacets` | `fingerprint`, `channel`, `messageRef` |
+| [`KeysInputDatasetFacet`](../spec/facets/1-0-0/KeysInputDatasetFacet.json) | `answerlineage_keys` | Jeu de données d'entrée | `inputs[].inputFacets` | `hmacs` ou `bloomFilter` |
+
+### `answerlineage_agent`
+
+Décrit l'agent qui exécute le run. Le graphe reconnaît un run d'agent à cette facette ; l'agent est celui que nomme le job.
+
+Facultatifs : `agentId`, `framework`, `agentVersion`, `owner` (le responsable), `taskClass` (la classe de tâche déclarée).
+
+### `answerlineage_toolCall`
+
+Décrit un appel d'outil MCP, posé sur le run enfant de l'appel. Le graphe reconnaît un run d'outil à cette facette. C'est ce que le proxy émet.
+
+Facultatifs émis aujourd'hui : `tool` (absent quand le nom reçu n'a pas une forme admise), `transport`, `protocolVersion`, `httpStatus`, `proxyError`, `headerMismatch`, `invalidToolName`, `readResolution` (`resolved` ou `unresolved`), `unresolvedReason`.
+
+Facultatifs prévus, pas encore émis : `argumentsFingerprint`, `readOnly`, `resultFingerprint`, `resultSize` (en octets), `definitionFingerprint` (l'empreinte de la définition de l'outil).
+
+### `answerlineage_qos`
+
+Qualité de service d'un run, pas encore émise. Tous les champs sont facultatifs : `model`, `route`, `inputTokens`, `outputTokens`, `latencyMs`, `estimatedCost`, `errorCount`, `retryCount`, `skill`.
+
+La version 1-0-0 ne dit pas dans quelle monnaie est `estimatedCost` : c'est l'unité de l'émetteur.
+
+### `answerlineage_delivery`
+
+Diffusion d'une réponse d'agent. La sortie qui la porte est la réponse, décrite par son empreinte (`fingerprint`) ; `channel` et `messageRef` disent où elle est partie, `recipients` à qui, sous des pseudonymes sans table de correspondance. Sans cette facette, une sortie est comptée comme une écriture ordinaire.
+
+### `answerlineage_keys`
+
+Clés lues dans un jeu de données, pas encore émise. Jamais en clair : `hmacs` liste des empreintes HMAC calculées avec une clé secrète, `bloomFilter` porte un filtre de Bloom à clé encodé en base64. L'une des deux formes au moins est présente. Les paramètres du filtre ne sont pas encore décrits.
+
+## Écrire un émetteur
+
+Un appel d'outil, tel que le proxy l'émet, avec la facette sur le run :
+
+```json
+{
+  "eventType": "COMPLETE",
+  "eventTime": "2026-11-02T09:00:00.000000Z",
+  "producer": "https://exemple.org/mon-emetteur",
+  "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
+  "run": {
+    "runId": "0193a9c5-7a10-7c3e-9d5e-2f1b6c8a0000",
+    "facets": {
+      "answerlineage_toolCall": {
+        "_producer": "https://exemple.org/mon-emetteur",
+        "_schemaURL": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/ToolCallRunFacet.json#/$defs/ToolCallRunFacet",
+        "server": "entrepot",
+        "tool": "execute_sql"
+      }
+    }
+  },
+  "job": {"namespace": "mcp://entrepot", "name": "execute_sql"},
+  "inputs": [],
+  "outputs": []
+}
+```
+
+Une réponse diffusée, sur la sortie du run de l'agent :
+
+```json
+{
+  "namespace": "agent://ventes",
+  "name": "analyste-ventes/reponses",
+  "outputFacets": {
+    "answerlineage_delivery": {
+      "_producer": "https://exemple.org/mon-emetteur",
+      "_schemaURL": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/DeliveryOutputDatasetFacet.json#/$defs/DeliveryOutputDatasetFacet",
+      "fingerprint": "sha256:5b1d…",
+      "channel": "mail",
+      "messageRef": "m-1",
+      "recipients": ["8f3a…"]
+    }
+  }
+}
+```
+
+Pour valider ses événements, on charge le schéma d'OpenLineage depuis [sa copie locale](../spec/openlineage/README.md) et ceux des facettes depuis `spec/facets/`, puis on résout les références sans réseau. `tests/test_facet_schemas.py` le fait avec `jsonschema` et `referencing`.
+
+## Versions et immutabilité
+
+Un fichier de version publié ne change plus jamais, pas d'un octet : l'adresse d'un `_schemaURL` désigne toujours le même schéma. Une évolution passe par une nouvelle version, dans un nouveau dossier (`1-1-0`).
+
+Une nouvelle version d'une facette, par rapport à la précédente :
+
+- ne retire aucun champ ;
+- ne rend aucun champ obligatoire, et n'en laisse pas un champ obligatoire cesser de l'être : ce que les lecteurs tenaient pour garanti le reste ;
+- ne change le type d'aucun champ.
+
+Elle peut ajouter des champs facultatifs. Une rupture demande une nouvelle facette, sous un autre nom.
+
+`make contract` fait respecter ces règles (`scripts/check_facets_compat.py`), avec le contrôle de l'API. Il compare la branche de travail à la branche cible (`BASE_SHA`, à défaut `origin/main`) : un fichier de version déjà publié qui a changé ou disparu échoue, de même qu'une nouvelle version qui casse la précédente. Il vérifie aussi le rangement : chemin, `$id`, définition sous `$defs`, base d'OpenLineage. Les chemins de `scripts/` sont protégés : une modification du contrôle demande l'approbation d'un mainteneur.
+
+## Limites connues
+
+- Le contrôle compare les champs, leur caractère obligatoire et leur type. Il ne compare ni les bornes (`maxLength`, `maxItems`, `minimum`) ni les valeurs admises (`enum`) : les resserrer dans une nouvelle version casserait des émetteurs sans le faire échouer.
+- Les facettes `answerlineage_qos` et `answerlineage_keys` n'ont pas encore d'émetteur, et `answerlineage_agent` n'émet encore aucun champ propre. Leurs champs sont facultatifs et décrits sobrement ; ils s'étendront.
+- Les schémas sont servis par le fichier brut du dépôt sur la branche principale : une adresse n'existe qu'une fois la version fusionnée.

@@ -94,7 +94,7 @@ Un test fait traverser un jeton, un cookie, un paramètre recopié en en-tête e
 
 ## L'événement émis
 
-Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COMPLETE` si le serveur a répondu sans erreur HTTP, `FAIL` sinon, `ABORT` si le client est parti. Le job est `mcp://<serveur>` / `<outil>`. La facette `answerlineage_toolCall` porte le serveur, l'outil, le transport, la révision du protocole, le statut HTTP, les écarts relevés et la résolution de la lecture. Les tables lues sont les jeux de données d'entrée ; leurs colonnes sont dans la facette standard `schema`.
+Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COMPLETE` si le serveur a répondu sans erreur HTTP, `FAIL` sinon, `ABORT` si le client est parti. Le job est `mcp://<serveur>` / `<outil>`. La facette `answerlineage_toolCall` porte le serveur, l'outil, le transport, la révision du protocole, le statut HTTP, les écarts relevés et la résolution de la lecture ; son schéma est publié (voir [Facettes OpenLineage](facettes.md)). Les tables lues sont les jeux de données d'entrée ; leurs colonnes sont dans la facette standard `schema`.
 
 ## Limites connues
 

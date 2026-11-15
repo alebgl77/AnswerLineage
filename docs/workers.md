@@ -29,11 +29,10 @@ Les événements bruts restent dans `event_raw` : le graphe peut être reconstru
 | `outputs` avec la facette `answerlineage_delivery` | Réponse (son empreinte) et sa diffusion : canal, référence du message, destinataires pseudonymisés |
 | Autres `outputs` | Écritures |
 
-Un événement venu d'un autre émetteur OpenLineage, sans ces facettes, est enregistré comme un job ordinaire avec ses lectures et ses écritures. Une facette propre mal formée est ignorée, sans empêcher d'enregistrer le reste de l'événement.
+Un événement venu d'un autre émetteur OpenLineage, sans ces facettes, est enregistré comme un job ordinaire avec ses lectures et ses écritures. Une facette propre mal formée est ignorée, sans empêcher d'enregistrer le reste de l'événement. Les schémas de ces facettes sont décrits dans [Facettes OpenLineage](facettes.md).
 
 L'ordre d'arrivée ne compte pas : deux événements d'un même run reçus dans le désordre donnent le même graphe.
 
 ## Limites connues
 
 - Un événement toujours fautif reste dans la file, de plus en plus espacé : il n'y a pas encore de file de rebut à consulter et à rejouer.
-- Les schémas des facettes propres ne sont pas encore publiés.

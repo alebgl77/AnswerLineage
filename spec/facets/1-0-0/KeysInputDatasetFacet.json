@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/KeysInputDatasetFacet.json",
+  "type": "object",
+  "$defs": {
+    "KeysInputDatasetFacet": {
+      "description": "Clés lues dans un jeu de données, sans jamais les porter en clair : des empreintes HMAC à clé secrète, ou un filtre de Bloom à clé. Facette de jeu de données d'entrée. Une des deux formes au moins est présente.",
+      "allOf": [
+        {
+          "$ref": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/InputDatasetFacet"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "hmacs": {
+              "type": "array",
+              "maxItems": 100000,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": "Empreinte HMAC d'une clé lue, calculée avec une clé secrète."
+              },
+              "description": "Empreintes HMAC des clés lues."
+            },
+            "bloomFilter": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000000,
+              "description": "Filtre de Bloom à clé des clés lues, encodé en base64."
+            }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "hmacs"
+              ]
+            },
+            {
+              "required": [
+                "bloomFilter"
+              ]
+            }
+          ]
+        }
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "answerlineage_keys": {
+      "$ref": "#/$defs/KeysInputDatasetFacet"
+    }
+  }
+}

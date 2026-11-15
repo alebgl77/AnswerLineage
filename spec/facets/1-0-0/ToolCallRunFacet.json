@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/ToolCallRunFacet.json",
+  "type": "object",
+  "$defs": {
+    "ToolCallRunFacet": {
+      "description": "Décrit un appel d'outil MCP. Facette de run, posée sur le run de l'appel. Elle ne porte ni argument ni résultat, seulement des noms, des empreintes et des tailles.",
+      "allOf": [
+        {
+          "$ref": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunFacet"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Nom du serveur MCP dans le lignage."
+            },
+            "tool": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Nom de l'outil appelé. Absent quand le nom reçu n'a pas une forme admise."
+            },
+            "transport": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Transport utilisé. Le proxy émet « http »."
+            },
+            "protocolVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Révision du protocole MCP annoncée par l'appel."
+            },
+            "httpStatus": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599,
+              "description": "Statut HTTP de la réponse du serveur MCP."
+            },
+            "proxyError": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Code fixe de l'erreur propre au proxy, par exemple upstream_unreachable."
+            },
+            "headerMismatch": {
+              "type": "array",
+              "maxItems": 16,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "Nom d'un en-tête MCP contredit par le corps de la requête."
+              },
+              "description": "En-têtes MCP qui contredisent le corps de la requête. Le proxy décide sur le corps."
+            },
+            "invalidToolName": {
+              "type": "boolean",
+              "description": "Vrai quand le nom d'outil reçu n'a pas une forme admise."
+            },
+            "readResolution": {
+              "type": "string",
+              "enum": [
+                "resolved",
+                "unresolved"
+              ],
+              "description": "Les lectures de l'appel sont-elles connues ? Une lecture non résolue n'est pas listée dans les jeux de données d'entrée."
+            },
+            "unresolvedReason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Code fixe du motif d'une lecture non résolue, par exemple too_large."
+            },
+            "argumentsFingerprint": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Empreinte des arguments de l'appel. Jamais le contenu."
+            },
+            "readOnly": {
+              "type": "boolean",
+              "description": "Vrai quand l'outil ne modifie rien."
+            },
+            "resultFingerprint": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Empreinte du résultat de l'appel. Jamais le contenu."
+            },
+            "resultSize": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Taille du résultat, en octets."
+            },
+            "definitionFingerprint": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Empreinte de la définition de l'outil. Jamais le contenu."
+            }
+          },
+          "required": [
+            "server"
+          ]
+        }
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "answerlineage_toolCall": {
+      "$ref": "#/$defs/ToolCallRunFacet"
+    }
+  }
+}
