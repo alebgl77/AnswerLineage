@@ -12,7 +12,9 @@ dev = [
     "pre-commit>=4.3",
     "pytest>=8.4",
     "pytest-cov>=7.0",
+    "pyyaml>=6.0",
     "ruff>=0.14",
+    "types-pyyaml>=6.0",
 ]
 
 [tool.uv]
@@ -45,11 +47,13 @@ files = [
     "api/src",
     "workers/src",
     "mcp-server/src",
+    "scripts",
     "tests",
 ]
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config", "-ra"]
+pythonpath = ["."]
 testpaths = ["tests", "proxy", "adapters", "collector", "api", "workers", "mcp-server"]
 xfail_strict = true
 
@@ -67,3 +71,17 @@ source = [
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
+
+# Porte de couverture (ENF-MAIN-01) : chaque composant suivi tient le seuil, en
+# couverture de branches comme en couverture combinée. Le moteur d'impact
+# rejoint la liste avec sa première story.
+[tool.answerlineage.coverage_gate]
+minimum = 85
+paths = [
+    "proxy/src",
+    "adapters/src",
+    "collector/src",
+    "api/src",
+    "workers/src",
+    "mcp-server/src",
+]

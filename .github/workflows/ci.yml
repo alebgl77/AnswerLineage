@@ -1,0 +1,86 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Jeton en lecture seule : aucun job de ce pipeline n'écrit dans le dépôt.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.32"
+
+jobs:
+  static:
+    name: Hygiène et analyse statique
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Installe l'environnement verrouillé
+        run: uv sync --all-packages --locked
+      - name: Format
+        run: make format-check
+      - name: Lint
+        run: make lint
+      - name: Typage strict
+        run: make typecheck
+
+  tests:
+    name: Tests (Python ${{ matrix.python }}, PostgreSQL ${{ matrix.postgres }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+        postgres: ["17", "18"]
+    env:
+      # Les tests d'intégration démarrent ce PostgreSQL avec Testcontainers.
+      ANSWERLINEAGE_TEST_POSTGRES_IMAGE: postgres:${{ matrix.postgres }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ matrix.python }}
+      - name: Installe l'environnement verrouillé
+        run: uv sync --all-packages --locked
+      - name: Tests et couverture de branches
+        run: make test
+      - name: Porte de couverture (85 % par composant)
+        run: make coverage-gate
+
+  # Seul contrôle à exiger dans la protection de la branche principale : il
+  # échoue dès qu'une étape bloquante échoue, est annulée ou est sautée.
+  ci-ok:
+    name: ci-ok
+    if: ${{ always() }}
+    needs: [static, tests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Vérifie que toutes les étapes bloquantes sont vertes
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "Étape bloquante non verte : $result"
+              exit 1
+            fi
+          done
+          echo "Toutes les étapes bloquantes sont vertes."
