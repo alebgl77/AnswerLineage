@@ -10,8 +10,8 @@ Ce dépôt fait foi pour le code et l'outillage. Le kit de démarrage du PRD (`a
 
 ## Sources de vérité
 
-- PRD (onglets PRD, Audit, Développement) : https://claude.ai/artifact/Q8LoLptQypma5RAWyD8cko — copie prévue dans `docs/`.
-- Backlog v3 (161 stories, 138 exigences, 24 risques) : https://docs.google.com/spreadsheets/d/1ssVf76ko4vkuo7N4t9x2frqo3MJGSrpZzQBd-F7v2QM — copie générée prévue dans `backlog/`.
+- PRD « AnswerLineage : lignage et rappel des réponses d'agents » (onglets PRD, Audit, Développement) : document privé, hors dépôt tant qu'il n'est pas versé dans `docs/`.
+- Backlog v3 (161 stories, 138 exigences, 24 risques) : classeur privé, hors dépôt tant qu'il n'est pas généré dans `backlog/`. Les demander à l'utilisateur plutôt que de deviner une fiche.
 - Identifiants : `E01`–`E20` epics, `US-EESS` stories, `EF-XXX-NN` exigences fonctionnelles, `ENF-XXX-NN` non fonctionnelles, `ADR-001`–`ADR-012`, `R01`–`R24` risques. Citer l'identifiant de story dans la branche, la merge request et le commit.
 - PRD, backlog et code sont en français pour le métier (rappel, piste, écart, criticité, quarantaine), en anglais pour les identifiants techniques. « Rappel » désigne à la fois la notification des destinataires et la métrique *recall* du moteur.
 
