@@ -23,9 +23,13 @@ flowchart LR
     serveur --> donnees[(Données de l'entreprise)]
     proxy -.->|événement OpenLineage| api[API d'ingestion]
     api --> graphe[(PostgreSQL : graphe de lignage)]
+    graphe --> lecture[API de lecture]
+    lecture --> explorateur[Explorateur]
 ```
 
 Le proxy se place devant un serveur [MCP](https://modelcontextprotocol.io) existant. Il relaie chaque appel d'outil octet pour octet et décrit, à côté de l'appel, ce que l'agent a lu : quel outil, quelles tables, quelles colonnes. Ces événements alimentent un graphe qui va du jeu de données jusqu'au destinataire de la réponse.
+
+L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers ses sources, d'une donnée fausse vers les réponses et les personnes touchées. L'explorateur en donne la vue.
 
 ## Principes
 
@@ -48,9 +52,9 @@ Le proxy se place devant un serveur [MCP](https://modelcontextprotocol.io) exist
 | Remontée d'une réponse à ses sources : jeux de données, versions, outils, agents | Disponible |
 | Propagation d'un incident : réponses et destinataires touchés par une table fausse sur une période | Disponible |
 | Entreprise synthétique et corpus de vérité, pour essayer et mesurer sans donnée réelle | Disponible |
-| Envoi des événements du proxy vers l'API | À venir |
 | Explorateur visuel : graphe en cinq colonnes, mode Propager, adresses partageables | Disponible |
 | Démonstration en une commande, sur une entreprise synthétique | Disponible |
+| Envoi des événements du proxy vers l'API | À venir |
 | Propagation fine (colonnes, lignes, versions) et transitive (mémoire, tables dérivées) | À venir |
 | Rappel des destinataires après validation humaine | À venir |
 
