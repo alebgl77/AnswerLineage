@@ -15,6 +15,7 @@ exclude-newer-span = "P7D"
 members = [
     "answerlineage",
     "answerlineage-api",
+    "answerlineage-conformance",
     "answerlineage-corpus",
     "answerlineage-proxy",
     "answerlineage-workers",
@@ -116,6 +117,21 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.40" },
     { name = "uvicorn", specifier = ">=0.38" },
+]
+
+[[package]]
+name = "answerlineage-conformance"
+version = "0.0.0"
+source = { editable = "conformance" }
+dependencies = [
+    { name = "answerlineage-workers" },
+    { name = "jsonschema" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "answerlineage-workers", editable = "workers" },
+    { name = "jsonschema", specifier = ">=4.25" },
 ]
 
 [[package]]

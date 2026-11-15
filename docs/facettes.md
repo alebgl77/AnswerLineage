@@ -126,6 +126,8 @@ Une réponse diffusée, sur la sortie du run de l'agent :
 
 Pour valider ses événements, on charge le schéma d'OpenLineage depuis [sa copie locale](../spec/openlineage/README.md) et ceux des facettes depuis `spec/facets/`, puis on résout les références sans réseau. `tests/test_facet_schemas.py` le fait avec `jsonschema` et `referencing`.
 
+Le [kit de conformité](conformite.md) juge ensuite l'émetteur sur ce qu'il a émis : la forme des événements et des facettes, ce qui les relie, ce que le graphe en retiendrait, et l'absence de contenu, prouvée par des canaris.
+
 ## Versions et immutabilité
 
 Un fichier de version publié ne change plus jamais, pas d'un octet : l'adresse d'un `_schemaURL` désigne toujours le même schéma. Une évolution passe par une nouvelle version, dans un nouveau dossier (`1-1-0`).
