@@ -6,6 +6,7 @@ L'API de lecture interroge le graphe de lignage. Elle est versionnée sous `/api
 | --- | --- |
 | `GET /api/v1/answers?channel=…&message_ref=…` | Les réponses d'agents diffusées par un message |
 | `GET /api/v1/answers/{id}/sources` | Les sources d'une réponse : jeux de données, versions, outils, agents |
+| `GET /api/v1/graph` | Le graphe en cinq colonnes des réponses les plus récentes |
 
 ## Remonter d'une réponse à ses sources
 
@@ -93,6 +94,32 @@ Une erreur `422` donne le chemin du paramètre fautif, un code et un motif, jama
 ```json
 { "errors": [{ "path": "/query/message_ref", "type": "missing", "message": "Field required" }] }
 ```
+
+## Le graphe en cinq colonnes
+
+`GET /api/v1/graph` donne une vue d'ensemble du lignage, faite pour être dessinée : cinq colonnes, des données aux destinataires.
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/graph?limit=60"
+```
+
+La vue part des réponses les plus récentes et ne montre que ce qu'elles touchent : les jeux de données lus pour les produire, les outils appelés, les agents qui ont répondu, les destinataires.
+
+| Champ | Contenu |
+| --- | --- |
+| `datasets`, `tools`, `agents`, `recipients` | Les nœuds de quatre colonnes, chacun avec un `id` |
+| `answers` | Les réponses, les plus récentes d'abord. Chacune porte sa chaîne : `agent`, `tools`, `recipients`, et `reads`, la liste des jeux de données lus avec l'outil qui les a lus |
+| `more` | `true` quand des réponses plus anciennes existent |
+| `truncated` | `true` quand les arbres de runs dépassent la borne : la vue est partielle |
+
+Les liens d'une colonne à l'autre se déduisent de la chaîne de chaque réponse. Suivre une donnée jusqu'aux personnes revient à garder les réponses dont `reads` la cite.
+
+| Paramètre | Rôle | Défaut |
+| --- | --- | --- |
+| `limit` | Nombre de réponses dans la vue, 200 au plus | 60 |
+| `before` | Ne garder que les réponses produites avant cet instant (RFC 3339, avec fuseau) | aucun |
+
+L'`id` d'une réponse est son identifiant stable. Celui des autres nœuds ne vaut que dans la réponse qui le donne : un jeu de données se désigne par son espace de noms et son nom.
 
 ## Limites connues
 

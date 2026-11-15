@@ -66,3 +66,61 @@ class Sources(BaseModel):
     truncated: bool = Field(
         description="Vrai quand l'arbre des runs dépasse la borne : les sources sont partielles."
     )
+
+
+class DatasetNode(BaseModel):
+    id: str = Field(description="Identifiant du nœud, valable dans cette réponse seulement.")
+    namespace: str
+    name: str
+    kind: str
+
+
+class ToolNode(BaseModel):
+    id: str = Field(description="Identifiant du nœud, valable dans cette réponse seulement.")
+    server: str
+    name: str
+
+
+class AgentNode(BaseModel):
+    id: str = Field(description="Identifiant du nœud, valable dans cette réponse seulement.")
+    namespace: str
+    name: str
+
+
+class RecipientNode(BaseModel):
+    id: str = Field(description="Identifiant du nœud, valable dans cette réponse seulement.")
+    pseudonym: str = Field(description="Pseudonyme du destinataire, jamais son identité.")
+
+
+class AnswerRead(BaseModel):
+    """Une lecture faite pour produire la réponse."""
+
+    dataset: str = Field(description="Nœud du jeu de données lu.")
+    tool: str | None = Field(description="Nœud de l'outil qui a lu, quand un outil a lu.")
+
+
+class AnswerNode(BaseModel):
+    """Une réponse et sa chaîne, d'une colonne à l'autre."""
+
+    id: str = Field(description="Identifiant stable de la réponse.")
+    fingerprint: str
+    produced_at: AwareDatetime
+    agent: str | None = Field(description="Nœud de l'agent qui a répondu, quand il est connu.")
+    channels: list[str] = Field(description="Canaux par lesquels la réponse a été diffusée.")
+    recipients: list[str] = Field(description="Nœuds des destinataires.")
+    tools: list[str] = Field(description="Nœuds des outils appelés.")
+    reads: list[AnswerRead]
+
+
+class GraphView(BaseModel):
+    """Le graphe en cinq colonnes : données, outils, agents, réponses, destinataires."""
+
+    datasets: list[DatasetNode]
+    tools: list[ToolNode]
+    agents: list[AgentNode]
+    answers: list[AnswerNode] = Field(description="Les plus récentes d'abord.")
+    recipients: list[RecipientNode]
+    more: bool = Field(description="Vrai quand des réponses plus anciennes existent.")
+    truncated: bool = Field(
+        description="Vrai quand les arbres de runs dépassent la borne : la vue est partielle."
+    )

@@ -19,6 +19,30 @@
         "title": "AgentName",
         "type": "object"
       },
+      "AgentNode": {
+        "properties": {
+          "id": {
+            "description": "Identifiant du nœud, valable dans cette réponse seulement.",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "namespace",
+          "name"
+        ],
+        "title": "AgentNode",
+        "type": "object"
+      },
       "AnswerList": {
         "properties": {
           "answers": {
@@ -33,6 +57,108 @@
           "answers"
         ],
         "title": "AnswerList",
+        "type": "object"
+      },
+      "AnswerNode": {
+        "description": "Une réponse et sa chaîne, d'une colonne à l'autre.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Nœud de l'agent qui a répondu, quand il est connu.",
+            "title": "Agent"
+          },
+          "channels": {
+            "description": "Canaux par lesquels la réponse a été diffusée.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifiant stable de la réponse.",
+            "title": "Id",
+            "type": "string"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "title": "Produced At",
+            "type": "string"
+          },
+          "reads": {
+            "items": {
+              "$ref": "#/components/schemas/AnswerRead"
+            },
+            "title": "Reads",
+            "type": "array"
+          },
+          "recipients": {
+            "description": "Nœuds des destinataires.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Recipients",
+            "type": "array"
+          },
+          "tools": {
+            "description": "Nœuds des outils appelés.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "fingerprint",
+          "produced_at",
+          "agent",
+          "channels",
+          "recipients",
+          "tools",
+          "reads"
+        ],
+        "title": "AnswerNode",
+        "type": "object"
+      },
+      "AnswerRead": {
+        "description": "Une lecture faite pour produire la réponse.",
+        "properties": {
+          "dataset": {
+            "description": "Nœud du jeu de données lu.",
+            "title": "Dataset",
+            "type": "string"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Nœud de l'outil qui a lu, quand un outil a lu.",
+            "title": "Tool"
+          }
+        },
+        "required": [
+          "dataset",
+          "tool"
+        ],
+        "title": "AnswerRead",
         "type": "object"
       },
       "AnswerSummary": {
@@ -108,6 +234,35 @@
           "rejected"
         ],
         "title": "BatchResult",
+        "type": "object"
+      },
+      "DatasetNode": {
+        "properties": {
+          "id": {
+            "description": "Identifiant du nœud, valable dans cette réponse seulement.",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "namespace",
+          "name",
+          "kind"
+        ],
+        "title": "DatasetNode",
         "type": "object"
       },
       "DatasetSource": {
@@ -262,6 +417,68 @@
         "title": "FieldError",
         "type": "object"
       },
+      "GraphView": {
+        "description": "Le graphe en cinq colonnes : données, outils, agents, réponses, destinataires.",
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNode"
+            },
+            "title": "Agents",
+            "type": "array"
+          },
+          "answers": {
+            "description": "Les plus récentes d'abord.",
+            "items": {
+              "$ref": "#/components/schemas/AnswerNode"
+            },
+            "title": "Answers",
+            "type": "array"
+          },
+          "datasets": {
+            "items": {
+              "$ref": "#/components/schemas/DatasetNode"
+            },
+            "title": "Datasets",
+            "type": "array"
+          },
+          "more": {
+            "description": "Vrai quand des réponses plus anciennes existent.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "recipients": {
+            "items": {
+              "$ref": "#/components/schemas/RecipientNode"
+            },
+            "title": "Recipients",
+            "type": "array"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolNode"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "truncated": {
+            "description": "Vrai quand les arbres de runs dépassent la borne : la vue est partielle.",
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "datasets",
+          "tools",
+          "agents",
+          "answers",
+          "recipients",
+          "more",
+          "truncated"
+        ],
+        "title": "GraphView",
+        "type": "object"
+      },
       "InputDataset": {
         "properties": {
           "facets": {
@@ -349,6 +566,26 @@
           "name"
         ],
         "title": "OutputDataset",
+        "type": "object"
+      },
+      "RecipientNode": {
+        "properties": {
+          "id": {
+            "description": "Identifiant du nœud, valable dans cette réponse seulement.",
+            "title": "Id",
+            "type": "string"
+          },
+          "pseudonym": {
+            "description": "Pseudonyme du destinataire, jamais son identité.",
+            "title": "Pseudonym",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "pseudonym"
+        ],
+        "title": "RecipientNode",
         "type": "object"
       },
       "Rejection": {
@@ -533,6 +770,30 @@
         "title": "Sources",
         "type": "object"
       },
+      "ToolNode": {
+        "properties": {
+          "id": {
+            "description": "Identifiant du nœud, valable dans cette réponse seulement.",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "server": {
+            "title": "Server",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "server",
+          "name"
+        ],
+        "title": "ToolNode",
+        "type": "object"
+      },
       "ToolUse": {
         "properties": {
           "calls": {
@@ -693,6 +954,73 @@
           }
         },
         "summary": "Remonte d'une réponse à ses sources",
+        "tags": [
+          "lignage"
+        ]
+      }
+    },
+    "/api/v1/graph": {
+      "get": {
+        "description": "Données, outils, agents, réponses et destinataires, avec la chaîne de chaque réponse.",
+        "operationId": "graph_api_v1_graph_get",
+        "parameters": [
+          {
+            "description": "Nombre maximal de réponses dans la vue.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 60,
+              "description": "Nombre maximal de réponses dans la vue.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Ne garder que les réponses produites avant cet instant (RFC 3339).",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Ne garder que les réponses produites avant cet instant (RFC 3339).",
+              "title": "Before"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          }
+        },
+        "summary": "Donne le graphe en cinq colonnes des réponses les plus récentes",
         "tags": [
           "lignage"
         ]

@@ -6,10 +6,11 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Query, Request
 from fastapi.responses import JSONResponse
+from pydantic import AwareDatetime
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from answerlineage_api.lineage import trace
-from answerlineage_api.lineage.models import AnswerList, Sources
+from answerlineage_api.lineage import overview, trace
+from answerlineage_api.lineage.models import AnswerList, GraphView, Sources
 from answerlineage_api.responses import RequestRefused, RequestRejected, refused
 
 router = APIRouter(prefix="/api/v1", tags=["lignage"])
@@ -79,3 +80,25 @@ async def answer_sources(request: Request, answer_id: AnswerId) -> Sources | JSO
         if answer is None:
             return refused(404, "unknown_answer")
         return await trace.sources(conn, answer)
+
+
+GraphLimit = Annotated[
+    int, Query(ge=1, le=200, description="Nombre maximal de réponses dans la vue.")
+]
+Before = Annotated[
+    AwareDatetime | None,
+    Query(description="Ne garder que les réponses produites avant cet instant (RFC 3339)."),
+]
+
+
+@router.get(
+    "/graph",
+    response_model=GraphView,
+    summary="Donne le graphe en cinq colonnes des réponses les plus récentes",
+    responses={**_INVALID},
+)
+async def graph(request: Request, limit: GraphLimit = 60, before: Before = None) -> GraphView:
+    """Données, outils, agents, réponses et destinataires, avec la chaîne de chaque réponse."""
+    engine: AsyncEngine = request.app.state.engine
+    async with engine.connect() as conn:
+        return await overview.overview(conn, limit=limit, before=before)

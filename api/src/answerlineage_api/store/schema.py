@@ -172,6 +172,8 @@ answer = Table(
     Column("event_time", DateTime(timezone=True), nullable=False),
     _recorded_at(),
     UniqueConstraint("run_id", "fingerprint"),
+    # Les réponses les plus récentes d'abord, pour l'explorateur.
+    Index(None, "event_time"),
 )
 
 delivery = Table(

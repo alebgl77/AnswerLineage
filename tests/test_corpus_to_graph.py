@@ -187,3 +187,50 @@ async def test_every_answer_traces_back_to_what_its_request_read(engine: AsyncEn
                 )
                 for dataset in sources["datasets"]
             ] == expected
+
+
+async def test_the_five_column_view_shows_the_chain_of_every_answer(engine: AsyncEngine) -> None:
+    enterprise = generate(7, requests=60, days=5, incidents=2)
+    await load(engine, enterprise)
+    answered = [request for request in enterprise.requests if request.answer is not None]
+
+    async with api(engine) as client:
+        view = (await client.get("/api/v1/graph", params={"limit": 200})).json()
+        recent = (await client.get("/api/v1/graph", params={"limit": 10})).json()
+
+    assert (view["more"], view["truncated"]) == (False, False)
+    assert (recent["more"], len(recent["answers"])) == (True, 10)
+    nodes = {
+        node["id"]: node
+        for column in ("datasets", "tools", "agents", "recipients")
+        for node in view[column]
+    }
+    by_fingerprint = {answer["fingerprint"]: answer for answer in view["answers"]}
+    assert len(by_fingerprint) == len(answered)
+    produced = [answer["produced_at"] for answer in view["answers"]]
+    assert produced == sorted(produced, reverse=True)
+
+    for request in answered:
+        assert request.answer is not None
+        answer = by_fingerprint[request.answer.fingerprint]
+        agent = nodes[answer["agent"]]
+        assert (agent["namespace"], agent["name"]) == (request.agent.namespace, request.agent.name)
+        assert answer["channels"] == [request.answer.channel]
+        assert sorted(nodes[node]["pseudonym"] for node in answer["recipients"]) == sorted(
+            request.answer.recipients
+        )
+        assert {(nodes[node]["server"], nodes[node]["name"]) for node in answer["tools"]} == {
+            (call.tool.server, call.tool.name) for call in request.calls
+        }
+        assert {
+            (
+                nodes[read["dataset"]]["namespace"],
+                nodes[read["dataset"]]["name"],
+                nodes[read["tool"]]["name"],
+            )
+            for read in answer["reads"]
+        } == {
+            (read.table.namespace, read.table.name, call.tool.name)
+            for call in request.calls
+            for read in call.reads
+        }
