@@ -16,7 +16,7 @@ L'explorateur est ensuite sur [http://127.0.0.1:8000/](http://127.0.0.1:8000/). 
 | `migrate` | Crée ou met à jour le schéma, puis s'arrête |
 | `api` | L'API d'ingestion et de lecture, et l'explorateur qu'elle sert |
 | `worker` | Projette les événements reçus dans le graphe de lignage |
-| `seed` | Envoie l'[entreprise synthétique](corpus.md) à l'API d'ingestion, puis s'arrête |
+| `seed` | Envoie l'[entreprise synthétique](corpus.md) à l'API d'ingestion, puis s'arrête. Il partage l'espace réseau de l'API et la joint par la boucle locale |
 
 Les données empruntent le chemin réel : ingestion, file de traitement, worker, graphe. Rien n'est écrit directement dans la base.
 
@@ -32,10 +32,10 @@ http://127.0.0.1:8000/#/propager?namespace=bigquery&name=ventes.suivi.commandes&
 ```
 
 - Interroger l'[API de lecture](lecture.md) avec `curl`, sur `http://127.0.0.1:8000/api/v1/`.
-- Comparer avec la vérité de l'entreprise, établie sans passer par AnswerLineage :
+- Comparer avec la vérité de l'entreprise, établie sans passer par AnswerLineage, pendant que la démonstration tourne :
 
 ```bash
-docker compose run --rm --no-deps seed answerlineage-corpus truth
+docker compose exec api answerlineage-corpus truth
 ```
 
 ## Arrêter, relancer, effacer
@@ -44,7 +44,7 @@ docker compose run --rm --no-deps seed answerlineage-corpus truth
 docker compose down
 ```
 
-Les données restent dans un volume. Relancée, la démonstration les retrouve à l'identique : l'entreprise est renvoyée à l'API, qui n'enregistre un événement qu'une fois.
+Les données restent dans un volume. Relancée, la démonstration les retrouve à l'identique. Le service `seed` renvoie alors l'entreprise à l'API, qui n'enregistre un événement qu'une fois : rien ne s'ajoute.
 
 ```bash
 docker compose down --volumes
@@ -54,16 +54,53 @@ efface aussi les données.
 
 ## Ce qui est garanti
 
-Rien n'écoute hors de la boucle locale : seul le port de l'API est publié, sur `127.0.0.1`. L'API refuse en plus toute requête dont l'en-tête `Host` ou `Origin` n'est pas attendu, ce qui ferme la porte à une page web ouverte sur le même poste.
+Rien n'écoute hors de la boucle locale : seul le port de l'API est publié, sur `127.0.0.1`. L'API refuse en plus toute requête dont l'en-tête `Host` ou `Origin` n'est pas attendu, ce qui ferme la porte à une page web ouverte sur le même poste. Elle n'accepte aucun nom en plus de la boucle locale : `seed` la joint par `127.0.0.1`, depuis son espace réseau, et non par un nom de service que le réseau pourrait résoudre ailleurs.
 
-Le pipeline rejoue la démonstration à chaque merge request (`scripts/check_demo.sh`) :
+Le journal d'accès de l'API est coupé : il écrirait les paramètres des adresses demandées, qui peuvent porter une donnée.
+
+Le pipeline rejoue la démonstration à chaque merge request :
 
 - depuis un clone neuf, le premier graphe est là en moins de cinq minutes, et la propagation du premier incident donne la vérité de l'entreprise ;
-- aucun port n'est publié hors de la boucle locale, et l'API ne répond pas sur l'adresse du réseau ;
-- une requête sous un autre nom d'hôte reçoit `403` ;
-- après un arrêt et une relance, les données sont identiques.
+- aucun port n'est publié hors de la boucle locale, et aucune connexion n'aboutit sur l'adresse du réseau, quelle que soit la réponse HTTP ;
+- une requête sous un autre nom d'hôte reçoit `403`, et le journal de l'API ne garde aucune adresse demandée ;
+- les parcours principaux de l'explorateur passent dans Chromium, comparés à l'entreprise générée : **Remonter**, de la vue d'ensemble à la page d'une réponse, avec ce qu'elle a lu, par quels outils, pour qui ; **Propager**, le premier incident saisi dans le formulaire, avec ses compteurs et ses nœuds allumés ;
+- arrêtée puis relancée sans le service `seed`, la démonstration retrouve un graphe identique : les données viennent du volume ;
+- renvoyée une seconde fois, l'entreprise n'apporte aucun événement nouveau et ne change pas le graphe.
 
-La politique du dépôt (`make policy`) refuse un fichier compose qui publierait un port ailleurs que sur la boucle locale, ou une image sans empreinte.
+## Rejouer la vérification sur le poste
+
+Il faut Docker, l'environnement du dépôt (`make setup`) et Chromium (`uv run playwright install chromium`). Le port 8000 doit être libre.
+
+```bash
+scripts/check_demo.sh
+```
+
+Le script lance la démonstration, la vérifie, puis l'arrête et efface ses données. Chaque étape est aussi une sous-commande, celles que le pipeline enchaîne :
+
+| Sous-commande | Ce qu'elle fait |
+| --- | --- |
+| `up` | Construit et lance la démonstration, attend le premier graphe et mesure son délai |
+| `checks` | Ports sur la boucle locale seulement, rien sur l'adresse du réseau, nom d'hôte inattendu refusé, journal sans adresse |
+| `browser` | Parcours Remonter et Propager dans Chromium (`tests/test_demonstration.py`) |
+| `restart` | Arrêt, relance sans `seed`, même graphe ; puis renvoi de l'entreprise, sans effet |
+| `down` | Arrête la démonstration et efface ses données |
+
+`checks`, `browser` et `restart` visent une démonstration déjà lancée. Après un échec, la démonstration reste lancée pour l'examiner ; `scripts/check_demo.sh down` l'arrête.
+
+Les parcours se jouent aussi seuls, contre toute démonstration chargée de l'entreprise par défaut ; sans `ANSWERLINEAGE_DEMO_URL`, ils sont sautés :
+
+```bash
+ANSWERLINEAGE_DEMO_URL=http://127.0.0.1:8000 uv run pytest -m demo
+```
+
+## Politique des fichiers compose
+
+La politique du dépôt (`make policy`) contrôle tout fichier YAML du dépôt qui décrit des services compose, quel que soit son nom : `compose.yaml`, mais aussi `compose.override.yaml` ou `docker-compose.override.yml`, que Compose fusionne d'office, et tout fichier inclus ou étendu. Elle refuse :
+
+- un port publié ailleurs que sur la boucle locale ;
+- un service sur le réseau de l'hôte, par `network_mode: host` ou par un réseau externe nommé `host` ;
+- une image sans empreinte ;
+- une directive `include` ou `extends` vers un fichier absent du dépôt, distant ou désigné par une variable : le contrôle ne pourrait pas le lire.
 
 ## Limites connues
 

@@ -13,6 +13,8 @@
 .coverage
 coverage.json
 htmlcov
+# Aucun fichier d'environnement : il peut porter un secret.
+**/.env*
 docs
 tests
 **/tests

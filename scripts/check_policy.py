@@ -13,7 +13,13 @@ un vecteur d'attaque. Ce contrôle échoue dès que :
   request) avec un secret ou un droit d'écriture ;
 - le conteneur de développement monte un identifiant de l'hôte ou reçoit un de ses jetons ;
 - un chemin protégé n'a pas de propriétaire dans ``.github/CODEOWNERS`` ;
-- un fichier compose publie un port ailleurs que sur la boucle locale.
+- un fichier compose publie un port ailleurs que sur la boucle locale, ou branche un
+  service sur le réseau de l'hôte ;
+- un fichier compose inclut ou étend un fichier absent du dépôt, que ce contrôle ne
+  pourrait pas lire.
+
+Un fichier compose se reconnaît à son nom ou à son contenu : tout fichier YAML du
+dépôt qui déclare des services en est un, quel que soit son nom.
 
 Usage : ``python -m scripts.check_policy [fichier ...]``
 """
@@ -21,6 +27,7 @@ Usage : ``python -m scripts.check_policy [fichier ...]``
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from collections.abc import Iterator, Mapping, Sequence
@@ -393,11 +400,140 @@ def _published_host(port: object) -> str | None:
     return parts[0] if len(parts) == 3 else None
 
 
-def check_compose(path: str, document: object) -> list[Violation]:
-    """Un fichier compose n'ouvre aucun port hors de la boucle locale et épingle ses images."""
-    services = document.get("services") if isinstance(document, Mapping) else None
-    if not isinstance(services, Mapping):
-        return [Violation(path, "fichier", "lisible", "le fichier n'est pas un fichier compose")]
+def _host_networks(document: Mapping[str, Any]) -> set[str]:
+    """Réseaux déclarés qui sont en fait le réseau de l'hôte : externes nommés ``host``."""
+    found = set()
+    for key, network in _mapping(document.get("networks")).items():
+        network = _mapping(network)
+        external = network.get("external")
+        name = network.get("name", key)
+        if isinstance(external, Mapping):
+            # Ancienne forme : « external: {name: host} ».
+            name = external.get("name", name)
+            external = True
+        if (external in (True, "true") and name == "host") or network.get("driver") == "host":
+            found.add(key)
+    return found
+
+
+def _attached_networks(service: Mapping[str, Any]) -> set[str]:
+    networks = service.get("networks")
+    if isinstance(networks, Mapping):
+        return {str(name) for name in networks}
+    if isinstance(networks, list):
+        return {str(name) for name in networks}
+    return set()
+
+
+def _describes_compose(document: object) -> bool:
+    """Un document qui déclare des services, ou en inclut d'autres, est un fichier compose."""
+    return isinstance(document, Mapping) and (
+        isinstance(document.get("services"), Mapping) or "include" in document
+    )
+
+
+def check_compose(path: str, document: object, root: Path | None = None) -> list[Violation]:
+    """Un fichier compose n'ouvre aucun port hors de la boucle locale et épingle ses images.
+
+    Les fichiers qu'il inclut (``include``) ou dont il étend un service
+    (``extends``) sont contrôlés avec lui ; ils doivent être dans le dépôt,
+    ``root``, le dossier courant par défaut.
+    """
+    return _ComposeCheck(Path.cwd() if root is None else root).run(path, document)
+
+
+class _ComposeCheck:
+    """Contrôle d'un fichier compose et des fichiers qu'il atteint, chacun une fois."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self._seen: set[Path] = set()
+
+    def run(self, path: str, document: object) -> list[Violation]:
+        self._seen.add(Path(path).resolve())
+        return self._check(path, document)
+
+    def _check(self, path: str, document: object) -> list[Violation]:
+        unreadable = [
+            Violation(path, "fichier", "lisible", "le fichier n'est pas un fichier compose")
+        ]
+        # Un fichier qui ne fait qu'en inclure d'autres n'a pas de services à lui.
+        if not isinstance(document, Mapping) or not {"services", "include"} & set(document):
+            return unreadable
+        services = document.get("services") or {}
+        if not isinstance(services, Mapping):
+            return unreadable
+        violations = self._includes(path, document.get("include"))
+        violations.extend(_services_violations(path, services, _host_networks(document)))
+        for name, service in services.items():
+            if isinstance(service, Mapping) and "extends" in service:
+                violations.extend(self._extends(path, f"service {name}", service["extends"]))
+        return violations
+
+    def _includes(self, path: str, include: object) -> list[Violation]:
+        if include is None:
+            return []
+        if not isinstance(include, list):
+            return [Violation(path, "include", "lisible", "include doit être une liste")]
+        violations: list[Violation] = []
+        for entry in include:
+            targets: object = entry
+            if isinstance(entry, Mapping):
+                targets = entry.get("path")
+            for target in targets if isinstance(targets, list) else [targets]:
+                violations.extend(self._follow(path, "include", target))
+        return violations
+
+    def _extends(self, path: str, where: str, extends: object) -> list[Violation]:
+        if isinstance(extends, str):
+            # Un service du même fichier.
+            return []
+        if not isinstance(extends, Mapping):
+            return self._follow(path, where, extends)
+        if "file" not in extends:
+            return []
+        return self._follow(path, where, extends["file"])
+
+    def _follow(self, path: str, where: str, target: object) -> list[Violation]:
+        """Contrôle le fichier désigné ; un fichier hors du dépôt échapperait au contrôle."""
+        located = self._locate(path, target)
+        if located is None:
+            return [
+                Violation(
+                    path,
+                    where,
+                    "fichier-du-depot",
+                    f"{target!r} ne désigne pas un fichier du dépôt : il échapperait au contrôle",
+                )
+            ]
+        if located.resolve() in self._seen:
+            return []
+        self._seen.add(located.resolve())
+        try:
+            document = yaml.safe_load(located.read_text(encoding="utf-8"))
+        except (OSError, ValueError, yaml.YAMLError) as error:
+            return [Violation(str(located), "fichier", "lisible", type(error).__name__)]
+        return self._check(str(located), document)
+
+    def _locate(self, path: str, target: object) -> Path | None:
+        if not isinstance(target, str) or not target.strip():
+            return None
+        # Une variable ou une adresse distante désigne un fichier que le contrôle ne lit pas.
+        if "$" in target or "://" in target:
+            return None
+        located = Path(os.path.normpath(Path(path).parent / target))
+        try:
+            relative = located.resolve().relative_to(self._root.resolve())
+        except ValueError:
+            return None
+        if _ignored(relative.parts) or not located.is_file():
+            return None
+        return located
+
+
+def _services_violations(
+    path: str, services: Mapping[str, Any], host_networks: set[str]
+) -> list[Violation]:
     violations: list[Violation] = []
     for name, service in services.items():
         where = f"service {name}"
@@ -406,11 +542,13 @@ def check_compose(path: str, document: object) -> list[Violation]:
         if not isinstance(service, Mapping):
             violations.append(Violation(path, where, "lisible", "le service est illisible"))
             continue
-        if "build" not in service:
+        # Une image construite sur place, ou héritée d'un service étendu, contrôlé lui aussi.
+        inherited = "extends" in service and "image" not in service
+        if "build" not in service and not inherited:
             unpinned = _image_violation(service.get("image"))
             if unpinned:
                 violations.append(Violation(path, where, "image-epinglee", unpinned))
-        if service.get("network_mode") == "host":
+        if service.get("network_mode") == "host" or _attached_networks(service) & host_networks:
             violations.append(
                 Violation(
                     path, where, "port-local", "le réseau de l'hôte écoute sur toutes ses adresses"
@@ -460,10 +598,42 @@ def check_action(path: str, action: object) -> list[Violation]:
     return violations
 
 
+def _ignored(parts: Sequence[str]) -> bool:
+    """Dossiers qui ne sont pas les sources du dépôt : Git, paquets installés."""
+    return any(part in {".git", "node_modules"} or part.startswith(".venv") for part in parts)
+
+
+def _repository_files(root: Path) -> Iterator[Path]:
+    for directory, subdirectories, files in os.walk(root):
+        subdirectories[:] = sorted(name for name in subdirectories if not _ignored([name]))
+        for name in files:
+            yield Path(directory) / name
+
+
+# Noms que Compose lit de lui-même, dont le fichier qu'il fusionne d'office (override).
+_COMPOSE_NAME = re.compile(r"(docker-)?compose.*\.ya?ml")
+
+
+def _is_workflow(path: Path) -> bool:
+    return path.parent.name == "workflows" and path.parent.parent.name == ".github"
+
+
+def _is_compose_file(path: Path) -> bool:
+    """Fichier YAML qui décrit des services compose, quel que soit son nom."""
+    if path.suffix not in {".yml", ".yaml"} or _is_workflow(path):
+        return False
+    if _COMPOSE_NAME.fullmatch(path.name):
+        return True
+    try:
+        return _describes_compose(yaml.safe_load(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, yaml.YAMLError):
+        return False
+
+
 def discover(root: Path) -> list[Path]:
     """Workflows, actions composites, scripts, Dockerfiles et fichiers compose du dépôt."""
     github = root / ".github"
-    found = [
+    found = {
         *github.glob("workflows/*.yml"),
         *github.glob("workflows/*.yaml"),
         *github.glob("actions/**/action.yml"),
@@ -471,20 +641,15 @@ def discover(root: Path) -> list[Path]:
         *(root / "scripts").glob("*.sh"),
         *(root / ".devcontainer").glob("**/devcontainer.json"),
         *github.glob("CODEOWNERS"),
-        *root.glob("compose*.yaml"),
-        *root.glob("compose*.yml"),
-        *(root / "deploy").glob("**/compose*.yaml"),
-        *(root / "deploy").glob("**/compose*.yml"),
-        *(
-            path
-            for path in root.rglob("Dockerfile*")
-            if not {".venv", "node_modules", ".git"} & set(path.relative_to(root).parts)
-        ),
-    ]
+    }
+    for path in _repository_files(root):
+        if path.name.startswith("Dockerfile") or _is_compose_file(path):
+            found.add(path)
     return sorted(found)
 
 
-def check_file(path: Path) -> list[Violation]:
+def check_file(path: Path, root: Path | None = None) -> list[Violation]:
+    """Contrôle un fichier ; ``root`` est le dépôt, le dossier courant par défaut."""
     try:
         text = path.read_text(encoding="utf-8")
         if path.suffix == ".sh":
@@ -500,15 +665,18 @@ def check_file(path: Path) -> list[Violation]:
         return [Violation(str(path), "fichier", "lisible", type(error).__name__)]
     if path.name.startswith("action."):
         return check_action(str(path), document)
-    if path.name.startswith("compose"):
-        return check_compose(str(path), document)
+    if not _is_workflow(path) and (
+        _COMPOSE_NAME.fullmatch(path.name) or _describes_compose(document)
+    ):
+        return check_compose(str(path), document, root)
     return check_workflow(str(path), document)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     paths = [Path(argument) for argument in arguments] or discover(Path.cwd())
-    violations = [violation for path in paths for violation in check_file(path)]
+    # Un fichier inclus par un autre est contrôlé deux fois : son écart n'est dit qu'une fois.
+    violations = list(dict.fromkeys(violation for path in paths for violation in check_file(path)))
     for violation in violations:
         print(violation)
     if violations:

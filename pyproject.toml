@@ -100,6 +100,7 @@ xfail_strict = true
 markers = [
     "integration: test sur un PostgreSQL réel, démarré par Testcontainers (Docker requis)",
     "e2e: test de bout en bout dans un navigateur (explorateur construit et Chromium requis)",
+    "demo: parcours dans un navigateur contre la démonstration lancée (ANSWERLINEAGE_DEMO_URL)",
 ]
 
 [tool.coverage.run]

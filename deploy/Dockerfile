@@ -41,4 +41,5 @@ USER 10001
 WORKDIR /
 
 EXPOSE 8000
-CMD ["uvicorn", "--factory", "answerlineage_api.app:create_app", "--host", "0.0.0.0", "--port", "8000"]
+# Sans journal d'accès : il écrirait les paramètres des adresses demandées.
+CMD ["uvicorn", "--factory", "answerlineage_api.app:create_app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

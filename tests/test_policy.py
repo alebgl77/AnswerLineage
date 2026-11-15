@@ -447,3 +447,238 @@ def test_compose_files_are_discovered_and_checked(tmp_path: Path) -> None:
     assert discover(tmp_path) == sorted([root, nested])
     assert rules(check_file(root)) == ["port-local"]
     assert rules(check_file(nested)) == ["image-epinglee"]
+
+
+def published_everywhere(**settings: Any) -> str:
+    return yaml.safe_dump({"services": {"api": {"build": ".", "ports": ["8000:8000"], **settings}}})
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "compose.override.yaml",
+        "compose.override.yml",
+        "docker-compose.yml",
+        "docker-compose.override.yml",
+        "docker-compose.override.yaml",
+    ],
+)
+def test_an_override_file_that_compose_merges_by_itself_is_checked(
+    tmp_path: Path, name: str
+) -> None:
+    """Compose fusionne d'office le fichier d'à côté : il n'échappe pas au contrôle."""
+    (tmp_path / "compose.yaml").write_text("services:\n  api:\n    build: .\n", "utf-8")
+    override = tmp_path / name
+    override.write_text(published_everywhere(), "utf-8")
+
+    assert override in discover(tmp_path)
+    assert rules(check_file(override, tmp_path)) == ["port-local"]
+
+
+def test_a_compose_file_is_checked_whatever_its_name(tmp_path: Path) -> None:
+    free = tmp_path / "deploy" / "demo.yml"
+    free.parent.mkdir()
+    free.write_text(published_everywhere(), "utf-8")
+    included_only = tmp_path / "pile.yaml"
+    included_only.write_text("include:\n  - deploy/demo.yml\n", "utf-8")
+    workflow_file = tmp_path / ".github" / "workflows" / "compose-demo.yml"
+    workflow_file.parent.mkdir(parents=True)
+    # Un workflow a des services, mais dans ses jobs : ce n'est pas un fichier compose,
+    # même quand son nom commence comme celui d'un fichier compose.
+    document = workflow()
+    document["jobs"]["build"]["services"] = {"base": {"image": f"postgres:18@{DIGEST}"}}
+    workflow_file.write_text(yaml.safe_dump(document), "utf-8")
+    for ignored in (".venv", ".venv-314", "node_modules", ".git"):
+        hidden = tmp_path / ignored / "paquet" / "compose.yaml"
+        hidden.parent.mkdir(parents=True)
+        hidden.write_text(published_everywhere(), "utf-8")
+    (tmp_path / "reglages.yaml").write_text("services: [aucun]\nniveau: 2\n", "utf-8")
+    (tmp_path / "liste.yml").write_text("- services\n", "utf-8")
+    (tmp_path / "casse.yml").write_text("services: [", "utf-8")
+
+    assert discover(tmp_path) == sorted([free, included_only, workflow_file])
+    assert rules(check_file(free, tmp_path)) == ["port-local"]
+    assert check_file(workflow_file, tmp_path) == []
+    # Le fichier inclus est contrôlé avec celui qui l'inclut.
+    violations = check_file(included_only, tmp_path)
+    assert rules(violations) == ["port-local"]
+    assert violations[0].path == str(free)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "absent.yaml",
+        "../ailleurs.yaml",
+        "/etc/compose.yaml",
+        "${REPERTOIRE}/compose.yaml",
+        "oci://registre.exemple/pile:1",
+        "https://github.com/org/depot.git#main:compose.yaml",
+        ".venv/paquet/compose.yaml",
+        "node_modules/paquet/compose.yaml",
+        "dossier",
+        "",
+        42,
+    ],
+)
+def test_an_include_toward_a_file_absent_from_the_repository_fails(
+    tmp_path: Path, target: object
+) -> None:
+    """Le contrôle ne lit que le dépôt : un fichier inclus d'ailleurs lui échapperait."""
+    root = tmp_path / "depot"
+    root.mkdir()
+    (tmp_path / "ailleurs.yaml").write_text(published_everywhere(), "utf-8")
+    (root / "dossier").mkdir()
+    for ignored in (".venv", "node_modules"):
+        hidden = root / ignored / "paquet" / "compose.yaml"
+        hidden.parent.mkdir(parents=True)
+        hidden.write_text("services: {}\n", "utf-8")
+    compose = root / "compose.yaml"
+    compose.write_text(yaml.safe_dump({"include": [target], "services": {}}), "utf-8")
+
+    violations = check_file(compose, root)
+    assert rules(violations) == ["fichier-du-depot"]
+    assert violations[0].where == "include"
+
+
+def test_an_include_is_read_in_its_short_and_long_forms(tmp_path: Path) -> None:
+    (tmp_path / "base.yaml").write_text("services: {}\n", "utf-8")
+    (tmp_path / "outils").mkdir()
+    (tmp_path / "outils" / "cache.yaml").write_text("services: {}\n", "utf-8")
+    compose = tmp_path / "compose.yaml"
+    entries: list[object] = [
+        "base.yaml",
+        {"path": "outils/cache.yaml", "project_directory": "outils"},
+        {"path": ["base.yaml", "outils/absent.yaml"]},
+        {"project_directory": "outils"},
+    ]
+    compose.write_text(yaml.safe_dump({"include": entries}), "utf-8")
+
+    violations = check_file(compose, tmp_path)
+    assert rules(violations) == ["fichier-du-depot", "fichier-du-depot"]
+    assert "outils/absent.yaml" in violations[0].message
+    assert rules(check_compose("compose.yaml", {"include": "base.yaml"})) == ["lisible"]
+
+
+def test_an_included_file_is_checked_as_a_compose_file_whatever_its_name(tmp_path: Path) -> None:
+    """Un fichier inclus, même sans extension YAML, publie ses ports comme les autres."""
+    hidden = tmp_path / "notes.txt"
+    hidden.write_text(published_everywhere(), "utf-8")
+    compose = tmp_path / "compose.yaml"
+    compose.write_text("include:\n  - notes.txt\nservices: {}\n", "utf-8")
+
+    violations = check_file(compose, tmp_path)
+    assert rules(violations) == ["port-local"]
+    assert violations[0].path == str(hidden)
+    hidden.write_text("services: [", "utf-8")
+    assert rules(check_file(compose, tmp_path)) == ["lisible"]
+
+
+def test_files_that_include_each_other_are_checked_once(tmp_path: Path) -> None:
+    first = tmp_path / "compose.yaml"
+    second = tmp_path / "autre.yaml"
+    first.write_text("include: [autre.yaml]\nservices: {}\n", "utf-8")
+    second.write_text("include: [compose.yaml]\n" + published_everywhere(), "utf-8")
+
+    assert rules(check_file(first, tmp_path)) == ["port-local"]
+
+
+def test_a_violation_reached_twice_is_reported_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    included = tmp_path / "commun.yaml"
+    included.write_text(published_everywhere(), "utf-8")
+    compose = tmp_path / "compose.yaml"
+    compose.write_text("include: [commun.yaml]\n", "utf-8")
+
+    assert main([str(compose), str(included)]) == 1
+    assert "1 écart(s)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "extends",
+    [
+        {"file": "absent.yaml", "service": "api"},
+        {"file": "../ailleurs.yaml", "service": "api"},
+        {"file": None, "service": "api"},
+        ["liste"],
+    ],
+)
+def test_an_extends_toward_a_file_absent_from_the_repository_fails(
+    tmp_path: Path, extends: object
+) -> None:
+    root = tmp_path / "depot"
+    root.mkdir()
+    (tmp_path / "ailleurs.yaml").write_text(published_everywhere(), "utf-8")
+    compose = root / "compose.yaml"
+    document = {"services": {"api": {"build": ".", "extends": extends}}}
+    compose.write_text(yaml.safe_dump(document), "utf-8")
+
+    violations = check_file(compose, root)
+    assert rules(violations) == ["fichier-du-depot"]
+    assert violations[0].where == "service api"
+
+
+def test_an_extends_within_the_repository_is_followed(tmp_path: Path) -> None:
+    common = tmp_path / "commun.yaml"
+    common.write_text(published_everywhere(), "utf-8")
+    compose = tmp_path / "compose.yaml"
+    document = {
+        "services": {
+            "base": {"build": "."},
+            "api": {"extends": {"file": "commun.yaml", "service": "api"}},
+            "worker": {"build": ".", "extends": "base"},
+            "seed": {"build": ".", "extends": {"service": "base"}},
+        }
+    }
+    compose.write_text(yaml.safe_dump(document), "utf-8")
+
+    violations = check_file(compose, tmp_path)
+    assert rules(violations) == ["port-local"]
+    assert violations[0].path == str(common)
+
+
+@pytest.mark.parametrize(
+    "network",
+    [
+        {"external": True, "name": "host"},
+        {"external": "true", "name": "host"},
+        {"external": {"name": "host"}},
+        {"driver": "host"},
+    ],
+)
+def test_a_service_on_the_host_network_through_an_external_network_fails(
+    network: dict[str, Any],
+) -> None:
+    for attached in (["reseau"], {"reseau": {"aliases": ["api"]}}):
+        document = {
+            "services": {"api": {"build": ".", "networks": attached}, "seed": {"build": "."}},
+            "networks": {"reseau": network},
+        }
+        violations = check_compose("compose.yaml", document)
+        assert rules(violations) == ["port-local"]
+        assert violations[0].where == "service api"
+
+
+def test_an_external_network_named_host_by_its_key_fails() -> None:
+    document = {
+        "services": {"api": {"build": ".", "networks": ["host"]}},
+        "networks": {"host": {"external": True}},
+    }
+    assert rules(check_compose("compose.yaml", document)) == ["port-local"]
+
+
+def test_other_networks_are_allowed() -> None:
+    document = {
+        "services": {
+            "api": {"build": ".", "networks": ["interne", "partage"]},
+            "seed": {"build": ".", "network_mode": "service:api"},
+        },
+        "networks": {
+            "interne": None,
+            "partage": {"external": True, "name": "answerlineage"},
+            "hote": {"external": True, "name": "host"},
+        },
+    }
+    assert check_compose("compose.yaml", document) == []

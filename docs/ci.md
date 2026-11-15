@@ -12,12 +12,14 @@ Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque me
 | `agent-config` | Une merge request qui modifie la configuration d'agents ou un garde-fou porte l'approbation d'un mainteneur | |
 | `devcontainer` | Le conteneur de développement se construit, installe le projet et passe les tests | |
 | `explorer` | L'explorateur se construit, ses types sont justes, et ses tests de bout en bout passent dans Chromium | `make ui e2e` |
-| `demo` | `docker compose up` donne un premier graphe en moins de cinq minutes, sur la boucle locale seulement, et retrouve ses données après une relance | `scripts/check_demo.sh` |
+| `demo` | `docker compose up` donne un premier graphe en moins de cinq minutes, sur la boucle locale seulement ; les parcours Remonter et Propager passent dans Chromium contre la démonstration lancée ; après une relance sans renvoi de l'entreprise, les données viennent du volume | `scripts/check_demo.sh` |
 | `ci-ok` | Toutes les étapes bloquantes sont vertes | |
 
 `make check` enchaîne sur le poste les contrôles des jobs `static` et `tests`.
 
 Les tests marqués `e2e` pilotent l'explorateur dans Chromium. Ils demandent l'interface construite (`make ui`, avec Node 22) et le navigateur (`uv run playwright install chromium`). Sur le poste, ils sont sautés quand l'un des deux manque ; en CI, ils échouent.
+
+Les tests marqués `demo` jouent les parcours Remonter et Propager dans Chromium contre la démonstration lancée, dont l'adresse est donnée par `ANSWERLINEAGE_DEMO_URL`. Sans elle, ils sont sautés ; `scripts/check_demo.sh browser` la fournit toujours, et le job `demo` les joue avant d'arrêter la démonstration. Le détail est dans [Démonstration](demonstration.md#rejouer-la-vérification-sur-le-poste).
 
 ## Rejouer une case de la matrice sur le poste
 
@@ -42,7 +44,7 @@ Le contrôle `make policy` (`scripts/check_policy.py`) échoue dès que :
 - un workflow ne déclare pas de permissions, ou accorde une écriture à tout le workflow ;
 - un workflow se déclenche sur `pull_request_target` ;
 - `actions/checkout` conserve le jeton du pipeline ;
-- un fichier compose publie un port ailleurs que sur la boucle locale, ou tire une image sans empreinte ;
+- un fichier compose publie un port ailleurs que sur la boucle locale, branche un service sur le réseau de l'hôte (directement ou par un réseau externe), tire une image sans empreinte, ou inclut ou étend un fichier absent du dépôt. Tout fichier YAML qui décrit des services compose est contrôlé, quel que soit son nom, fichiers de surcharge compris ;
 - le job `ci-ok` ne dépend pas de tous les autres jobs.
 
 Le jeton du pipeline est en lecture seule. Seul le job `codeql` reçoit `security-events: write`, pour déposer ses résultats.

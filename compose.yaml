@@ -11,7 +11,7 @@ x-answerlineage: &answerlineage
   build:
     context: .
     dockerfile: deploy/Dockerfile
-  environment: &environment
+  environment:
     # Mot de passe de démonstration : la base n'est joignable que des services ci-dessous.
     ANSWERLINEAGE_DATABASE_URL: postgresql://answerlineage:answerlineage@postgres:5432/answerlineage
 
@@ -25,7 +25,19 @@ services:
     volumes:
       - data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD", "pg_isready", "--username", "answerlineage", "--dbname", "answerlineage"]
+      # Par TCP : pendant son initialisation, PostgreSQL n'écoute que sur son
+      # socket, et un contrôle sans hôte le dirait prêt trop tôt.
+      test:
+        - CMD
+        - pg_isready
+        - --host
+        - 127.0.0.1
+        - --port
+        - "5432"
+        - --username
+        - answerlineage
+        - --dbname
+        - answerlineage
       interval: 2s
       timeout: 3s
       retries: 30
@@ -38,12 +50,20 @@ services:
       postgres:
         condition: service_healthy
 
+  # L'API n'accepte que la boucle locale dans Host : aucun autre nom, que le
+  # réseau pourrait résoudre ailleurs. Son journal d'accès, qui écrirait les
+  # paramètres des adresses demandées, est coupé.
   api:
     <<: *answerlineage
-    environment:
-      <<: *environment
-      # Nom sous lequel le service seed joint l'API, en plus de la boucle locale.
-      ANSWERLINEAGE_ALLOWED_HOSTS: api
+    command:
+      - uvicorn
+      - --factory
+      - answerlineage_api.app:create_app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --no-access-log
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -67,10 +87,12 @@ services:
         condition: service_completed_successfully
 
   # Envoie l'entreprise synthétique à l'API, puis s'arrête. Relancé, il ne
-  # change rien : un événement déjà reçu n'est enregistré qu'une fois.
+  # change rien : un événement déjà reçu n'est enregistré qu'une fois. Il
+  # partage l'espace réseau de l'API et la joint par la boucle locale.
   seed:
     <<: *answerlineage
-    command: ["answerlineage-corpus", "load", "--url", "http://api:8000"]
+    network_mode: "service:api"
+    command: ["answerlineage-corpus", "load", "--url", "http://127.0.0.1:8000"]
     depends_on:
       api:
         condition: service_healthy
