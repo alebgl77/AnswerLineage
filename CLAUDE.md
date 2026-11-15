@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## État du dépôt
 
-Aucun code n'existe encore. Ce fichier est dérivé du PRD et du backlog, pas d'un code lu : tout ce qui suit est une **cible de conception**, à corriger dès que le code la contredit.
+Le socle du monorepo existe (US-0101) et le sprint 1 est en cours : `make sprint` n'existant pas encore, l'avancement se lit dans `git log` (une story finie = son identifiant dans un commit de `main`). L'architecture décrite plus bas reste une **cible de conception** issue du PRD pour tout ce qui n'est pas encore codé : la corriger dès que le code la contredit.
 
-Le PRD prévoit un kit de démarrage (`answerlineage-kit.zip` : racine du dépôt, `Makefile`, `.claude/`, `backlog/`, `scripts/`, `docs/`) qui contient son propre `CLAUDE.md`. Quand il sera décompressé ici, son `CLAUDE.md` fait foi et remplace celui-ci.
+Ce dépôt fait foi pour le code et l'outillage. Le kit de démarrage du PRD (`answerlineage-kit.zip`) n'y a pas été versé. S'il l'est un jour, il apporte ce qui manque ici (`.claude/`, `backlog/`, `scripts/`, `tests/kit/`, modèles de `.github/`, `docs/`) ; en cas de conflit, `pyproject.toml`, `uv.lock`, `Makefile` et le code de ce dépôt l'emportent, et les deux `CLAUDE.md` se fusionnent à la main.
 
 ## Sources de vérité
 
@@ -17,18 +17,17 @@ Le PRD prévoit un kit de démarrage (`answerlineage-kit.zip` : racine du dépô
 
 ## Commandes
 
-Fournies par le kit, absentes tant qu'il n'est pas dans le dépôt :
-
 ```bash
-make setup            # environnement uv, pre-commit
-make check            # format, lint (ruff), typage strict (mypy), tests (pytest) — porte de toute story
-make sprint           # état du sprint, lu dans git (story finie = son identifiant dans un commit de main)
-make next             # stories prêtes, une par piste (composant) libre
-scripts/story US-0401 # ouvre la session d'une story : modèle, effort, mode plan dès 5 points, worktree .claude/worktrees/US-XXXX
+make setup    # uv sync --all-packages --locked, puis installation des hooks pre-commit
+make check    # porte de toute story : format, lint (ruff), typage strict (mypy), tests avec couverture de branches
+make format   # reformate et applique les corrections automatiques de ruff
+make test     # tests seuls
+uv run pytest tests/test_workspace.py::test_mypy_checks_every_component   # un test isolé
 ```
 
-Test isolé : outillage `uv` + `pytest`, donc a priori `uv run pytest chemin/test_x.py::test_nom` — à confirmer sur le `Makefile` du kit.
-Démonstration locale : `docker compose up` (entreprise synthétique à vérité connue, premier lignage en moins de 5 min depuis un clone, ENF-DOC-01).
+Les dépendances s'ajoutent dans le `pyproject.toml` du composant, puis `uv lock` (délai de carence de 7 jours réglé dans le `pyproject.toml` racine).
+
+Prévu par le PRD, pas encore dans le dépôt : `make sprint`, `make next`, `scripts/story US-XXXX` (kit) et la démonstration `docker compose up` (US-1902).
 
 ## Ce que fait le produit
 
