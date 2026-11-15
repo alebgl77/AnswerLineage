@@ -33,6 +33,8 @@ ARCHIVE="$OUT/image.tar"
 SBOM="$OUT/sbom.cdx.json"
 REPORT="$OUT/grype.json"
 EXCEPTIONS=vulnerability-exceptions.toml
+# Dossier du canari : hors de la fonction, pour que le nettoyage à la sortie le retrouve.
+CANARY_DIR=""
 
 fail() {
   echo "ÉCHEC : $1" >&2
@@ -91,8 +93,9 @@ PYTHON
 # critique), doit faire échouer l'analyse, sans aucune exception.
 selftest() {
   local workdir status=0
-  workdir=$(mktemp -d)
-  trap 'rm -rf "$workdir"' EXIT
+  CANARY_DIR=$(mktemp -d)
+  trap 'rm -rf "$CANARY_DIR"' EXIT
+  workdir=$CANARY_DIR
   cat >"$workdir/sbom.cdx.json" <<'JSON'
 {
   "bomFormat": "CycloneDX",
