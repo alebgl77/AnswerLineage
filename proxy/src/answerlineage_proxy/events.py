@@ -13,6 +13,7 @@ from uuid import UUID
 from answerlineage_proxy import __version__
 from answerlineage_proxy.inspection import Inspection
 from answerlineage_proxy.sql import SqlAnalysis
+from answerlineage_proxy.tracecontext import CallTrace
 
 Outcome = Literal["COMPLETE", "FAIL", "ABORT"]
 
@@ -47,11 +48,14 @@ def build_tool_call_event(
     proxy_error: str | None = None,
     reads: SqlAnalysis | None = None,
     namespace: str | None = None,
+    trace: CallTrace | None = None,
 ) -> dict[str, Any]:
     """Construit le RunEvent d'un appel d'outil relayé.
 
     ``reads`` est l'analyse de la requête SQL d'un outil déclaré : chaque table
-    lue devient un jeu de données d'entrée, sous ``namespace``.
+    lue devient un jeu de données d'entrée, sous ``namespace``. ``trace`` est le
+    contexte de trace de l'appel, dont ``run_id`` dérive : la facette le cite,
+    pour passer du lignage à la trace.
     """
     facet: dict[str, Any] = {
         "_producer": PRODUCER,
@@ -69,6 +73,10 @@ def build_tool_call_event(
         facet["httpStatus"] = http_status
     if proxy_error is not None:
         facet["proxyError"] = proxy_error
+    if trace is not None:
+        facet["traceId"] = trace.context.trace_id
+        facet["spanId"] = trace.context.parent_id
+        facet["traceOrigin"] = trace.origin
     inputs: list[dict[str, Any]] = []
     if reads is not None:
         facet["readResolution"] = "resolved" if reads.resolved else "unresolved"

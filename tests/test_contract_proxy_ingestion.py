@@ -13,6 +13,7 @@ from answerlineage_api.ingest.store import event_identifier
 from answerlineage_proxy.events import build_tool_call_event
 from answerlineage_proxy.inspection import Inspection
 from answerlineage_proxy.sql import analyze_sql
+from answerlineage_proxy.tracecontext import resolve_trace
 from api.tests.events import official_run_event_schema
 
 OFFICIAL = Draft202012Validator(official_run_event_schema(), format_checker=FormatChecker())
@@ -30,13 +31,15 @@ INSPECTIONS = {
 
 @pytest.mark.parametrize("name", list(INSPECTIONS))
 def test_proxy_event_is_a_valid_openlineage_run_event(name: str) -> None:
+    trace = resolve_trace(None, [])
     event = build_tool_call_event(
-        run_id=uuid4(),
+        run_id=trace.run_id,
         event_time=datetime.now(UTC),
         outcome="COMPLETE",
         server="entrepot",
         inspection=INSPECTIONS[name],
         http_status=200,
+        trace=trace,
     )
     assert list(OFFICIAL.iter_errors(event)) == []
     accepted, errors = validate_event(event)
@@ -44,6 +47,8 @@ def test_proxy_event_is_a_valid_openlineage_run_event(name: str) -> None:
     assert accepted is not None
     assert accepted.job.namespace == "mcp://entrepot"
     assert "answerlineage_toolCall" in accepted.run.facets
+    # L'API d'ingestion accepte l'identifiant dérivé du contexte de trace (UUID version 8).
+    assert accepted.run.run_id == trace.run_id
     assert len(event_identifier(event)) == 64
 
 

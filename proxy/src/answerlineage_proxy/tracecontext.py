@@ -1,0 +1,133 @@
+"""Contexte de trace W3C d'un appel d'outil, et identifiant de run qui en dérive.
+
+Le contexte se lit dans ``params._meta.traceparent`` du corps, sinon dans
+l'en-tête HTTP ``traceparent``. Faute de l'un et de l'autre, le proxy en crée un.
+
+L'identifiant de run est une fonction pure du ``trace-id`` et du ``parent-id`` :
+tout émetteur qui voit le même contexte, quel que soit son langage, son
+processus ou sa machine, émet pour le même run. Le calcul est décrit à l'octet
+près dans ``docs/proxy.md`` et vérifié par les vecteurs de
+``spec/run-id/vectors-v1.json``.
+
+Une valeur mal formée est une entrée hostile : elle est ignorée comme si elle
+manquait, sans être conservée, recopiée ni journalisée.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+import secrets
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Literal
+from uuid import UUID
+
+TRACEPARENT = "traceparent"
+# Étiquette de domaine : elle distingue ce calcul de tout autre SHA-256 des mêmes octets.
+RUN_ID_LABEL = b"answerlineage/run-id/v1"
+# Au-delà, la valeur n'est pas lue : un traceparent de version 00 compte 55 caractères.
+MAX_TRACEPARENT_LENGTH = 512
+
+# Version, trace-id, parent-id, drapeaux, puis, pour une version future, des
+# champs qui suivent un tiret (W3C Trace Context, niveau 1, section 3.2).
+_TRACEPARENT = re.compile(
+    r"(?P<version>[0-9a-f]{2})-(?P<trace>[0-9a-f]{32})-(?P<parent>[0-9a-f]{16})"
+    r"-(?P<flags>[0-9a-f]{2})(?P<rest>-.*)?",
+    re.DOTALL,
+)
+_INVALID_VERSION = "ff"
+_CURRENT_VERSION = "00"
+# Drapeaux d'un contexte créé : « non échantillonné », le proxy ne décide pas
+# de l'échantillonnage des traces d'autrui.
+_NOT_SAMPLED = "00"
+
+TraceOrigin = Literal["meta", "header", "proxy"]
+
+
+@dataclass(frozen=True)
+class TraceContext:
+    """Un contexte de trace bien formé."""
+
+    trace_id: str
+    parent_id: str
+    version: str = _CURRENT_VERSION
+    flags: str = _NOT_SAMPLED
+
+    def traceparent(self) -> str:
+        """Valeur de l'en-tête ``traceparent`` qui porte ce contexte, en version 00."""
+        return f"{_CURRENT_VERSION}-{self.trace_id}-{self.parent_id}-{self.flags}"
+
+
+@dataclass(frozen=True)
+class CallTrace:
+    """Contexte de trace d'un appel d'outil, et d'où il vient."""
+
+    context: TraceContext
+    origin: TraceOrigin
+    # En-tête traceparent que le proxy ajoute à la requête relayée, s'il en ajoute un.
+    forwarded: str | None = None
+
+    @property
+    def run_id(self) -> UUID:
+        return derive_run_id(self.context)
+
+
+def parse_traceparent(value: object) -> TraceContext | None:
+    """Lit un ``traceparent``. Renvoie ``None`` pour toute valeur mal formée."""
+    if not isinstance(value, str) or len(value) > MAX_TRACEPARENT_LENGTH:
+        return None
+    found = _TRACEPARENT.fullmatch(value)
+    if found is None:
+        return None
+    version, trace_id, parent_id = found["version"], found["trace"], found["parent"]
+    if version == _INVALID_VERSION or (version == _CURRENT_VERSION and found["rest"] is not None):
+        return None
+    if not (_nonzero(trace_id) and _nonzero(parent_id)):
+        return None
+    return TraceContext(trace_id, parent_id, version, found["flags"])
+
+
+def derive_run_id(context: TraceContext) -> UUID:
+    """UUID version 8 (RFC 9562) pris sur SHA-256(étiquette ‖ trace-id ‖ parent-id).
+
+    La version et les drapeaux du contexte n'entrent pas dans le calcul.
+    """
+    digest = hashlib.sha256(
+        RUN_ID_LABEL + bytes.fromhex(context.trace_id) + bytes.fromhex(context.parent_id)
+    ).digest()
+    octets = bytearray(digest[:16])
+    octets[6] = (octets[6] & 0x0F) | 0x80
+    octets[8] = (octets[8] & 0x3F) | 0x80
+    return UUID(bytes=bytes(octets))
+
+
+def new_trace_context(token: Callable[[int], str] = secrets.token_hex) -> TraceContext:
+    """Crée un contexte d'identifiants aléatoires, de source cryptographique, jamais nuls."""
+    while True:
+        trace_id, parent_id = token(16), token(8)
+        if _nonzero(trace_id) and _nonzero(parent_id):
+            return TraceContext(trace_id, parent_id)
+
+
+def resolve_trace(meta: TraceContext | None, headers: Sequence[str]) -> CallTrace:
+    """Choisit le contexte d'un appel d'outil.
+
+    ``meta`` est le contexte lu dans ``params._meta.traceparent``, ``headers``
+    les valeurs des en-têtes ``traceparent`` reçus. ``_meta`` l'emporte : il
+    désigne l'appel d'outil lui-même et survit aux reprises HTTP. Un en-tête en
+    double ou mal formé n'est pas lu ; il n'est ni remplacé ni doublé, et le
+    contexte créé ne sert alors qu'à l'identifiant de run.
+    """
+    if meta is not None:
+        return CallTrace(meta, "meta")
+    if len(headers) == 1:
+        received = parse_traceparent(headers[0])
+        if received is not None:
+            return CallTrace(received, "header")
+    created = new_trace_context()
+    return CallTrace(created, "proxy", None if headers else created.traceparent())
+
+
+def _nonzero(identifier: str) -> bool:
+    return identifier.strip("0") != ""

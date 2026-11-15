@@ -46,6 +46,12 @@ Décrit un appel d'outil MCP, posé sur le run enfant de l'appel. Le graphe reco
 
 Facultatifs émis aujourd'hui : `tool` (absent quand le nom reçu n'a pas une forme admise), `transport`, `protocolVersion`, `httpStatus`, `proxyError`, `headerMismatch`, `invalidToolName`, `readResolution` (`resolved` ou `unresolved`), `unresolvedReason`.
 
+Le contexte de trace W3C de l'appel, d'où dérive l'identifiant de run (voir [le proxy](proxy.md#identifiant-de-run-et-contexte-de-trace)), pour passer du lignage à la trace dans un outil d'observabilité :
+
+- `traceId` : le `trace-id`, 32 hexadécimaux minuscules, jamais tous nuls ;
+- `spanId` : le `parent-id` vu, c'est-à-dire le span qui a fait l'appel, 16 hexadécimaux minuscules, jamais tous nuls ;
+- `traceOrigin` : d'où vient le contexte, `meta` (`params._meta.traceparent` de l'appel), `header` (l'en-tête HTTP `traceparent`) ou `proxy` (créé par le proxy, faute de contexte reçu).
+
 Facultatifs prévus, pas encore émis : `argumentsFingerprint`, `readOnly`, `resultFingerprint`, `resultSize` (en octets), `definitionFingerprint` (l'empreinte de la définition de l'outil).
 
 ### `answerlineage_qos`

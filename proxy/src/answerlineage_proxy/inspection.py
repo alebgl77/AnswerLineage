@@ -18,6 +18,8 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
+from answerlineage_proxy.tracecontext import TRACEPARENT, TraceContext, parse_traceparent
+
 TOOLS_CALL = "tools/call"
 
 # Nom d'outil tel que la spécification MCP le recommande : seul un nom de
@@ -50,6 +52,9 @@ class Inspection:
     # Requête SQL d'un outil déclaré : gardée en mémoire le temps de l'analyser,
     # jamais affichée, comparée ni conservée.
     sql: str | None = field(default=None, repr=False, compare=False)
+    # Contexte de trace W3C d'un appel d'outil, lu dans params._meta.traceparent.
+    # Une valeur mal formée est ignorée comme si elle manquait.
+    trace_context: TraceContext | None = None
 
 
 def decode_header_value(value: str) -> str | None:
@@ -142,4 +147,5 @@ def inspect_request(
         protocol_version=version,
         header_mismatches=tuple(mismatches),
         sql=sql,
+        trace_context=parse_traceparent(meta.get(TRACEPARENT)),
     )

@@ -28,6 +28,17 @@ def test_tool_call_is_described_from_the_body() -> None:
     assert result.protocol_version is None
 
 
+def test_trace_context_of_a_tool_call_is_read_from_meta() -> None:
+    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    result = inspect_request(body(name="get_weather", _meta={"traceparent": traceparent}), [])
+    assert result is not None
+    assert result.trace_context is not None
+    assert result.trace_context.traceparent() == traceparent
+    malformed = inspect_request(body(name="get_weather", _meta={"traceparent": "00-x"}), [])
+    assert malformed is not None
+    assert malformed.trace_context is None
+
+
 def test_matching_headers_raise_no_mismatch() -> None:
     meta = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
     result = inspect_request(

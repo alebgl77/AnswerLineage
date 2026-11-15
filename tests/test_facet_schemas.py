@@ -28,6 +28,7 @@ from answerlineage_corpus.scenarios import load_corpus
 from answerlineage_proxy.events import build_tool_call_event
 from answerlineage_proxy.inspection import Inspection
 from answerlineage_proxy.sql import SqlAnalysis, TableRead
+from answerlineage_proxy.tracecontext import parse_traceparent, resolve_trace
 from api.tests.events import OFFICIAL_SCHEMA
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -143,6 +144,9 @@ EXAMPLES: dict[str, dict[str, Any]] = {
             "resultFingerprint": "sha256:" + "b" * 64,
             "resultSize": 2048,
             "definitionFingerprint": "sha256:" + "c" * 64,
+            "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+            "spanId": "00f067aa0ba902b7",
+            "traceOrigin": "meta",
         },
     },
     "QosRunFacet": {
@@ -189,6 +193,13 @@ FAULTY: dict[str, dict[str, dict[str, Any]]] = {
         "en-têtes qui ne sont pas des textes": {"server": "s", "headerMismatch": [1]},
         "taille négative": {"server": "s", "resultSize": -1},
         "lecture seule en texte": {"server": "s", "readOnly": "true"},
+        "trace en majuscules": {"server": "s", "traceId": "4BF92F3577B34DA6A3CE929D0E0E4736"},
+        "trace trop courte": {"server": "s", "traceId": "4bf92f3577b34da6a3ce929d0e0e473"},
+        "trace nulle": {"server": "s", "traceId": "0" * 32},
+        "span trop long": {"server": "s", "spanId": "00f067aa0ba902b7a"},
+        "span nul": {"server": "s", "spanId": "0" * 16},
+        "span non hexadécimal": {"server": "s", "spanId": "00f067aa0ba902bz"},
+        "origine de la trace inconnue": {"server": "s", "traceOrigin": "devinee"},
     },
     "QosRunFacet": {
         "jetons en texte": {"inputTokens": "12"},
@@ -314,6 +325,25 @@ def proxy_events() -> list[dict[str, Any]]:
         )
         for inspection in inspections
     ]
+    # Le contexte de trace de l'appel : dans _meta, dans l'en-tête, ou créé par le proxy.
+    received = parse_traceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+    traces = [
+        resolve_trace(received, []),
+        resolve_trace(None, ["00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"]),
+        resolve_trace(None, []),
+    ]
+    events.extend(
+        build_tool_call_event(
+            run_id=trace.run_id,
+            event_time=datetime.now(UTC),
+            outcome="COMPLETE",
+            server="entrepot",
+            inspection=inspections[0],
+            http_status=200,
+            trace=trace,
+        )
+        for trace in traces
+    )
     failed = build_tool_call_event(
         run_id=uuid4(),
         event_time=datetime.now(UTC),

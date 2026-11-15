@@ -1,0 +1,65 @@
+{
+  "description": "Identifiant de run d'un appel d'outil dérivé de son contexte de trace W3C (traceparent). runId = UUID version 8 (RFC 9562) pris sur les 16 premiers octets de SHA-256(label || trace-id || parent-id), où label est l'encodage ASCII de la valeur de « label » (23 octets) et trace-id (16 octets) et parent-id (8 octets) sont décodés de l'hexadécimal ; l'octet 6 devient (octet & 0x0f) | 0x80 et l'octet 8 (octet & 0x3f) | 0x80. La version et les drapeaux du traceparent n'entrent pas dans le calcul. Une valeur de « invalid » est ignorée comme si elle manquait.",
+  "label": "answerlineage/run-id/v1",
+  "valid": [
+    {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "parentId": "00f067aa0ba902b7",
+      "runId": "a7e19836-59d9-8033-bd72-8a4bccb7271f"
+    },
+    {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "parentId": "00f067aa0ba902b7",
+      "runId": "a7e19836-59d9-8033-bd72-8a4bccb7271f"
+    },
+    {
+      "traceparent": "cc-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-09-une-version-future",
+      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "parentId": "00f067aa0ba902b7",
+      "runId": "a7e19836-59d9-8033-bd72-8a4bccb7271f"
+    },
+    {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-b7ad6b7169203331-01",
+      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "parentId": "b7ad6b7169203331",
+      "runId": "ca2eb194-2dd1-8da1-82a6-6da144f23dc2"
+    },
+    {
+      "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+      "traceId": "0af7651916cd43dd8448eb211c80319c",
+      "parentId": "b7ad6b7169203331",
+      "runId": "3da03720-a19a-838b-b800-9c8bdf04a769"
+    },
+    {
+      "traceparent": "00-ffffffffffffffffffffffffffffffff-ffffffffffffffff-ff",
+      "traceId": "ffffffffffffffffffffffffffffffff",
+      "parentId": "ffffffffffffffff",
+      "runId": "252f9a8d-7ebc-8392-9e9a-23105f34c642"
+    },
+    {
+      "traceparent": "00-00000000000000000000000000000001-0000000000000001-00",
+      "traceId": "00000000000000000000000000000001",
+      "parentId": "0000000000000001",
+      "runId": "dc1ce965-1c9b-81b8-8de9-43bfb93f8d80"
+    }
+  ],
+  "invalid": [
+    {"traceparent": "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "reason": "version ff"},
+    {"traceparent": "00-00000000000000000000000000000000-00f067aa0ba902b7-01", "reason": "trace-id nul"},
+    {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01", "reason": "parent-id nul"},
+    {"traceparent": "00-4BF92F3577B34DA6A3CE929D0E0E4736-00F067AA0BA902B7-01", "reason": "hexadécimal en majuscules"},
+    {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-suite", "reason": "version 00 suivie d'un champ"},
+    {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e473-00f067aa0ba902b7-01", "reason": "trace-id trop court"},
+    {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b-01", "reason": "parent-id trop court"},
+    {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-1", "reason": "drapeaux trop courts"},
+    {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-0g", "reason": "drapeaux non hexadécimaux"},
+    {"traceparent": "0-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "reason": "version trop courte"},
+    {"traceparent": "00_4bf92f3577b34da6a3ce929d0e0e4736_00f067aa0ba902b7_01", "reason": "séparateur autre que le tiret"},
+    {"traceparent": "cc-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01x", "reason": "version future sans tiret après les drapeaux"},
+    {"traceparent": " 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "reason": "espace en tête"},
+    {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\n", "reason": "fin de ligne en queue"},
+    {"traceparent": "", "reason": "valeur vide"}
+  ]
+}

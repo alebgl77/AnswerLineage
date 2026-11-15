@@ -67,11 +67,14 @@ async def test_modern_tool_call_is_relayed_byte_for_byte_and_emits_one_event(
         assert proxied.header("server") == direct.header("server") == ["uvicorn"]
         assert proxied.header("x-duplique") == ["un", "deux"]
 
-        # Le serveur MCP reçoit la même requête, à l'en-tête Host près.
+        # Le serveur MCP reçoit la même requête, à l'en-tête Host près et au contexte
+        # de trace que le proxy crée pour un appel qui n'en porte pas.
         seen_direct, seen_proxied = b.upstream.requests
         assert seen_proxied.body == seen_direct.body == body
         assert (seen_proxied.method, seen_proxied.raw_path) == ("POST", b"/mcp")
-        without_host = [h for h in seen_proxied.headers if h[0] != "host"]
+        assert seen_direct.header("traceparent") == []
+        assert len(seen_proxied.header("traceparent")) == 1
+        without_host = [h for h in seen_proxied.headers if h[0] not in ("host", "traceparent")]
         assert sorted(without_host) == sorted(h for h in seen_direct.headers if h[0] != "host")
         assert seen_proxied.header("authorization") == [TOKEN_CANARY]
         assert seen_proxied.header("host") == [b.proxy_url.removeprefix("http://")]

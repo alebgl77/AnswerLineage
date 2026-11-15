@@ -103,6 +103,29 @@
               "minLength": 1,
               "maxLength": 128,
               "description": "Empreinte de la définition de l'outil. Jamais le contenu."
+            },
+            "traceId": {
+              "type": "string",
+              "minLength": 32,
+              "maxLength": 32,
+              "pattern": "^(?!0{32}$)[0-9a-f]{32}$",
+              "description": "trace-id du contexte de trace W3C de l'appel, en hexadécimal minuscule. L'identifiant de run en dérive."
+            },
+            "spanId": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 16,
+              "pattern": "^(?!0{16}$)[0-9a-f]{16}$",
+              "description": "parent-id du contexte de trace W3C de l'appel, en hexadécimal minuscule : le span qui a fait l'appel. L'identifiant de run en dérive."
+            },
+            "traceOrigin": {
+              "type": "string",
+              "enum": [
+                "meta",
+                "header",
+                "proxy"
+              ],
+              "description": "D'où vient le contexte de trace : params._meta.traceparent de l'appel (meta), l'en-tête HTTP traceparent (header), ou créé par le proxy faute de contexte reçu (proxy)."
             }
           },
           "required": [

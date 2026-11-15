@@ -8,6 +8,10 @@ section 7.6.1) ne sont pas transmis.
 À côté du relais, il lit le corps des requêtes POST pour reconnaître un appel
 d'outil et émet un événement par appel, une fois l'échange terminé. Aucun
 en-tête, argument ou résultat n'est conservé ni journalisé.
+
+Seule exception à la transparence : un appel d'outil qui ne porte aucun
+contexte de trace W3C reçoit celui que le proxy crée, dans un en-tête
+``traceparent`` ajouté à la requête relayée. Le corps n'est jamais modifié.
 """
 
 from __future__ import annotations
@@ -19,7 +23,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import unquote_to_bytes
-from uuid import UUID, uuid4
 
 import httpx
 
@@ -34,6 +37,7 @@ from answerlineage_proxy.inspection import (
 )
 from answerlineage_proxy.sink import EventSink
 from answerlineage_proxy.sql import SqlAnalysis, analyze_sql
+from answerlineage_proxy.tracecontext import TRACEPARENT, CallTrace, resolve_trace
 
 Scope = MutableMapping[str, Any]
 Message = MutableMapping[str, Any]
@@ -61,6 +65,7 @@ _HOP_BY_HOP = frozenset(
 _INSPECTED_HEADERS = frozenset(
     name.encode("ascii") for name in (HEADER_METHOD, HEADER_NAME, HEADER_PROTOCOL_VERSION)
 )
+_TRACEPARENT = TRACEPARENT.encode("ascii")
 _BAD_GATEWAY_BODY = b'{"error":"upstream_unreachable"}'
 _BAD_REQUEST_BODY = b'{"error":"invalid_request_target"}'
 _FORBIDDEN_BODIES = {
@@ -126,6 +131,8 @@ class _Exchange:
     outcome: Outcome = "FAIL"
     status: int | None = None
     error: str | None = None
+    # Contexte de trace d'un appel d'outil : l'identifiant de run en dérive.
+    trace: CallTrace | None = None
 
 
 def _now() -> datetime:
@@ -148,6 +155,11 @@ def end_to_end_headers(headers: Iterable[Header]) -> list[Header]:
     ]
 
 
+def _traceparents(headers: Iterable[Header]) -> list[str]:
+    """Valeurs des en-têtes ``traceparent`` reçus : lues, jamais journalisées."""
+    return [value.decode("latin-1") for name, value in headers if name.lower() == _TRACEPARENT]
+
+
 async def _settle(task: asyncio.Task[Any]) -> None:
     """Annule une tâche et attend qu'elle ait rendu la main."""
     task.cancel()
@@ -164,7 +176,6 @@ class McpProxy:
         *,
         client: httpx.AsyncClient | None = None,
         clock: Callable[[], datetime] = _now,
-        new_run_id: Callable[[], UUID] = uuid4,
     ) -> None:
         quiet_transport_logs()
         self.settings = settings
@@ -173,8 +184,6 @@ class McpProxy:
         self._client = client
         self._owns_client = client is None
         self._clock = clock
-        # Identifiant aléatoire pour l'instant : il sera dérivé du contexte de trace W3C.
-        self._new_run_id = new_run_id
         self._prefix = settings.upstream.raw_path.rstrip(b"/")
         self._sql_arguments = {tool: rule.argument for tool, rule in settings.sql_tools.items()}
         self._guard = settings.guard()
@@ -250,8 +259,14 @@ class McpProxy:
 
         inspection = self._inspect(scope["method"], headers, body)
         exchange = _Exchange()
+        relayed = headers
+        if inspection is not None and inspection.is_tool_call:
+            exchange.trace = resolve_trace(inspection.trace_context, _traceparents(headers))
+            if exchange.trace.forwarded is not None:
+                # Seul en-tête que le proxy ajoute : le contexte qu'il a créé, transmis au serveur.
+                relayed = [*headers, (_TRACEPARENT, exchange.trace.forwarded.encode("ascii"))]
         try:
-            await self._exchange(scope, headers, body, stream, upload_done, receive, send, exchange)
+            await self._exchange(scope, relayed, body, stream, upload_done, receive, send, exchange)
         finally:
             if inspection is not None and inspection.is_tool_call:
                 self._describe(inspection, exchange)
@@ -480,9 +495,12 @@ class McpProxy:
     ) -> None:
         """Émet l'événement de l'appel. Un échec d'émission n'atteint jamais l'appel."""
         self.stats.tool_calls += 1
+        trace = exchange.trace
         try:
+            if trace is None:  # pragma: no cover — tout appel d'outil reçoit son contexte.
+                raise RuntimeError("contexte de trace manquant")
             event = build_tool_call_event(
-                run_id=self._new_run_id(),
+                run_id=trace.run_id,
                 event_time=event_time,
                 outcome=exchange.outcome,
                 server=self.settings.server_name,
@@ -491,6 +509,7 @@ class McpProxy:
                 proxy_error=exchange.error,
                 reads=reads,
                 namespace=namespace,
+                trace=trace,
             )
             self._sink.emit(event)
         except Exception as error:
