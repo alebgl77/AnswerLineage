@@ -311,3 +311,37 @@ async def test_several_answers_of_one_run_share_its_chain(
     for answer in found["answers"]:
         assert answer["reads"] == [{"dataset": "dataset-0", "tool": "tool-0"}]
     assert sorted(len(answer["recipients"]) for answer in found["answers"]) == [0, 1]
+
+
+async def test_the_chain_of_one_answer_can_be_asked_for_by_its_identifier(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    old, recent = uuid4(), uuid4()
+    await record(
+        engine,
+        answering(old, 1, recipients=("p-ancien",)),
+        calling(old, ACCOUNTS_TOOL, Read(ACCOUNTS)),
+        answering(recent, 2, agent=FINANCE),
+        calling(recent, SQL, Read(RATES)),
+    )
+
+    found = await graph(client, answer=answer_key(old, fingerprint(1)))
+
+    assert [answer["fingerprint"] for answer in found["answers"]] == [fingerprint(1)]
+    assert [dataset["name"] for dataset in found["datasets"]] == ["crm.public.comptes"]
+    assert [recipient["pseudonym"] for recipient in found["recipients"]] == ["p-ancien"]
+    assert [agent["name"] for agent in found["agents"]] == ["assistant-commercial"]
+    assert (found["more"], found["truncated"]) == (False, False)
+
+
+async def test_the_chain_of_an_unknown_answer_is_not_found(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    await record(engine, answering(uuid4(), 1))
+    response = await client.get(
+        "/api/v1/graph", params={"answer": answer_key(uuid4(), fingerprint(1))}
+    )
+    assert (response.status_code, response.json()) == (404, {"error": "unknown_answer"})
+    malformed = await client.get("/api/v1/graph", params={"answer": "pas-un-identifiant"})
+    assert malformed.status_code == 422
+    assert [error["path"] for error in malformed.json()["errors"]] == ["/query/answer"]

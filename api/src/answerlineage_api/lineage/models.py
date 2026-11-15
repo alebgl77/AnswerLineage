@@ -167,3 +167,10 @@ class ImpactResult(BaseModel):
     truncated: bool = Field(
         description="Vrai quand la propagation dépasse la borne : le résultat est partiel."
     )
+
+
+class DatasetList(BaseModel):
+    """Les jeux de données connus du graphe, par espace de noms puis par nom."""
+
+    datasets: list[DatasetName]
+    more: bool = Field(description="Vrai quand la liste dépasse la borne demandée.")

@@ -11,7 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.ingest.models import FieldError
 from answerlineage_api.lineage import impact, overview, trace
-from answerlineage_api.lineage.models import AnswerList, GraphView, ImpactResult, Sources
+from answerlineage_api.lineage.models import (
+    AnswerList,
+    DatasetList,
+    GraphView,
+    ImpactResult,
+    Sources,
+)
 from answerlineage_api.responses import RequestRefused, RequestRejected, refused
 
 router = APIRouter(prefix="/api/v1", tags=["lignage"])
@@ -92,17 +98,54 @@ Before = Annotated[
 ]
 
 
+OneAnswer = Annotated[
+    str | None,
+    Query(
+        pattern=r"^[0-9a-f]{48}$",
+        description="Identifiant d'une réponse : la vue se réduit alors à sa chaîne.",
+    ),
+]
+
+
 @router.get(
     "/graph",
     response_model=GraphView,
-    summary="Donne le graphe en cinq colonnes des réponses les plus récentes",
-    responses={**_INVALID},
+    summary="Donne le graphe en cinq colonnes des réponses les plus récentes, ou d'une réponse",
+    responses={
+        404: {"model": RequestRefused, "description": "Aucune réponse ne porte cet identifiant."},
+        **_INVALID,
+    },
 )
-async def graph(request: Request, limit: GraphLimit = 60, before: Before = None) -> GraphView:
+async def graph(
+    request: Request, limit: GraphLimit = 60, before: Before = None, answer: OneAnswer = None
+) -> GraphView | JSONResponse:
     """Données, outils, agents, réponses et destinataires, avec la chaîne de chaque réponse."""
     engine: AsyncEngine = request.app.state.engine
     async with engine.connect() as conn:
-        return await overview.overview(conn, limit=limit, before=before)
+        if answer is None:
+            return await overview.overview(conn, limit=limit, before=before)
+        found = await trace.find_answer(conn, answer)
+        if found is None:
+            return refused(404, "unknown_answer")
+        return await overview.view_of_answer(conn, found)
+
+
+DatasetLimit = Annotated[
+    int, Query(ge=1, le=500, description="Nombre maximal de jeux de données renvoyés.")
+]
+
+
+@router.get(
+    "/datasets",
+    response_model=DatasetList,
+    summary="Liste les jeux de données connus du graphe",
+    responses={**_INVALID},
+)
+async def datasets(request: Request, limit: DatasetLimit = 200) -> DatasetList:
+    """Les jeux de données lus ou écrits par un run, par espace de noms puis par nom."""
+    engine: AsyncEngine = request.app.state.engine
+    async with engine.connect() as conn:
+        return await overview.datasets(conn, limit=limit)
 
 
 Namespace = Annotated[

@@ -252,6 +252,29 @@
         "title": "Coverage",
         "type": "object"
       },
+      "DatasetList": {
+        "description": "Les jeux de données connus du graphe, par espace de noms puis par nom.",
+        "properties": {
+          "datasets": {
+            "items": {
+              "$ref": "#/components/schemas/DatasetName"
+            },
+            "title": "Datasets",
+            "type": "array"
+          },
+          "more": {
+            "description": "Vrai quand la liste dépasse la borne demandée.",
+            "title": "More",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "datasets",
+          "more"
+        ],
+        "title": "DatasetList",
+        "type": "object"
+      },
       "DatasetName": {
         "properties": {
           "kind": {
@@ -1076,6 +1099,54 @@
         ]
       }
     },
+    "/api/v1/datasets": {
+      "get": {
+        "description": "Les jeux de données lus ou écrits par un run, par espace de noms puis par nom.",
+        "operationId": "datasets_api_v1_datasets_get",
+        "parameters": [
+          {
+            "description": "Nombre maximal de jeux de données renvoyés.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "description": "Nombre maximal de jeux de données renvoyés.",
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          }
+        },
+        "summary": "Liste les jeux de données connus du graphe",
+        "tags": [
+          "lignage"
+        ]
+      }
+    },
     "/api/v1/graph": {
       "get": {
         "description": "Données, outils, agents, réponses et destinataires, avec la chaîne de chaque réponse.",
@@ -1113,6 +1184,25 @@
               "description": "Ne garder que les réponses produites avant cet instant (RFC 3339).",
               "title": "Before"
             }
+          },
+          {
+            "description": "Identifiant d'une réponse : la vue se réduit alors à sa chaîne.",
+            "in": "query",
+            "name": "answer",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{48}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Identifiant d'une réponse : la vue se réduit alors à sa chaîne.",
+              "title": "Answer"
+            }
           }
         ],
         "responses": {
@@ -1126,6 +1216,16 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Aucune réponse ne porte cet identifiant."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1137,7 +1237,7 @@
             "description": "Un paramètre est invalide."
           }
         },
-        "summary": "Donne le graphe en cinq colonnes des réponses les plus récentes",
+        "summary": "Donne le graphe en cinq colonnes des réponses les plus récentes, ou d'une réponse",
         "tags": [
           "lignage"
         ]

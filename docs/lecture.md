@@ -7,7 +7,8 @@ L'API de lecture interroge le graphe de lignage. Elle est versionnée sous `/api
 | `GET /api/v1/answers?channel=…&message_ref=…` | Les réponses d'agents diffusées par un message |
 | `GET /api/v1/answers/{id}/sources` | Les sources d'une réponse : jeux de données, versions, outils, agents |
 | `GET /api/v1/impact?namespace=…&name=…&from=…&to=…` | Les réponses et les destinataires touchés par un jeu de données faux pendant une fenêtre |
-| `GET /api/v1/graph` | Le graphe en cinq colonnes des réponses les plus récentes |
+| `GET /api/v1/graph` | Le graphe en cinq colonnes des réponses les plus récentes, ou d'une réponse |
+| `GET /api/v1/datasets` | Les jeux de données connus du graphe |
 
 ## Remonter d'une réponse à ses sources
 
@@ -161,6 +162,9 @@ Les liens d'une colonne à l'autre se déduisent de la chaîne de chaque répons
 | --- | --- | --- |
 | `limit` | Nombre de réponses dans la vue, 200 au plus | 60 |
 | `before` | Ne garder que les réponses produites avant cet instant (RFC 3339, avec fuseau) | aucun |
+| `answer` | Identifiant d'une réponse : la vue se réduit à sa chaîne, `404` si elle est inconnue | aucun |
+
+`GET /api/v1/datasets` liste les jeux de données connus du graphe, par espace de noms puis par nom, 200 par défaut et 500 au plus avec `limit`.
 
 L'`id` d'une réponse est son identifiant stable. Celui des autres nœuds ne vaut que dans la réponse qui le donne : un jeu de données se désigne par son espace de noms et son nom.
 

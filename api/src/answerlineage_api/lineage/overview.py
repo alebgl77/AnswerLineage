@@ -20,6 +20,9 @@ from answerlineage_api.lineage.models import (
     AgentNode,
     AnswerNode,
     AnswerRead,
+    AnswerSummary,
+    DatasetList,
+    DatasetName,
     DatasetNode,
     GraphView,
     RecipientNode,
@@ -29,6 +32,23 @@ from answerlineage_api.lineage.trace import answer_key
 
 # Borne des runs parcourus pour toutes les réponses d'une vue.
 MAX_RUNS = 20_000
+
+_DATASETS = text(
+    """
+    SELECT namespace, name, kind FROM dataset ORDER BY namespace, name LIMIT :limit
+    """
+)
+
+_ONE_ANSWER = text(
+    """
+    SELECT a.id, a.run_id, a.fingerprint, a.event_time,
+           g.namespace AS agent_namespace, g.name AS agent_name
+    FROM answer a
+    JOIN run r ON r.run_id = a.run_id
+    LEFT JOIN agent g ON g.id = r.agent_id
+    WHERE a.run_id = :run_id AND a.fingerprint = :fingerprint
+    """
+)
 
 _RECENT_ANSWERS = text(
     """
@@ -93,6 +113,28 @@ async def overview(conn: AsyncConnection, *, limit: int, before: datetime | None
     """Les ``limit`` réponses les plus récentes, avant ``before``, et ce qu'elles touchent."""
     picked = (await conn.execute(_RECENT_ANSWERS, {"before": before, "limit": limit + 1})).all()
     return await view_of(conn, picked[:limit], more=len(picked) > limit)
+
+
+async def datasets(conn: AsyncConnection, *, limit: int) -> DatasetList:
+    """Les jeux de données connus, par espace de noms puis par nom."""
+    rows = (await conn.execute(_DATASETS, {"limit": limit + 1})).all()
+    return DatasetList(
+        datasets=[
+            DatasetName(namespace=row.namespace, name=row.name, kind=row.kind)
+            for row in rows[:limit]
+        ],
+        more=len(rows) > limit,
+    )
+
+
+async def view_of_answer(conn: AsyncConnection, answer: AnswerSummary) -> GraphView:
+    """La vue en cinq colonnes d'une seule réponse : sa chaîne."""
+    picked = (
+        await conn.execute(
+            _ONE_ANSWER, {"run_id": answer.run_id, "fingerprint": answer.fingerprint}
+        )
+    ).all()
+    return await view_of(conn, picked, more=False)
 
 
 async def view_of(conn: AsyncConnection, picked: Sequence[Row[Any]], *, more: bool) -> GraphView:
