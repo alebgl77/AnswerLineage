@@ -161,12 +161,16 @@ L'agent se connecte alors à `http://127.0.0.1:8717` au lieu du serveur : rien d
 - [Entreprise synthétique](docs/corpus.md) : ce qu'elle contient, ses événements, la vérité de ses incidents
 - [Pipeline d'intégration continue](docs/ci.md) : contrôles, chaîne d'approvisionnement
 
-## Développement
+## Contribuer
 
 ```bash
 make check
 ```
 
-`make check` enchaîne le contrôle de politique du dépôt, le format, le lint, le typage strict, les tests et la porte de couverture. Les tests d'intégration démarrent un PostgreSQL réel avec Testcontainers.
+`make check` est la porte de toute contribution : politique du dépôt, compatibilité de l'API, format, lint, typage strict, tests et couverture. Les tests d'intégration démarrent un PostgreSQL réel avec Testcontainers.
 
-Le dépôt fournit un conteneur de développement (`.devcontainer/`), sans identifiant ni jeton, utilisable avec VS Code ou GitHub Codespaces.
+Le [guide de contribution](CONTRIBUTING.md) dit comment proposer un changement et ce qui est attendu avant sa fusion. Le dépôt fournit un conteneur de développement (`.devcontainer/`), sans identifiant ni jeton, utilisable avec VS Code ou GitHub Codespaces.
+
+## Sécurité
+
+Une faille se signale en privé, jamais dans une issue : la [politique de sécurité](SECURITY.md) donne le canal et les délais de réponse.
