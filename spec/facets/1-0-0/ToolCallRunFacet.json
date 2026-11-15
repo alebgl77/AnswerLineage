@@ -81,7 +81,8 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
-              "description": "Empreinte des arguments de l'appel. Jamais le contenu."
+              "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+              "description": "Empreinte à clé des arguments de l'appel : « hmac-sha256: » suivi de HMAC-SHA-256(clé du locataire, « answerlineage/fingerprint/arguments/v1 » || 0x00 || forme canonique JSON RFC 8785 de params.arguments) en hexadécimal minuscule ; un appel sans arguments est empreint comme {}. Absente sans clé. Jamais le contenu."
             },
             "readOnly": {
               "type": "boolean",
@@ -91,12 +92,13 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
-              "description": "Empreinte du résultat de l'appel. Jamais le contenu."
+              "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+              "description": "Empreinte à clé du résultat de l'appel : « hmac-sha256: » suivi de HMAC-SHA-256(clé du locataire, « answerlineage/fingerprint/result/v1 » || 0x00 || octets du corps de la réponse tels que relayés) en hexadécimal minuscule. Absente sans clé, et quand le corps n'a pas été relayé en entier. Jamais le contenu."
             },
             "resultSize": {
               "type": "integer",
               "minimum": 0,
-              "description": "Taille du résultat, en octets."
+              "description": "Taille du résultat : octets du corps de la réponse tels que relayés. Absente quand le corps n'a pas été relayé en entier."
             },
             "definitionFingerprint": {
               "type": "string",

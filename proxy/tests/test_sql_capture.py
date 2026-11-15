@@ -77,10 +77,12 @@ async def test_sql_crossing_the_proxy_lists_source_tables_and_columns(
             "date_commande",
             "montant",
         ]
-        # Ni la requête ni ses littéraux n'atteignent l'événement ou les journaux.
+        # Ni la requête ni ses littéraux n'atteignent l'événement ou les journaux :
+        # l'événement n'en garde que la forme sans littéraux.
         recorded = json.dumps(event) + caplog.text
         assert "2026-01-01" not in recorded
-        assert "SELECT" not in recorded
+        assert "SELECT" not in caplog.text
+        assert "o.date_commande >= ?" in event["job"]["facets"]["sql"]["query"]
 
 
 async def test_table_read_as_a_whole_carries_no_column_list(bench: BenchFactory) -> None:

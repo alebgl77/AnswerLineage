@@ -14,10 +14,14 @@ interpréteur distinct, démarré à neuf (``python -I -m answerlineage_proxy.an
   a la forme attendue : un processus qui meurt, ne démarre pas ou répond
   n'importe quoi donne une lecture « non résolue », jamais une exception.
 
+La forme de la requête sans ses littéraux se calcule dans le même processus,
+pendant la même analyse et dans le même budget : elle traverse la même
+frontière, où elle n'est crue que bornée, imprimable et sans commentaire.
+
 Le cache est indexé par une empreinte à clé secrète du texte et des réglages
 d'analyse, jamais par le texte : seul le résultat (des noms de tables et de
-colonnes) est gardé. Une analyse abandonnée au budget est mise en cache comme
-les autres : l'analyse est déterministe, la relancer coûterait de nouveau le
+colonnes, la forme sans littéraux) est gardé. Une analyse abandonnée au budget
+est mise en cache comme les autres : l'analyse est déterministe, la relancer coûterait de nouveau le
 budget, un processus tué et un redémarrage, et une requête pathologique répétée
 deviendrait un moyen d'occuper l'analyse au détriment des autres appels.
 
@@ -56,6 +60,7 @@ from answerlineage_proxy.sql import (
     SqlAnalysis,
     TableRead,
     analyze_sql,
+    is_plain_shape,
 )
 
 logger = logging.getLogger("answerlineage_proxy")
@@ -117,7 +122,8 @@ def _unresolved(reason: str) -> SqlAnalysis:
 
 
 def _weight(analysis: SqlAnalysis) -> int:
-    return 1 + sum(len(table.name) + sum(map(len, table.columns)) for table in analysis.tables)
+    names = sum(len(table.name) + sum(map(len, table.columns)) for table in analysis.tables)
+    return 1 + names + len(analysis.shape or "")
 
 
 def _is_message(line: bytes, key: str, value: object) -> bool:
@@ -134,6 +140,7 @@ def _encode(number: int, analysis: SqlAnalysis) -> dict[str, Any]:
         "resolved": analysis.resolved,
         "reason": analysis.reason,
         "tables": [[table.name, table.precision, list(table.columns)] for table in analysis.tables],
+        "shape": analysis.shape,
     }
 
 
@@ -167,6 +174,9 @@ def _decode(line: bytes, number: int) -> SqlAnalysis | None:
         return None
     if not resolved and (tables or not (isinstance(reason, str) and _REASON.fullmatch(reason))):
         return None
+    shape = reply.get("shape")
+    if shape is not None and not (isinstance(shape, str) and is_plain_shape(shape)):
+        return None
     reads = [_decode_table(item) for item in tables]
     if any(read is None for read in reads):
         return None
@@ -174,6 +184,7 @@ def _decode(line: bytes, number: int) -> SqlAnalysis | None:
         resolved=resolved,
         tables=tuple(read for read in reads if read is not None),
         reason=reason,
+        shape=shape,
     )
 
 

@@ -2,7 +2,7 @@
 
 AnswerLineage reçoit des `RunEvent` OpenLineage ([schéma 2-0-2](../spec/openlineage/README.md)) et les enrichit de cinq facettes qui lui sont propres. Chacune a un schéma JSON versionné : on écrit un émetteur à partir de ces schémas, sans lire le code d'AnswerLineage.
 
-Aucune facette ne porte de contenu : ni prompt, ni argument, ni résultat, ni réponse. Seulement des noms, des empreintes, des tailles et des pseudonymes.
+Aucune facette ne porte de contenu : ni prompt, ni argument, ni résultat, ni réponse. Seulement des noms, des empreintes, des tailles et des pseudonymes. D'une requête SQL, le proxy ne garde que la forme sans littéraux, dans la facette de job standard `sql`.
 
 ## Où sont les schémas
 
@@ -52,7 +52,17 @@ Le contexte de trace W3C de l'appel, d'où dérive l'identifiant de run (voir [l
 - `spanId` : le `parent-id` vu, c'est-à-dire le span qui a fait l'appel, 16 hexadécimaux minuscules, jamais tous nuls ;
 - `traceOrigin` : d'où vient le contexte, `meta` (`params._meta.traceparent` de l'appel), `header` (l'en-tête HTTP `traceparent`) ou `proxy` (créé par le proxy, faute de contexte reçu).
 
-Facultatifs prévus, pas encore émis : `argumentsFingerprint`, `readOnly`, `resultFingerprint`, `resultSize` (en octets), `definitionFingerprint` (l'empreinte de la définition de l'outil).
+Les empreintes à clé de l'appel et la taille de son résultat (voir [le proxy](proxy.md#empreintes-à-clé) pour la clé et le calcul à l'octet près) :
+
+- `argumentsFingerprint` : empreinte des arguments, `hmac-sha256:` suivi de 64 hexadécimaux minuscules. HMAC-SHA-256, avec la clé du locataire, de l'étiquette `answerlineage/fingerprint/arguments/v1`, d'un octet nul et de la forme canonique JSON (RFC 8785) de `params.arguments` ; `{}` pour un appel sans arguments ;
+- `resultFingerprint` : empreinte du résultat, de même forme, sur l'étiquette `answerlineage/fingerprint/result/v1` et les octets du corps de la réponse tels que relayés ;
+- `resultSize` : taille de ces octets.
+
+Sans clé, les deux empreintes sont absentes : un émetteur n'écrit jamais un hachage sans clé, qu'une énumération inverserait, et le schéma refuse toute autre forme que `hmac-sha256:`. Quand le corps de la réponse n'a pas été relayé en entier, ni `resultFingerprint` ni `resultSize` ne sont émis. Les vecteurs de test sont dans [`spec/fingerprint/vectors-v1.json`](../spec/fingerprint/vectors-v1.json).
+
+Facultatifs prévus, pas encore émis : `readOnly`, `definitionFingerprint` (l'empreinte de la définition de l'outil).
+
+Pour un outil SQL déclaré, la requête n'est pas dans cette facette : sa forme sans littéraux va dans la facette de job standard d'OpenLineage `sql` ([`SQLJobFacet` 1-1-0](../spec/openlineage/facets/1-1-0/SQLJobFacet.json)), sous `job.facets`, avec `query` (la forme, chaque constante remplacée par `?`) et `dialect`. Elle est absente quand l'analyse n'a pas établi de forme sûre (voir [le proxy](proxy.md#le-sql-conservé-sans-ses-littéraux)).
 
 ### `answerlineage_qos`
 

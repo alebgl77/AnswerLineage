@@ -18,6 +18,7 @@ import uvicorn
 from answerlineage_proxy.analyzer import SqlAnalyzer
 from answerlineage_proxy.app import McpProxy, Message, Receive, Scope, Send
 from answerlineage_proxy.config import ProxySettings, SqlTool
+from answerlineage_proxy.fingerprint import FingerprintKey
 from answerlineage_proxy.sink import MemorySink
 
 TOOL_RESULT = (
@@ -30,6 +31,8 @@ HEADER_MISMATCH = b'{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"He
 # Défi d'un serveur MCP protégé : il désigne ses métadonnées OAuth (RFC 9728).
 CHALLENGE = 'Bearer resource_metadata="https://mcp.exemple.fr/.well-known/oauth-protected-resource"'
 UNAUTHORIZED = b'{"error":"invalid_token"}'
+# Résultat volumineux, rendu en morceaux de 64 Ko.
+LARGE_RESULT = bytes(range(256)) * (32 * 1024)
 
 
 @pytest.fixture
@@ -123,6 +126,12 @@ class FakeMcpServer:
                 gzip.compress(TOOL_RESULT, mtime=0),
                 [(b"content-type", b"application/json"), (b"content-encoding", b"gzip")],
             )
+        elif path.endswith("/large"):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            for start in range(0, len(LARGE_RESULT), 64 * 1024):
+                chunk = LARGE_RESULT[start : start + 64 * 1024]
+                await send({"type": "http.response.body", "body": chunk, "more_body": True})
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
         elif path.endswith("/echo"):
             digest = hashlib.sha256(body).hexdigest()
             await _respond(send, 200, json.dumps({"sha256": digest, "size": len(body)}).encode())
@@ -241,6 +250,7 @@ def bench() -> BenchFactory:
         allowed_origins: tuple[str, ...] = (),
         sql_budget_ms: int = 50,
         analyzer: SqlAnalyzer | None = None,
+        fingerprint_key: FingerprintKey | None = None,
     ) -> AsyncIterator[Bench]:
         upstream = FakeMcpServer()
         sink = MemorySink()
@@ -254,6 +264,7 @@ def bench() -> BenchFactory:
                 allowed_hosts=allowed_hosts,
                 allowed_origins=allowed_origins,
                 sql_budget_ms=sql_budget_ms,
+                fingerprint_key=fingerprint_key,
             )
             proxy = McpProxy(settings, sink, analyzer=analyzer)
             async with running(proxy, transparent=True) as proxy_url:

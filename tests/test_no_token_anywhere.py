@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from answerlineage_api.app import create_app
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import ProxySettings, SqlTool
+from answerlineage_proxy.fingerprint import FingerprintKey
 from answerlineage_proxy.sink import MemorySink
 from answerlineage_workers.queue import process_batch
 from proxy.tests.conftest import (
@@ -81,6 +82,7 @@ async def test_a_token_crosses_the_whole_path_without_leaving_a_trace(
                 upstream_url,
                 "entrepot",
                 sql_tools={"execute_sql": SqlTool("query", "bigquery", "bigquery")},
+                fingerprint_key=FingerprintKey(bytes(range(32))),
             )
             proxy = McpProxy(settings, sink)
             async with running(proxy, transparent=True) as proxy_url:
@@ -123,6 +125,10 @@ async def test_a_token_crosses_the_whole_path_without_leaving_a_trace(
     assert '"kind":"tool"' in stored
     assert "finance.ref.taux_change" in stored
     assert '"columns":["devise","taux"]' in stored
+    # L'événement garde des empreintes et la forme de la requête, sans ses littéraux.
+    facet = events[0]["run"]["facets"]["answerlineage_toolCall"]
+    assert facet["argumentsFingerprint"].startswith("hmac-sha256:")
+    assert events[0]["job"]["facets"]["sql"]["query"].endswith("WHERE devise = ?")
 
     seen.append(caplog.text)
     for canary in CANARIES:

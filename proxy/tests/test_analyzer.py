@@ -13,7 +13,7 @@ import time
 import pytest
 
 from answerlineage_proxy.analyzer import SqlAnalyzer, serve
-from answerlineage_proxy.sql import MAX_SQL_BYTES, SqlAnalysis, TableRead
+from answerlineage_proxy.sql import MAX_SHAPE_CHARS, MAX_SQL_BYTES, SqlAnalysis, TableRead
 
 pytestmark = pytest.mark.anyio
 
@@ -71,7 +71,9 @@ async def test_analysis_runs_in_a_separate_process() -> None:
         result = await analyzer.analyze("SELECT t.a FROM s.t AS t", "postgres")
         assert result.origin == "analyzed"
         assert result.analysis == SqlAnalysis(
-            resolved=True, tables=(TableRead("s.t", "columns", ("a",)),)
+            resolved=True,
+            tables=(TableRead("s.t", "columns", ("a",)),),
+            shape="SELECT t.a FROM s.t AS t",
         )
         pid = analyzer.process_id
         assert pid is not None
@@ -314,6 +316,13 @@ def result_line(**fields: object) -> str:
         (answering(result_line(resolved=False, tables=[["s.t", "table", []]])), "analyzer_failed"),
         (answering(result_line(reason="too_large")), "analyzer_failed"),
         (answering("", expression="'x' * (2 * 1024 * 1024)"), "analyzer_failed"),
+        # Une forme n'est crue que bornée, imprimable et sans commentaire.
+        (answering(result_line(shape=42)), "analyzer_failed"),
+        (answering(result_line(shape="")), "analyzer_failed"),
+        (answering(result_line(shape="SELECT a\nFROM t")), "analyzer_failed"),
+        (answering(result_line(shape="SELECT a FROM t -- Dupont")), "analyzer_failed"),
+        (answering(result_line(shape="SELECT a /* Dupont */ FROM t")), "analyzer_failed"),
+        (answering(result_line(shape="SELECT " + "a" * MAX_SHAPE_CHARS)), "analyzer_failed"),
     ],
 )
 async def test_a_failing_process_gives_an_unresolved_read_and_is_replaced(
@@ -403,6 +412,7 @@ def test_serve_answers_each_request_on_one_line() -> None:
         return SqlAnalysis(
             resolved=True,
             tables=(TableRead("c.s.t", "columns", ("a", "é")), TableRead("u", "table")),
+            shape="SELECT a, é FROM c.s.t, u",
         )
 
     jobs = [
@@ -421,9 +431,10 @@ def test_serve_answers_each_request_on_one_line() -> None:
             "resolved": True,
             "reason": None,
             "tables": [["c.s.t", "columns", ["a", "é"]], ["u", "table", []]],
+            "shape": "SELECT a, é FROM c.s.t, u",
         },
         {"started": 2},
-        {"id": 2, "resolved": False, "reason": "not_understood", "tables": []},
+        {"id": 2, "resolved": False, "reason": "not_understood", "tables": [], "shape": None},
     ]
     assert seen == [
         ("oui", "bigquery", {"default_catalog": "c", "default_db": "s"}),

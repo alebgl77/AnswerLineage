@@ -20,6 +20,8 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrep
 | Budget de calcul de l'analyse d'une requête SQL | `--sql-budget-ms` | `ANSWERLINEAGE_PROXY_SQL_BUDGET_MS` | 50 ms (1 à 60 000) |
 | Analyses du SQL en attente, au plus | `--sql-queue-size` | `ANSWERLINEAGE_PROXY_SQL_QUEUE_SIZE` | 32 (1 à 10 000) |
 | Résultats d'analyse gardés en cache | `--sql-cache-size` | `ANSWERLINEAGE_PROXY_SQL_CACHE_SIZE` | 1 024 (0 pour aucun, jusqu'à 1 000 000) |
+| Fichier de la clé d'empreinte | `--fingerprint-key-file` | `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY_FILE` | aucun |
+| Clé d'empreinte elle-même, en hexadécimal | | `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY` | aucune : pas d'empreinte |
 
 L'adresse du serveur MCP ne porte ni identifiant ni paramètre : elle peut apparaître dans la configuration. Son hôte peut être une adresse IPv6, entre crochets (`http://[2001:db8::1]:9000`) ; une adresse IPv6 ne faisant pas un nom de serveur, `--server-name` est alors obligatoire. Un réglage invalide arrête le proxy avec le message « Configuration invalide : … » et le code de sortie 2.
 
@@ -108,7 +110,41 @@ L'analyse est prudente : elle ne liste des colonnes que si la liste est sûre d'
 | Colonne sans préfixe quand plusieurs tables sont possibles | Tables concernées, sans liste de colonnes |
 | Syntaxe inconnue, SQL dynamique, procédure, fonction de table, `UPDATE`, `DELETE`, `MERGE`, requête de plus de 100 Ko | Lecture « non résolue » (`readResolution`), l'appel passe |
 
-Une vue est rapportée sous son nom : les tables qu'elle lit ne sont pas connues du proxy. La requête et ses littéraux n'atteignent ni l'événement ni les journaux.
+Une vue est rapportée sous son nom : les tables qu'elle lit ne sont pas connues du proxy. La requête et ses littéraux n'atteignent ni l'événement ni les journaux : l'événement n'en garde que la forme sans littéraux.
+
+### Le SQL conservé sans ses littéraux
+
+L'événement porte la requête sous une forme qui permet d'en reconnaître la structure et de relire ce que l'agent a demandé, sans aucune donnée métier : la facette de job standard d'OpenLineage `sql` ([`SQLJobFacet` 1-1-0](../spec/openlineage/facets/1-1-0/SQLJobFacet.json)), champs `query` (la forme) et `dialect` (celui de l'outil).
+
+```text
+reçu   : SELECT c.nom FROM crm.clients c WHERE c.nom = 'Jeanne Dupont' AND c.ville IN ('Lyon', 'Lille') -- demande de Paul
+gardé  : SELECT c.nom FROM crm.clients AS c WHERE c.nom = ? AND c.ville IN (?)
+```
+
+La forme se construit sur l'arbre syntaxique de la requête, lu par sqlglot dans le dialecte de l'outil, jamais par des expressions régulières sur le texte :
+
+- toute constante devient le marqueur `?`, quelle que soit son écriture : chaîne (entre apostrophes ou guillemets selon le dialecte, triple, brute, échappée, Unicode, nationale, délimitée par dollars de PostgreSQL), nombre, booléen, hexadécimal, binaire, octets, date ou heure typée (`DATE '…'`), intervalle entier (`INTERVAL '3 days'`), paramètre numéroté (`$1`), motif `LIKE`, `ILIKE`, `SIMILAR TO` ou d'expression régulière, chaîne et chemin JSON (`j ->> 'cle'`, `v:cle`) ;
+- une liste `IN` de constantes devient `IN (?)` : la forme ne dépend pas de sa longueur ;
+- les commentaires disparaissent ;
+- les noms restent : tables, colonnes, fonctions, alias, paramètres nommés (`@p`).
+
+La forme se calcule avec l'analyse des lectures, dans le même processus, à partir du même découpage et dans le même budget : elle ne retarde aucun appel, et une analyse abandonnée ou en panne n'en donne pas. Elle franchit la même frontière que les lectures : le proxy ne la croit que bornée (32 768 caractères), imprimable et sans marque de commentaire. Elle est gardée en cache avec le reste du résultat.
+
+Au moindre doute, aucune forme n'est gardée, et l'événement n'a pas de facette `sql` : mieux vaut pas de forme qu'une fuite.
+
+| Cas | Pourquoi |
+| --- | --- |
+| Requête qui ne se lit pas en entier (syntaxe inconnue, repli de l'analyseur sur du texte brut : `CALL`, `EXECUTE IMMEDIATE`) | Un fragment non lu pourrait porter une constante |
+| Requête de plus de 100 Ko, ou forme de plus de 32 768 caractères | Taille maximale |
+| Analyse abandonnée au budget, file pleine, processus en panne | L'analyse n'a pas abouti |
+| Imbrication trop profonde | L'arbre ne se réécrit pas |
+| Forme qui contient encore une chaîne ou un nombre, ou un mot égal au texte d'une constante de la requête qui n'y figurait pas aussi comme nom | Une constante que l'analyseur aurait changée en nom (`DATE_TRUNC('dupont', d)` lu comme une unité) serait sinon recopiée |
+
+Seule exception au contrôle : une unité de temps (`DAY`, `MONTH`, `YEAR`…, un vocabulaire clos) que le dialecte écrit entre apostrophes, comme `DATE_TRUNC('MONTH', d)` en PostgreSQL. Elle ne dit rien des données.
+
+Une instruction dont les lectures ne sont pas connues (`UPDATE`, `INSERT … VALUES`) garde sa forme : elle se lit en entier, la lecture reste « non résolue ».
+
+La limite qui reste : un nom choisi par l'auteur de la requête (alias, nom de colonne, nom de table ou de paramètre) est conservé tel quel. `SELECT nom AS "Jeanne Dupont"` garde `"Jeanne Dupont"`.
 
 ### Un processus à part, un budget borné
 
@@ -122,7 +158,7 @@ Une requête pathologique de quelques dizaines de Ko peut occuper sqlglot plusie
 
 ### Cache
 
-Deux requêtes identiques, avec les mêmes réglages d'analyse (dialecte, catalogue et base par défaut), ne s'analysent qu'une fois, y compris quand elles arrivent ensemble. Le cache garde au plus `--sql-cache-size` résultats et 4 millions de caractères de noms ; les moins récemment servis sortent les premiers. Sa clé est une empreinte BLAKE2b, à clé tirée au démarrage du proxy, du texte et des réglages : le texte de la requête n'est pas conservé, même en mémoire, au-delà de l'appel. Seul le résultat de l'analyse, des noms de tables et de colonnes, est gardé.
+Deux requêtes identiques, avec les mêmes réglages d'analyse (dialecte, catalogue et base par défaut), ne s'analysent qu'une fois, y compris quand elles arrivent ensemble. Le cache garde au plus `--sql-cache-size` résultats et 4 millions de caractères de noms ; les moins récemment servis sortent les premiers. Sa clé est une empreinte BLAKE2b, à clé tirée au démarrage du proxy, du texte et des réglages : le texte de la requête n'est pas conservé, même en mémoire, au-delà de l'appel. Seul le résultat de l'analyse, des noms de tables et de colonnes et la forme sans littéraux, est gardé.
 
 Une analyse abandonnée au budget, ou perdue par un processus mort en plein calcul, est mise en cache comme les autres. L'analyse est déterministe : la relancer coûterait de nouveau le budget, un processus tué et un redémarrage, et répéter une requête pathologique deviendrait un moyen d'occuper l'analyse aux dépens des autres appels. Une requête refusée faute de place, ou qu'un processus n'a pas pu commencer, n'est pas mise en cache : l'échec ne tient pas à elle.
 
@@ -215,9 +251,60 @@ Exemple : `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01` donne `a7e19
 
 Un UUID version 5 aurait aussi convenu. La version 8 est retenue parce que la version 5 impose SHA-1, que l'on n'emploie plus dans une construction nouvelle, et un UUID d'espace de noms à publier en plus ; la RFC 9562 recommande la version 8 pour un nom haché par un autre algorithme, et en donne un exemple avec SHA-256. Tout langage a SHA-256 ; le calcul tient en cinq étapes. L'API d'ingestion accepte tout UUID de forme canonique. Une autre dérivation, demain, changerait d'étiquette (`…/v2`) et de fichier de vecteurs.
 
+## Empreintes à clé
+
+Des arguments et du résultat d'un appel, l'événement ne garde que des empreintes : deux appels aux mêmes arguments, ou deux résultats identiques, se reconnaissent sans que leur contenu entre dans AnswerLineage.
+
+### La clé
+
+Une empreinte est un HMAC-SHA-256 calculé avec une clé secrète propre au locataire. Deux locataires ont deux clés : la même valeur donne chez eux deux empreintes différentes, personne ne peut rapprocher leurs événements, et qui ne détient pas la clé ne retrouve pas une valeur peu variée (un code client, un montant) en essayant des candidates.
+
+- **Fourniture.** La clé s'écrit en hexadécimal, 32 à 64 octets (64 à 128 caractères). Elle se donne dans un fichier (`--fingerprint-key-file`, ou `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY_FILE`), qui ne contient qu'elle, ou dans la variable `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY` ; pas les deux. Jamais sur la ligne de commande, que la liste des processus montre. Pour en tirer une : `python -c "import secrets; print(secrets.token_hex(32))"`.
+- **Refus.** Une clé trop courte, trop longue ou qui n'est pas de l'hexadécimal, un fichier illisible : le proxy s'arrête avec « Configuration invalide : … » et le code 2. Le message ne cite ni la clé ni le chemin du fichier.
+- **Discrétion.** La clé n'apparaît dans aucun journal, aucun événement, aucune représentation des réglages ni aucun message d'erreur.
+- **Sans clé**, aucune empreinte n'est émise : jamais de repli sur un hachage sans clé, qu'une énumération suffirait à inverser. Le proxy le dit une fois, au démarrage.
+- **Rotation.** Changer de clé rompt le rapprochement : les empreintes calculées avec la nouvelle clé ne se comparent plus à celles des événements déjà reçus. Une rotation se fait donc à une date connue, et les comparaisons s'arrêtent à cette date. La même clé, partagée par plusieurs proxys du même locataire, leur donne les mêmes empreintes.
+
+### Ce qui est empreint
+
+| Champ de `answerlineage_toolCall` | Octets empreints | Absent quand |
+| --- | --- | --- |
+| `argumentsFingerprint` | Forme canonique JSON ([RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)) de `params.arguments`, en UTF-8 ; `{}` pour un appel sans arguments | sans clé ; corps plus grand que la taille lue ; arguments sans forme canonique (nombre non fini, texte qui n'est pas de l'Unicode valide) |
+| `resultFingerprint` | Corps de la réponse, octet pour octet, tel que relayé : compressé s'il l'est, flux SSE compris | sans clé ; réponse interrompue ; client parti avant la fin |
+| `resultSize` | Taille de ces mêmes octets ; ce n'est pas une empreinte, elle est émise même sans clé | réponse interrompue ; client parti avant la fin |
+
+La forme canonique ne dépend ni de l'ordre des clés ni des blancs du JSON reçu : clés triées sur leurs unités de code UTF-16, aucun blanc, chaînes avec les seuls échappements obligatoires, nombres écrits comme en ECMAScript (`2.50` et `2.5` donnent `2.5`, `1.0` donne `1`, `1E-7` donne `1e-7`).
+
+### Le calcul, à l'octet près
+
+1. `message` = l'étiquette de l'usage en ASCII, un octet nul, puis les octets empreints. Les étiquettes : `answerlineage/fingerprint/arguments/v1` et `answerlineage/fingerprint/result/v1`. Des arguments et un résultat identiques ont donc des empreintes différentes.
+2. `empreinte` = `hmac-sha256:` suivi de HMAC-SHA-256(`clé`, `message`) en hexadécimal minuscule.
+
+En Python, sans rien d'AnswerLineage :
+
+```python
+import hashlib
+import hmac
+
+empreinte = (
+    "hmac-sha256:"
+    + hmac.new(
+        cle, b"answerlineage/fingerprint/result/v1" + b"\x00" + corps, hashlib.sha256
+    ).hexdigest()
+)
+```
+
+Les vecteurs de test, avec deux clés de locataire, sont publiés dans [`spec/fingerprint/vectors-v1.json`](../spec/fingerprint/vectors-v1.json) ; ils ont été établis par une implémentation indépendante, en JavaScript, et les tests du proxy les relisent. Un autre émetteur qui retrouve ces valeurs calcule les mêmes empreintes avec la même clé. Un autre calcul, demain, changerait d'étiquette (`…/v2`) et de fichier de vecteurs.
+
+### Ce que coûte le calcul
+
+L'empreinte du résultat se calcule au fil du relais, morceau par morceau, après l'envoi de chaque morceau au client : la réponse n'est ni retenue ni attendue. Mesuré sur la boucle locale, HMAC-SHA-256 passe environ 1,5 Go/s, soit une quarantaine de microsecondes par morceau de 64 Ko : sur une réponse de 8 Mo relayée en 40 ms environ, quelques millisecondes de plus ; sur un appel ordinaire, rien de mesurable. Sans clé, seule la taille est comptée.
+
+L'empreinte des arguments se calcule après l'échange, quand l'événement est construit : quelques microsecondes pour des arguments ordinaires, de l'ordre de 7 ms pour 1 Mo, la taille lue par défaut, pendant lesquelles la boucle ne relaie rien d'autre.
+
 ## Ce qui n'est jamais conservé
 
-Aucun argument, résultat, en-tête ni jeton n'est stocké ou journalisé. Seuls le `trace-id` et le `parent-id` d'un contexte de trace bien formé, qui ne disent rien du contenu, sont recopiés dans l'événement ; ils ne sont jamais journalisés. Les en-têtes `Mcp-Param-*`, qui recopient des arguments d'outil, ne sont pas lus. Le journal d'accès du serveur HTTP est coupé. Les journaux des bibliothèques qui citeraient une URL complète, des en-têtes ou une requête SQL (`httpx`, `httpcore`, `sqlglot`) sont coupés pour tout le processus.
+Aucun argument, résultat, en-tête ni jeton n'est stocké ou journalisé : des arguments et du résultat, l'événement ne garde que des empreintes à clé et une taille ; d'une requête SQL, sa forme sans littéraux. Seuls le `trace-id` et le `parent-id` d'un contexte de trace bien formé, qui ne disent rien du contenu, sont recopiés dans l'événement ; ils ne sont jamais journalisés. Les en-têtes `Mcp-Param-*`, qui recopient des arguments d'outil, ne sont pas lus. Le journal d'accès du serveur HTTP est coupé. Les journaux des bibliothèques qui citeraient une URL complète, des en-têtes ou une requête SQL (`httpx`, `httpcore`, `sqlglot`) sont coupés pour tout le processus.
 
 ## Autorisation
 
@@ -227,7 +314,7 @@ Un test fait traverser un jeton, un cookie, un paramètre recopié en en-tête e
 
 ## L'événement émis
 
-Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COMPLETE` si le serveur a répondu sans erreur HTTP, `FAIL` sinon, `ABORT` si le client est parti. Le job est `mcp://<serveur>` / `<outil>`, l'identifiant de run celui que dérive le contexte de trace. La facette `answerlineage_toolCall` porte le serveur, l'outil, le transport, la révision du protocole, le statut HTTP, les écarts relevés, la résolution de la lecture et le contexte de trace (`traceId`, `spanId`, `traceOrigin`) ; son schéma est publié (voir [Facettes OpenLineage](facettes.md)). Les tables lues sont les jeux de données d'entrée ; leurs colonnes sont dans la facette standard `schema`.
+Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COMPLETE` si le serveur a répondu sans erreur HTTP, `FAIL` sinon, `ABORT` si le client est parti. Le job est `mcp://<serveur>` / `<outil>`, l'identifiant de run celui que dérive le contexte de trace. La facette `answerlineage_toolCall` porte le serveur, l'outil, le transport, la révision du protocole, le statut HTTP, les écarts relevés, la résolution de la lecture, le contexte de trace (`traceId`, `spanId`, `traceOrigin`), les empreintes à clé des arguments et du résultat et la taille du résultat ; son schéma est publié (voir [Facettes OpenLineage](facettes.md)). Les tables lues sont les jeux de données d'entrée ; leurs colonnes sont dans la facette standard `schema`. La forme sans littéraux d'une requête SQL est dans la facette de job standard `sql`.
 
 ## Limites connues
 
@@ -241,3 +328,6 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - Dans un corps plus grand que la taille lue, une clé `method` ou `name` répétée au-delà des 16 premiers Ko ne peut pas être vue : l'événement décrit la première.
 - Le budget se mesure en temps écoulé : sur une machine très chargée, une requête qui tient d'ordinaire dans le budget peut le dépasser et rester « non résolue » tant qu'elle est en cache.
 - La latence ajoutée par le proxy n'est pas encore mesurée.
+- La forme d'une requête garde les noms choisis par son auteur : un alias ou un nom de colonne qui serait une donnée métier (`AS "Jeanne Dupont"`) est conservé tel quel.
+- L'empreinte du résultat porte sur les octets relayés : le même résultat, compressé ou non, ou découpé autrement en événements SSE, a deux empreintes différentes.
+- Les arguments d'un appel dont le corps dépasse la taille lue ne sont pas lus : pas d'empreinte des arguments.

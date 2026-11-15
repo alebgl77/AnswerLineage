@@ -5,10 +5,12 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import cast
 
 import httpx
 
+from answerlineage_proxy.fingerprint import FingerprintKey
 from answerlineage_proxy.guard import LOOPBACK_HOSTS, RequestGuard
 from answerlineage_proxy.sql import DIALECTS, Dialect
 
@@ -21,6 +23,9 @@ ENV_ALLOWED_ORIGINS = "ANSWERLINEAGE_PROXY_ALLOWED_ORIGINS"
 ENV_SQL_BUDGET_MS = "ANSWERLINEAGE_PROXY_SQL_BUDGET_MS"
 ENV_SQL_QUEUE_SIZE = "ANSWERLINEAGE_PROXY_SQL_QUEUE_SIZE"
 ENV_SQL_CACHE_SIZE = "ANSWERLINEAGE_PROXY_SQL_CACHE_SIZE"
+# Clé d'empreinte : jamais sur la ligne de commande, que la liste des processus montre.
+ENV_FINGERPRINT_KEY = "ANSWERLINEAGE_PROXY_FINGERPRINT_KEY"
+ENV_FINGERPRINT_KEY_FILE = "ANSWERLINEAGE_PROXY_FINGERPRINT_KEY_FILE"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8717
@@ -41,6 +46,8 @@ _SERVER_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _ARGUMENT_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _NAMESPACE = re.compile(r"[A-Za-z0-9_.:/@-]{1,255}")
+# Taille lue d'un fichier de clé : une clé hexadécimale y tient largement.
+_KEY_FILE_BYTES = 4096
 
 
 class ProxyConfigurationError(ValueError):
@@ -50,6 +57,42 @@ class ProxyConfigurationError(ValueError):
 def listed(value: str | None) -> tuple[str, ...]:
     """Lit une liste séparée par des virgules, telle qu'une variable d'environnement la porte."""
     return tuple(item.strip() for item in (value or "").split(",") if item.strip())
+
+
+def fingerprint_key(
+    environment: Mapping[str, str], key_file: str | None = None
+) -> FingerprintKey | None:
+    """Lit la clé d'empreinte : dans un fichier (``key_file``, sinon la variable
+    ``ANSWERLINEAGE_PROXY_FINGERPRINT_KEY_FILE``) ou dans la variable
+    ``ANSWERLINEAGE_PROXY_FINGERPRINT_KEY``, en hexadécimal. ``None`` sans clé.
+
+    Aucun message d'erreur ne cite la clé, ni le chemin du fichier, qui pourrait
+    être une clé passée par erreur.
+    """
+    path = key_file or environment.get(ENV_FINGERPRINT_KEY_FILE) or None
+    text = environment.get(ENV_FINGERPRINT_KEY) or None
+    if path is not None and text is not None:
+        raise ProxyConfigurationError(
+            f"La clé d'empreinte vient d'un fichier ou de {ENV_FINGERPRINT_KEY}, pas des deux."
+        )
+    if path is not None:
+        try:
+            with Path(path).open("rb") as source:
+                content = source.read(_KEY_FILE_BYTES + 1)
+        except OSError:
+            raise ProxyConfigurationError(
+                "Le fichier de la clé d'empreinte est illisible."
+            ) from None
+        if len(content) > _KEY_FILE_BYTES:
+            raise ProxyConfigurationError("Le fichier de la clé d'empreinte est trop grand.")
+        text = content.decode("ascii", errors="replace")
+    if text is None:
+        return None
+    try:
+        return FingerprintKey.from_hex(text)
+    except ValueError as error:
+        # Le message de FingerprintKey ne cite jamais la valeur.
+        raise ProxyConfigurationError(str(error)) from None
 
 
 def integer(environment: Mapping[str, str], name: str, default: int) -> int:
@@ -123,6 +166,8 @@ class ProxySettings:
     sql_budget_ms: int = DEFAULT_SQL_BUDGET_MS
     sql_queue_size: int = DEFAULT_SQL_QUEUE_SIZE
     sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE
+    # Clé d'empreinte du locataire. Sans clé, aucune empreinte n'est émise.
+    fingerprint_key: FingerprintKey | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.upstream.scheme not in ("http", "https") or not self.upstream.host:
@@ -197,6 +242,7 @@ class ProxySettings:
         sql_budget_ms: int = DEFAULT_SQL_BUDGET_MS,
         sql_queue_size: int = DEFAULT_SQL_QUEUE_SIZE,
         sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE,
+        fingerprint_key: FingerprintKey | None = None,
     ) -> ProxySettings:
         try:
             url = httpx.URL(upstream)
@@ -215,6 +261,7 @@ class ProxySettings:
             sql_budget_ms=sql_budget_ms,
             sql_queue_size=sql_queue_size,
             sql_cache_size=sql_cache_size,
+            fingerprint_key=fingerprint_key,
         )
 
     @classmethod
@@ -238,4 +285,5 @@ class ProxySettings:
             sql_budget_ms=integer(environment, ENV_SQL_BUDGET_MS, DEFAULT_SQL_BUDGET_MS),
             sql_queue_size=integer(environment, ENV_SQL_QUEUE_SIZE, DEFAULT_SQL_QUEUE_SIZE),
             sql_cache_size=integer(environment, ENV_SQL_CACHE_SIZE, DEFAULT_SQL_CACHE_SIZE),
+            fingerprint_key=fingerprint_key(environment),
         )

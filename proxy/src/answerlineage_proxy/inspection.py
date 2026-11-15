@@ -56,6 +56,10 @@ class Inspection:
     # Contexte de trace W3C d'un appel d'outil, lu dans params._meta.traceparent.
     # Une valeur mal formée est ignorée comme si elle manquait.
     trace_context: TraceContext | None = None
+    # Arguments de l'appel, gardés le temps d'en calculer l'empreinte, quand elle
+    # est demandée : jamais affichés, comparés ni conservés.
+    arguments: object = field(default=None, repr=False, compare=False)
+    has_arguments: bool = field(default=False, repr=False, compare=False)
 
 
 def decode_header_value(value: str) -> str | None:
@@ -96,13 +100,17 @@ def inspect_request(
     body: bytes,
     headers: Iterable[tuple[str, str]],
     sql_arguments: Mapping[str, str] | None = None,
+    *,
+    keep_arguments: bool = False,
 ) -> Inspection | None:
     """Analyse le corps d'un POST MCP.
 
     ``sql_arguments`` donne, par outil, le nom de l'argument qui porte une
-    requête SQL. Renvoie ``None`` si le corps n'est pas une requête JSON-RPC
-    lisible sans ambiguïté (JSON invalide, lot de requêtes, clé répétée, corps
-    compressé) : la requête est alors relayée sans être décrite, et comptée.
+    requête SQL. Avec ``keep_arguments``, les arguments d'un appel d'outil sont
+    gardés pour en calculer l'empreinte ; un appel sans arguments a ``{}``.
+    Renvoie ``None`` si le corps n'est pas une requête JSON-RPC lisible sans
+    ambiguïté (JSON invalide, lot de requêtes, clé répétée, corps compressé) : la
+    requête est alors relayée sans être décrite, et comptée.
     """
     try:
         message = json.loads(body, object_pairs_hook=_unambiguous)
@@ -164,6 +172,8 @@ def inspect_request(
         header_mismatches=tuple(mismatches),
         sql=sql,
         trace_context=parse_traceparent(meta.get(TRACEPARENT)),
+        arguments=params.get("arguments", {}) if keep_arguments else None,
+        has_arguments=keep_arguments,
     )
 
 

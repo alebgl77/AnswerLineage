@@ -30,6 +30,7 @@ import httpx
 from answerlineage_proxy.analyzer import Origin, SqlAnalyzer
 from answerlineage_proxy.config import ProxySettings, SqlTool
 from answerlineage_proxy.events import Outcome, build_tool_call_event
+from answerlineage_proxy.fingerprint import RESULT_LABEL, Digest, arguments_fingerprint
 from answerlineage_proxy.inspection import (
     HEADER_METHOD,
     HEADER_NAME,
@@ -155,6 +156,11 @@ class _Exchange:
     error: str | None = None
     # Contexte de trace d'un appel d'outil : l'identifiant de run en dérive.
     trace: CallTrace | None = None
+    # Corps de la réponse relayé : sa taille et, avec une clé, son empreinte, au fil
+    # de l'eau. Elles ne valent que pour un corps relayé en entier.
+    digest: Digest | None = None
+    size: int = 0
+    relayed_whole: bool = False
 
 
 def _now() -> datetime:
@@ -311,6 +317,8 @@ class McpProxy:
         relayed = headers
         if inspection is not None and inspection.is_tool_call:
             exchange.trace = resolve_trace(inspection.trace_context, _traceparents(headers))
+            if self.settings.fingerprint_key is not None:
+                exchange.digest = self.settings.fingerprint_key.digest(RESULT_LABEL)
             if oversized:
                 # Le corps n'a pas été lu en entier, son contexte de trace non plus : la
                 # requête est relayée telle quelle, et un contexte créé ne sert qu'à
@@ -340,7 +348,12 @@ class McpProxy:
             if inspection is not None:
                 self.stats.inspected_from_prefix += 1
         else:
-            inspection = inspect_request(body, inspected, self._sql_arguments)
+            inspection = inspect_request(
+                body,
+                inspected,
+                self._sql_arguments,
+                keep_arguments=self.settings.fingerprint_key is not None,
+            )
         if inspection is None:
             self.stats.uninspected += 1
         elif inspection.header_mismatches:
@@ -489,6 +502,9 @@ class McpProxy:
                 async for chunk in response.aiter_raw():
                     if chunk:
                         await send({"type": "http.response.body", "body": chunk, "more_body": True})
+                        exchange.size += len(chunk)
+                        if exchange.digest is not None:
+                            exchange.digest.update(chunk)
             except httpx.HTTPError as error:
                 # La réponse reste inachevée : le serveur HTTP ferme la connexion,
                 # le client sait qu'elle est tronquée.
@@ -497,6 +513,7 @@ class McpProxy:
                 exchange.error = "upstream_interrupted"
                 return
             await send({"type": "http.response.body", "body": b"", "more_body": False})
+            exchange.relayed_whole = True
             exchange.outcome = "COMPLETE" if response.status_code < 400 else "FAIL"
         finally:
             await response.aclose()
@@ -528,7 +545,7 @@ class McpProxy:
         if oversized:
             # La requête n'a pas été lue : sa lecture n'est pas connue.
             reads = SqlAnalysis(resolved=False, reason="request_too_large")
-            self._emit(inspection, exchange, event_time, reads, rule.namespace)
+            self._emit(inspection, exchange, event_time, reads, rule.namespace, rule.dialect)
             return
         task = asyncio.ensure_future(
             self._analyze_then_emit(inspection, exchange, event_time, rule)
@@ -563,7 +580,7 @@ class McpProxy:
             logger.error("Analyse du SQL en échec (%s).", type(error).__name__)
             reads = SqlAnalysis(resolved=False, reason="analyzer_failed")
         finally:
-            self._emit(inspection, exchange, event_time, reads, rule.namespace)
+            self._emit(inspection, exchange, event_time, reads, rule.namespace, rule.dialect)
 
     def _emit(
         self,
@@ -572,6 +589,7 @@ class McpProxy:
         event_time: datetime,
         reads: SqlAnalysis | None = None,
         namespace: str | None = None,
+        dialect: str | None = None,
     ) -> None:
         """Émet l'événement de l'appel. Un échec d'émission n'atteint jamais l'appel."""
         self.stats.tool_calls += 1
@@ -590,6 +608,8 @@ class McpProxy:
                 reads=reads,
                 namespace=namespace,
                 trace=trace,
+                dialect=dialect,
+                **self._fingerprints(inspection, exchange),
             )
             self._sink.emit(event)
         except Exception as error:
@@ -597,3 +617,16 @@ class McpProxy:
             logger.error("Événement de lignage non émis (%s).", type(error).__name__)
         else:
             self.stats.events_emitted += 1
+
+    def _fingerprints(self, inspection: Inspection, exchange: _Exchange) -> dict[str, Any]:
+        """Empreintes et taille de l'appel : aucune empreinte sans clé, et rien du
+        résultat quand son corps n'a pas été relayé en entier."""
+        fields: dict[str, Any] = {}
+        key = self.settings.fingerprint_key
+        if key is not None and inspection.has_arguments:
+            fields["arguments_fingerprint"] = arguments_fingerprint(key, inspection.arguments)
+        if exchange.relayed_whole:
+            fields["result_size"] = exchange.size
+            if exchange.digest is not None:
+                fields["result_fingerprint"] = exchange.digest.fingerprint()
+        return fields

@@ -8,6 +8,12 @@ L'analyse est prudente. Elle ne décrit une lecture que si elle la comprend :
 - tout le reste (syntaxe inconnue, SQL dynamique, ``UPDATE``, ``DELETE``,
   ``MERGE``, procédure, requête trop longue) est « non résolu ».
 
+La même lecture de la requête en donne la forme sans littéraux (``shape``) :
+l'arbre syntaxique, où toute constante est remplacée par le marqueur ``?``,
+réécrit sans ses commentaires. Les noms (tables, colonnes, fonctions, alias)
+restent. Au moindre doute, aucune forme n'est rendue : mieux vaut pas de forme
+qu'une fuite.
+
 ``analyze_sql`` ne lève jamais d'exception et ne journalise jamais la requête :
 un littéral peut être un contenu, et aucun contenu n'est conservé.
 """
@@ -16,14 +22,16 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal, get_args
 
-import sqlglot
 from sqlglot import exp
+from sqlglot.dialects.dialect import Dialect as SqlglotDialect
 from sqlglot.errors import OptimizeError
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import Scope, build_scope
+from sqlglot.tokenizer_core import Token, TokenType
 
 Dialect = Literal["bigquery", "snowflake", "postgres"]
 Precision = Literal["table", "columns"]
@@ -31,6 +39,8 @@ DIALECTS: tuple[str, ...] = get_args(Dialect)
 
 # Au-delà, la requête n'est pas analysée.
 MAX_SQL_BYTES = 100_000
+# Au-delà, la forme sans littéraux n'est pas gardée.
+MAX_SHAPE_CHARS = 32_768
 
 
 class _DropEverything(logging.Filter):
@@ -77,6 +87,9 @@ class SqlAnalysis:
     tables: tuple[TableRead, ...] = ()
     # Code du motif quand la lecture n'est pas résolue.
     reason: str | None = None
+    # Forme de la requête sans ses littéraux, quand elle est sûre. Une lecture non
+    # résolue peut en avoir une : un UPDATE se lit en entier, sans lecture connue.
+    shape: str | None = None
 
 
 @dataclass
@@ -274,6 +287,157 @@ def _statement_reads(
             raise _UnresolvedError("not_understood")
 
 
+# Écritures d'une constante, telles que le découpage du SQL les reconnaît.
+_LITERAL_TOKENS = frozenset(
+    {
+        TokenType.STRING,
+        TokenType.NUMBER,
+        TokenType.BIT_STRING,
+        TokenType.HEX_STRING,
+        TokenType.BYTE_STRING,
+        TokenType.NATIONAL_STRING,
+        TokenType.NATIONAL_RAW_STRING,
+        TokenType.RAW_STRING,
+        TokenType.HEREDOC_STRING,
+        TokenType.UNICODE_STRING,
+    }
+)
+# Constantes de l'arbre syntaxique. Un chemin JSON (``j ->> 'cle'``) est une
+# chaîne écrite par l'auteur de la requête : il devient un marqueur, lui aussi.
+_CONSTANTS = (
+    exp.Literal,
+    exp.Boolean,
+    exp.HexString,
+    exp.BitString,
+    exp.ByteString,
+    exp.National,
+    exp.RawString,
+    exp.UnicodeString,
+    exp.JSONPath,
+)
+# Seules chaînes admises dans une forme : les unités de temps, que certains
+# dialectes écrivent entre apostrophes (``DATE_TRUNC('MONTH', d)`` en PostgreSQL).
+# Un vocabulaire clos, qui ne dit rien des données.
+_TIME_UNITS = frozenset(
+    {
+        "NANOSECOND",
+        "MICROSECOND",
+        "MILLISECOND",
+        "SECOND",
+        "MINUTE",
+        "HOUR",
+        "DAY",
+        "WEEK",
+        "ISOWEEK",
+        "MONTH",
+        "QUARTER",
+        "YEAR",
+        "ISOYEAR",
+        "DECADE",
+        "CENTURY",
+        "MILLENNIUM",
+        "DOW",
+        "DOY",
+        "ISODOW",
+        "EPOCH",
+    }
+)
+# Marques d'un commentaire : aucune forme n'en contient, même dans un nom.
+_COMMENT_MARKERS = ("--", "/*", "*/")
+
+
+def is_plain_shape(shape: str) -> bool:
+    """Contrôle de surface d'une forme : bornée, imprimable, sans commentaire.
+
+    Le proxy l'applique aussi à ce que rend le processus d'analyse.
+    """
+    return (
+        0 < len(shape) <= MAX_SHAPE_CHARS
+        and shape.isprintable()
+        and not any(marker in shape for marker in _COMMENT_MARKERS)
+    )
+
+
+def _marker() -> exp.Placeholder:
+    # « jdbc » : le marqueur s'écrit « ? » dans tous les dialectes, « %s » sinon en PostgreSQL.
+    return exp.Placeholder(jdbc=True)
+
+
+def _is_constant(node: exp.Expr) -> bool:
+    if isinstance(node, _CONSTANTS):
+        return True
+    if isinstance(node, exp.Placeholder):
+        # Un marqueur reçu sans nom : réécrit comme les autres.
+        return node.this is None
+    if isinstance(node, exp.Neg | exp.Interval | exp.Parameter):
+        # -5, INTERVAL '3 days', $1 : la constante entière.
+        return isinstance(node.this, exp.Expr) and _is_constant(node.this)
+    return False
+
+
+def _without_constants(statement: exp.Expr) -> exp.Expr:
+    """Copie de l'instruction où chaque constante est un marqueur, sans commentaire."""
+    copy = statement.copy()
+
+    def stops(node: exp.Expr) -> bool:
+        return _is_constant(node) or isinstance(node, exp.Command)
+
+    constants = [node for node in copy.walk(prune=stops) if stops(node)]
+    for node in constants:
+        if isinstance(node, exp.Command) or node is copy:
+            # Repli de l'analyseur sur du texte brut : la requête n'est pas lue en entier.
+            raise _UnresolvedError("not_understood")
+        node.replace(_marker())
+    for node in copy.find_all(exp.In):
+        # IN (?, ?, ?) devient IN (?) : la forme ne dépend pas de la longueur de la liste.
+        items = node.expressions
+        if items and all(isinstance(item, exp.Placeholder) for item in items):
+            node.set("expressions", [_marker()])
+    for node in copy.walk():
+        node.comments = None
+    return copy
+
+
+def _is_doubtless(shape: str, source: Sequence[Token], dialect: SqlglotDialect) -> bool:
+    """Vrai si la forme ne garde rien d'une constante ni d'un commentaire de la requête.
+
+    La forme est redécoupée : aucune constante, sauf une unité de temps, ni aucun
+    commentaire n'y figure. Et aucun de ses mots n'est le texte d'une constante de
+    la requête qui n'y était pas aussi écrite comme un nom : une constante que
+    l'analyseur aurait changée en nom serait sinon recopiée.
+    """
+    if not is_plain_shape(shape):
+        return False
+    written = {token.text.upper() for token in source if token.token_type in _LITERAL_TOKENS}
+    named = {token.text.upper() for token in source if token.token_type not in _LITERAL_TOKENS}
+    hidden = written - named
+    for token in dialect.tokenize(shape):
+        word = token.text.upper()
+        if token.comments:
+            return False
+        if token.token_type in _LITERAL_TOKENS:
+            if word not in _TIME_UNITS:
+                return False
+        elif word in hidden:
+            return False
+    return True
+
+
+def _shape(
+    statements: Sequence[exp.Expr], source: Sequence[Token], dialect: SqlglotDialect
+) -> str | None:
+    """Forme sans littéraux des instructions, ``None`` au moindre doute."""
+    try:
+        shape = "; ".join(
+            _without_constants(statement).sql(dialect=dialect, comments=False)
+            for statement in statements
+        )
+        return shape if _is_doubtless(shape, source, dialect) else None
+    except Exception:
+        # Construction impossible, ou trop profonde : pas de forme.
+        return None
+
+
 def analyze_sql(
     sql: str,
     dialect: Dialect,
@@ -282,27 +446,32 @@ def analyze_sql(
     default_db: str | None = None,
     max_bytes: int = MAX_SQL_BYTES,
 ) -> SqlAnalysis:
-    """Déduit d'une requête SQL les tables et les colonnes qu'elle lit."""
+    """Déduit d'une requête SQL les tables et les colonnes qu'elle lit, et sa forme."""
     if dialect not in DIALECTS:
         return _unresolved("unsupported_dialect")
     silence_sqlglot_logs()
+    shape: str | None = None
     try:
         if len(sql.encode("utf-8", errors="replace")) > max_bytes:
             return _unresolved("too_large")
-        statements = [item for item in sqlglot.parse(sql, read=dialect) if item is not None]
+        reader = SqlglotDialect.get_or_raise(dialect)
+        # Un seul découpage : il sert à l'arbre et au contrôle de la forme.
+        tokens = reader.tokenize(sql)
+        statements = [item for item in reader.parser().parse(tokens, sql) if item is not None]
         if not statements:
             return _unresolved("empty")
+        shape = _shape(statements, tokens, reader)
         reads: dict[str, _Table] = {}
         for statement in statements:
             _statement_reads(statement, dialect, default_catalog, default_db, reads)
     except _UnresolvedError as error:
-        return _unresolved(error.reason)
+        return SqlAnalysis(resolved=False, reason=error.reason, shape=shape)
     except RecursionError:
-        return _unresolved("too_deep")
+        return SqlAnalysis(resolved=False, reason="too_deep", shape=shape)
     except Exception:
         # Erreur de syntaxe ou cas que l'analyseur ne couvre pas : l'appel passe,
         # la lecture est non résolue. Le message, qui cite la requête, est ignoré.
-        return _unresolved("not_understood")
+        return SqlAnalysis(resolved=False, reason="not_understood", shape=shape)
 
     tables = []
     for name in sorted(reads):
@@ -313,4 +482,4 @@ def analyze_sql(
             tables.append(
                 TableRead(name=name, precision="columns", columns=tuple(sorted(table.columns)))
             )
-    return SqlAnalysis(resolved=True, tables=tuple(tables))
+    return SqlAnalysis(resolved=True, tables=tuple(tables), shape=shape)

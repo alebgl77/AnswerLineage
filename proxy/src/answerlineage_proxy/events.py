@@ -1,7 +1,8 @@
 """Événements OpenLineage émis par le proxy : un par appel d'outil.
 
 Un événement ne porte aucun contenu : ni argument, ni résultat, ni en-tête,
-ni jeton.
+ni jeton. Des arguments et du résultat, il ne garde que des empreintes à clé et
+une taille ; d'une requête SQL, que sa forme sans littéraux.
 """
 
 from __future__ import annotations
@@ -29,6 +30,9 @@ TOOL_CALL_FACET_SCHEMA = (
 SCHEMA_FACET_SCHEMA = (
     "https://openlineage.io/spec/facets/1-2-0/SchemaDatasetFacet.json#/$defs/SchemaDatasetFacet"
 )
+# Facette de job standard : la requête SQL du job, ici sans ses littéraux.
+SQL_FACET = "sql"
+SQL_FACET_SCHEMA = "https://openlineage.io/spec/facets/1-1-0/SQLJobFacet.json#/$defs/SQLJobFacet"
 # Nom de job d'un appel dont le nom d'outil n'a pas une forme admise.
 UNRESOLVED_TOOL = "outil-non-resolu"
 
@@ -49,13 +53,20 @@ def build_tool_call_event(
     reads: SqlAnalysis | None = None,
     namespace: str | None = None,
     trace: CallTrace | None = None,
+    dialect: str | None = None,
+    arguments_fingerprint: str | None = None,
+    result_fingerprint: str | None = None,
+    result_size: int | None = None,
 ) -> dict[str, Any]:
     """Construit le RunEvent d'un appel d'outil relayé.
 
     ``reads`` est l'analyse de la requête SQL d'un outil déclaré : chaque table
     lue devient un jeu de données d'entrée, sous ``namespace``. ``trace`` est le
     contexte de trace de l'appel, dont ``run_id`` dérive : la facette le cite,
-    pour passer du lignage à la trace.
+    pour passer du lignage à la trace. La forme sans littéraux de la requête,
+    quand l'analyse en a établi une, va dans la facette de job ``sql``, avec
+    ``dialect``. Les empreintes et la taille du résultat vont dans la facette de
+    l'appel.
     """
     facet: dict[str, Any] = {
         "_producer": PRODUCER,
@@ -73,11 +84,30 @@ def build_tool_call_event(
         facet["httpStatus"] = http_status
     if proxy_error is not None:
         facet["proxyError"] = proxy_error
+    if arguments_fingerprint is not None:
+        facet["argumentsFingerprint"] = arguments_fingerprint
+    if result_fingerprint is not None:
+        facet["resultFingerprint"] = result_fingerprint
+    if result_size is not None:
+        facet["resultSize"] = result_size
     if trace is not None:
         facet["traceId"] = trace.context.trace_id
         facet["spanId"] = trace.context.parent_id
         facet["traceOrigin"] = trace.origin
     inputs: list[dict[str, Any]] = []
+    job: dict[str, Any] = {
+        "namespace": f"mcp://{server}",
+        "name": inspection.tool or UNRESOLVED_TOOL,
+    }
+    if reads is not None and reads.shape is not None:
+        sql: dict[str, Any] = {
+            "_producer": PRODUCER,
+            "_schemaURL": SQL_FACET_SCHEMA,
+            "query": reads.shape,
+        }
+        if dialect is not None:
+            sql["dialect"] = dialect
+        job["facets"] = {SQL_FACET: sql}
     if reads is not None:
         facet["readResolution"] = "resolved" if reads.resolved else "unresolved"
         if reads.reason is not None:
@@ -99,7 +129,7 @@ def build_tool_call_event(
         "producer": PRODUCER,
         "schemaURL": RUN_EVENT_SCHEMA,
         "run": {"runId": str(run_id), "facets": {TOOL_CALL_FACET: facet}},
-        "job": {"namespace": f"mcp://{server}", "name": inspection.tool or UNRESOLVED_TOOL},
+        "job": job,
         "inputs": inputs,
         "outputs": [],
     }

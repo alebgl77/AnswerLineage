@@ -20,6 +20,8 @@ from answerlineage_proxy.config import (
     DEFAULT_SQL_QUEUE_SIZE,
     ENV_ALLOWED_HOSTS,
     ENV_ALLOWED_ORIGINS,
+    ENV_FINGERPRINT_KEY,
+    ENV_FINGERPRINT_KEY_FILE,
     ENV_HOST,
     ENV_PORT,
     ENV_SERVER_NAME,
@@ -30,6 +32,7 @@ from answerlineage_proxy.config import (
     ProxyConfigurationError,
     ProxySettings,
     SqlTool,
+    fingerprint_key,
     integer,
     listed,
 )
@@ -119,6 +122,15 @@ def build_parser() -> argparse.ArgumentParser:
             f"{DEFAULT_SQL_CACHE_SIZE} par défaut (ou {ENV_SQL_CACHE_SIZE})"
         ),
     )
+    parser.add_argument(
+        "--fingerprint-key-file",
+        metavar="FICHIER",
+        help=(
+            "fichier qui contient la clé d'empreinte du locataire, en hexadécimal "
+            f"(ou {ENV_FINGERPRINT_KEY_FILE}, ou la clé elle-même dans {ENV_FINGERPRINT_KEY}) ; "
+            "sans clé, aucune empreinte n'est émise"
+        ),
+    )
     return parser
 
 
@@ -160,6 +172,7 @@ def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str
             if args.sql_cache_size is not None
             else integer(environment, ENV_SQL_CACHE_SIZE, DEFAULT_SQL_CACHE_SIZE)
         ),
+        fingerprint_key=fingerprint_key(environment, args.fingerprint_key_file),
     )
 
 
@@ -181,6 +194,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.warning(
             "Le proxy écoute hors de la boucle locale : seuls la boucle locale et le serveur MCP "
             "sont acceptés dans l'en-tête Host. Ajouter les noms du proxy avec --allow-host."
+        )
+    if settings.fingerprint_key is None:
+        logger.warning(
+            "Aucune clé d'empreinte (%s ou %s) : les événements ne portent ni empreinte "
+            "des arguments ni empreinte du résultat.",
+            ENV_FINGERPRINT_KEY,
+            ENV_FINGERPRINT_KEY_FILE,
         )
     logger.warning(
         "Aucune destination d'événements : les appels d'outils sont comptés, "

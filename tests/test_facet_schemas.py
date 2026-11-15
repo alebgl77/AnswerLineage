@@ -26,14 +26,21 @@ from answerlineage_api.ingest.models import RECIPIENTS_MAX
 from answerlineage_corpus.enterprise import generate
 from answerlineage_corpus.events import render
 from answerlineage_corpus.scenarios import load_corpus
-from answerlineage_proxy.events import build_tool_call_event
+from answerlineage_proxy.events import SQL_FACET_SCHEMA, build_tool_call_event
+from answerlineage_proxy.fingerprint import (
+    RESULT_LABEL,
+    FingerprintKey,
+    arguments_fingerprint,
+)
 from answerlineage_proxy.inspection import Inspection
-from answerlineage_proxy.sql import SqlAnalysis, TableRead
+from answerlineage_proxy.sql import SqlAnalysis, TableRead, analyze_sql
 from answerlineage_proxy.tracecontext import parse_traceparent, resolve_trace
 from api.tests.events import OFFICIAL_SCHEMA
 
 ROOT = Path(__file__).resolve().parents[1]
 FACETS = ROOT / "spec" / "facets"
+# Facettes standard d'OpenLineage que le proxy émet, copiées depuis la version 1.55.0.
+STANDARD_FACETS = ROOT / "spec" / "openlineage" / "facets"
 RAW = "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/"
 PUBLISHED = RAW + "spec/facets/"
 OWN_PREFIX = "answerlineage_"
@@ -61,6 +68,7 @@ def registry() -> Registry[Any]:
     """Le schéma d'OpenLineage et les schémas des facettes, indexés par leur ``$id``."""
     documents = [json.loads(OFFICIAL_SCHEMA.read_text(encoding="utf-8"))]
     documents.extend(load(path) for path in schema_files())
+    documents.extend(load(path) for path in sorted(STANDARD_FACETS.glob("*/*.json")))
     return Registry().with_resources(
         (document["$id"], Resource.from_contents(document, default_specification=DRAFT202012))
         for document in documents
@@ -140,9 +148,9 @@ EXAMPLES: dict[str, dict[str, Any]] = {
             "invalidToolName": False,
             "readResolution": "unresolved",
             "unresolvedReason": "too_large",
-            "argumentsFingerprint": "sha256:" + "a" * 64,
+            "argumentsFingerprint": "hmac-sha256:" + "a" * 64,
             "readOnly": True,
-            "resultFingerprint": "sha256:" + "b" * 64,
+            "resultFingerprint": "hmac-sha256:" + "b" * 64,
             "resultSize": 2048,
             "definitionFingerprint": "sha256:" + "c" * 64,
             "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
@@ -193,6 +201,17 @@ FAULTY: dict[str, dict[str, dict[str, Any]]] = {
         "résolution inconnue": {"server": "s", "readResolution": "peut-être"},
         "en-têtes qui ne sont pas des textes": {"server": "s", "headerMismatch": [1]},
         "taille négative": {"server": "s", "resultSize": -1},
+        "empreinte des arguments sans clé": {
+            "server": "s",
+            "argumentsFingerprint": "sha256:" + "a" * 64,
+        },
+        "empreinte du résultat sans clé": {
+            "server": "s",
+            "resultFingerprint": "sha256:" + "b" * 64,
+        },
+        "empreinte sans algorithme": {"server": "s", "argumentsFingerprint": "a" * 64},
+        "empreinte en majuscules": {"server": "s", "resultFingerprint": "hmac-sha256:" + "B" * 64},
+        "empreinte tronquée": {"server": "s", "resultFingerprint": "hmac-sha256:" + "b" * 63},
         "lecture seule en texte": {"server": "s", "readOnly": "true"},
         "trace en majuscules": {"server": "s", "traceId": "4BF92F3577B34DA6A3CE929D0E0E4736"},
         "trace trop courte": {"server": "s", "traceId": "4bf92f3577b34da6a3ce929d0e0e473"},
@@ -385,7 +404,23 @@ def proxy_events() -> list[dict[str, Any]]:
         reads=SqlAnalysis(resolved=False, reason="too_large"),
         namespace="bigquery",
     )
-    return [*events, failed, resolved, unresolved]
+    # Avec une clé d'empreinte, et la forme sans littéraux d'une requête.
+    key = FingerprintKey(bytes(range(32)))
+    fingerprinted = build_tool_call_event(
+        run_id=uuid4(),
+        event_time=datetime.now(UTC),
+        outcome="COMPLETE",
+        server="entrepot",
+        inspection=inspections[0],
+        http_status=200,
+        reads=analyze_sql("SELECT c.nom FROM crm.clients AS c WHERE c.nom = 'Dupont'", "bigquery"),
+        namespace="bigquery",
+        dialect="bigquery",
+        arguments_fingerprint=arguments_fingerprint(key, {"query": "…"}),
+        result_fingerprint=key.fingerprint(RESULT_LABEL, b"{}"),
+        result_size=2,
+    )
+    return [*events, failed, resolved, unresolved, fingerprinted]
 
 
 def emitted_events() -> list[dict[str, Any]]:
@@ -436,3 +471,22 @@ def test_every_emitted_facet_is_announced_under_its_own_key_and_respects_its_sch
             assert list(validator(name).iter_errors(emitted)) == []
             checked += 1
     assert checked > 1000
+
+
+def test_the_sql_facet_the_proxy_emits_respects_the_standard_schema() -> None:
+    """La facette de job « sql » d'OpenLineage, sans champ inventé."""
+    sql_facets = [
+        event["job"]["facets"]["sql"] for event in proxy_events() if "facets" in event["job"]
+    ]
+    assert sql_facets
+    standard = Draft202012Validator(
+        {"$ref": SQL_FACET_SCHEMA}, registry=REGISTRY, format_checker=FormatChecker()
+    )
+    document = load(STANDARD_FACETS / "1-1-0" / "SQLJobFacet.json")
+    fields = set(document["$defs"]["SQLJobFacet"]["allOf"][1]["properties"])
+    for emitted in sql_facets:
+        assert list(standard.iter_errors(emitted)) == []
+        assert set(emitted) <= {"_producer", "_schemaURL", *fields}
+        assert emitted["_schemaURL"] == SQL_FACET_SCHEMA
+        assert SQL_FACET_SCHEMA.startswith(document["$id"] + "#")
+        assert "Dupont" not in emitted["query"]

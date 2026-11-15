@@ -11,6 +11,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from answerlineage_api.ingest.models import validate_event
 from answerlineage_api.ingest.store import event_identifier
 from answerlineage_proxy.events import build_tool_call_event
+from answerlineage_proxy.fingerprint import RESULT_LABEL, FingerprintKey, arguments_fingerprint
 from answerlineage_proxy.inspection import Inspection
 from answerlineage_proxy.sql import analyze_sql
 from answerlineage_proxy.tracecontext import resolve_trace
@@ -73,3 +74,26 @@ def test_proxy_event_with_sql_reads_is_a_valid_openlineage_run_event() -> None:
         ("bigquery", "ref.taux_change"),
     ]
     assert set(accepted.inputs[1].facets) == {"schema"}
+
+
+def test_proxy_event_with_fingerprints_and_a_sql_shape_is_accepted() -> None:
+    key = FingerprintKey(bytes(range(32)))
+    event = build_tool_call_event(
+        run_id=uuid4(),
+        event_time=datetime.now(UTC),
+        outcome="COMPLETE",
+        server="entrepot",
+        inspection=Inspection(is_tool_call=True, tool="execute_sql"),
+        http_status=200,
+        reads=analyze_sql("SELECT c.nom FROM crm.clients c WHERE c.nom = 'Dupont'", "postgres"),
+        namespace="postgres",
+        dialect="postgres",
+        arguments_fingerprint=arguments_fingerprint(key, {"query": "…"}),
+        result_fingerprint=key.fingerprint(RESULT_LABEL, b"{}"),
+        result_size=2,
+    )
+    assert list(OFFICIAL.iter_errors(event)) == []
+    accepted, errors = validate_event(event)
+    assert errors == []
+    assert accepted is not None
+    assert set(accepted.job.facets) == {"sql"}

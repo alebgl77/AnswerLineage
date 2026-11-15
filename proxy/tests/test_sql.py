@@ -240,8 +240,13 @@ def test_several_statements_are_all_analyzed() -> None:
 
 
 def test_statements_without_data_read_are_resolved_and_empty() -> None:
-    assert analyze_sql("SELECT 1", "postgres") == SqlAnalysis(resolved=True)
-    assert analyze_sql("SHOW TABLES", "snowflake") == SqlAnalysis(resolved=True)
+    cases: tuple[tuple[str, Dialect], ...] = (
+        ("SELECT 1", "postgres"),
+        ("SHOW TABLES", "snowflake"),
+    )
+    for sql, dialect in cases:
+        analysis = analyze_sql(sql, dialect)
+        assert (analysis.resolved, analysis.tables, analysis.reason) == (True, (), None)
 
 
 @pytest.mark.parametrize(
