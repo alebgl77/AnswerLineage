@@ -85,6 +85,8 @@ class FakeMcpServer:
     """Serveur HTTP qui enregistre ce qu'il reçoit et répond selon le chemin."""
 
     requests: list[Received] = field(default_factory=list)
+    # Résultat rendu à un appel d'outil : réglable, pour y placer un canari.
+    tool_result: bytes = TOOL_RESULT
     gate: asyncio.Event = field(default_factory=asyncio.Event)
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
     # Premiers octets d'un corps reçus : la requête est relayée avant d'être complète.
@@ -178,7 +180,7 @@ class FakeMcpServer:
         await _respond(
             send,
             200,
-            TOOL_RESULT,
+            self.tool_result,
             [
                 (b"content-type", b"application/json"),
                 (b"x-duplique", b"un"),
