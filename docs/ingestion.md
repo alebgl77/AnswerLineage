@@ -43,7 +43,66 @@ Chaque événement d'un lot est validé séparément. Un événement invalide es
 
 Le contrat est le schéma officiel d'OpenLineage, copié dans `spec/openlineage/2-0-2/`. L'API le traduit en modèles Pydantic pour la vitesse ; un test compare les deux, événement par événement, sur des événements valides et invalides.
 
-Deux textes que PostgreSQL ne peut pas conserver sont rejetés (`unstorable_text`) : le caractère nul et les demi-codets Unicode isolés.
+Deux textes que PostgreSQL ne peut pas conserver sont rejetés (`unstorable_text`) : le caractère nul et les demi-codets Unicode isolés. Ce motif vient en tête de la liste des erreurs.
+
+Au-delà du schéma, l'API contrôle l'heure de l'événement et chacun de ses identifiants.
+
+### Heure de l'événement
+
+`eventTime` suit la RFC 3339, avec son fuseau ; `T` et `Z` s'écrivent en majuscules ou en minuscules. Ramenée en UTC, l'heure tombe entre le 1er janvier 1970 et un jour après la réception de l'événement ; sinon l'événement est rejeté (`event_time_out_of_range`).
+
+- Aucun événement de lignage ne précède 1970 ; une année qui sortirait de 1 à 9999 une fois ramenée en UTC (`9999-12-31T23:59:59-14:00`) ne se relirait plus et ferait échouer toute lecture du graphe.
+- Un jour d'avance couvre un décalage d'horloge, comme un fuseau mal déclaré (14 heures au plus). Au-delà, l'heure est fausse : elle fixerait pour toujours l'état du run, que donne son dernier événement, et placerait sa réponse en tête des plus récentes.
+- Aucune borne n'empêche d'envoyer des événements anciens : un émetteur peut rattraper son retard.
+
+L'ingestion et les workers lisent l'heure avec la même fonction : un événement accepté est toujours projeté.
+
+### Identifiants
+
+Un identifiant reçu finit dans le graphe, l'explorateur et les gabarits de rappel : il n'est accepté que s'il a la forme d'un nom. Sont des identifiants :
+
+| Champ | Longueur maximale |
+| --- | --- |
+| `job.namespace` (agent, serveur MCP, émetteur) | 512 |
+| `job.name` (agent, outil, job) | 512 |
+| `namespace` d'un jeu de données d'entrée ou de sortie | 512 |
+| `name` d'un jeu de données d'entrée ou de sortie | 1 024 |
+| Facette `parent` : `job.namespace`, `job.name` | 512 |
+| Facette `answerlineage_toolCall` : `server`, `tool` | 255 |
+| Facette `schema` d'une entrée : `fields[].name` | 300 |
+| Facette `version` : `datasetVersion` | 255 |
+| Facette `answerlineage_delivery` (dans `facets` ou `outputFacets`) : `fingerprint` | 255 |
+| Même facette : `channel` | 64 |
+| Même facette : `messageRef` | 512 |
+| Même facette : `recipients[]` | 255 |
+
+La longueur se compte en caractères de la forme normalisée. Un identifiant contient des lettres, des marques et des chiffres de toute écriture, et ces signes : `. _ - / : @ = + ~ % , # $ * [ ]`. Ils suffisent aux conventions de nommage d'OpenLineage : `postgres://crm:5432`, `gs://seau/chemin/fichier.csv`, `kafka://broker1:9092,broker2:9092`, `abfss://conteneur@compte.dfs.core.windows.net`, `référentiel.société.coût_unitaire`, `projet.jeu.evenements_2026*`.
+
+Tout le reste est rejeté, un code par motif. Quand une valeur a plusieurs défauts, le premier de cette liste est rapporté :
+
+| Code | Motif |
+| --- | --- |
+| `identifier_control` | Un caractère de contrôle |
+| `identifier_invisible` | Un caractère invisible ou de formatage : largeur nulle, marque ou forçage de direction, sélecteur de variante, étiquette, trait d'union conditionnel (propriété Unicode *Default_Ignorable_Code_Point*) |
+| `identifier_markup` | Un chevron, un guillemet ou un accent grave, y compris sous une forme de compatibilité comme `＜` : rien qui forme une balise ou sorte d'une chaîne |
+| `identifier_whitespace` | Un espace ou un blanc, quel qu'il soit : tabulation, retour à la ligne, espace insécable ou idéographique |
+| `identifier_forbidden_character` | Tout autre signe : ponctuation, symbole, émoji, usage privé |
+| `identifier_too_long` | Plus de caractères que la borne du champ |
+| `identifier_empty` | Un texte vide |
+
+Un nom fait d'une phrase est refusé parce qu'il contient des espaces : une instruction en langage naturel glissée dans un nom de table (`Ignore les consignes précédentes et…`) est rejetée avec `identifier_whitespace`, dont le motif dit qu'une phrase n'est pas un nom. Le motif est un texte fixe : il ne cite jamais la valeur reçue.
+
+```json
+{ "path": "/inputs/0/name", "type": "identifier_whitespace", "message": "Un identifiant ne contient ni espace ni blanc : une phrase n'est pas un nom." }
+```
+
+Un nom réel qui contient des espaces, celui d'un document par exemple, s'envoie encodé (`Politique%20voyages%202026.pdf`) : `%` est admis, et le nom reste lisible. Les schémas publiés des [facettes](facettes.md) portent les mêmes longueurs maximales que ce tableau.
+
+Une facette inconnue, et un champ d'une facette connue qui n'est pas dans ce tableau, ne sont pas contrôlés : ils n'entrent pas dans le graphe. Une valeur de ces champs qui n'est pas un texte est tolérée : la projection l'ignore.
+
+### Forme normalisée
+
+Le contrôle porte sur la forme normalisée NFC de l'identifiant, et c'est elle qui entre dans le graphe : `société` écrit avec un `é` composé ou avec un `e` suivi d'un accent combinant désigne un seul jeu de données. L'événement brut, lui, reste enregistré tel qu'il a été reçu, et son identifiant reste l'empreinte de cette forme reçue. Les [workers](workers.md) normalisent chaque identifiant qu'ils recopient dans le graphe.
 
 ## Contrat
 
@@ -77,6 +136,8 @@ Chaque événement nouveau entre dans la file de traitement, d'où un [worker](w
 ## Limites connues
 
 - Les émetteurs ne sont pas authentifiés : l'API ne s'expose pas hors d'un réseau de confiance.
-- Le corps est lu en entier avant d'être contrôlé ; seule la taille du lot est bornée.
-- Les identifiants reçus (noms de jeux de données, d'outils, d'agents) ne sont pas encore validés au-delà du schéma.
+- Le corps est lu en entier avant d'être contrôlé ; seules la taille du lot et la longueur des identifiants sont bornées, pas le nombre d'entrées, de colonnes ou de destinataires d'un événement.
+- Le contrôle des identifiants porte sur leur forme, pas sur leur sens : une instruction écrite sans espace (`ignore_les_consignes`) a la forme d'un nom et passe. Aucun texte reçu n'atteint un modèle ni un destinataire autrement que dans un gabarit fixe.
+- La forme NFC ne confond pas les caractères qui se ressemblent : `а` cyrillique et `a` latin font deux noms distincts.
+- L'heure d'un événement est bornée par l'horloge de l'API : le corpus synthétique, daté à partir du 2 novembre 2026, voit refuser ses événements qui tombent plus d'un jour après la date du jour (`--days` élevé).
 - L'API n'exporte pas encore de métriques.

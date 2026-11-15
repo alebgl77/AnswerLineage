@@ -8,7 +8,9 @@ chaud : un test les compare au schéma officiel, événement par événement.
 from __future__ import annotations
 
 import re
-from typing import Annotated, Any, Literal
+from collections.abc import Iterator, Mapping
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -20,7 +22,26 @@ from pydantic import (
     Field,
     TypeAdapter,
     ValidationError,
+    ValidationInfo,
+    field_validator,
 )
+from pydantic_core import PydanticCustomError
+
+from answerlineage_api import identifiers
+from answerlineage_api.identifiers import identifier_fault
+
+# Facettes propres à AnswerLineage, lues par la projection.
+AGENT_FACET: Final = "answerlineage_agent"
+TOOL_CALL_FACET: Final = "answerlineage_toolCall"
+DELIVERY_FACET: Final = "answerlineage_delivery"
+
+# Plage admise pour l'heure d'un événement, ramenée en UTC. Aucun événement de
+# lignage ne précède 1970, et un jour d'avance couvre tout décalage d'horloge
+# comme un fuseau mal déclaré (14 heures au plus). Au-delà, l'heure est fausse :
+# elle fixerait pour toujours l'état d'un run ou l'ordre des réponses, et une
+# année qui sort de 1 à 9999 une fois ramenée en UTC ne se relit plus.
+EVENT_TIME_EARLIEST: Final = datetime(1970, 1, 1, tzinfo=UTC)
+EVENT_TIME_AHEAD: Final = timedelta(days=1)
 
 _RFC_3339 = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})"
@@ -41,6 +62,7 @@ def _canonical_uuid(value: object) -> object:
 
 
 EventTime = Annotated[AwareDatetime, BeforeValidator(_rfc_3339)]
+_EVENT_TIME: TypeAdapter[datetime] = TypeAdapter(EventTime)
 RunId = Annotated[UUID, BeforeValidator(_canonical_uuid)]
 EventType = Literal["START", "RUNNING", "COMPLETE", "ABORT", "FAIL", "OTHER"]
 
@@ -101,6 +123,19 @@ class RunEvent(BaseModel):
     inputs: list[InputDataset] = Field(default_factory=list)
     outputs: list[OutputDataset] = Field(default_factory=list)
 
+    @field_validator("event_time")
+    @classmethod
+    def _within_range(cls, value: datetime, info: ValidationInfo) -> datetime:
+        context = info.context if isinstance(info.context, Mapping) else {}
+        received_at = context.get("received_at") or datetime.now(UTC)
+        if not EVENT_TIME_EARLIEST <= value <= received_at + EVENT_TIME_AHEAD:
+            raise PydanticCustomError(
+                "event_time_out_of_range",
+                "L'heure de l'événement, ramenée en UTC, tombe entre le 1er janvier 1970 "
+                "et un jour après sa réception.",
+            )
+        return value
+
 
 class FieldError(BaseModel):
     """Champ fautif d'un événement rejeté."""
@@ -118,20 +153,113 @@ def json_pointer(location: tuple[int | str, ...]) -> str:
     return "".join("/" + str(part).replace("~", "~0").replace("/", "~1") for part in location)
 
 
-def validate_event(raw: object) -> tuple[RunEvent | None, list[FieldError]]:
-    """Valide un événement. Renvoie l'événement, ou la liste de ses champs fautifs."""
+def parse_event_time(value: object) -> datetime:
+    """Heure d'un événement, lue comme l'ingestion la lit : RFC 3339, ``T`` et ``Z``
+    en majuscules comme en minuscules. Lève ``ValidationError`` si elle est illisible."""
+    return _EVENT_TIME.validate_python(value)
+
+
+def _mapping(value: object) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _items(value: object) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+Location = tuple[int | str, ...]
+
+
+def _identifiers(raw: Mapping[str, Any]) -> Iterator[tuple[Location, object, int]]:
+    """Les identifiants d'un événement : emplacement, valeur reçue, longueur maximale.
+
+    Ce sont les champs que la projection recopie dans le graphe, plus le job
+    parent. Une facette inconnue, ou un champ libre d'une facette connue, n'en
+    contient pas.
+    """
+    job = _mapping(raw.get("job"))
+    yield ("job", "namespace"), job.get("namespace"), identifiers.NAMESPACE_MAX
+    yield ("job", "name"), job.get("name"), identifiers.JOB_NAME_MAX
+
+    run_facets = _mapping(_mapping(raw.get("run")).get("facets"))
+    parent_job = _mapping(_mapping(run_facets.get("parent")).get("job"))
+    parent: Location = ("run", "facets", "parent", "job")
+    yield (*parent, "namespace"), parent_job.get("namespace"), identifiers.NAMESPACE_MAX
+    yield (*parent, "name"), parent_job.get("name"), identifiers.JOB_NAME_MAX
+    tool_call = _mapping(run_facets.get(TOOL_CALL_FACET))
+    for field in ("server", "tool"):
+        yield ("run", "facets", TOOL_CALL_FACET, field), tool_call.get(field), identifiers.TOOL_MAX
+
+    for side in ("inputs", "outputs"):
+        for index, item in enumerate(_items(raw.get(side))):
+            dataset = _mapping(item)
+            yield (side, index, "namespace"), dataset.get("namespace"), identifiers.NAMESPACE_MAX
+            yield (side, index, "name"), dataset.get("name"), identifiers.DATASET_NAME_MAX
+            facets = _mapping(dataset.get("facets"))
+            where: Location = (side, index, "facets")
+            version = _mapping(facets.get("version")).get("datasetVersion")
+            yield (*where, "version", "datasetVersion"), version, identifiers.VERSION_MAX
+            if side == "inputs":
+                fields = _items(_mapping(facets.get("schema")).get("fields"))
+                for rank, column in enumerate(fields):
+                    name = _mapping(column).get("name")
+                    yield (*where, "schema", "fields", rank, "name"), name, identifiers.COLUMN_MAX
+                continue
+            for container in ("facets", "outputFacets"):
+                delivery = _mapping(_mapping(dataset.get(container)).get(DELIVERY_FACET))
+                at: Location = (side, index, container, DELIVERY_FACET)
+                yield (*at, "fingerprint"), delivery.get("fingerprint"), identifiers.FINGERPRINT_MAX
+                yield (*at, "channel"), delivery.get("channel"), identifiers.CHANNEL_MAX
+                yield (*at, "messageRef"), delivery.get("messageRef"), identifiers.MESSAGE_REF_MAX
+                for rank, recipient in enumerate(_items(delivery.get("recipients"))):
+                    yield (*at, "recipients", rank), recipient, identifiers.RECIPIENT_MAX
+
+
+def identifier_errors(raw: Mapping[str, Any]) -> list[FieldError]:
+    """Identifiants d'un événement qui n'ont pas une forme admise.
+
+    Seul un texte est contrôlé ici : le type d'un champ obligatoire relève du
+    schéma, et une valeur de facette qui n'est pas un texte est ignorée par la
+    projection.
+    """
+    errors = []
+    for location, value, max_length in _identifiers(raw):
+        if not isinstance(value, str):
+            continue
+        fault = identifier_fault(value, max_length=max_length)
+        if fault is not None:
+            errors.append(
+                FieldError(path=json_pointer(location), type=fault.code, message=fault.message)
+            )
+    return errors
+
+
+def validate_event(
+    raw: object, *, received_at: datetime | None = None
+) -> tuple[RunEvent | None, list[FieldError]]:
+    """Valide un événement. Renvoie l'événement, ou la liste de ses champs fautifs.
+
+    L'heure de l'événement est bornée par ``received_at``, l'heure de sa
+    réception ; à défaut, par l'heure courante.
+    """
     if not isinstance(raw, dict):
         return None, [
             FieldError(path="", type="not_an_object", message="Un événement est un objet JSON.")
         ]
+    event: RunEvent | None = None
+    errors: list[FieldError] = []
     try:
-        return _RUN_EVENT.validate_python(raw), []
+        event = _RUN_EVENT.validate_python(raw, context={"received_at": received_at})
     except ValidationError as error:
         # Ni la valeur reçue ni son contexte ne sont renvoyés : chemin, code, motif.
-        return None, [
+        errors = [
             FieldError(path=json_pointer(item["loc"]), type=item["type"], message=item["msg"])
             for item in error.errors(include_url=False, include_input=False, include_context=False)
         ]
+    errors.extend(identifier_errors(raw))
+    if errors:
+        return None, errors
+    return event, []
 
 
 def run_event_json_schema() -> dict[str, Any]:

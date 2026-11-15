@@ -31,6 +31,8 @@ Les événements bruts restent dans `event_raw` : le graphe peut être reconstru
 
 Un événement venu d'un autre émetteur OpenLineage, sans ces facettes, est enregistré comme un job ordinaire avec ses lectures et ses écritures. Une facette propre mal formée est ignorée, sans empêcher d'enregistrer le reste de l'événement. Les schémas de ces facettes sont décrits dans [Facettes OpenLineage](facettes.md).
 
+Chaque identifiant recopié dans le graphe (agent, outil, jeu de données, version, colonne, empreinte, canal, référence de message, destinataire) l'est sous sa forme normalisée NFC : deux écritures d'un même nom, composée et décomposée, donnent un seul objet. Les identifiants ont été contrôlés à l'[ingestion](ingestion.md#identifiants) ; un événement enregistré avant ce contrôle et rejoué n'en fait pas entrer de mal formé : une valeur de facette fautive est ignorée, et un espace de noms ou un nom fautif laisse l'événement dans la file.
+
 L'ordre d'arrivée ne compte pas : deux événements d'un même run reçus dans le désordre donnent le même graphe.
 
 ## Limites connues

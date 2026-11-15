@@ -15,19 +15,19 @@
             "fingerprint": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 128,
+              "maxLength": 255,
               "description": "Empreinte de la réponse. Jamais le contenu."
             },
             "channel": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 256,
+              "maxLength": 64,
               "description": "Canal par lequel la réponse a été diffusée."
             },
             "messageRef": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 256,
+              "maxLength": 512,
               "description": "Référence du message diffusé sur le canal."
             },
             "recipients": {
@@ -36,7 +36,7 @@
               "items": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 128,
+                "maxLength": 255,
                 "description": "Pseudonyme d'un destinataire."
               },
               "description": "Destinataires pseudonymisés, sans table de correspondance."

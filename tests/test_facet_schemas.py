@@ -21,6 +21,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
+from answerlineage_api import identifiers
 from answerlineage_corpus.enterprise import generate
 from answerlineage_corpus.events import render
 from answerlineage_corpus.scenarios import load_corpus
@@ -244,6 +245,36 @@ def test_the_base_facet_of_openlineage_is_required(name: str, missing: str) -> N
     assert list(validator(name).iter_errors(complete)) == []
     del complete[missing]
     assert list(validator(name).iter_errors(complete)) != []
+
+
+BOUNDED = [
+    ("ToolCallRunFacet", "server", identifiers.TOOL_MAX),
+    ("ToolCallRunFacet", "tool", identifiers.TOOL_MAX),
+    ("DeliveryOutputDatasetFacet", "fingerprint", identifiers.FINGERPRINT_MAX),
+    ("DeliveryOutputDatasetFacet", "channel", identifiers.CHANNEL_MAX),
+    ("DeliveryOutputDatasetFacet", "messageRef", identifiers.MESSAGE_REF_MAX),
+]
+
+
+@pytest.mark.parametrize(("name", "field", "bound"), BOUNDED)
+def test_a_schema_bounds_an_identifier_where_ingestion_does(
+    name: str, field: str, bound: int
+) -> None:
+    """Qui respecte le schéma publié n'est pas rejeté pour une longueur, et inversement."""
+    minimal = EXAMPLES[name]["minimal"]
+    at_the_bound = facet(name, **{**minimal, field: "a" * bound})
+    beyond = facet(name, **{**minimal, field: "a" * (bound + 1)})
+    assert list(validator(name).iter_errors(at_the_bound)) == []
+    assert list(validator(name).iter_errors(beyond)) != []
+
+
+def test_a_schema_bounds_a_recipient_where_ingestion_does() -> None:
+    name = "DeliveryOutputDatasetFacet"
+    minimal = EXAMPLES[name]["minimal"]
+    at_the_bound = facet(name, **{**minimal, "recipients": ["a" * identifiers.RECIPIENT_MAX]})
+    beyond = facet(name, **{**minimal, "recipients": ["a" * (identifiers.RECIPIENT_MAX + 1)]})
+    assert list(validator(name).iter_errors(at_the_bound)) == []
+    assert list(validator(name).iter_errors(beyond)) != []
 
 
 def test_a_field_the_schema_does_not_know_is_accepted() -> None:

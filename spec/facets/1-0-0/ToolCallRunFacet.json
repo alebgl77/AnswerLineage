@@ -15,13 +15,13 @@
             "server": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 256,
+              "maxLength": 255,
               "description": "Nom du serveur MCP dans le lignage."
             },
             "tool": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 256,
+              "maxLength": 255,
               "description": "Nom de l'outil appelé. Absent quand le nom reçu n'a pas une forme admise."
             },
             "transport": {

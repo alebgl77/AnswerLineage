@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -61,14 +62,18 @@ async def _read_json(request: Request) -> tuple[Any, JSONResponse | None]:
         return None, refused(400, "invalid_json")
 
 
-def _accept(raw: object) -> tuple[AcceptedEvent | None, list[FieldError]]:
-    event, errors = validate_event(raw)
-    if event is None or not isinstance(raw, dict):
+def _accept(raw: object, received_at: datetime) -> tuple[AcceptedEvent | None, list[FieldError]]:
+    event, errors = validate_event(raw, received_at=received_at)
+    if not isinstance(raw, dict):
         return None, errors
     try:
-        return AcceptedEvent(event_identifier(raw), event, raw), []
+        event_id = event_identifier(raw)
     except UnstorableEventError as error:
-        return None, [FieldError(path="", type="unstorable_text", message=str(error))]
+        # Un texte que la base ne peut pas conserver passe avant tout autre motif.
+        return None, [FieldError(path="", type="unstorable_text", message=str(error)), *errors]
+    if event is None:
+        return None, errors
+    return AcceptedEvent(event_id, event, raw), []
 
 
 @router.post(
@@ -99,11 +104,12 @@ async def ingest_batch(request: Request) -> JSONResponse:
     if len(body) > request.app.state.max_batch_events:
         return refused(413, "batch_too_large")
 
+    received_at = datetime.now(UTC)
     accepted: dict[str, AcceptedEvent] = {}
     valid = 0
     rejected: list[Rejection] = []
     for index, raw in enumerate(body):
-        event, errors = _accept(raw)
+        event, errors = _accept(raw, received_at)
         if event is None:
             rejected.append(Rejection(index=index, errors=errors))
         else:
@@ -140,7 +146,7 @@ async def ingest_event(request: Request) -> JSONResponse:
     body, refusal = await _read_json(request)
     if refusal is not None:
         return refusal
-    event, errors = _accept(body)
+    event, errors = _accept(body, datetime.now(UTC))
     if event is None:
         return JSONResponse(status_code=422, content=EventRejected(errors=errors).model_dump())
 

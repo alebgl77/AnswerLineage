@@ -12,16 +12,29 @@ d'enregistrer le reste de l'événement.
 | ``inputs`` | lectures ; les champs de la facette ``schema`` sont les colonnes lues |
 | ``outputs`` avec la facette ``answerlineage_delivery`` | réponse et sa diffusion |
 | autres ``outputs`` | écritures |
+
+Chaque identifiant entre dans le graphe sous sa forme normalisée (NFC) : deux
+écritures d'un même nom, composée et décomposée, y désignent un seul objet.
+L'ingestion a refusé tout identifiant mal formé ; un événement enregistré avant
+ce contrôle et rejoué n'en fait pas entrer davantage : une valeur de facette
+fautive est ignorée, un identifiant obligatoire fautif empêche la projection.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from answerlineage_api import identifiers
+from answerlineage_api.identifiers import InvalidIdentifierError, checked_identifier
+from answerlineage_api.ingest.models import (
+    AGENT_FACET,
+    DELIVERY_FACET,
+    TOOL_CALL_FACET,
+    parse_event_time,
+)
 from answerlineage_api.store.graph import (
     AgentRef,
     Answer,
@@ -36,10 +49,6 @@ from answerlineage_api.store.graph import (
     Write,
 )
 
-AGENT_FACET = "answerlineage_agent"
-TOOL_CALL_FACET = "answerlineage_toolCall"
-DELIVERY_FACET = "answerlineage_delivery"
-
 _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _SERVER_PREFIX = "mcp://"
 _DATASET_KINDS: tuple[DatasetKind, ...] = ("table", "document", "api", "memory", "answer")
@@ -50,8 +59,19 @@ def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _text(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
+def _text(value: object, max_length: int) -> str | None:
+    """Identifiant facultatif, normalisé ; une valeur absente ou fautive est ignorée."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return checked_identifier(value, max_length=max_length)
+    except InvalidIdentifierError:
+        return None
+
+
+def _required(value: object, max_length: int) -> str:
+    """Identifiant obligatoire, normalisé ; lève ``InvalidIdentifierError`` s'il est fautif."""
+    return checked_identifier(str(value), max_length=max_length)
 
 
 def _facet(owner: Mapping[str, Any], name: str, *containers: str) -> Mapping[str, Any]:
@@ -76,10 +96,10 @@ def _dataset(dataset: Mapping[str, Any]) -> DatasetRef:
         if isinstance(declared, str) and declared.lower() == candidate:
             kind = candidate
     return DatasetRef(
-        namespace=str(dataset["namespace"]),
-        name=str(dataset["name"]),
+        namespace=_required(dataset["namespace"], identifiers.NAMESPACE_MAX),
+        name=_required(dataset["name"], identifiers.DATASET_NAME_MAX),
         kind=kind,
-        version=_text(_facet(dataset, "version").get("datasetVersion")),
+        version=_text(_facet(dataset, "version").get("datasetVersion"), identifiers.VERSION_MAX),
     )
 
 
@@ -89,7 +109,7 @@ def _read(dataset: Mapping[str, Any]) -> Read:
         {
             name
             for field in (fields if isinstance(fields, list) else [])
-            if (name := _text(_mapping(field).get("name"))) is not None
+            if (name := _text(_mapping(field).get("name"), identifiers.COLUMN_MAX)) is not None
         }
     )
     if columns:
@@ -98,16 +118,21 @@ def _read(dataset: Mapping[str, Any]) -> Read:
 
 
 def _answer(facet: Mapping[str, Any]) -> Answer | None:
-    fingerprint = _text(facet.get("fingerprint"))
+    fingerprint = _text(facet.get("fingerprint"), identifiers.FINGERPRINT_MAX)
     if fingerprint is None:
         return None
-    channel, message_ref = _text(facet.get("channel")), _text(facet.get("messageRef"))
+    channel = _text(facet.get("channel"), identifiers.CHANNEL_MAX)
+    message_ref = _text(facet.get("messageRef"), identifiers.MESSAGE_REF_MAX)
     if channel is None or message_ref is None:
         return Answer(fingerprint=fingerprint)
     recipients = facet.get("recipients")
     pseudonyms = tuple(
         sorted(
-            {item for item in (recipients if isinstance(recipients, list) else []) if _text(item)}
+            {
+                pseudonym
+                for item in (recipients if isinstance(recipients, list) else [])
+                if (pseudonym := _text(item, identifiers.RECIPIENT_MAX)) is not None
+            }
         )
     )
     return Answer(
@@ -129,15 +154,20 @@ def project(payload: Mapping[str, Any]) -> RunRecord:
     kind: RunKind = "job"
     agent: AgentRef | None = None
     tool: ToolRef | None = None
+    namespace = _required(job["namespace"], identifiers.NAMESPACE_MAX)
+    name = _required(job["name"], identifiers.JOB_NAME_MAX)
     tool_call = _facet(run, TOOL_CALL_FACET)
     if tool_call:
         kind = "tool"
-        namespace = str(job["namespace"])
-        server = _text(tool_call.get("server")) or namespace.removeprefix(_SERVER_PREFIX)
-        tool = ToolRef(server=server, name=_text(tool_call.get("tool")) or str(job["name"]))
+        server = _text(tool_call.get("server"), identifiers.TOOL_MAX) or (
+            namespace.removeprefix(_SERVER_PREFIX) or namespace
+        )
+        tool = ToolRef(
+            server=server, name=_text(tool_call.get("tool"), identifiers.TOOL_MAX) or name
+        )
     elif _facet(run, AGENT_FACET):
         kind = "agent"
-        agent = AgentRef(namespace=str(job["namespace"]), name=str(job["name"]))
+        agent = AgentRef(namespace=namespace, name=name)
 
     reads: list[Read] = []
     for dataset in payload.get("inputs") or []:
@@ -157,7 +187,7 @@ def project(payload: Mapping[str, Any]) -> RunRecord:
         run_id=UUID(str(run["runId"])),
         kind=kind,
         state=state,
-        event_time=datetime.fromisoformat(str(payload["eventTime"]).replace("Z", "+00:00")),
+        event_time=parse_event_time(payload["eventTime"]),
         agent=agent,
         tool=tool,
         parent_run_id=_parent_run_id(run),

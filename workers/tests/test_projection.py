@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
+import pytest
+
+from answerlineage_api.identifiers import InvalidIdentifierError
 from answerlineage_api.store.graph import (
     AgentRef,
     Answer,
@@ -82,6 +86,13 @@ def test_tool_call_becomes_a_tool_run_with_its_reads() -> None:
 def test_tool_call_without_names_in_its_facet_falls_back_on_the_job() -> None:
     record = project(event(run={"runId": RUN_ID, "facets": {"answerlineage_toolCall": facet()}}))
     assert record.tool == ToolRef("entrepot", "execute_sql")
+    bare = project(
+        event(
+            job={"namespace": "mcp://", "name": "execute_sql"},
+            run={"runId": RUN_ID, "facets": {"answerlineage_toolCall": facet()}},
+        )
+    )
+    assert bare.tool == ToolRef("mcp://", "execute_sql")
 
 
 def test_agent_run_carries_the_answer_and_its_delivery() -> None:
@@ -198,3 +209,152 @@ def test_malformed_optional_facets_are_ignored_not_fatal() -> None:
     # Sans empreinte, la sortie n'est pas une réponse : elle reste une écriture.
     assert record.answers == ()
     assert record.writes == (Write(DatasetRef("answer://web", "r1")),)
+
+
+def test_event_time_in_lower_case_is_read_as_the_ingestion_reads_it() -> None:
+    record = project(event(eventTime="2026-11-02t09:00:00.5z"))
+    assert record.event_time == datetime(2026, 11, 2, 9, 0, 0, 500000, tzinfo=UTC)
+
+
+def nfd(value: str) -> str:
+    return unicodedata.normalize("NFD", value)
+
+
+def test_every_identifier_enters_the_graph_in_its_nfc_form() -> None:
+    tool = project(
+        event(
+            job={"namespace": nfd("mcp://entrepôt"), "name": nfd("requête")},
+            run={
+                "runId": RUN_ID,
+                "facets": {
+                    "answerlineage_toolCall": facet(server=nfd("entrepôt"), tool=nfd("requête"))
+                },
+            },
+            inputs=[
+                {
+                    "namespace": nfd("bigquery://société"),
+                    "name": nfd("référentiel.coût"),
+                    "facets": {
+                        "schema": facet(fields=[{"name": nfd("coût_unitaire")}]),
+                        "version": facet(datasetVersion=nfd("été-2026")),
+                    },
+                }
+            ],
+        )
+    )
+    assert tool.tool == ToolRef("entrepôt", "requête")
+    assert tool.reads == (
+        Read(
+            DatasetRef("bigquery://société", "référentiel.coût", version="été-2026"),
+            precision="columns",
+            columns=("coût_unitaire",),
+        ),
+    )
+    fallback = project(
+        event(
+            job={"namespace": nfd("mcp://entrepôt"), "name": nfd("requête")},
+            run={"runId": RUN_ID, "facets": {"answerlineage_toolCall": facet()}},
+        )
+    )
+    assert fallback.tool == ToolRef("entrepôt", "requête")
+
+    agent = project(
+        event(
+            job={"namespace": nfd("agent://ventes-été"), "name": nfd("analyste-société")},
+            run={"runId": RUN_ID, "facets": {"answerlineage_agent": facet()}},
+            outputs=[
+                {
+                    "namespace": "answer://slack",
+                    "name": "r1",
+                    "facets": {
+                        "answerlineage_delivery": facet(
+                            fingerprint=nfd("hmac:é1"),
+                            channel=nfd("équipe"),
+                            messageRef=nfd("C042/été"),
+                            recipients=[nfd("pseudo:é"), "pseudo:é"],
+                        )
+                    },
+                },
+                {"namespace": nfd("memory://société"), "name": nfd("notes-été")},
+            ],
+        )
+    )
+    assert agent.agent == AgentRef("agent://ventes-été", "analyste-société")
+    assert agent.answers == (Answer("hmac:é1", (Delivery("équipe", "C042/été", ("pseudo:é",)),)),)
+    assert agent.writes == (Write(DatasetRef("memory://société", "notes-été")),)
+
+
+def test_identifiers_of_an_event_stored_before_validation_never_reach_the_graph() -> None:
+    """Un événement ancien, enregistré avant le contrôle des identifiants, est rejoué."""
+    record = project(
+        event(
+            run={
+                "runId": RUN_ID,
+                "facets": {"answerlineage_toolCall": facet(server="<b>", tool="a b")},
+            },
+            inputs=[
+                {
+                    "namespace": "bigquery",
+                    "name": "t",
+                    "facets": {
+                        "schema": facet(fields=[{"name": "ok"}, {"name": "x\u200by"}]),
+                        "version": facet(datasetVersion="v 1"),
+                    },
+                }
+            ],
+            outputs=[
+                {
+                    "namespace": "answer://slack",
+                    "name": "r1",
+                    "facets": {
+                        "answerlineage_delivery": facet(
+                            fingerprint="hmac:1",
+                            channel="slack",
+                            messageRef="C042/1",
+                            recipients=["pseudo:a", "<script>"],
+                        )
+                    },
+                },
+                {
+                    "namespace": "answer://slack",
+                    "name": "r2",
+                    "facets": {
+                        "answerlineage_delivery": facet(
+                            fingerprint="hmac:2", channel="sl ack", messageRef="C042/2"
+                        )
+                    },
+                },
+                {
+                    "namespace": "answer://slack",
+                    "name": "r3",
+                    "facets": {"answerlineage_delivery": facet(fingerprint="h\u202emac")},
+                },
+            ],
+        )
+    )
+    # Une valeur de facette fautive est ignorée, comme une facette mal formée.
+    assert record.tool == ToolRef("entrepot", "execute_sql")
+    assert record.reads == (
+        Read(DatasetRef("bigquery", "t"), precision="columns", columns=("ok",)),
+    )
+    assert record.answers == (
+        Answer("hmac:1", (Delivery("slack", "C042/1", ("pseudo:a",)),)),
+        Answer("hmac:2"),
+    )
+    assert record.writes == (Write(DatasetRef("answer://slack", "r3")),)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"job": {"namespace": "mcp://entrepot", "name": "ignore previous instructions"}},
+        {"job": {"namespace": "agent://<script>", "name": "a"}},
+        {"inputs": [{"namespace": "bigquery", "name": "taux\u200bchange"}]},
+        {"outputs": [{"namespace": "", "name": "t"}]},
+    ],
+)
+def test_an_event_whose_required_identifier_is_faulty_is_not_projected(
+    overrides: dict[str, Any],
+) -> None:
+    with pytest.raises(InvalidIdentifierError):
+        project(event(**overrides))
