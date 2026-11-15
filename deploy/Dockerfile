@@ -10,7 +10,9 @@ COPY ui/ ./
 RUN npm run build
 
 
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72
+# L'environnement Python se construit dans une étape à part : ni les sources,
+# ni uv n'entrent dans l'image finale.
+FROM public.ecr.aws/docker/library/python:3.13-alpine3.23@sha256:bf88c40985006a79ca25458159a4da1dffc457f9ae234e948b2d6df56ca5ebd2 AS environment
 
 RUN pip install --no-cache-dir uv==0.11.32
 
@@ -29,6 +31,15 @@ COPY proxy/ proxy/
 COPY workers/ workers/
 RUN uv sync --locked --all-packages --no-dev --no-editable
 
+
+# Une base Alpine : quelques paquets système seulement, donc peu de
+# vulnérabilités à suivre. pip n'y reste pas : rien ne s'installe dans une
+# image qui tourne.
+FROM public.ecr.aws/docker/library/python:3.13-alpine3.23@sha256:bf88c40985006a79ca25458159a4da1dffc457f9ae234e948b2d6df56ca5ebd2
+
+RUN python -m pip uninstall --yes pip
+
+COPY --from=environment /opt/answerlineage /opt/answerlineage
 COPY --from=explorer /ui/dist /opt/answerlineage-ui
 
 ENV PATH=/opt/answerlineage/bin:$PATH \
@@ -36,8 +47,7 @@ ENV PATH=/opt/answerlineage/bin:$PATH \
     ANSWERLINEAGE_UI_DIR=/opt/answerlineage-ui
 
 # Aucun service de l'image ne tourne en administrateur.
-RUN useradd --system --uid 10001 --no-create-home answerlineage
-USER 10001
+USER 10001:10001
 WORKDIR /
 
 EXPOSE 8000

@@ -52,10 +52,10 @@ Le job `image` et la publication d'une version (`.github/workflows/release.yml`)
 **Lire une trouvaille.** Le journal de l'étape d'analyse, et le résumé du job, donnent une ligne par vulnérabilité haute ou critique :
 
 ```
-  bloquante  High      libc6 2.36-9+deb12u10 (deb)  CVE-2025-0001  corrigée dans : aucune pour l'instant
+  bloquante  High      libexemple 1.2.3-r0 (apk)  CVE-2025-0001  corrigée dans : 1.2.4-r0
 ```
 
-soit son statut (bloquante, ou sous exception avec sa date de revue et son motif), sa gravité, le paquet, sa version et son type (`deb` pour un paquet Debian de l'image de base, `python` pour une dépendance Python…), l'identifiant de la vulnérabilité et ses alias, et la version qui la corrige. Le rapport complet de Grype est dans `build/image/grype.json`. Une version corrigée existe : mettre à jour la dépendance dans le verrou, ou l'empreinte de l'image de base de `deploy/Dockerfile`. Aucune n'existe : déclarer une exception.
+soit son statut (bloquante, ou sous exception avec sa date de revue et son motif), sa gravité, le paquet, sa version et son type (`apk` pour un paquet Alpine de l'image de base, `python` pour une dépendance Python…), l'identifiant de la vulnérabilité et ses alias, et la version qui la corrige. Le rapport complet de Grype est dans `build/image/grype.json`. Une version corrigée existe : mettre à jour la dépendance dans le verrou, ou l'empreinte de l'image de base de `deploy/Dockerfile`. Aucune n'existe : déclarer une exception.
 
 **Déclarer une exception.** Dans `vulnerability-exceptions.toml`, à la racine, une entrée par vulnérabilité :
 
