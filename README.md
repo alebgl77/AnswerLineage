@@ -38,6 +38,7 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 - **La capture ne bloque jamais un agent.** Le proxy décrit l'appel après l'avoir relayé ; une panne d'AnswerLineage n'arrête rien.
 - **Standards ouverts.** OpenLineage pour les événements, MCP pour la capture : les catalogues de données en place restent utilisables.
 - **Écoute locale par défaut.** Le proxy et l'API refusent une requête dont l'hôte ou l'origine n'est pas attendu : une page web ouverte sur le poste ne les atteint pas.
+- **Toute entrée est tenue pour hostile.** Un nom reçu n'entre dans le graphe que s'il a la forme d'un nom ; toute requête est bornée en taille, en profondeur et en durée ; une erreur ne renvoie jamais la valeur reçue.
 - **Une seule dépendance : PostgreSQL.** Aucun service cloud propriétaire, installation possible hors ligne.
 
 ## État du projet
@@ -54,6 +55,13 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Entreprise synthétique et corpus de vérité, pour essayer et mesurer sans donnée réelle | Disponible |
 | Explorateur visuel : graphe en cinq colonnes, mode Propager, adresses partageables | Disponible |
 | Démonstration en une commande, sur une entreprise synthétique | Disponible |
+| Contrôle de toute entrée : identifiants, taille, compression, profondeur, délai des lectures | Disponible |
+| Ingestion idempotente, avec un compteur de doublons par émetteur | Disponible |
+| Schémas JSON versionnés des facettes propres, pour écrire un émetteur sans lire le code | Disponible |
+| Identifiant de run dérivé du contexte de trace W3C : lignage et traces se rejoignent | Disponible |
+| Empreintes à clé des appels, et SQL conservé sans ses littéraux | Disponible |
+| Kit de conformité des émetteurs, avec preuve de non-fuite par canari | Disponible |
+| Image analysée à chaque merge request : SBOM, vulnérabilités hautes et critiques bloquantes | Disponible |
 | Envoi des événements du proxy vers l'API | À venir |
 | Propagation fine (colonnes, lignes, versions) et transitive (mémoire, tables dérivées) | À venir |
 | Rappel des destinataires après validation humaine | À venir |
@@ -209,6 +217,8 @@ L'agent se connecte alors à `http://127.0.0.1:8717` au lieu du serveur : rien d
 - [Proxy MCP](docs/proxy.md) : ce qui est relayé, ce qui est lu, analyse du SQL, limites connues
 - [API d'ingestion](docs/ingestion.md) : routes, lots, validation, rejeu
 - [API de lecture](docs/lecture.md) : retrouver une réponse, remonter à ses sources, propager un incident
+- [Facettes](docs/facettes.md) : les schémas JSON versionnés des facettes propres à AnswerLineage
+- [Kit de conformité](docs/conformite.md) : vérifier un émetteur, lire son rapport
 - [Démonstration](docs/demonstration.md) : ce que lance `docker compose up`, et comment le vérifier
 - [Explorateur](docs/explorateur.md) : le graphe en cinq colonnes, le mode Propager, les adresses partageables
 - [Workers](docs/workers.md) : file de traitement, garanties, projection dans le graphe

@@ -34,8 +34,10 @@ Toute contribution passe `make check` : politique du dépôt, compatibilité de 
 | `make test` | Tests seuls, avec le rapport de couverture |
 | `uv run pytest -m "not integration"` | Tests sans PostgreSQL |
 | `make openapi` | Met à jour le contrat OpenAPI publié, quand une route change |
+| `make contract` | Compare l'API et les schémas de facettes à ceux de la branche cible : un changement incompatible échoue |
 | `make ui` | Construit l'explorateur dans `ui/dist` |
 | `make e2e` | Tests de l'explorateur dans Chromium, après `make ui` et `uv run playwright install chromium` |
+| `make image` | Construit l'image, produit son SBOM et l'analyse : une vulnérabilité haute ou critique bloque |
 
 ## Ce qui est attendu d'un changement
 
