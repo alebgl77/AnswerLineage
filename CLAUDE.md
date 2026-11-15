@@ -43,6 +43,7 @@ Des services sans état autour d'un seul PostgreSQL. Le flux : capture → évé
 | `proxy/` | Proxy MCP transparent : relaie à l'identique, émet un événement par appel d'outil, analyse le SQL à côté de l'appel | ASGI, httpx, sqlglot |
 | `api/` | Schéma du graphe, migrations, écriture du graphe, API d'ingestion OpenLineage | FastAPI, SQLAlchemy Core, Alembic, psycopg |
 | `workers/` | File de traitement dans PostgreSQL, projection des événements reçus dans le graphe | SQLAlchemy Core, psycopg |
+| `corpus/` | Entreprise synthétique à vérité connue : événements OpenLineage et vérité des incidents, déterminés par une graine | Bibliothèque standard seule |
 
 Chaque composant est un membre de l'espace de travail uv : sources dans `<composant>/src/answerlineage_<composant>/`, tests dans `<composant>/tests/` (importés sous `<composant>.tests`). Les tests qui croisent plusieurs composants sont dans `tests/`. Un nouveau composant s'ajoute au `pyproject.toml` racine à six endroits : membres de l'espace de travail, `src` de ruff, `mypy_path` et `files` de mypy, `testpaths` de pytest, `source` de coverage, chemins de la porte de couverture.
 
@@ -55,6 +56,7 @@ Ce qui demande de lire plusieurs fichiers :
 - **L'API publiée est un contrat.** `spec/openapi/answerlineage-v1.json` est la spécification servie par l'application ; un test échoue s'ils diffèrent, des tests générés (Schemathesis) vérifient que chaque route s'y conforme, et `scripts/check_openapi_compat.py` refuse un changement incompatible avec la branche cible.
 - **Écritures du graphe idempotentes et commutatives** (`api/.../store/graph.py`) : rejouer un événement, ou recevoir deux événements d'un run dans le désordre, donne le même graphe.
 - **De l'événement au graphe.** L'ingestion écrit l'événement brut et une ligne de file dans la même transaction (`api/.../ingest/store.py`). Un worker réclame un lot avec `FOR UPDATE SKIP LOCKED`, projette chaque événement (`workers/.../projection.py`) et retire le lot de la file dans une seule transaction (`workers/.../queue.py`) : ni double traitement, ni perte. `workers` dépend de `api` pour le schéma et l'écriture du graphe.
+- **La vérité du corpus ne passe pas par le produit.** `corpus/.../enterprise.py` établit lui-même les réponses touchées par un incident, à partir de ce qu'il a généré : elle sert à mesurer le moteur, elle ne se calcule donc jamais avec lui. Ses tirages sont nommés (`_Dice`) : en ajouter un ne décale pas les autres.
 - **Schéma et migrations.** `store/schema.py` déclare le schéma, les migrations Alembic le créent, et un test compare la base migrée au schéma déclaré. Une migration nomme ses contraintes et fournit sa descente.
 - **Fixtures PostgreSQL.** `conftest.py` à la racine fournit `database` (base migrée, clonée d'un modèle) et `empty_database`, une base par test.
 

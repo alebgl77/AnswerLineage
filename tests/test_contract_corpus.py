@@ -1,0 +1,147 @@
+"""Contrat entre composants : l'entreprise synthétique parle comme les émetteurs réels.
+
+Ses événements sont des RunEvents OpenLineage que l'API d'ingestion accepte,
+ses appels d'outils sont ceux que le proxy émet, et la projection en tire le
+graphe attendu.
+"""
+
+from __future__ import annotations
+
+import copy
+from typing import Any
+
+import pytest
+from jsonschema import Draft202012Validator, FormatChecker
+
+from answerlineage_api.ingest.models import validate_event
+from answerlineage_api.store.graph import AgentRef, Answer, DatasetRef, Delivery, Read, ToolRef
+from answerlineage_corpus.enterprise import Enterprise, generate
+from answerlineage_corpus.events import PROTOCOL_VERSION, render, request_events, tool_call_event
+from answerlineage_proxy.events import build_tool_call_event
+from answerlineage_proxy.inspection import Inspection
+from answerlineage_proxy.sql import SqlAnalysis, TableRead
+from answerlineage_workers.projection import project
+from api.tests.events import official_run_event_schema
+
+OFFICIAL = Draft202012Validator(official_run_event_schema(), format_checker=FormatChecker())
+
+
+@pytest.fixture(scope="module")
+def enterprise() -> Enterprise:
+    return generate(7)
+
+
+def test_every_event_is_an_openlineage_run_event_the_ingestion_accepts(
+    enterprise: Enterprise,
+) -> None:
+    events = render(enterprise)
+    assert len(events) > 900
+    for event in events:
+        assert list(OFFICIAL.iter_errors(event)) == []
+        accepted, errors = validate_event(event)
+        assert errors == []
+        assert accepted is not None
+
+
+def without_origin(event: dict[str, Any]) -> dict[str, Any]:
+    """L'événement sans ce qui tient à son émetteur : producteur, run parent, version lue."""
+
+    def neutral(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: "émetteur" if key in ("producer", "_producer") else neutral(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [neutral(item) for item in value]
+        return value
+
+    shaped: dict[str, Any] = neutral(copy.deepcopy(event))
+    shaped["run"]["facets"].pop("parent", None)
+    for dataset in shaped["inputs"]:
+        facets = dataset.get("facets", {})
+        facets.pop("version", None)
+        if not facets:
+            dataset.pop("facets", None)
+    return shaped
+
+
+def test_a_tool_call_is_described_as_the_proxy_describes_it(enterprise: Enterprise) -> None:
+    compared = 0
+    for request in enterprise.requests:
+        for call in request.calls:
+            (namespace,) = {read.table.namespace for read in call.reads}
+            emitted_by_the_proxy = build_tool_call_event(
+                run_id=call.run_id,
+                event_time=call.time,
+                outcome="COMPLETE",
+                server=call.tool.server,
+                inspection=Inspection(
+                    is_tool_call=True, tool=call.tool.name, protocol_version=PROTOCOL_VERSION
+                ),
+                http_status=200,
+                reads=SqlAnalysis(
+                    resolved=True,
+                    tables=tuple(
+                        TableRead(
+                            name=read.table.name,
+                            precision="columns" if read.columns else "table",
+                            columns=read.columns,
+                        )
+                        for read in call.reads
+                    ),
+                ),
+                namespace=namespace,
+            )
+            assert without_origin(tool_call_event(request, call)) == without_origin(
+                emitted_by_the_proxy
+            )
+            compared += 1
+    assert compared > 400
+
+
+def test_the_projection_reads_a_request_as_an_agent_run_its_tool_runs_and_its_answer(
+    enterprise: Enterprise,
+) -> None:
+    for request in enterprise.requests:
+        opening, *calls, closing = [project(event) for event in request_events(request)]
+
+        agent = AgentRef(request.agent.namespace, request.agent.name)
+        for record in (opening, closing):
+            assert (record.run_id, record.kind, record.agent) == (request.run_id, "agent", agent)
+            assert record.parent_run_id is None
+            assert record.reads == ()
+        assert (opening.state, opening.event_time) == ("START", request.started_at)
+        assert closing.event_time == request.ended_at
+
+        for record, call in zip(calls, request.calls, strict=True):
+            assert (record.run_id, record.kind, record.state) == (call.run_id, "tool", "COMPLETE")
+            assert record.tool == ToolRef(call.tool.server, call.tool.name)
+            assert record.parent_run_id == request.run_id
+            assert record.event_time == call.time
+            assert record.reads == tuple(
+                Read(
+                    DatasetRef(read.table.namespace, read.table.name, version=read.version),
+                    precision="columns" if read.columns else "table",
+                    columns=tuple(sorted(read.columns)),
+                )
+                for read in call.reads
+            )
+
+        assert closing.writes == ()
+        if request.answer is None:
+            assert (closing.state, closing.answers) == ("FAIL", ())
+        else:
+            assert closing.state == "COMPLETE"
+            assert closing.answers == (
+                Answer(
+                    fingerprint=request.answer.fingerprint,
+                    deliveries=(
+                        Delivery(
+                            channel=request.answer.channel,
+                            message_ref=request.answer.message_ref,
+                            recipients=request.answer.recipients,
+                        ),
+                    ),
+                ),
+            )

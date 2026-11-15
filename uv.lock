@@ -15,6 +15,7 @@ exclude-newer-span = "P7D"
 members = [
     "answerlineage",
     "answerlineage-api",
+    "answerlineage-corpus",
     "answerlineage-proxy",
     "answerlineage-workers",
 ]
@@ -114,6 +115,11 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.40" },
     { name = "uvicorn", specifier = ">=0.38" },
 ]
+
+[[package]]
+name = "answerlineage-corpus"
+version = "0.0.0"
+source = { editable = "corpus" }
 
 [[package]]
 name = "answerlineage-proxy"

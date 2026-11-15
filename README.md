@@ -42,6 +42,7 @@ Le proxy se place devant un serveur [MCP](https://modelcontextprotocol.io) exist
 | API d'ingestion OpenLineage, par événement ou par lot | Disponible |
 | Schéma du graphe de lignage dans PostgreSQL, avec ses migrations | Disponible |
 | Alimentation du graphe à partir des événements reçus, par des workers concurrents | Disponible |
+| Entreprise synthétique à vérité connue, pour essayer et tester sans donnée réelle | Disponible |
 | Envoi des événements du proxy vers l'API | À venir |
 | Remontée d'une réponse à ses sources, propagation d'un incident | À venir |
 | Explorateur visuel, rappel des destinataires | À venir |
@@ -104,6 +105,26 @@ Le run et la table qu'il a lue sont maintenant dans le graphe :
 docker exec answerlineage-postgres psql -U postgres -c "SELECT d.namespace, d.name, e.precision, r.state FROM read_edge e JOIN dataset d ON d.id = e.dataset_id JOIN run r ON r.run_id = e.run_id"
 ```
 
+### Une entreprise synthétique
+
+Pour voir un graphe plus riche qu'un seul événement, le dépôt fournit une entreprise inventée : 5 agents, 4 outils, 13 tables, deux semaines de demandes. La commande envoie ses événements à l'API, et le worker les projette dans le graphe :
+
+```bash
+uv run answerlineage-corpus load --url http://127.0.0.1:8000
+```
+
+Les réponses de chaque agent, et les personnes qui les ont reçues :
+
+```bash
+docker exec answerlineage-postgres psql -U postgres -c "SELECT a.name AS agent, count(DISTINCT w.id) AS reponses, count(DISTINCT l.recipient_id) AS destinataires FROM answer w JOIN run r ON r.run_id = w.run_id JOIN agent a ON a.id = r.agent_id JOIN delivery d ON d.answer_id = w.id JOIN delivery_recipient l ON l.delivery_id = d.id GROUP BY a.name ORDER BY reponses DESC"
+```
+
+L'entreprise vient avec sa vérité : pour six incidents de données, la liste exacte des réponses et des destinataires touchés.
+
+```bash
+uv run answerlineage-corpus truth
+```
+
 ### Le proxy MCP
 
 Devant un serveur MCP qui écoute sur le port 9000 et expose un outil `execute_sql` dont l'argument `query` porte du SQL BigQuery :
@@ -120,6 +141,7 @@ L'agent se connecte alors à `http://127.0.0.1:8717` au lieu du serveur : rien d
 - [API d'ingestion](docs/ingestion.md) : routes, lots, validation, rejeu
 - [Workers](docs/workers.md) : file de traitement, garanties, projection dans le graphe
 - [Schéma du graphe](docs/schema.md) : tables, écritures, migrations
+- [Entreprise synthétique](docs/corpus.md) : ce qu'elle contient, ses événements, la vérité de ses incidents
 - [Pipeline d'intégration continue](docs/ci.md) : contrôles, chaîne d'approvisionnement
 
 ## Développement

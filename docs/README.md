@@ -5,3 +5,4 @@
 - [API d'ingestion](ingestion.md)
 - [Workers](workers.md)
 - [Proxy MCP](proxy.md)
+- [Entreprise synthétique](corpus.md)

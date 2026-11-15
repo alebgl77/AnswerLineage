@@ -32,6 +32,7 @@ exclude-newer = "7 days"
 [tool.uv.workspace]
 members = [
     "api",
+    "corpus",
     "proxy",
     "workers",
 ]
@@ -41,6 +42,7 @@ line-length = 100
 target-version = "py313"
 src = [
     "api/src",
+    "corpus/src",
     "proxy/src",
     "workers/src",
     ".",
@@ -63,12 +65,14 @@ namespace_packages = true
 explicit_package_bases = true
 mypy_path = [
     "api/src",
+    "corpus/src",
     "proxy/src",
     "workers/src",
     ".",
 ]
 files = [
     "api",
+    "corpus",
     "proxy",
     "workers",
     "scripts",
@@ -86,6 +90,7 @@ pythonpath = ["."]
 testpaths = [
     "tests",
     "api",
+    "corpus",
     "proxy",
     "workers",
 ]
@@ -99,6 +104,7 @@ branch = true
 source = [
     "scripts",
     "api/src",
+    "corpus/src",
     "proxy/src",
     "workers/src",
 ]
@@ -114,6 +120,7 @@ minimum = 85
 paths = [
     "scripts",
     "api/src",
+    "corpus/src",
     "proxy/src",
     "workers/src",
 ]
