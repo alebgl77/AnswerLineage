@@ -26,6 +26,9 @@ TOOL_RESULT = (
 SSE_FIRST = b'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/progress"}\n\n'
 SSE_LAST = b'event: message\r\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\r\n\r\n'
 HEADER_MISMATCH = b'{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"Header mismatch"}}'
+# Défi d'un serveur MCP protégé : il désigne ses métadonnées OAuth (RFC 9728).
+CHALLENGE = 'Bearer resource_metadata="https://mcp.exemple.fr/.well-known/oauth-protected-resource"'
+UNAUTHORIZED = b'{"error":"invalid_token"}'
 
 
 @pytest.fixture
@@ -118,6 +121,13 @@ class FakeMcpServer:
         elif path.endswith("/echo"):
             digest = hashlib.sha256(body).hexdigest()
             await _respond(send, 200, json.dumps({"sha256": digest, "size": len(body)}).encode())
+        elif path.endswith("/unauthorized"):
+            await _respond(
+                send,
+                401,
+                UNAUTHORIZED,
+                [(b"www-authenticate", CHALLENGE.encode()), (b"content-type", b"application/json")],
+            )
         elif path.endswith("/redirect"):
             await _respond(send, 307, b"", [(b"location", b"http://example.invalid/ailleurs")])
         elif path.endswith("/truncated"):
