@@ -1,0 +1,79 @@
+# Démonstration d'AnswerLineage : docker compose up
+#
+# Un PostgreSQL, l'API et son explorateur, un worker, et une entreprise
+# synthétique chargée par l'API d'ingestion. L'explorateur est ensuite sur
+# http://127.0.0.1:8000/ ; seul ce port est publié, et sur la boucle locale.
+
+name: answerlineage
+
+x-answerlineage: &answerlineage
+  image: answerlineage-demo
+  build:
+    context: .
+    dockerfile: deploy/Dockerfile
+  environment: &environment
+    # Mot de passe de démonstration : la base n'est joignable que des services ci-dessous.
+    ANSWERLINEAGE_DATABASE_URL: postgresql://answerlineage:answerlineage@postgres:5432/answerlineage
+
+services:
+  postgres:
+    image: public.ecr.aws/docker/library/postgres:18@sha256:2ea8630df176ad090ec92136dee850397c5af8781e4bcf2e4162593691c61bbc
+    environment:
+      POSTGRES_USER: answerlineage
+      POSTGRES_PASSWORD: answerlineage
+      POSTGRES_DB: answerlineage
+    volumes:
+      - data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username", "answerlineage", "--dbname", "answerlineage"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Crée ou met à jour le schéma, puis s'arrête.
+  migrate:
+    <<: *answerlineage
+    command: ["python", "-m", "answerlineage_api.store.migrate", "upgrade"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *answerlineage
+    environment:
+      <<: *environment
+      # Nom sous lequel le service seed joint l'API, en plus de la boucle locale.
+      ANSWERLINEAGE_ALLOWED_HOSTS: api
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/openapi.json', timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  worker:
+    <<: *answerlineage
+    command: ["answerlineage-worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Envoie l'entreprise synthétique à l'API, puis s'arrête. Relancé, il ne
+  # change rien : un événement déjà reçu n'est enregistré qu'une fois.
+  seed:
+    <<: *answerlineage
+    command: ["answerlineage-corpus", "load", "--url", "http://api:8000"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  data:

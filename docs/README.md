@@ -1,5 +1,6 @@
 # Documentation
 
+- [Démonstration](demonstration.md)
 - [Pipeline d'intégration continue](ci.md)
 - [Schéma du graphe](schema.md)
 - [API d'ingestion](ingestion.md)

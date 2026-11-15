@@ -13,6 +13,7 @@ from scripts.check_policy import (
     Violation,
     check_action,
     check_codeowners,
+    check_compose,
     check_devcontainer,
     check_dockerfile,
     check_file,
@@ -374,3 +375,75 @@ def test_development_container_files_are_discovered(tmp_path: Path) -> None:
     assert len(check_file(owners)) == len(PROTECTED)
     config.write_text("{", "utf-8")
     assert rules(check_file(config)) == ["lisible"]
+
+
+def service(**settings: Any) -> dict[str, Any]:
+    return {"services": {"api": {"build": ".", **settings}}}
+
+
+@pytest.mark.parametrize(
+    "port",
+    [
+        "127.0.0.1:8000:8000",
+        "127.0.0.1:8000:8000/tcp",
+        "[::1]:8000:8000",
+        {"target": 8000, "published": "8000", "host_ip": "127.0.0.1"},
+        {"target": 8000, "published": 8000, "host_ip": "::1"},
+    ],
+)
+def test_a_port_published_on_the_loopback_is_allowed(port: object) -> None:
+    assert check_compose("compose.yaml", service(ports=[port])) == []
+    assert check_compose("compose.yaml", service()) == []
+
+
+@pytest.mark.parametrize(
+    "port",
+    [
+        "8000:8000",
+        "8000",
+        8000,
+        "0.0.0.0:8000:8000",
+        "192.168.1.10:8000:8000",
+        "[::]:8000:8000",
+        {"target": 8000, "published": "8000"},
+        {"target": 8000, "published": "8000", "host_ip": "0.0.0.0"},  # noqa: S104
+        ["liste"],
+    ],
+)
+def test_a_port_published_beyond_the_loopback_fails(port: object) -> None:
+    violations = check_compose("compose.yaml", service(ports=["127.0.0.1:1:1", port]))
+    assert rules(violations) == ["port-local"]
+    assert "api" in violations[0].where
+
+
+def test_a_service_on_the_host_network_listens_everywhere() -> None:
+    assert rules(check_compose("compose.yaml", service(network_mode="host"))) == ["port-local"]
+    assert check_compose("compose.yaml", service(network_mode="bridge")) == []
+
+
+def test_an_image_pulled_by_a_compose_file_must_be_pinned_by_digest() -> None:
+    pinned = {"services": {"postgres": {"image": f"postgres:18@{DIGEST}"}}}
+    assert check_compose("compose.yaml", pinned) == []
+    floating = {"services": {"postgres": {"image": "postgres:18"}, "cache": {}}}
+    assert rules(check_compose("compose.yaml", floating)) == ["image-epinglee", "image-epinglee"]
+    # Une image construite sur place porte un nom local, sans empreinte.
+    built = {"services": {"api": {"image": "answerlineage-demo", "build": {"context": "."}}}}
+    assert check_compose("compose.yaml", built) == []
+
+
+def test_a_compose_file_that_is_not_one_is_reported() -> None:
+    assert rules(check_compose("compose.yaml", ["pas", "un", "fichier"])) == ["lisible"]
+    assert rules(check_compose("compose.yaml", {"services": ["api"]})) == ["lisible"]
+    assert rules(check_compose("compose.yaml", {"services": {"api": "image"}})) == ["lisible"]
+
+
+def test_compose_files_are_discovered_and_checked(tmp_path: Path) -> None:
+    root = tmp_path / "compose.yaml"
+    root.write_text("services:\n  api:\n    build: .\n    ports: ['8000:8000']\n", "utf-8")
+    nested = tmp_path / "deploy" / "compose.essai.yml"
+    nested.parent.mkdir()
+    nested.write_text("services:\n  base:\n    image: postgres:18\n", "utf-8")
+
+    assert discover(tmp_path) == sorted([root, nested])
+    assert rules(check_file(root)) == ["port-local"]
+    assert rules(check_file(nested)) == ["image-epinglee"]

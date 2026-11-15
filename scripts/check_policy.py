@@ -12,7 +12,8 @@ un vecteur d'attaque. Ce contrôle échoue dès que :
 - un agent de code s'exécute sur une entrée non fiable (issue, commentaire, merge
   request) avec un secret ou un droit d'écriture ;
 - le conteneur de développement monte un identifiant de l'hôte ou reçoit un de ses jetons ;
-- un chemin protégé n'a pas de propriétaire dans ``.github/CODEOWNERS``.
+- un chemin protégé n'a pas de propriétaire dans ``.github/CODEOWNERS`` ;
+- un fichier compose publie un port ailleurs que sur la boucle locale.
 
 Usage : ``python -m scripts.check_policy [fichier ...]``
 """
@@ -375,6 +376,61 @@ def check_dockerfile(path: str, content: str) -> list[Violation]:
     return violations
 
 
+_LOOPBACK = frozenset({"127.0.0.1", "::1", "[::1]"})
+
+
+def _published_host(port: object) -> str | None:
+    """Adresse de l'hôte sur laquelle un port est publié ; ``None`` quand elle n'est pas dite."""
+    if isinstance(port, Mapping):
+        host = port.get("host_ip")
+        return host if isinstance(host, str) else None
+    if not isinstance(port, str):
+        return None
+    spec = port.split("/", 1)[0]
+    if spec.startswith("["):
+        return spec.split("]", 1)[0] + "]"
+    parts = spec.split(":")
+    return parts[0] if len(parts) == 3 else None
+
+
+def check_compose(path: str, document: object) -> list[Violation]:
+    """Un fichier compose n'ouvre aucun port hors de la boucle locale et épingle ses images."""
+    services = document.get("services") if isinstance(document, Mapping) else None
+    if not isinstance(services, Mapping):
+        return [Violation(path, "fichier", "lisible", "le fichier n'est pas un fichier compose")]
+    violations: list[Violation] = []
+    for name, service in services.items():
+        where = f"service {name}"
+        if service is None:
+            service = {}
+        if not isinstance(service, Mapping):
+            violations.append(Violation(path, where, "lisible", "le service est illisible"))
+            continue
+        if "build" not in service:
+            unpinned = _image_violation(service.get("image"))
+            if unpinned:
+                violations.append(Violation(path, where, "image-epinglee", unpinned))
+        if service.get("network_mode") == "host":
+            violations.append(
+                Violation(
+                    path, where, "port-local", "le réseau de l'hôte écoute sur toutes ses adresses"
+                )
+            )
+        ports = service.get("ports") or []
+        for port in ports if isinstance(ports, list) else [ports]:
+            if _published_host(port) not in _LOOPBACK:
+                violations.append(
+                    Violation(
+                        path,
+                        where,
+                        "port-local",
+                        f"le port {port} doit être publié sur la boucle locale, sous la forme "
+                        "127.0.0.1:port:port",
+                    )
+                )
+    return violations
+
+
 def check_codeowners(path: str, content: str) -> list[Violation]:
     """Chaque chemin protégé a un propriétaire, dont la revue peut être exigée."""
     owned = set()
@@ -405,7 +461,7 @@ def check_action(path: str, action: object) -> list[Violation]:
 
 
 def discover(root: Path) -> list[Path]:
-    """Workflows, actions composites et scripts du dépôt."""
+    """Workflows, actions composites, scripts, Dockerfiles et fichiers compose du dépôt."""
     github = root / ".github"
     found = [
         *github.glob("workflows/*.yml"),
@@ -415,6 +471,10 @@ def discover(root: Path) -> list[Path]:
         *(root / "scripts").glob("*.sh"),
         *(root / ".devcontainer").glob("**/devcontainer.json"),
         *github.glob("CODEOWNERS"),
+        *root.glob("compose*.yaml"),
+        *root.glob("compose*.yml"),
+        *(root / "deploy").glob("**/compose*.yaml"),
+        *(root / "deploy").glob("**/compose*.yml"),
         *(
             path
             for path in root.rglob("Dockerfile*")
@@ -440,6 +500,8 @@ def check_file(path: Path) -> list[Violation]:
         return [Violation(str(path), "fichier", "lisible", type(error).__name__)]
     if path.name.startswith("action."):
         return check_action(str(path), document)
+    if path.name.startswith("compose"):
+        return check_compose(str(path), document)
     return check_workflow(str(path), document)
 
 

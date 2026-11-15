@@ -27,6 +27,9 @@ _SOURCES = re.compile(r"/api/v1/answers/([0-9a-f]+)/sources")
 # Un exemple chiffré, pas la ligne du tableau des routes, qui écrit « … ».
 _VALUE = r"([A-Za-z0-9_.:/-]+)"
 _IMPACT = re.compile(rf"/api/v1/impact\?namespace={_VALUE}&name={_VALUE}&from={_VALUE}&to={_VALUE}")
+_INCIDENT_ADDRESS = re.compile(
+    rf"#/propager\?namespace={_VALUE}&name={_VALUE}&from={_VALUE}&to={_VALUE}"
+)
 _COUNTED = re.compile(r"(\d+) réponses(?: touchées)? et (\d+) destinataires")
 
 
@@ -68,6 +71,20 @@ def test_the_documented_incident_is_the_first_of_the_default_synthetic_enterpris
     text = (ROOT / document).read_text(encoding="utf-8")
     first = truth(generate(DEFAULT_SEED))["incidents"][0]
     assert set(_IMPACT.findall(text)) == {
+        (first["dataset"]["namespace"], first["dataset"]["name"], first["from"], first["to"])
+    }
+    assert set(_COUNTED.findall(text)) == {
+        (str(len(first["answers"])), str(len(first["recipients"])))
+    }
+
+
+@pytest.mark.parametrize("document", ["README.md", "docs/demonstration.md"])
+def test_the_documented_address_opens_the_first_incident_of_the_demonstration(
+    document: str,
+) -> None:
+    text = (ROOT / document).read_text(encoding="utf-8")
+    first = truth(generate(DEFAULT_SEED))["incidents"][0]
+    assert set(_INCIDENT_ADDRESS.findall(text)) == {
         (first["dataset"]["namespace"], first["dataset"]["name"], first["from"], first["to"])
     }
     assert set(_COUNTED.findall(text)) == {

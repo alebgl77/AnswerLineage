@@ -50,18 +50,39 @@ Le proxy se place devant un serveur [MCP](https://modelcontextprotocol.io) exist
 | Entreprise synthétique et corpus de vérité, pour essayer et mesurer sans donnée réelle | Disponible |
 | Envoi des événements du proxy vers l'API | À venir |
 | Explorateur visuel : graphe en cinq colonnes, mode Propager, adresses partageables | Disponible |
+| Démonstration en une commande, sur une entreprise synthétique | Disponible |
 | Propagation fine (colonnes, lignes, versions) et transitive (mémoire, tables dérivées) | À venir |
 | Rappel des destinataires après validation humaine | À venir |
 
 ## Essayer
 
+### En une commande
+
+Avec Docker pour seul prérequis :
+
+```bash
+git clone https://github.com/alebgl77/AnswerLineage.git && cd AnswerLineage && docker compose up
+```
+
+L'explorateur est ensuite sur [http://127.0.0.1:8000/](http://127.0.0.1:8000/), devant une entreprise inventée : 5 agents, 4 outils, 13 tables, deux semaines de demandes. Un incident déjà propagé s'ouvre par son adresse :
+
+```
+http://127.0.0.1:8000/#/propager?namespace=bigquery&name=ventes.suivi.commandes&from=2026-11-11T06:00:00Z&to=2026-11-12T12:00:00Z
+```
+
+Rien n'écoute hors de la boucle locale, et aucune donnée réelle n'est en jeu. [La démonstration](docs/demonstration.md) dit ce qui tourne et comment l'arrêter.
+
+### Pas à pas
+
+Le reste de cette section monte les mêmes pièces une à une, pour voir ce que fait chacune.
+
 Prérequis : [uv](https://docs.astral.sh/uv/), Python 3.13 ou 3.14, Docker, et Node 22 pour l'explorateur.
 
 ```bash
-git clone https://github.com/alebgl77/AnswerLineage.git && cd AnswerLineage && make setup
+make setup
 ```
 
-### L'API d'ingestion
+#### L'API d'ingestion
 
 Un PostgreSQL jetable, le schéma, puis l'API sur `http://127.0.0.1:8000` :
 
@@ -97,7 +118,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/lineage -H 'content-type: application/
 
 L'API répond `201` avec l'identifiant de l'événement. Le même envoi répété répond `"duplicate": true` : un événement rejoué n'est enregistré qu'une fois. Un événement invalide est rejeté avec le chemin de chaque champ fautif. La description complète de l'API est servie sur `/api/v1/openapi.json`.
 
-### Le graphe
+#### Le graphe
 
 Dans un troisième terminal, avec la même variable `ANSWERLINEAGE_DATABASE_URL`, un worker projette les événements reçus dans le graphe de lignage :
 
@@ -111,7 +132,7 @@ Le run et la table qu'il a lue sont maintenant dans le graphe :
 docker exec answerlineage-postgres psql -U postgres -c "SELECT d.namespace, d.name, e.precision, r.state FROM read_edge e JOIN dataset d ON d.id = e.dataset_id JOIN run r ON r.run_id = e.run_id"
 ```
 
-### Une entreprise synthétique
+#### Une entreprise synthétique
 
 Pour voir un graphe plus riche qu'un seul événement, le dépôt fournit une entreprise inventée : 5 agents, 4 outils, 13 tables, deux semaines de demandes. La commande envoie ses événements à l'API, et le worker les projette dans le graphe :
 
@@ -125,7 +146,7 @@ Les réponses de chaque agent, et les personnes qui les ont reçues :
 docker exec answerlineage-postgres psql -U postgres -c "SELECT a.name AS agent, count(DISTINCT w.id) AS reponses, count(DISTINCT l.recipient_id) AS destinataires FROM answer w JOIN run r ON r.run_id = w.run_id JOIN agent a ON a.id = r.agent_id JOIN delivery d ON d.answer_id = w.id JOIN delivery_recipient l ON l.delivery_id = d.id GROUP BY a.name ORDER BY reponses DESC"
 ```
 
-### Remonter d'une réponse à ses sources
+#### Remonter d'une réponse à ses sources
 
 Un destinataire a reçu un message d'un agent et veut savoir sur quoi il s'appuie. Il retrouve la réponse par le canal et la référence du message :
 
@@ -139,7 +160,7 @@ Puis il demande ses sources, avec l'identifiant obtenu : les tables et les colon
 curl http://127.0.0.1:8000/api/v1/answers/01a1c9e63a187c5cb8b5fce292591000424d79573035c170/sources
 ```
 
-### Propager un incident
+#### Propager un incident
 
 La table des commandes a été fausse du chargement de nuit du 11 novembre jusqu'à sa correction le lendemain midi. Quelles réponses s'appuient sur elle, et qui les a reçues ?
 
@@ -153,7 +174,7 @@ La réponse compte 16 réponses touchées et 13 destinataires, et donne la chaî
 uv run answerlineage-corpus truth
 ```
 
-### L'explorateur
+#### L'explorateur
 
 L'explorateur montre tout cela en cinq colonnes, des données aux personnes. Il se construit une fois :
 
@@ -167,13 +188,9 @@ Puis l'API se relance avec le dossier construit, à la place de la commande pré
 ANSWERLINEAGE_UI_DIR=ui/dist uv run uvicorn --factory answerlineage_api.app:create_app
 ```
 
-Le graphe est sur [http://127.0.0.1:8000/](http://127.0.0.1:8000/). L'incident propagé plus haut s'ouvre directement par son adresse, qui se partage telle quelle :
+Le graphe est sur [http://127.0.0.1:8000/](http://127.0.0.1:8000/), et l'incident propagé plus haut s'ouvre par la même adresse que dans la démonstration.
 
-```
-http://127.0.0.1:8000/#/propager?namespace=bigquery&name=ventes.suivi.commandes&from=2026-11-11T06:00:00Z&to=2026-11-12T12:00:00Z
-```
-
-### Le proxy MCP
+#### Le proxy MCP
 
 Devant un serveur MCP qui écoute sur le port 9000 et expose un outil `execute_sql` dont l'argument `query` porte du SQL BigQuery :
 
@@ -188,6 +205,7 @@ L'agent se connecte alors à `http://127.0.0.1:8717` au lieu du serveur : rien d
 - [Proxy MCP](docs/proxy.md) : ce qui est relayé, ce qui est lu, analyse du SQL, limites connues
 - [API d'ingestion](docs/ingestion.md) : routes, lots, validation, rejeu
 - [API de lecture](docs/lecture.md) : retrouver une réponse, remonter à ses sources, propager un incident
+- [Démonstration](docs/demonstration.md) : ce que lance `docker compose up`, et comment le vérifier
 - [Explorateur](docs/explorateur.md) : le graphe en cinq colonnes, le mode Propager, les adresses partageables
 - [Workers](docs/workers.md) : file de traitement, garanties, projection dans le graphe
 - [Schéma du graphe](docs/schema.md) : tables, écritures, migrations

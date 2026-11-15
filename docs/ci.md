@@ -12,6 +12,7 @@ Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque me
 | `agent-config` | Une merge request qui modifie la configuration d'agents ou un garde-fou porte l'approbation d'un mainteneur | |
 | `devcontainer` | Le conteneur de développement se construit, installe le projet et passe les tests | |
 | `explorer` | L'explorateur se construit, ses types sont justes, et ses tests de bout en bout passent dans Chromium | `make ui e2e` |
+| `demo` | `docker compose up` donne un premier graphe en moins de cinq minutes, sur la boucle locale seulement, et retrouve ses données après une relance | `scripts/check_demo.sh` |
 | `ci-ok` | Toutes les étapes bloquantes sont vertes | |
 
 `make check` enchaîne sur le poste les contrôles des jobs `static` et `tests`.
@@ -41,6 +42,7 @@ Le contrôle `make policy` (`scripts/check_policy.py`) échoue dès que :
 - un workflow ne déclare pas de permissions, ou accorde une écriture à tout le workflow ;
 - un workflow se déclenche sur `pull_request_target` ;
 - `actions/checkout` conserve le jeton du pipeline ;
+- un fichier compose publie un port ailleurs que sur la boucle locale, ou tire une image sans empreinte ;
 - le job `ci-ok` ne dépend pas de tous les autres jobs.
 
 Le jeton du pipeline est en lecture seule. Seul le job `codeql` reçoit `security-events: write`, pour déposer ses résultats.

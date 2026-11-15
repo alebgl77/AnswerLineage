@@ -170,12 +170,23 @@ jobs:
       - name: Tests de bout en bout dans le navigateur
         run: make e2e
 
+  demo:
+    name: Démonstration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Lance la démonstration, mesure le premier graphe, l'arrête et la relance
+        run: scripts/check_demo.sh
+
   # Seul contrôle à exiger dans la protection de la branche principale : il
   # échoue dès qu'une étape bloquante échoue, est annulée ou est sautée.
   ci-ok:
     name: ci-ok
     if: ${{ always() }}
-    needs: [static, tests, secrets, codeql, agent-config, devcontainer, explorer]
+    needs: [static, tests, secrets, codeql, agent-config, devcontainer, explorer, demo]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

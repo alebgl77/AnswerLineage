@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check policy contract openapi format format-check lint typecheck test coverage-gate secrets ui e2e
+.PHONY: help setup check policy contract openapi format format-check lint typecheck test coverage-gate secrets ui e2e demo
 
 help: ## Liste les cibles
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -49,3 +49,6 @@ ui: ## Construit l'explorateur dans ui/dist (Node requis)
 
 e2e: ## Tests de bout en bout de l'explorateur dans Chromium (après make ui)
 	uv run pytest -m e2e
+
+demo: ## Lance la démonstration : l'explorateur sur http://127.0.0.1:8000/ (Docker requis)
+	docker compose up --build
