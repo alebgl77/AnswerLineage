@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
+from answerlineage_corpus.coverage import coverage_reports
 from answerlineage_corpus.enterprise import Enterprise, generate
 from answerlineage_corpus.events import render
 from answerlineage_workers.queue import process_batch
@@ -278,3 +279,49 @@ async def test_propagating_each_incident_finds_exactly_the_truth(engine: AsyncEn
             assert {
                 recipient["pseudonym"] for recipient in result["graph"]["recipients"]
             } == expected_recipients
+
+
+async def report_coverage(engine: AsyncEngine, enterprise: Enterprise) -> None:
+    """Envoie les relevés de couverture des serveurs de l'entreprise, comme le chargement."""
+    async with api(engine) as client:
+        for report in coverage_reports(enterprise):
+            response = await client.post("/api/v1/coverage", json=report)
+            assert response.status_code == 201, response.text
+
+
+async def test_the_enterprise_and_its_reports_give_a_measured_coverage_without_hole(
+    engine: AsyncEngine,
+) -> None:
+    enterprise = generate(7, requests=120, days=5, incidents=4)
+    await load(engine, enterprise)
+    await report_coverage(engine, enterprise)
+    calls = sum(len(request.calls) for request in enterprise.requests)
+
+    async with api(engine) as client:
+        for incident in enterprise.incidents:
+            response = await client.get(
+                "/api/v1/impact",
+                params={
+                    "namespace": incident.table.namespace,
+                    "name": incident.table.name,
+                    "from": incident.start.isoformat(),
+                    "to": incident.end.isoformat(),
+                },
+            )
+            coverage = response.json()["coverage"]
+            assert (coverage["status"], coverage["rate"], coverage["holes"]) == (
+                "measured",
+                1.0,
+                [],
+            )
+        first = min(request.started_at for request in enterprise.requests)
+        last = max(request.ended_at for request in enterprise.requests)
+        response = await client.get(
+            "/api/v1/coverage", params={"from": first.isoformat(), "to": last.isoformat()}
+        )
+    emitters = response.json()["emitters"]
+    assert {item["emitter"] for item in emitters} == {
+        f"mcp://{tool.server}" for tool in enterprise.tools
+    }
+    assert sum(item["coverage"]["events_in_graph"] for item in emitters) == calls
+    assert {item["coverage"]["status"] for item in emitters} == {"measured"}

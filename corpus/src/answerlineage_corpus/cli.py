@@ -2,7 +2,8 @@
 
 ``events`` écrit les événements OpenLineage de l'entreprise synthétique,
 ``truth`` la vérité de ses incidents, et ``load`` envoie les événements à une
-API d'ingestion d'AnswerLineage. ``check`` contrôle le corpus de vérité.
+API d'ingestion d'AnswerLineage, puis les relevés de couverture de ses
+serveurs MCP. ``check`` contrôle le corpus de vérité.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from answerlineage_corpus.coverage import coverage_reports
 from answerlineage_corpus.enterprise import (
     DEFAULT_DAYS,
     DEFAULT_INCIDENTS,
@@ -21,7 +23,7 @@ from answerlineage_corpus.enterprise import (
     generate,
 )
 from answerlineage_corpus.events import render
-from answerlineage_corpus.loader import DEFAULT_BATCH_SIZE, LoadError, send
+from answerlineage_corpus.loader import DEFAULT_BATCH_SIZE, LoadError, send, send_reports
 from answerlineage_corpus.scenarios import CORPUS_VERSION, check_corpus, load_corpus
 from answerlineage_corpus.truth import truth
 
@@ -42,7 +44,9 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("events", parents=[size], help="écrit les événements OpenLineage (JSON)")
     commands.add_parser("truth", parents=[size], help="écrit la vérité des incidents (JSON)")
-    load = commands.add_parser("load", parents=[size], help="envoie les événements à une API")
+    load = commands.add_parser(
+        "load", parents=[size], help="envoie les événements et les relevés de couverture à une API"
+    )
     load.add_argument(
         "--url", required=True, help="adresse de l'API, par exemple http://127.0.0.1:8000"
     )
@@ -97,6 +101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     try:
         result = send(render(enterprise), args.url, batch_size=args.batch_size)
+        reports = send_reports(coverage_reports(enterprise), args.url)
     except LoadError as error:
         print(f"Envoi interrompu : {error}", file=sys.stderr)
         return 1
@@ -104,7 +109,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{result.accepted} événements acceptés, dont {result.duplicates} déjà connus ; "
         f"{result.rejected} rejetés."
     )
-    return 0 if result.rejected == 0 else 1
+    print(f"{reports.accepted} relevés de couverture acceptés ; {reports.rejected} rejetés.")
+    return 0 if result.rejected == 0 and reports.rejected == 0 else 1
 
 
 if __name__ == "__main__":

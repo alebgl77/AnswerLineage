@@ -63,12 +63,41 @@ export interface DatasetList {
   more: boolean;
 }
 
+export type HoleKind =
+  | "events_lost"
+  | "uninspected"
+  | "missing_from_graph"
+  | "silence"
+  | "before_first_report";
+
+// Un trou connu du lignage : une fenêtre où des appels ont pu échapper au graphe.
+export interface CoverageHole {
+  emitter: string;
+  kind: HoleKind;
+  window: { from: string; to: string };
+  // Nul pour un silence, où rien n'est compté.
+  count: number | null;
+}
+
+// La couverture du lignage sur la fenêtre : la part des appels vus présents dans le graphe.
+export interface Coverage {
+  status: "measured" | "partial" | "unknown";
+  // De 0 à 1 ; nul quand aucun appel n'a été vu.
+  rate: number | null;
+  calls_seen: number;
+  events_in_graph: number;
+  events_lost: number;
+  uninspected: number;
+  holes: CoverageHole[];
+  truncated: boolean;
+}
+
 export interface ImpactResult {
   dataset: DatasetName;
   window: { from: string; to: string };
   // ``lower_bound`` : le résultat est tronqué, les décomptes sont des minimums.
   counts: { answers: number; recipients: number; lower_bound: boolean };
-  coverage: { status: "unknown" };
+  coverage: Coverage;
   graph: GraphView;
   truncated: boolean;
 }

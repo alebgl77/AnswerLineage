@@ -112,7 +112,7 @@ curl "http://127.0.0.1:8000/api/v1/impact?namespace=bigquery&name=ventes.suivi.c
   "dataset": { "namespace": "bigquery", "name": "ventes.suivi.commandes", "kind": "table" },
   "window": { "from": "2026-11-11T06:00:00Z", "to": "2026-11-12T12:00:00Z" },
   "counts": { "answers": 16, "recipients": 13, "lower_bound": false },
-  "coverage": { "status": "unknown", "rate": null, "calls_seen": 0, "holes": [], "…": "…" },
+  "coverage": { "status": "measured", "rate": 1.0, "holes": [], "…": "…" },
   "graph": { "answers": ["…"], "recipients": ["…"], "…": "…" },
   "truncated": false
 }

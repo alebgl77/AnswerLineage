@@ -171,6 +171,22 @@ nav a[aria-current="page"] {
   color: var(--muted);
 }
 
+.holes {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.hole {
+  overflow-wrap: anywhere;
+}
+
+.hole-emitter {
+  font-weight: 600;
+  color: var(--ink);
+}
+
 .notice {
   margin: 16px 0;
   padding: 12px;

@@ -8,9 +8,10 @@ from typing import Any
 import pytest
 
 from answerlineage_corpus import cli
+from answerlineage_corpus.coverage import coverage_reports
 from answerlineage_corpus.enterprise import generate
 from answerlineage_corpus.events import render
-from answerlineage_corpus.loader import LoadError, LoadResult
+from answerlineage_corpus.loader import LoadError, LoadResult, ReportResult
 from answerlineage_corpus.truth import truth
 
 SMALL = ["--seed", "3", "--requests", "8", "--days", "2", "--incidents", "1"]
@@ -44,16 +45,36 @@ def test_load_sends_the_events_and_reports(
         calls.append((events, url, batch_size))
         return LoadResult(accepted=len(events), duplicates=2, rejected=0)
 
+    def fake_send_reports(reports: Any, url: str) -> ReportResult:
+        calls.append((reports, url))
+        return ReportResult(accepted=len(reports))
+
     monkeypatch.setattr(cli, "send", fake_send)
+    monkeypatch.setattr(cli, "send_reports", fake_send_reports)
     assert cli.main(["load", "--url", "http://127.0.0.1:8000", "--batch-size", "50", *SMALL]) == 0
-    assert calls == [(render(small()), "http://127.0.0.1:8000", 50)]
+    reports = coverage_reports(small())
+    assert calls == [
+        (render(small()), "http://127.0.0.1:8000", 50),
+        (reports, "http://127.0.0.1:8000"),
+    ]
     assert capsys.readouterr().out == (
         f"{len(render(small()))} événements acceptés, dont 2 déjà connus ; 0 rejetés.\n"
+        f"{len(reports)} relevés de couverture acceptés ; 0 rejetés.\n"
     )
 
 
-def test_load_fails_when_an_event_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "send", lambda *_, **__: LoadResult(accepted=1, rejected=1))
+@pytest.mark.parametrize(
+    ("events", "reports"),
+    [
+        (LoadResult(accepted=1, rejected=1), ReportResult(accepted=1)),
+        (LoadResult(accepted=1), ReportResult(accepted=1, rejected=1)),
+    ],
+)
+def test_load_fails_when_an_event_or_a_report_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, events: LoadResult, reports: ReportResult
+) -> None:
+    monkeypatch.setattr(cli, "send", lambda *_, **__: events)
+    monkeypatch.setattr(cli, "send_reports", lambda *_, **__: reports)
     assert cli.main(["load", "--url", "http://127.0.0.1:8000", *SMALL]) == 1
 
 

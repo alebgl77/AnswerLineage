@@ -10,7 +10,14 @@ from typing import Any, ClassVar
 
 import pytest
 
-from answerlineage_corpus.loader import LoadError, LoadResult, batch_url, send
+from answerlineage_corpus.loader import (
+    LoadError,
+    LoadResult,
+    ReportResult,
+    batch_url,
+    send,
+    send_reports,
+)
 
 
 class FakeApi(BaseHTTPRequestHandler):
@@ -109,6 +116,34 @@ def test_only_an_http_address_is_accepted(address: str) -> None:
 def test_a_batch_holds_at_least_one_event(api: str) -> None:
     with pytest.raises(LoadError, match="au moins un"):
         send(events(1), api, batch_size=0)
+
+
+def test_reports_are_sent_one_by_one_to_the_coverage_route(api: str) -> None:
+    FakeApi.status = 201
+    FakeApi.body = b"{}"
+    assert send_reports([{"rank": 0}, {"rank": 1}], api) == ReportResult(accepted=2)
+    assert [batch["events"] for batch in FakeApi.batches] == [{"rank": 0}, {"rank": 1}]
+    assert {batch["path"] for batch in FakeApi.batches} == {"/api/v1/coverage"}
+
+
+def test_a_rejected_report_is_counted_and_the_others_are_sent(api: str) -> None:
+    FakeApi.status = 422
+    FakeApi.body = b'{"errors": []}'
+    assert send_reports([{"rank": 0}, {"rank": 1}], api) == ReportResult(rejected=2)
+    assert len(FakeApi.batches) == 2
+
+
+def test_a_report_refused_otherwise_stops_the_load(api: str) -> None:
+    FakeApi.status = 413
+    FakeApi.body = b"{}"
+    with pytest.raises(LoadError, match="relevé \\(HTTP 413\\)"):
+        send_reports([{"rank": 0}, {"rank": 1}], api)
+    assert len(FakeApi.batches) == 1
+
+
+def test_reports_need_an_http_address() -> None:
+    with pytest.raises(LoadError, match="http://"):
+        send_reports([{"rank": 0}], "ftp://exemple")
 
 
 @pytest.mark.parametrize(

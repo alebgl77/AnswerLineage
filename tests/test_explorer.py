@@ -22,15 +22,18 @@ from answerlineage_api.app import create_app
 from answerlineage_api.lineage import impact
 from answerlineage_api.lineage.trace import answer_key
 from answerlineage_corpus.cli import DEFAULT_SEED
+from answerlineage_corpus.coverage import coverage_reports
 from answerlineage_corpus.enterprise import Enterprise, Request, generate
 from proxy.tests.conftest import running
-from tests.test_corpus_to_graph import load
+from tests.test_corpus_to_graph import api, load
 
 pytestmark = [pytest.mark.e2e, pytest.mark.integration, pytest.mark.anyio]
 
 DIST = Path(__file__).resolve().parents[1] / "ui" / "dist"
 SHOWN = 60
 ORDERS = "ventes.suivi.commandes"
+# L'explorateur écrit « 99 % » avec une espace insécable.
+PERCENT = "\N{NO-BREAK SPACE}%"
 
 
 def unavailable(reason: str) -> NoReturn:
@@ -321,6 +324,95 @@ async def test_propagating_an_incident_lights_answers_and_recipients_and_shows_t
     )
     assert f"{sooner:%Y-%m-%dT%H}" in page.url
     assert await count(page, ".node-answer.is-on") == len(fewer)
+    assert errors == []
+
+
+def incident_address(explorer: str, enterprise: Enterprise) -> str:
+    incident = enterprise.incidents[0]
+    return (
+        f"{explorer}#/propager?namespace={incident.table.namespace}&name={incident.table.name}"
+        f"&from={incident.start:%Y-%m-%dT%H:%M:%SZ}&to={incident.end:%Y-%m-%dT%H:%M:%SZ}"
+    )
+
+
+async def publish(engine: AsyncEngine, reports: list[dict[str, Any]]) -> None:
+    async with api(engine) as client:
+        for report in reports:
+            response = await client.post("/api/v1/coverage", json=report)
+            assert response.status_code == 201, response.text
+
+
+def holding_the_start(enterprise: Enterprise, report: dict[str, Any]) -> bool:
+    """Vrai pour un relevé dont la fenêtre contient le début du premier incident."""
+    start = f"{enterprise.incidents[0].start:%Y-%m-%dT%H:%M:%SZ}"
+    return bool(report["window"]["from"] <= start < report["window"]["to"])
+
+
+async def coverage_shown(page: Page) -> tuple[str, list[str]]:
+    await page.wait_for_selector("[data-testid=coverage-note]")
+    value = await page.locator("[data-testid=coverage]").text_content() or ""
+    holes = await page.locator("[data-testid=coverage-holes] li").all_text_contents()
+    return value, holes
+
+
+async def test_a_measured_coverage_shows_its_rate_and_no_hole(
+    browser: Browser, explorer: str, enterprise: Enterprise, engine: AsyncEngine
+) -> None:
+    await publish(engine, coverage_reports(enterprise))
+    page, errors = await opened(browser, incident_address(explorer, enterprise))
+
+    assert await coverage_shown(page) == ("100" + PERCENT, [])
+    note = await page.locator("[data-testid=coverage-note]").text_content() or ""
+    assert "sans trou connu" in note
+    assert errors == []
+
+
+async def test_a_measured_coverage_with_missing_events_shows_the_rate_and_the_hole(
+    browser: Browser, explorer: str, enterprise: Enterprise, engine: AsyncEngine
+) -> None:
+    reports = coverage_reports(enterprise)
+    [inflated] = [
+        report
+        for report in reports
+        if report["emitter"] == "mcp://entrepot" and holding_the_start(enterprise, report)
+    ]
+    # L'émetteur a vu cinq appels de plus que le graphe n'en contient.
+    inflated = {
+        **inflated,
+        "calls_seen": inflated["calls_seen"] + 5,
+        "events_emitted": inflated["events_emitted"] + 5,
+    }
+    await publish(engine, [*reports, inflated])
+    page, errors = await opened(browser, incident_address(explorer, enterprise))
+
+    value, holes = await coverage_shown(page)
+    assert value.endswith(PERCENT)
+    assert value != "100" + PERCENT
+    assert len(holes) == 1
+    assert holes[0].startswith("mcp://entrepot : 5 événements absents du graphe, du ")
+    assert errors == []
+
+
+async def test_a_partial_coverage_says_so_and_what_is_missing(
+    browser: Browser, explorer: str, enterprise: Enterprise, engine: AsyncEngine
+) -> None:
+    reports = coverage_reports(enterprise)
+    kept = [
+        report
+        for report in reports
+        if not (report["emitter"] == "mcp://crm" and holding_the_start(enterprise, report))
+    ]
+    assert len(kept) == len(reports) - 1
+    await publish(engine, kept)
+    page, errors = await opened(browser, incident_address(explorer, enterprise))
+
+    value, holes = await coverage_shown(page)
+    assert value == "partielle"
+    assert len(holes) == 1
+    assert holes[0].startswith("mcp://crm : ")
+    assert "aucun relevé (silence)" in holes[0] or "avant son premier relevé" in holes[0]
+    note = await page.locator("[data-testid=coverage-note]").text_content() or ""
+    assert "qu'une partie de cette fenêtre" in note
     assert errors == []
 
 

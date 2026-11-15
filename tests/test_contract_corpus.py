@@ -16,6 +16,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 from answerlineage_api.app import DEFAULT_MAX_BATCH_EVENTS
 from answerlineage_api.ingest.body import DEFAULT_MAX_BODY_BYTES, MAX_DEPTH, nesting_depth
+from answerlineage_api.ingest.coverage import validate_report
 from answerlineage_api.ingest.models import validate_event
 from answerlineage_api.store.graph import (
     AgentRef,
@@ -26,6 +27,7 @@ from answerlineage_api.store.graph import (
     ToolRef,
     Write,
 )
+from answerlineage_corpus.coverage import coverage_reports
 from answerlineage_corpus.enterprise import Enterprise, generate
 from answerlineage_corpus.events import PROTOCOL_VERSION, render, request_events, tool_call_event
 from answerlineage_corpus.scenarios import load_corpus
@@ -53,6 +55,20 @@ def test_every_event_is_an_openlineage_run_event_the_ingestion_accepts(
         accepted, errors = validate_event(event)
         assert errors == []
         assert accepted is not None
+
+
+def test_every_coverage_report_is_one_the_ingestion_accepts_from_the_proxys_emitter(
+    enterprise: Enterprise,
+) -> None:
+    # À la date de ses relevés : l'entreprise peut être datée après l'horloge du test.
+    latest = max(request.ended_at for request in enterprise.requests)
+    emitters = {event["job"]["namespace"] for event in render(enterprise)}
+    for report in coverage_reports(enterprise):
+        accepted, errors = validate_report(report, received_at=latest)
+        assert errors == []
+        assert accepted is not None
+        # L'émetteur d'un relevé est celui des appels qu'il compte.
+        assert accepted.emitter in emitters
 
 
 def without_origin(event: dict[str, Any]) -> dict[str, Any]:

@@ -12,7 +12,7 @@ uv run answerlineage-corpus load --url http://127.0.0.1:8000
 | --- | --- |
 | `answerlineage-corpus events` | Écrit les événements OpenLineage de l'entreprise, en un tableau JSON |
 | `answerlineage-corpus truth` | Écrit la vérité : pour chaque incident, les réponses et les destinataires touchés |
-| `answerlineage-corpus load --url <API>` | Envoie les événements à l'API d'ingestion, par lots |
+| `answerlineage-corpus load --url <API>` | Envoie les événements à l'API d'ingestion, par lots, puis les [relevés de couverture](#relevés-de-couverture) de ses serveurs MCP |
 
 Les options `--seed`, `--requests`, `--days` et `--incidents` choisissent la graine et la taille. Par défaut : graine 1, 240 demandes sur 10 jours ouvrés, 6 incidents.
 
@@ -30,6 +30,12 @@ Une demande est un run d'agent. L'agent appelle un à trois outils, chaque appel
 Un outil SQL lit les tables que la requête choisit, parfois en entier, parfois quelques colonnes. Les autres outils lisent toujours les mêmes tables, en entier. Les tables de l'entrepôt sont rechargées chaque nuit : leur lecture porte la version du jour.
 
 Rien de tout cela n'a de contenu. Une réponse est une empreinte, un message est une référence, un destinataire est un pseudonyme.
+
+## Relevés de couverture
+
+`load` envoie aussi, après les événements, les [relevés de couverture](ingestion.md#relevés-de-couverture) des émetteurs de l'entreprise : ses serveurs MCP, `mcp://entrepot`, `mcp://crm` et `mcp://support`, comme le proxy placé devant chacun les publierait. Un relevé par serveur et par jour UTC, du premier jour des demandes au lendemain du dernier, jours sans appel compris : les appels vus sont les appels d'outils de ce serveur ce jour-là, tous émis, aucun perdu, aucune requête non inspectée. L'entreprise ne perd rien : la couverture lue après chargement est mesurée, à 100 %, sans trou, et la démonstration l'affiche ainsi.
+
+Renvoyés, les relevés ne changent rien : l'API les fusionne au plus grand. La vérité de l'entreprise n'en dépend pas, et ne change pas. Une fois chargée, l'entreprise ne publie plus : dix minutes plus tard, le [contrôle des émetteurs muets](workers.md#émetteurs-muets) signale ses trois serveurs, une fois, et la couverture d'une période postérieure à ses relevés n'est pas mesurée.
 
 ## Les événements
 

@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 
 import { MAX_LIMIT, datasetsPath, graphPath, impactPath } from "./api";
 import type { DatasetList, DatasetName, GraphView, ImpactResult } from "./api";
+import { CoverageNote, coverageValue } from "./CoverageNote";
 import { Graph } from "./Graph";
 import { Failure, Loading } from "./Notice";
 import { Partial } from "./Overview";
@@ -135,13 +136,10 @@ function Result({ result }: { result: ImpactResult }) {
         </div>
         <div>
           <dt>Couverture du lignage</dt>
-          <dd data-testid="coverage">non mesurée</dd>
+          <dd data-testid="coverage">{coverageValue(result.coverage)}</dd>
         </div>
       </dl>
-      <p className="hint">
-        La couverture du lignage sur cette fenêtre n'est pas encore mesurée : une réponse dont la
-        lecture n'a pas été captée n'apparaît pas ici.
-      </p>
+      <CoverageNote coverage={result.coverage} />
       {lowerBound && (
         <p className="notice" role="status" data-testid="partial">
           Résultat partiel : l'incident dépasse ce que la propagation parcourt. D'autres réponses

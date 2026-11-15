@@ -31,7 +31,7 @@ L'explorateur est alors sur `http://127.0.0.1:8000/`. Sans `ANSWERLINEAGE_UI_DIR
 
 Survoler ou choisir un nœud met sa chaîne en évidence. Depuis une donnée, on suit ce qui en dépend : les outils qui l'ont lue, les agents, les réponses, les destinataires. Depuis une réponse ou un destinataire, on remonte à ce qui a été lu.
 
-**Propager.** Le mode Propager prend un jeu de données et la période pendant laquelle il a été faux. Les réponses et les destinataires touchés s'allument, et trois compteurs s'affichent : réponses touchées, destinataires, couverture du lignage. La couverture dit ce que le résultat peut manquer ; elle n'est pas encore mesurée, et l'explorateur l'écrit. Quand la propagation dépasse ses bornes, les compteurs s'écrivent « au moins … » et un avis dit que le résultat est partiel : un résultat tronqué sans réponse ne s'affiche jamais comme « aucune réponse ». Une lecture interrompue par son délai maximal le dit aussi ([bornes et délais](lecture.md#bornes-et-délais)).
+**Propager.** Le mode Propager prend un jeu de données et la période pendant laquelle il a été faux. Les réponses et les destinataires touchés s'allument, et trois compteurs s'affichent : réponses touchées, destinataires, couverture du lignage. La couverture dit ce que le résultat peut manquer ([couverture du lignage](lecture.md#couverture-du-lignage)) : son taux quand des relevés couvrent toute la fenêtre, « partielle » quand ils n'en couvrent qu'une part, « non mesurée » quand aucun ne la touche. En dessous, une phrase dit ce que cela veut dire pour ce résultat, et la liste des trous connus de la fenêtre nomme pour chacun son émetteur, sa nature (événements perdus, événements absents du graphe, requêtes non inspectées, silence, début avant le premier relevé) et sa fenêtre. Le taux est arrondi par défaut : 99,96 % s'écrit « 99,9 % », jamais « 100 % ». Quand la propagation dépasse ses bornes, les compteurs s'écrivent « au moins … » et un avis dit que le résultat est partiel : un résultat tronqué sans réponse ne s'affiche jamais comme « aucune réponse ». Une lecture interrompue par son délai maximal le dit aussi ([bornes et délais](lecture.md#bornes-et-délais)).
 
 **Adresses.** L'adresse de la page dit ce que l'explorateur montre. Copiée dans un ticket ou un message, elle rouvre le même incident, la même réponse ou le même jeu de données, dans le même mode. L'identifiant d'une réponse reste valable si le graphe est reconstruit.
 
@@ -54,9 +54,9 @@ Le serveur de développement écoute sur `http://127.0.0.1:5173` et relaie `/api
 | `make ui` | Installe les paquets verrouillés, contrôle les types, construit `ui/dist` |
 | `make e2e` | Pilote l'explorateur construit dans Chromium, sur l'entreprise synthétique |
 
-Les tests de bout en bout comparent ce que la page affiche à l'entreprise générée : les cinq colonnes et leurs liens en moins de 2 secondes, rien qui déborde sur un écran de 400 pixels de large, la chaîne allumée d'un jeu de données, les compteurs d'un incident, les adresses rouvertes dans un nouvel onglet. Une erreur dans la console du navigateur, refus de la politique de contenu compris, fait échouer le test.
+Les tests de bout en bout comparent ce que la page affiche à l'entreprise générée : les cinq colonnes et leurs liens en moins de 2 secondes, rien qui déborde sur un écran de 400 pixels de large, la chaîne allumée d'un jeu de données, les compteurs d'un incident, sa couverture mesurée, mesurée avec un trou, partielle ou non mesurée, les adresses rouvertes dans un nouvel onglet. Une erreur dans la console du navigateur, refus de la politique de contenu compris, fait échouer le test.
 
-Les sources sont dans `ui/src/` : `graph.ts` déduit les liens et la chaîne d'un nœud, `route.ts` lit et écrit l'adresse, `Graph.tsx` dessine les colonnes et trace les liens en SVG.
+Les sources sont dans `ui/src/` : `graph.ts` déduit les liens et la chaîne d'un nœud, `route.ts` lit et écrit l'adresse, `CoverageNote.tsx` écrit la couverture d'un incident, `Graph.tsx` dessine les colonnes et trace les liens en SVG.
 
 ## Limites connues
 
