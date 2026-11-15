@@ -183,3 +183,9 @@ Le [guide de contribution](CONTRIBUTING.md) dit comment proposer un changement e
 ## Sécurité
 
 Une faille se signale en privé, jamais dans une issue : la [politique de sécurité](SECURITY.md) donne le canal et les délais de réponse.
+
+Le projet suit un [code de conduite](CODE_OF_CONDUCT.md).
+
+## Licence
+
+AnswerLineage est distribué sous la licence [Apache 2.0](LICENSE).

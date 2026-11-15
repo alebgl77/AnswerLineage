@@ -4,6 +4,7 @@ version = "0.0.0"
 description = "Lignage et rappel des réponses d'agents"
 readme = "README.md"
 requires-python = ">=3.13"
+license = "Apache-2.0"
 dependencies = []
 
 [dependency-groups]

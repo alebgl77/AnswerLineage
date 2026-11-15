@@ -3,6 +3,7 @@ name = "answerlineage-api"
 version = "0.0.0"
 description = "API d'AnswerLineage : ingestion des événements OpenLineage et lecture du graphe."
 requires-python = ">=3.13"
+license = "Apache-2.0"
 dependencies = [
     "alembic>=1.16",
     "fastapi>=0.121",

@@ -4,6 +4,8 @@ Merci de l'intérêt que vous portez au projet. Ce guide dit comment proposer un
 
 Pour une faille de sécurité, n'ouvrez pas d'issue : suivez la [politique de sécurité](SECURITY.md).
 
+Le projet suit un [code de conduite](CODE_OF_CONDUCT.md).
+
 ## Avant d'écrire du code
 
 Ouvrez une issue pour tout changement qui dépasse une correction évidente : un nouveau réglage, une route, un format d'événement, un composant. Le périmètre et l'ordre des travaux sont tenus par le mainteneur ; un échange court évite un travail qui ne pourrait pas être fusionné.
@@ -65,3 +67,7 @@ Les actions GitHub s'épinglent par empreinte de commit et les images par emprei
 ## Agents de code
 
 Une contribution écrite avec un agent de code suit les mêmes règles et engage son auteur de la même façon. Le fichier `CLAUDE.md` donne à l'agent le contexte du dépôt.
+
+## Licence des contributions
+
+AnswerLineage est distribué sous la licence [Apache 2.0](LICENSE). En proposant un changement, vous acceptez qu'il le soit aussi.

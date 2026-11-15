@@ -3,6 +3,7 @@ name = "answerlineage-proxy"
 version = "0.0.0"
 description = "Proxy MCP d'AnswerLineage : relaie les appels d'outils et émet les événements de lignage."
 requires-python = ">=3.13"
+license = "Apache-2.0"
 dependencies = [
     "httpx>=0.28",
     "sqlglot>=27.0",
