@@ -5,6 +5,8 @@
 .venv-*
 **/node_modules
 **/dist
+# Résultats de scripts/image.sh, dont l'archive de l'image elle-même.
+build
 **/__pycache__
 **/*.py[cod]
 .mypy_cache

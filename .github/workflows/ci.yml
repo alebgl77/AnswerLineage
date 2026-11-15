@@ -90,6 +90,37 @@ jobs:
       - name: Analyse de tout l'historique
         run: scripts/gitleaks.sh scan
 
+  # Les mêmes sous-commandes de scripts/image.sh que la publication d'une
+  # version (release.yml), qui ne s'essaie qu'à la première étiquette.
+  image:
+    name: Image, SBOM et vulnérabilités
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      IMAGE_VERSION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Vérifie les exceptions déclarées (motif, date de revue)
+        run: python3 -m scripts.check_vulnerabilities exceptions
+      - name: Construit l'image
+        run: scripts/image.sh build
+      - name: Inventorie ses composants (Syft, SBOM CycloneDX)
+        id: sbom
+        run: scripts/image.sh sbom
+      - name: Vérifie que l'analyse bloque une vulnérabilité critique connue
+        run: scripts/image.sh selftest
+      - name: Analyse ses vulnérabilités (Grype), hautes et critiques bloquantes
+        run: scripts/image.sh scan
+      - name: Garde le SBOM
+        if: ${{ always() && steps.sbom.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-answerlineage
+          path: build/image/sbom.cdx.json
+          if-no-files-found: error
+
   codeql:
     name: Analyse de sécurité du code (${{ matrix.language }})
     runs-on: ubuntu-24.04
@@ -204,7 +235,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: ${{ always() }}
-    needs: [static, tests, secrets, codeql, agent-config, devcontainer, explorer, demo]
+    needs: [static, tests, secrets, image, codeql, agent-config, devcontainer, explorer, demo]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

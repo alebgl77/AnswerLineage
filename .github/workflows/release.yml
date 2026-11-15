@@ -1,0 +1,109 @@
+name: release
+
+# Publier est l'acte du mainteneur : il pose l'étiquette de version (v1.2.3).
+# Ce workflow ne tourne jamais sur une merge request.
+on:
+  push:
+    tags: ["v*"]
+
+# Lecture seule par défaut : le job déclare ce dont il a besoin en plus.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # Construit, inventorie et analyse avec les mêmes sous-commandes que le job
+  # image de ci.yml ; une vulnérabilité haute ou critique sans exception
+  # valable arrête la publication avant que l'image soit poussée.
+  publish:
+    name: Publie l'image et son SBOM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Pousse l'image et l'attestation de son SBOM dans le registre de conteneurs de GitHub.
+      packages: write
+      # Signe l'attestation du SBOM avec un certificat Sigstore éphémère, puis l'enregistre.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Lit la version dans l'étiquette
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)$ ]]; then
+            echo "Étiquette refusée : une version s'écrit v1.2.3 ou v1.2.3-rc.1."
+            exit 1
+          fi
+          version=${BASH_REMATCH[1]}
+          name="$REGISTRY/${GITHUB_REPOSITORY,,}"
+          echo "Version $version, image $name:$version."
+          {
+            echo "version=$version"
+            echo "name=$name"
+            echo "image=$name:$version"
+          } >>"$GITHUB_OUTPUT"
+      - name: Vérifie les exceptions déclarées (motif, date de revue)
+        run: python3 -m scripts.check_vulnerabilities exceptions
+      - name: Construit l'image
+        env:
+          IMAGE: ${{ steps.version.outputs.image }}
+        run: scripts/image.sh build
+      - name: Inventorie ses composants (Syft, SBOM CycloneDX)
+        env:
+          IMAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/image.sh sbom
+      - name: Vérifie que l'analyse bloque une vulnérabilité critique connue
+        run: scripts/image.sh selftest
+      - name: Analyse ses vulnérabilités (Grype), hautes et critiques bloquantes
+        run: scripts/image.sh scan
+      - name: Garde le SBOM avec l'exécution
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-answerlineage-${{ steps.version.outputs.version }}
+          path: build/image/sbom.cdx.json
+          if-no-files-found: error
+      - name: Pousse l'image analysée
+        id: push
+        env:
+          IMAGE: ${{ steps.version.outputs.image }}
+          TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$TOKEN" | docker login "$REGISTRY" --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE" | tee "$RUNNER_TEMP/push.log"
+          digest=$(grep --only-matching --extended-regexp 'digest: sha256:[0-9a-f]{64}' "$RUNNER_TEMP/push.log" \
+            | tail -n 1 | cut -d ' ' -f 2)
+          if [ -z "$digest" ]; then
+            echo "Empreinte de l'image poussée introuvable dans la sortie de docker push."
+            exit 1
+          fi
+          echo "Image poussée : ${IMAGE%:*}@$digest"
+          echo "digest=$digest" >>"$GITHUB_OUTPUT"
+      # L'attestation lie le SBOM à l'empreinte de l'image et se range à côté
+      # d'elle dans le registre : qui tire l'image retrouve son SBOM.
+      - name: Attache le SBOM à l'image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.version.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: build/image/sbom.cdx.json
+          push-to-registry: true
+          # Les enregistrements de stockage ne valent que pour un dépôt d'organisation.
+          create-storage-record: false
+      - name: Oublie l'identifiant du registre
+        if: ${{ always() }}
+        run: docker logout "$REGISTRY"

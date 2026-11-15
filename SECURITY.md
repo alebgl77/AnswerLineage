@@ -32,6 +32,8 @@ La divulgation est coordonnée : un avis de sécurité est publié sur GitHub av
 
 Le projet est en construction et n'a pas encore publié de version. Seule la branche principale reçoit des correctifs.
 
+Une image publiée dans le registre de conteneurs de GitHub (`ghcr.io/alebgl77/answerlineage`) a été analysée par Grype le jour de sa publication, sans vulnérabilité haute ou critique connue qui n'ait une exception motivée et datée dans `vulnerability-exceptions.toml` ; son SBOM CycloneDX lui est attaché par une attestation, que `gh attestation verify` vérifie et lit, comme le montre [la documentation du pipeline](docs/ci.md#publication-dune-version).
+
 ## Ce qui compte comme une vulnérabilité
 
 Tout ce qui fait mentir une garantie du produit, en plus des failles habituelles :

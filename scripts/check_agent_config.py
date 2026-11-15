@@ -47,6 +47,8 @@ PROTECTED: tuple[str, ...] = (
     # Réglages et exceptions de la détection de secrets.
     ".gitleaks.toml",
     ".gitleaksignore",
+    # Exceptions de l'analyse de vulnérabilités des images.
+    "vulnerability-exceptions.toml",
 )
 
 _PRINTABLE = re.compile(r"[\w./ @+=,-]{1,300}")

@@ -24,3 +24,4 @@
 /scripts/                         @alebgl77
 /.gitleaks.toml                   @alebgl77
 /.gitleaksignore                  @alebgl77
+/vulnerability-exceptions.toml    @alebgl77

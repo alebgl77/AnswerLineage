@@ -32,6 +32,7 @@ from scripts.check_agent_config import (
         ".devcontainer/devcontainer.json",
         "scripts/check_policy.py",
         "renovate.json",
+        "vulnerability-exceptions.toml",
     ],
 )
 def test_agent_configuration_and_guardrails_are_protected(path: str) -> None:

@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check policy contract openapi format format-check lint typecheck test coverage-gate secrets ui e2e demo
+.PHONY: help setup check policy contract openapi format format-check lint typecheck test coverage-gate secrets image ui e2e demo
 
 help: ## Liste les cibles
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -42,6 +42,9 @@ coverage-gate: ## Vérifie le seuil de couverture par composant (après make tes
 secrets: ## Détection de secrets sur tout l'historique (gitleaks, Docker requis)
 	scripts/gitleaks.sh selftest
 	scripts/gitleaks.sh scan
+
+image: ## Construit l'image, produit son SBOM et l'analyse : hautes et critiques bloquantes (Docker requis)
+	scripts/image.sh
 
 ui: ## Construit l'explorateur dans ui/dist (Node requis)
 	npm ci --prefix ui --ignore-scripts --no-audit --no-fund
