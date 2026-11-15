@@ -195,7 +195,8 @@ async def test_api_is_versioned_and_described_by_an_openapi_document(
     document = response.json()
     assert document["openapi"].startswith("3.")
     assert document["info"]["version"] == API_VERSION
-    assert set(document["paths"]) == {BATCH, SINGLE}
+    assert {BATCH, SINGLE} <= set(document["paths"])
+    assert all(path.startswith("/api/v1/") for path in document["paths"])
 
     batch = document["paths"][BATCH]["post"]
     assert set(batch["responses"]) == {"202", "400", "413", "422"}

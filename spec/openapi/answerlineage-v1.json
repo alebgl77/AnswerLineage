@@ -1,6 +1,86 @@
 {
   "components": {
     "schemas": {
+      "AgentName": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ],
+        "title": "AgentName",
+        "type": "object"
+      },
+      "AnswerList": {
+        "properties": {
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/AnswerSummary"
+            },
+            "title": "Answers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "answers"
+        ],
+        "title": "AnswerList",
+        "type": "object"
+      },
+      "AnswerSummary": {
+        "description": "Une réponse d'agent, désignée par son empreinte.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentName"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Agent du run, quand il est connu."
+          },
+          "fingerprint": {
+            "description": "Empreinte de la réponse : son contenu n'est pas conservé.",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifiant stable de la réponse.",
+            "title": "Id",
+            "type": "string"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "title": "Produced At",
+            "type": "string"
+          },
+          "run_id": {
+            "description": "Run de l'agent qui a produit la réponse.",
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "fingerprint",
+          "produced_at",
+          "run_id",
+          "agent"
+        ],
+        "title": "AnswerSummary",
+        "type": "object"
+      },
       "BatchResult": {
         "description": "Bilan de l'ingestion d'un lot.",
         "properties": {
@@ -28,6 +108,72 @@
           "rejected"
         ],
         "title": "BatchResult",
+        "type": "object"
+      },
+      "DatasetSource": {
+        "description": "Un jeu de données lu pour produire la réponse.",
+        "properties": {
+          "columns": {
+            "description": "Colonnes lues, quand toutes les lectures les donnent.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "first_read_at": {
+            "format": "date-time",
+            "title": "First Read At",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_read_at": {
+            "format": "date-time",
+            "title": "Last Read At",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          },
+          "precision": {
+            "description": "Ce que l'on sait de la lecture. « table » : le jeu entier est une source.",
+            "enum": [
+              "table",
+              "columns",
+              "subset",
+              "keys"
+            ],
+            "title": "Precision",
+            "type": "string"
+          },
+          "versions": {
+            "description": "Versions lues, quand l'émetteur les a déclarées.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "namespace",
+          "name",
+          "kind",
+          "versions",
+          "precision",
+          "columns",
+          "first_read_at",
+          "last_read_at"
+        ],
+        "title": "DatasetSource",
         "type": "object"
       },
       "EventRejected": {
@@ -242,6 +388,23 @@
         "title": "RequestRefused",
         "type": "object"
       },
+      "RequestRejected": {
+        "description": "Requête dont un paramètre est invalide.",
+        "properties": {
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/FieldError"
+            },
+            "title": "Errors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "errors"
+        ],
+        "title": "RequestRejected",
+        "type": "object"
+      },
       "Run": {
         "properties": {
           "facets": {
@@ -326,6 +489,73 @@
         ],
         "title": "RunEvent",
         "type": "object"
+      },
+      "Sources": {
+        "description": "Les sources d'une réponse : ce que son run et ses runs enfants ont lu.",
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/AgentName"
+            },
+            "title": "Agents",
+            "type": "array"
+          },
+          "answer": {
+            "$ref": "#/components/schemas/AnswerSummary"
+          },
+          "datasets": {
+            "items": {
+              "$ref": "#/components/schemas/DatasetSource"
+            },
+            "title": "Datasets",
+            "type": "array"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolUse"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "truncated": {
+            "description": "Vrai quand l'arbre des runs dépasse la borne : les sources sont partielles.",
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "answer",
+          "agents",
+          "tools",
+          "datasets",
+          "truncated"
+        ],
+        "title": "Sources",
+        "type": "object"
+      },
+      "ToolUse": {
+        "properties": {
+          "calls": {
+            "description": "Appels de cet outil faits pour produire la réponse.",
+            "title": "Calls",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "server": {
+            "title": "Server",
+            "type": "string"
+          }
+        },
+        "required": [
+          "server",
+          "name",
+          "calls"
+        ],
+        "title": "ToolUse",
+        "type": "object"
       }
     }
   },
@@ -336,6 +566,138 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/answers": {
+      "get": {
+        "description": "Le destinataire d'un message retrouve la réponse d'agent qu'il porte.",
+        "operationId": "find_answers_api_v1_answers_get",
+        "parameters": [
+          {
+            "description": "Canal de diffusion du message, tel que l'émetteur le nomme.",
+            "in": "query",
+            "name": "channel",
+            "required": true,
+            "schema": {
+              "description": "Canal de diffusion du message, tel que l'émetteur le nomme.",
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Channel",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Référence du message dans ce canal.",
+            "in": "query",
+            "name": "message_ref",
+            "required": true,
+            "schema": {
+              "description": "Référence du message dans ce canal.",
+              "maxLength": 500,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Message Ref",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Nombre maximal de réponses renvoyées.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "description": "Nombre maximal de réponses renvoyées.",
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnswerList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          }
+        },
+        "summary": "Retrouve les réponses diffusées par un message",
+        "tags": [
+          "lignage"
+        ]
+      }
+    },
+    "/api/v1/answers/{answer_id}/sources": {
+      "get": {
+        "description": "Jeux de données et versions lus, outils appelés et agents intervenus, sans contenu.",
+        "operationId": "answer_sources_api_v1_answers__answer_id__sources_get",
+        "parameters": [
+          {
+            "description": "Identifiant de la réponse, tel que l'API le donne.",
+            "in": "path",
+            "name": "answer_id",
+            "required": true,
+            "schema": {
+              "description": "Identifiant de la réponse, tel que l'API le donne.",
+              "pattern": "^[0-9a-f]{48}$",
+              "title": "Answer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sources"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Aucune réponse ne porte cet identifiant."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          }
+        },
+        "summary": "Remonte d'une réponse à ses sources",
+        "tags": [
+          "lignage"
+        ]
+      }
+    },
     "/api/v1/lineage": {
       "post": {
         "description": "Point d'entrée standard d'OpenLineage : un émetteur conforme s'y branche tel quel.",

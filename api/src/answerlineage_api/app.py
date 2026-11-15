@@ -11,11 +11,14 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.ingest.models import run_event_json_schema
 from answerlineage_api.ingest.routes import router as ingestion_router
+from answerlineage_api.lineage.routes import router as lineage_router
+from answerlineage_api.responses import reject_invalid_request
 from answerlineage_api.store.engine import create_engine, database_url_from_environment
 
 # L'API a son propre numéro de version, distinct de celui du produit.
@@ -53,6 +56,8 @@ def create_app(
     app.state.engine = engine
     app.state.max_batch_events = max_batch_events
     app.include_router(ingestion_router)
+    app.include_router(lineage_router)
+    app.add_exception_handler(RequestValidationError, reject_invalid_request)
 
     def openapi() -> dict[str, Any]:
         if app.openapi_schema is None:

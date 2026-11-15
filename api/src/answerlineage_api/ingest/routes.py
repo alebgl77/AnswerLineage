@@ -17,6 +17,7 @@ from answerlineage_api.ingest.store import (
     event_identifier,
     store_events,
 )
+from answerlineage_api.responses import RequestRefused, refused
 
 router = APIRouter(prefix="/api/v1", tags=["ingestion"])
 
@@ -49,14 +50,6 @@ class EventRejected(BaseModel):
     errors: list[FieldError]
 
 
-class RequestRefused(BaseModel):
-    error: str = Field(description="Code stable du motif de refus.")
-
-
-def _refused(status: int, code: str) -> JSONResponse:
-    return JSONResponse(status_code=status, content={"error": code})
-
-
 def _not_a_number(_: str) -> Any:
     raise ValueError("NaN et Infinity ne sont pas du JSON")
 
@@ -65,7 +58,7 @@ async def _read_json(request: Request) -> tuple[Any, JSONResponse | None]:
     try:
         return json.loads(await request.body(), parse_constant=_not_a_number), None
     except (ValueError, RecursionError):
-        return None, _refused(400, "invalid_json")
+        return None, refused(400, "invalid_json")
 
 
 def _accept(raw: object) -> tuple[AcceptedEvent | None, list[FieldError]]:
@@ -102,9 +95,9 @@ async def ingest_batch(request: Request) -> JSONResponse:
     if refusal is not None:
         return refusal
     if not isinstance(body, list):
-        return _refused(400, "batch_must_be_an_array")
+        return refused(400, "batch_must_be_an_array")
     if len(body) > request.app.state.max_batch_events:
-        return _refused(413, "batch_too_large")
+        return refused(413, "batch_too_large")
 
     accepted: dict[str, AcceptedEvent] = {}
     valid = 0

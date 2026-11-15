@@ -101,6 +101,9 @@ markers = [
 
 [tool.coverage.run]
 branch = true
+# SQLAlchemy asynchrone tourne dans des greenlets : sans ce réglage, le code
+# repris après un appel à la base n'est pas suivi.
+concurrency = ["greenlet", "thread"]
 source = [
     "scripts",
     "api/src",

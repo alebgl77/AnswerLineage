@@ -41,7 +41,7 @@ Des services sans état autour d'un seul PostgreSQL. Le flux : capture → évé
 | Composant | Rôle | Technologie |
 | --- | --- | --- |
 | `proxy/` | Proxy MCP transparent : relaie à l'identique, émet un événement par appel d'outil, analyse le SQL à côté de l'appel | ASGI, httpx, sqlglot |
-| `api/` | Schéma du graphe, migrations, écriture du graphe, API d'ingestion OpenLineage | FastAPI, SQLAlchemy Core, Alembic, psycopg |
+| `api/` | Schéma du graphe, migrations, écriture du graphe, API d'ingestion OpenLineage, API de lecture du lignage | FastAPI, SQLAlchemy Core, Alembic, psycopg |
 | `workers/` | File de traitement dans PostgreSQL, projection des événements reçus dans le graphe | SQLAlchemy Core, psycopg |
 | `corpus/` | Entreprise synthétique à vérité connue : événements OpenLineage et vérité des incidents, déterminés par une graine | Bibliothèque standard seule |
 
@@ -54,6 +54,7 @@ Ce qui demande de lire plusieurs fichiers :
 - **Rien ne retarde un appel.** Le relais (`app.py`) rend la réponse au fil de l'eau ; l'événement est construit après l'échange, et l'analyse du SQL (`sql.py`) tourne ensuite dans un fil à part.
 - **L'analyse du SQL échoue du côté sûr.** Elle ne liste les colonnes d'une table que si la liste est sûre d'être complète ; sinon la table est rendue en entier, ou la lecture est « non résolue ». Une colonne manquante ferait écarter à tort une réponse touchée.
 - **L'API publiée est un contrat.** `spec/openapi/answerlineage-v1.json` est la spécification servie par l'application ; un test échoue s'ils diffèrent, des tests générés (Schemathesis) vérifient que chaque route s'y conforme, et `scripts/check_openapi_compat.py` refuse un changement incompatible avec la branche cible.
+- **Lecture du lignage** (`api/.../lineage/`). Les sources d'une réponse sont les lectures de son run et de ses runs enfants (`trace.py`). Toute lecture du graphe est bornée, et une route ne renvoie jamais la valeur reçue dans une erreur (`responses.py`).
 - **Écritures du graphe idempotentes et commutatives** (`api/.../store/graph.py`) : rejouer un événement, ou recevoir deux événements d'un run dans le désordre, donne le même graphe.
 - **De l'événement au graphe.** L'ingestion écrit l'événement brut et une ligne de file dans la même transaction (`api/.../ingest/store.py`). Un worker réclame un lot avec `FOR UPDATE SKIP LOCKED`, projette chaque événement (`workers/.../projection.py`) et retire le lot de la file dans une seule transaction (`workers/.../queue.py`) : ni double traitement, ni perte. `workers` dépend de `api` pour le schéma et l'écriture du graphe.
 - **La vérité du corpus ne passe pas par le produit.** `corpus/.../enterprise.py` établit lui-même les réponses touchées par un incident, à partir de ce qu'il a généré : elle sert à mesurer le moteur, elle ne se calcule donc jamais avec lui. Ses tirages sont nommés (`_Dice`) : en ajouter un ne décale pas les autres.

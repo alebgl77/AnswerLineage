@@ -42,9 +42,10 @@ Le proxy se place devant un serveur [MCP](https://modelcontextprotocol.io) exist
 | API d'ingestion OpenLineage, par événement ou par lot | Disponible |
 | Schéma du graphe de lignage dans PostgreSQL, avec ses migrations | Disponible |
 | Alimentation du graphe à partir des événements reçus, par des workers concurrents | Disponible |
+| Remontée d'une réponse à ses sources : jeux de données, versions, outils, agents | Disponible |
 | Entreprise synthétique à vérité connue, pour essayer et tester sans donnée réelle | Disponible |
 | Envoi des événements du proxy vers l'API | À venir |
-| Remontée d'une réponse à ses sources, propagation d'un incident | À venir |
+| Propagation d'un incident de données jusqu'aux réponses et aux destinataires | À venir |
 | Explorateur visuel, rappel des destinataires | À venir |
 
 ## Essayer
@@ -119,7 +120,21 @@ Les réponses de chaque agent, et les personnes qui les ont reçues :
 docker exec answerlineage-postgres psql -U postgres -c "SELECT a.name AS agent, count(DISTINCT w.id) AS reponses, count(DISTINCT l.recipient_id) AS destinataires FROM answer w JOIN run r ON r.run_id = w.run_id JOIN agent a ON a.id = r.agent_id JOIN delivery d ON d.answer_id = w.id JOIN delivery_recipient l ON l.delivery_id = d.id GROUP BY a.name ORDER BY reponses DESC"
 ```
 
-L'entreprise vient avec sa vérité : pour six incidents de données, la liste exacte des réponses et des destinataires touchés.
+### Remonter d'une réponse à ses sources
+
+Un destinataire a reçu un message d'un agent et veut savoir sur quoi il s'appuie. Il retrouve la réponse par le canal et la référence du message :
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/answers?channel=slack&message_ref=34f209664c2955dd"
+```
+
+Puis il demande ses sources, avec l'identifiant obtenu : les tables et les colonnes lues, leur version, les outils appelés, l'agent qui a répondu.
+
+```bash
+curl http://127.0.0.1:8000/api/v1/answers/01a1c9e63a187c5cb8b5fce292591000424d79573035c170/sources
+```
+
+L'entreprise vient aussi avec sa vérité : pour six incidents de données, la liste exacte des réponses et des destinataires touchés.
 
 ```bash
 uv run answerlineage-corpus truth
@@ -139,6 +154,7 @@ L'agent se connecte alors à `http://127.0.0.1:8717` au lieu du serveur : rien d
 
 - [Proxy MCP](docs/proxy.md) : ce qui est relayé, ce qui est lu, analyse du SQL, limites connues
 - [API d'ingestion](docs/ingestion.md) : routes, lots, validation, rejeu
+- [API de lecture](docs/lecture.md) : retrouver une réponse, remonter à ses sources
 - [Workers](docs/workers.md) : file de traitement, garanties, projection dans le graphe
 - [Schéma du graphe](docs/schema.md) : tables, écritures, migrations
 - [Entreprise synthétique](docs/corpus.md) : ce qu'elle contient, ses événements, la vérité de ses incidents

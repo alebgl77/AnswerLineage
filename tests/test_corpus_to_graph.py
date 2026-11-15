@@ -22,10 +22,14 @@ async def rows(engine: AsyncEngine, sql: str) -> list[tuple[Any, ...]]:
         return [tuple(row) for row in await conn.execute(text(sql))]
 
 
+def api(engine: AsyncEngine) -> httpx.AsyncClient:
+    transport = httpx.ASGITransport(app=create_app(engine))
+    return httpx.AsyncClient(transport=transport, base_url="http://api.test")
+
+
 async def load(engine: AsyncEngine, enterprise: Enterprise) -> None:
     events = render(enterprise)
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://api.test") as client:
+    async with api(engine) as client:
         response = await client.post("/api/v1/lineage/batch", json=events)
     assert response.status_code == 202
     assert response.json() == {"accepted": len(events), "duplicates": 0, "rejected": []}
@@ -125,3 +129,61 @@ async def test_the_graph_holds_the_enterprise_and_nothing_else(engine: AsyncEngi
         if request.answer is not None
         for pseudonym in request.answer.recipients
     }
+
+
+async def test_every_answer_traces_back_to_what_its_request_read(engine: AsyncEngine) -> None:
+    enterprise = generate(7, requests=60, days=5, incidents=2)
+    await load(engine, enterprise)
+
+    async with api(engine) as client:
+        for request in enterprise.requests:
+            if request.answer is None:
+                continue
+            found = await client.get(
+                "/api/v1/answers",
+                params={
+                    "channel": request.answer.channel,
+                    "message_ref": request.answer.message_ref,
+                },
+            )
+            (answer,) = found.json()["answers"]
+            assert answer["fingerprint"] == request.answer.fingerprint
+            assert answer["run_id"] == str(request.run_id)
+
+            sources = (await client.get(f"/api/v1/answers/{answer['id']}/sources")).json()
+            assert sources["truncated"] is False
+            assert sources["agents"] == [
+                {"namespace": request.agent.namespace, "name": request.agent.name}
+            ]
+            tools = [(call.tool.server, call.tool.name) for call in request.calls]
+            assert sources["tools"] == [
+                {"server": server, "name": name, "calls": tools.count((server, name))}
+                for server, name in sorted(set(tools))
+            ]
+
+            reads = [read for call in request.calls for read in call.reads]
+            expected = []
+            for table in sorted(
+                {read.table for read in reads}, key=lambda t: (t.namespace, t.name)
+            ):
+                of_table = [read for read in reads if read.table == table]
+                whole = any(not read.columns for read in of_table)
+                expected.append(
+                    (
+                        table.namespace,
+                        table.name,
+                        sorted({read.version for read in of_table if read.version is not None}),
+                        "table" if whole else "columns",
+                        [] if whole else sorted({c for read in of_table for c in read.columns}),
+                    )
+                )
+            assert [
+                (
+                    dataset["namespace"],
+                    dataset["name"],
+                    dataset["versions"],
+                    dataset["precision"],
+                    dataset["columns"],
+                )
+                for dataset in sources["datasets"]
+            ] == expected
