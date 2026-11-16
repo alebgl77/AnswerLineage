@@ -227,6 +227,11 @@ jobs:
         run: uv sync --all-packages --locked
       - name: Installe Chromium
         run: uv run playwright install --with-deps chromium
+      # Les blocs bash de docs/demarrage.md, dans l'ordre, depuis le départ : le
+      # premier lignage dans le budget de cinq minutes, une commande qui échoue
+      # nommée. Le guide arrête la démonstration et efface ses données.
+      - name: Joue le guide de démarrage, chronométré
+        run: scripts/check_demo.sh guide
       - name: Lance la démonstration et mesure le premier graphe
         run: scripts/check_demo.sh up
       - name: Vérifie qu'elle n'écoute que sur la boucle locale et ne journalise aucune adresse

@@ -15,7 +15,7 @@ Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque me
 | `agent-config` | Une merge request qui modifie la configuration d'agents ou un garde-fou porte l'approbation d'un mainteneur | |
 | `devcontainer` | Le conteneur de développement se construit, installe le projet et passe les tests | |
 | `explorer` | L'explorateur se construit, ses types sont justes, et ses tests de bout en bout passent dans Chromium | `make ui e2e` |
-| `demo` | `docker compose up` donne un premier graphe en moins de cinq minutes, sur la boucle locale seulement ; les parcours Remonter et Propager passent dans Chromium contre la démonstration lancée ; après une relance sans renvoi de l'entreprise, les données viennent du volume | `scripts/check_demo.sh` |
+| `demo` | Les commandes du [guide de démarrage](demarrage.md) sont jouées dans l'ordre depuis un clone neuf, le premier lignage en moins de cinq minutes, et une commande qui échoue se nomme ; `docker compose up` donne un premier graphe en moins de cinq minutes, sur la boucle locale seulement ; les parcours Remonter et Propager passent dans Chromium contre la démonstration lancée ; après une relance sans renvoi de l'entreprise, les données viennent du volume | `scripts/check_demo.sh` |
 | `ci-ok` | Toutes les étapes bloquantes sont vertes | |
 
 `make check` enchaîne sur le poste les contrôles des jobs `static` et `tests`.

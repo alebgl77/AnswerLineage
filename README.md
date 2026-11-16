@@ -46,30 +46,39 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 
 | Fonction | État |
 | --- | --- |
-| Proxy MCP transparent en HTTP, révisions 2026-07-28 et 2025-11-25 du protocole | Disponible |
-| Tables et colonnes lues, déduites des requêtes SQL (BigQuery, Snowflake, PostgreSQL) | Disponible |
+| Proxy MCP transparent, en HTTP ou en stdio, révisions 2026-07-28 et 2025-11-25 du protocole | Disponible |
+| Tables et colonnes lues, déduites des requêtes SQL (BigQuery, Snowflake, PostgreSQL), analysées dans un processus à part sous un budget | Disponible |
+| Règles de lecture déclaratives en YAML pour les outils non SQL : jeux de données, colonnes, clés lues sous forme d'empreinte | Disponible |
+| Envoi des événements et des relevés du proxy vers l'API, par une boîte d'envoi en mémoire qui ne retarde jamais un appel | Disponible |
 | API d'ingestion OpenLineage, par événement ou par lot | Disponible |
 | Schéma du graphe de lignage dans PostgreSQL, avec ses migrations | Disponible |
 | Alimentation du graphe à partir des événements reçus, par des workers concurrents | Disponible |
-| Remontée d'une réponse à ses sources : jeux de données, versions, outils, agents | Disponible |
+| Double horodatage (heure de l'événement, heure d'enregistrement) et lecture du graphe « tel que connu à » une date | Disponible |
+| Partitions mensuelles des tables qui grossissent avec le trafic, créées et purgées par les workers selon une conservation réglable | Disponible |
+| Remontée d'une réponse à ses sources : jeux de données, versions, outils, agents, avec la couverture de la période de son run | Disponible |
 | Propagation d'un incident : réponses et destinataires touchés par une table fausse sur une période | Disponible |
 | Entreprise synthétique et corpus de vérité, pour essayer et mesurer sans donnée réelle | Disponible |
-| Explorateur visuel : graphe en cinq colonnes, mode Propager, adresses partageables | Disponible |
+| Porte de qualité du moteur d'impact : rappel d'au moins 0,99 au niveau table sur le corpus de vérité, à chaque merge request | Disponible |
+| Explorateur visuel : graphe en cinq colonnes, modes Remonter et Propager, adresses partageables | Disponible |
 | Démonstration en une commande, sur une entreprise synthétique | Disponible |
+| Ligne de commande `answerlineage` : `impact`, `doctor`, `demo`, `proxy`, et route de santé de l'API | Disponible |
 | Contrôle de toute entrée : identifiants, taille, compression, profondeur, délai des lectures | Disponible |
 | Ingestion idempotente, avec un compteur de doublons par émetteur | Disponible |
 | Schémas JSON versionnés des facettes propres, pour écrire un émetteur sans lire le code | Disponible |
 | Identifiant de run dérivé du contexte de trace W3C : lignage et traces se rejoignent | Disponible |
 | Empreintes à clé des appels, et SQL conservé sans ses littéraux | Disponible |
-| Couverture du lignage : part des appels captés, trous connus, émetteurs muets | Disponible |
+| Couverture du lignage : part des appels captés, trous connus, émetteurs muets, instances additionnées | Disponible |
+| Signaux de qualité de service de chaque appel (latence, latence ajoutée, issue, reprises) et banc de latence du proxy, chaque nuit | Disponible |
 | Kit de conformité des émetteurs, avec preuve de non-fuite par canari | Disponible |
 | Corpus d'abus rejoué à chaque merge request : 94 attaques, par famille, contre le proxy, l'API et l'explorateur | Disponible |
 | Image analysée à chaque merge request : SBOM, vulnérabilités hautes et critiques bloquantes | Disponible |
-| Envoi des événements du proxy vers l'API | À venir |
+| Chaîne de publication d'une version : image et paquets signés sans clé et attestés, éprouvée à chaque merge request sans rien publier | Disponible |
 | Propagation fine (colonnes, lignes, versions) et transitive (mémoire, tables dérivées) | À venir |
 | Rappel des destinataires après validation humaine | À venir |
 
 ## Essayer
+
+Le [guide de démarrage](docs/demarrage.md) mène du clone au premier lignage visible en cinq minutes au plus, puis vérifie l'installation et propage un incident depuis le terminal et dans l'explorateur. Ses commandes sont rejouées par le pipeline.
 
 ### En une commande
 
@@ -217,17 +226,31 @@ L'agent se connecte alors à `http://127.0.0.1:8717` au lieu du serveur : rien d
 
 ## Documentation
 
-- [Proxy MCP](docs/proxy.md) : ce qui est relayé, ce qui est lu, analyse du SQL, limites connues
-- [API d'ingestion](docs/ingestion.md) : routes, lots, validation, rejeu
-- [API de lecture](docs/lecture.md) : retrouver une réponse, remonter à ses sources, propager un incident
+Pour comprendre le projet en une demi-heure :
+
+- [Démarrage](docs/demarrage.md) : du clone au premier lignage visible, vérifié par le pipeline
+- [Concepts](docs/concepts.md) : le vocabulaire du produit, un exemple de l'entreprise synthétique pour chaque mot
+- [Architecture](docs/architecture.md) : les composants, le flux de la capture à la lecture, le modèle de données, les invariants et où chacun est tenu
+- [Décisions d'architecture](docs/decisions/README.md) : le contexte, l'alternative écartée et les conséquences de chaque choix structurant
+
+Chaque composant :
+
+- [Proxy MCP](docs/proxy.md) : ce qui est relayé, ce qui est lu, analyse du SQL, boîte d'envoi, mode stdio, limites connues
+- [API d'ingestion](docs/ingestion.md) : routes, lots, validation, rejeu, relevés de couverture
+- [API de lecture](docs/lecture.md) : retrouver une réponse, remonter à ses sources, propager un incident, couverture, graphe à une date
 - [Facettes](docs/facettes.md) : les schémas JSON versionnés des facettes propres à AnswerLineage
 - [Kit de conformité](docs/conformite.md) : vérifier un émetteur, lire son rapport
+- [Workers](docs/workers.md) : file de traitement, garanties, projection dans le graphe, émetteurs muets, partitions
+- [Schéma du graphe](docs/schema.md) : tables, deux heures, partitions et conservation, migrations
+- [Ligne de commande](docs/cli.md) : `answerlineage impact`, `doctor`, `demo`, `proxy`
+- [Explorateur](docs/explorateur.md) : le graphe en cinq colonnes, les modes Remonter et Propager, les adresses partageables
+- [Entreprise synthétique, corpus de vérité et corpus d'abus](docs/corpus.md) : ce qu'ils contiennent, la vérité des incidents, la mesure du moteur, les attaques rejouées et celles qui restent ouvertes
+
+Faire tourner et publier :
+
 - [Démonstration](docs/demonstration.md) : ce que lance `docker compose up`, et comment le vérifier
-- [Explorateur](docs/explorateur.md) : le graphe en cinq colonnes, le mode Propager, les adresses partageables
-- [Workers](docs/workers.md) : file de traitement, garanties, projection dans le graphe
-- [Schéma du graphe](docs/schema.md) : tables, écritures, migrations
-- [Entreprise synthétique, corpus de vérité et corpus d'abus](docs/corpus.md) : ce qu'ils contiennent, la vérité des incidents, les attaques rejouées et celles qui restent ouvertes
 - [Pipeline d'intégration continue](docs/ci.md) : contrôles, chaîne d'approvisionnement
+- [Publication](docs/publication.md) : ce que publie une version, et comment vérifier une image ou un paquet
 
 ## Contribuer
 
@@ -237,7 +260,7 @@ make check
 
 `make check` est la porte de toute contribution : politique du dépôt, compatibilité de l'API, format, lint, typage strict, tests et couverture. Les tests d'intégration démarrent un PostgreSQL réel avec Testcontainers.
 
-Le [guide de contribution](CONTRIBUTING.md) dit comment proposer un changement et ce qui est attendu avant sa fusion. Le dépôt fournit un conteneur de développement (`.devcontainer/`), sans identifiant ni jeton, utilisable avec VS Code ou GitHub Codespaces.
+Le [guide de démarrage](docs/demarrage.md) et l'[architecture](docs/architecture.md) donnent le contexte ; le [guide de contribution](CONTRIBUTING.md) dit comment proposer un changement et ce qui est attendu avant sa fusion. Le dépôt fournit un conteneur de développement (`.devcontainer/`), sans identifiant ni jeton, utilisable avec VS Code ou GitHub Codespaces.
 
 ## Sécurité
 

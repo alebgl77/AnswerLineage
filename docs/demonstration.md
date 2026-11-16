@@ -62,6 +62,7 @@ Le journal d'accès de l'API est coupé : il écrirait les paramètres des adres
 
 Le pipeline rejoue la démonstration à chaque merge request :
 
+- les commandes du [guide de démarrage](demarrage.md) se jouent dans l'ordre depuis un clone neuf, et le premier lignage est là dans le budget de cinq minutes ([ci-dessous](#le-guide-de-démarrage-rejoué)) ;
 - depuis un clone neuf, le premier graphe est là en moins de cinq minutes, et la propagation du premier incident donne la vérité de l'entreprise ;
 - aucun port n'est publié hors de la boucle locale, et aucune connexion n'aboutit sur l'adresse du réseau, quelle que soit la réponse HTTP ;
 - une requête sous un autre nom d'hôte reçoit `403`, et le journal de l'API ne garde aucune adresse demandée ;
@@ -81,19 +82,31 @@ Le script lance la démonstration, la vérifie, puis l'arrête et efface ses don
 
 | Sous-commande | Ce qu'elle fait |
 | --- | --- |
+| `guide` | Joue les blocs `bash` de `docs/demarrage.md`, dans l'ordre, et mesure le premier lignage ; arrête la démonstration et efface ses données à la fin du guide |
 | `up` | Construit et lance la démonstration, attend le premier graphe et mesure son délai |
 | `checks` | Ports sur la boucle locale seulement, rien sur l'adresse du réseau, nom d'hôte inattendu refusé, journal sans adresse |
 | `browser` | Parcours Remonter et Propager dans Chromium (`tests/test_demonstration.py`) |
 | `restart` | Arrêt, relance sans `seed`, même graphe ; puis renvoi de l'entreprise, sans effet |
 | `down` | Arrête la démonstration et efface ses données |
 
-`checks`, `browser` et `restart` visent une démonstration déjà lancée. Après un échec, la démonstration reste lancée pour l'examiner ; `scripts/check_demo.sh down` l'arrête.
+`guide` lance et arrête lui-même la démonstration, et demande `uv` et `make setup` ; `checks`, `browser` et `restart` visent une démonstration déjà lancée. Sans argument, le script les enchaîne toutes, `guide` d'abord. Après un échec, la démonstration reste lancée pour l'examiner ; `scripts/check_demo.sh down` l'arrête.
 
 Les parcours se jouent aussi seuls, contre toute démonstration chargée de l'entreprise par défaut ; sans `ANSWERLINEAGE_DEMO_URL`, ils sont sautés :
 
 ```bash
 ANSWERLINEAGE_DEMO_URL=http://127.0.0.1:8000 uv run pytest -m demo
 ```
+
+## Le guide de démarrage rejoué
+
+Le [guide de démarrage](demarrage.md) est joué par `scripts/check_demo.sh guide`, qui appelle `python -m scripts.play_guide docs/demarrage.md --budget …`. Le budget est celui de `up` (`BUDGET_SECONDS`, 300 s) : il n'est écrit qu'à un endroit.
+
+- **Tout bloc `bash` est joué**, dans l'ordre, chacun comme un script à lui seul (`bash -euo pipefail`), depuis la racine du dépôt. Les blocs d'une autre langue (`text`, pour un exemple de sortie) ne le sont jamais.
+- **Un bloc qui ne doit pas l'être se marque**, par un commentaire sur la ligne qui précède sa clôture, avec sa raison : `<!-- guide : non joué, le pipeline est déjà dans un clone du dépôt -->`. Une marque inconnue, sans raison, ou qui ne précède pas un bloc `bash` est refusée.
+- **Le premier lignage se marque aussi** : `<!-- guide : premier lignage -->`, sur le bloc dont la réussite le montre. Le temps écoulé depuis le départ du guide est comparé au budget, et aucune commande ne dure plus que lui : une commande qui l'excède est tuée et nommée.
+- **Une commande qui échoue arrête le guide et se nomme** par son fichier, sa ligne et sa première ligne : `docs/demarrage.md, ligne 30 : la commande échoue (code 1) : docker compose up --build --detach`.
+
+L'extraction se teste dans `make check` (`tests/test_play_guide.py`) : un bloc ajouté est joué, un bloc marqué ne l'est pas, une commande qui échoue est nommée. `tests/test_documentation.py` vérifie que le guide a son premier lignage, que les cibles `make` et les services `compose` qu'il cite existent, et que ses exemples sont ceux de l'entreprise synthétique.
 
 ## Politique des fichiers compose
 

@@ -22,12 +22,14 @@ from answerlineage_corpus.cli import DEFAULT_SEED
 from answerlineage_corpus.enterprise import generate
 from answerlineage_corpus.truth import truth
 from scripts.check_release import distribution_names, normalize
+from scripts.play_guide import extract
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCUMENTS = sorted(
     [
         *ROOT.glob("*.md"),
         *ROOT.glob("docs/*.md"),
+        *ROOT.glob("docs/decisions/*.md"),
         *ROOT.glob("spec/**/*.md"),
     ]
 )
@@ -49,7 +51,7 @@ _ABUSE_CASE = re.compile(
 )
 
 
-@pytest.mark.parametrize("document", ["README.md", "docs/lecture.md"])
+@pytest.mark.parametrize("document", ["README.md", "docs/lecture.md", "docs/demarrage.md"])
 def test_the_documented_answer_exists_in_the_default_synthetic_enterprise(document: str) -> None:
     text = (ROOT / document).read_text(encoding="utf-8")
     messages = set(_SEARCH.findall(text))
@@ -94,7 +96,7 @@ def test_the_documented_incident_is_the_first_of_the_default_synthetic_enterpris
     }
 
 
-@pytest.mark.parametrize("document", ["README.md", "docs/demonstration.md"])
+@pytest.mark.parametrize("document", ["README.md", "docs/demonstration.md", "docs/demarrage.md"])
 def test_the_documented_address_opens_the_first_incident_of_the_demonstration(
     document: str,
 ) -> None:
@@ -115,8 +117,11 @@ _CLI_IMPACT = re.compile(
 _CLI_COUNTED = re.compile(r"(\d+) réponses touchées, (\d+) destinataires")
 
 
-def test_the_documented_command_propagates_the_first_incident_of_the_demonstration() -> None:
-    text = re.sub(r"\\\n\s*", "", (ROOT / "docs" / "cli.md").read_text(encoding="utf-8"))
+@pytest.mark.parametrize("document", ["docs/cli.md", "docs/demarrage.md"])
+def test_the_documented_command_propagates_the_first_incident_of_the_demonstration(
+    document: str,
+) -> None:
+    text = re.sub(r"\\\n\s*", "", (ROOT / document).read_text(encoding="utf-8"))
     first = truth(generate(DEFAULT_SEED))["incidents"][0]
     assert set(_CLI_IMPACT.findall(text)) == {
         (first["dataset"]["namespace"], first["dataset"]["name"], first["from"], first["to"])
@@ -258,3 +263,158 @@ def test_the_publication_guide_lists_every_name_to_publish_or_reserve() -> None:
         "npm": sorted(names.npm),
         "Registre de conteneurs de GitHub": sorted(names.images),
     }
+
+
+# Les ancres : un lien vers un titre d'un document de la documentation mène à ce titre.
+_FENCE_LINE = re.compile(r"^\s*(`{3,}|~{3,})")
+_HEADING = re.compile(r"^#{1,6} +(.+?) *#*$")
+_ANCHOR_LINK = re.compile(r"\]\((?!https?://|mailto:)([^)#\s]*)#([^)\s]+)\)")
+
+
+def github_slug(heading: str) -> str:
+    """L'ancre que GitHub donne à un titre : minuscules, sans ponctuation, tirets pour espaces."""
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", heading)
+    return re.sub(r"[^\w\- ]", "", text.lower()).replace(" ", "-")
+
+
+def anchors(document: Path) -> set[str]:
+    """Les ancres d'un fichier Markdown, titres répétés compris (`titre`, `titre-1`…)."""
+    found: set[str] = set()
+    seen: dict[str, int] = {}
+    fenced = False
+    for line in document.read_text(encoding="utf-8").splitlines():
+        if _FENCE_LINE.match(line):
+            fenced = not fenced
+        heading = None if fenced else _HEADING.match(line)
+        if heading is None:
+            continue
+        slug = github_slug(heading.group(1))
+        count = seen.get(slug, 0)
+        seen[slug] = count + 1
+        found.add(slug if count == 0 else f"{slug}-{count}")
+    return found
+
+
+def test_an_anchor_is_what_github_makes_of_a_heading() -> None:
+    assert github_slug("Boîte d'envoi") == "boîte-denvoi"
+    assert github_slug("La dérivation, à l'octet près") == "la-dérivation-à-loctet-près"
+    assert github_slug("`answerlineage impact`") == "answerlineage-impact"
+    assert github_slug("Écrire dans le [graphe](schema.md)") == "écrire-dans-le-graphe"
+
+
+def test_a_repeated_heading_gets_a_numbered_anchor_and_a_comment_in_a_block_is_no_heading(
+    tmp_path: Path,
+) -> None:
+    document = tmp_path / "doc.md"
+    document.write_text(
+        "# Titre\n\n## Suite\n\n```bash\n# pas un titre\n```\n\n## Suite\n", encoding="utf-8"
+    )
+    assert anchors(document) == {"titre", "suite", "suite-1"}
+
+
+@pytest.mark.parametrize("document", DOCUMENTS, ids=lambda path: str(path.relative_to(ROOT)))
+def test_every_anchor_of_a_link_leads_to_a_heading(document: Path) -> None:
+    text = document.read_text(encoding="utf-8")
+    for target, anchor in _ANCHOR_LINK.findall(text):
+        destination = document if not target else (document.parent / target)
+        if destination.suffix != ".md":
+            continue
+        assert anchor in anchors(destination), (
+            f"{document.name} : l'ancre #{anchor} n'est pas un titre de {destination.name}"
+        )
+
+
+# Les décisions d'architecture : chacune a ses quatre parties, et l'index les liste toutes.
+DECISIONS = sorted((ROOT / "docs" / "decisions").glob("[0-9][0-9][0-9][0-9]-*.md"))
+_PARTS = (
+    "Contexte",
+    "Décision",
+    r"Alternatives? écartées?",
+    "Conséquences",
+)
+_DECISION_LINK = re.compile(r"^\| \[(\d{4})\]\(([^)]+)\) \|", re.MULTILINE)
+
+
+def sections(text: str) -> dict[str, str]:
+    """Le texte de chaque titre de deuxième niveau, hors des blocs de code."""
+    found: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    fenced = False
+    for line in text.splitlines():
+        if _FENCE_LINE.match(line):
+            fenced = not fenced
+        if not fenced and line.startswith("## "):
+            current = found.setdefault(line[3:].strip(), [])
+        elif current is not None:
+            current.append(line)
+    return {title: "\n".join(body).strip() for title, body in found.items()}
+
+
+def test_there_are_decisions_numbered_without_a_gap() -> None:
+    numbers = [path.name[:4] for path in DECISIONS]
+    assert numbers
+    assert numbers == [f"{number:04d}" for number in range(1, len(numbers) + 1)]
+
+
+@pytest.mark.parametrize("decision", DECISIONS, ids=lambda path: path.name)
+def test_a_decision_has_its_four_parts_in_order(decision: Path) -> None:
+    text = decision.read_text(encoding="utf-8")
+    assert text.startswith(f"# {decision.name[:4]}. "), "le titre porte le numéro du fichier"
+    found = sections(text)
+    titles = list(found)
+    for part in _PARTS:
+        matching = [title for title in titles if re.fullmatch(part, title)]
+        assert len(matching) == 1, f"{decision.name} : la partie « {part} » manque ou est double"
+        assert len(found[matching[0]]) >= 200, f"{decision.name} : « {matching[0]} » est vide"
+    order = [
+        next(i for i, title in enumerate(titles) if re.fullmatch(part, title)) for part in _PARTS
+    ]
+    assert order == sorted(order), f"{decision.name} : les parties ne suivent pas l'ordre"
+
+
+def test_the_index_lists_every_decision_with_its_title() -> None:
+    index = (ROOT / "docs" / "decisions" / "README.md").read_text(encoding="utf-8")
+    listed = _DECISION_LINK.findall(index)
+    assert [number for number, _ in listed] == [path.name[:4] for path in DECISIONS]
+    assert [target for _, target in listed] == [path.name for path in DECISIONS]
+    for decision in DECISIONS:
+        title = decision.read_text(encoding="utf-8").splitlines()[0].split(". ", 1)[1]
+        assert f"| {title} |" in index, f"{decision.name} : l'index ne reprend pas son titre"
+
+
+# Le guide de démarrage : ses commandes se jouent, et celles qui ne se jouent pas le disent.
+GUIDE = ROOT / "docs" / "demarrage.md"
+_MAKE_TARGET = re.compile(r"\bmake ([a-z][a-z-]*)")
+_COMPOSE_EXEC = re.compile(r"docker compose exec (?:-T )?([a-z]+)")
+
+
+def test_the_guide_has_commands_to_play_and_one_first_lineage() -> None:
+    blocks = extract(GUIDE.read_text(encoding="utf-8"))
+    played = [block for block in blocks if block.skip_reason is None]
+    assert len(played) >= 5
+    assert sum(block.first_lineage for block in played) == 1
+    # Ce qui ne se joue pas est l'exception, et dit pourquoi.
+    assert all(block.skip_reason for block in blocks if block not in played)
+
+
+def test_the_commands_of_the_guide_name_targets_and_services_that_exist() -> None:
+    blocks = extract(GUIDE.read_text(encoding="utf-8"))
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    targets = set(re.findall(r"^([a-z-]+):", makefile, re.MULTILINE))
+    compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    services = set(re.findall(r"^  ([a-z]+):$", compose, re.MULTILINE))
+    for block in blocks:
+        for target in _MAKE_TARGET.findall(block.code):
+            assert target in targets, f"ligne {block.line} : make {target} n'existe pas"
+        for service in _COMPOSE_EXEC.findall(block.code):
+            assert service in services, f"ligne {block.line} : le service {service} n'existe pas"
+
+
+@pytest.mark.parametrize("document", ["README.md", "docs/README.md"])
+def test_the_overview_documents_lead_to_the_guide_the_concepts_the_architecture_and_the_decisions(
+    document: str,
+) -> None:
+    text = (ROOT / document).read_text(encoding="utf-8")
+    prefix = "docs/" if document == "README.md" else ""
+    for target in ("demarrage.md", "concepts.md", "architecture.md", "decisions/README.md"):
+        assert f"]({prefix}{target})" in text, f"{document} ne renvoie pas à {target}"

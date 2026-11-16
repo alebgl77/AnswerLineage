@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Vérifie la démonstration lancée par docker compose, comme le pipeline.
 #
-#   scripts/check_demo.sh           tout, dans l'ordre : up, checks, browser, restart, down
+#   scripts/check_demo.sh           tout, dans l'ordre : guide, up, checks, browser, restart, down
+#   scripts/check_demo.sh guide     joue les commandes de docs/demarrage.md, dans l'ordre, depuis
+#                                   un clone neuf : le premier lignage doit être là dans le
+#                                   budget ; la démonstration est arrêtée et ses données effacées
+#                                   à la fin du guide
 #   scripts/check_demo.sh up        construit et lance la démonstration ; depuis un clone
 #                                   neuf, le premier graphe arrive en moins de cinq minutes
 #   scripts/check_demo.sh checks    rien n'écoute hors de la boucle locale, un autre nom
@@ -11,7 +15,9 @@
 #                                   viennent du volume ; renvoyée, l'entreprise n'ajoute rien
 #   scripts/check_demo.sh down      arrête la démonstration et efface ses données
 #
-# checks, browser et restart visent une démonstration déjà lancée. browser
+# guide joue ses commandes depuis la racine du clone, port 8000 libre ; il demande
+# uv et l'environnement du dépôt (make setup). checks, browser et restart visent une
+# démonstration déjà lancée. browser
 # demande l'environnement du dépôt (make setup) et Chromium
 # (uv run playwright install chromium). COMPOSE (la commande compose),
 # ANSWERLINEAGE_DEMO_URL (l'adresse de la démonstration) et BUDGET_SECONDS (le
@@ -129,6 +135,14 @@ up() {
   [ "$elapsed" -lt "$BUDGET_SECONDS" ] || fail "premier graphe en ${elapsed} s, pour ${BUDGET_SECONDS} s au plus"
 }
 
+# Le guide de démarrage est joué tel qu'il est écrit : chacun de ses blocs bash
+# se lance, dans l'ordre, et une commande qui échoue se nomme. Le budget du
+# premier lignage est celui de up, depuis le départ du guide (scripts/play_guide.py).
+guide() {
+  uv run python -m scripts.play_guide docs/demarrage.md --budget "$BUDGET_SECONDS" \
+    || fail "une commande du guide de démarrage échoue, ou son premier lignage dépasse ${BUDGET_SECONDS} s"
+}
+
 checks() {
   # Aucun port n'est publié hors de la boucle locale.
   $COMPOSE ps --format json | python3 -c '
@@ -220,8 +234,9 @@ down() {
 }
 
 case "${1:-all}" in
-  up | checks | browser | restart | down) "$1" ;;
+  up | checks | browser | restart | down | guide) "$1" ;;
   all)
+    guide
     up
     checks
     browser
@@ -230,7 +245,7 @@ case "${1:-all}" in
     echo "Démonstration vérifiée."
     ;;
   *)
-    echo "Usage : $0 [all | up | checks | browser | restart | down]" >&2
+    echo "Usage : $0 [all | guide | up | checks | browser | restart | down]" >&2
     exit 2
     ;;
 esac

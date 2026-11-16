@@ -12,6 +12,8 @@ Ouvrez une issue pour tout changement qui dépasse une correction évidente : un
 
 ## Mise en place
 
+Pour un premier tour du projet, le [guide de démarrage](docs/demarrage.md) lance la démonstration, puis l'[architecture](docs/architecture.md) et les [décisions d'architecture](docs/decisions/README.md) disent comment le code est organisé et pourquoi.
+
 Prérequis : [uv](https://docs.astral.sh/uv/), Python 3.13 ou 3.14, Docker pour les tests d'intégration, et Node 22 pour l'explorateur.
 
 ```bash
