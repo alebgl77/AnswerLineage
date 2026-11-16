@@ -4,3 +4,8 @@
 # Canari de test, pas un secret : une valeur inventée, que le test fait
 # traverser le proxy pour vérifier qu'elle ne laisse aucune trace.
 e089ebdf2e1983039dfad85e949440d9e770682f:tests/test_no_token_anywhere.py:generic-api-key:36
+
+# Faux jeton de test, pas un secret : une valeur inventée, écrite en clair dans un
+# workflow fictif pour vérifier que la politique du dépôt refuse un mot de passe
+# de publication écrit dans un workflow.
+0567e44c427b728ada3882d1b12c94800af3c2d6:tests/test_policy.py:generic-api-key:332
