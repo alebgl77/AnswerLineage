@@ -24,6 +24,7 @@ from answerlineage_api.ingest.models import (
     OUTCOMES,
     OUTPUTS_MAX,
     QOS_FACET,
+    READ_KEYS,
     RECIPIENTS_MAX,
     SCHEMA_FIELDS_MAX,
     SIGNAL_MAX,
@@ -621,3 +622,24 @@ def test_quality_of_service_elsewhere_than_on_the_run_is_left_to_the_projection(
     event, errors = validate_event(mutated(["job", "facets"], faulty))
     assert errors == []
     assert event is not None
+
+
+READ_KEYS_PATH: list[str | int] = ["run", "facets", "answerlineage_toolCall", "readKeys"]
+
+
+@pytest.mark.parametrize("value", READ_KEYS)
+def test_what_became_of_a_key_read_is_accepted_from_its_closed_list(value: str) -> None:
+    event, errors = validate_event(mutated(READ_KEYS_PATH, value))
+    assert errors == []
+    assert event is not None
+
+
+@pytest.mark.parametrize("value", ["devinee", "FINGERPRINTED", 1, None, ["fingerprinted"]])
+def test_what_became_of_a_key_read_outside_the_closed_list_rejects_the_event(
+    value: object,
+) -> None:
+    event, errors = validate_event(mutated(READ_KEYS_PATH, value))
+    assert event is None
+    assert [(error.path, error.type) for error in errors] == [
+        ("/run/facets/answerlineage_toolCall/readKeys", "literal_error")
+    ]

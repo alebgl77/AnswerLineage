@@ -19,6 +19,7 @@ from answerlineage_proxy.analyzer import SqlAnalyzer
 from answerlineage_proxy.app import McpProxy, Message, Receive, Scope, Send
 from answerlineage_proxy.config import ProxySettings, SqlTool
 from answerlineage_proxy.fingerprint import FingerprintKey
+from answerlineage_proxy.rules import ReadRule
 from answerlineage_proxy.sink import MemorySink
 
 TOOL_RESULT = (
@@ -270,6 +271,7 @@ def bench() -> BenchFactory:
         sql_budget_ms: int = 50,
         analyzer: SqlAnalyzer | None = None,
         fingerprint_key: FingerprintKey | None = None,
+        read_rules: tuple[ReadRule, ...] = (),
     ) -> AsyncIterator[Bench]:
         upstream = FakeMcpServer()
         sink = MemorySink()
@@ -284,6 +286,7 @@ def bench() -> BenchFactory:
                 allowed_origins=allowed_origins,
                 sql_budget_ms=sql_budget_ms,
                 fingerprint_key=fingerprint_key,
+                read_rules=read_rules,
             )
             proxy = McpProxy(settings, sink, analyzer=analyzer)
             async with running(proxy, transparent=True) as proxy_url:

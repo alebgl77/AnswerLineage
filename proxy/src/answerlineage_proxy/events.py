@@ -2,7 +2,8 @@
 
 Un événement ne porte aucun contenu : ni argument, ni résultat, ni en-tête,
 ni jeton. Des arguments et du résultat, il ne garde que des empreintes à clé et
-une taille ; d'une requête SQL, que sa forme sans littéraux.
+une taille ; d'une requête SQL, que sa forme sans littéraux ; d'une clé lue
+d'après une règle de lecture, que son empreinte à clé.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from uuid import UUID
 
 from answerlineage_proxy import __version__
 from answerlineage_proxy.inspection import Inspection
+from answerlineage_proxy.rules import DeclaredDataset, DeclaredReads
 from answerlineage_proxy.signals import CallSignals
 from answerlineage_proxy.sql import SqlAnalysis
 from answerlineage_proxy.tracecontext import CallTrace
@@ -22,10 +24,22 @@ Outcome = Literal["COMPLETE", "FAIL", "ABORT"]
 PRODUCER = f"https://github.com/alebgl77/AnswerLineage/tree/{__version__}/proxy"
 RUN_EVENT_SCHEMA = "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent"
 TOOL_CALL_FACET = "answerlineage_toolCall"
-# Schéma publié de la facette, à une adresse qui ne change plus (spec/facets/1-0-0/).
+# Schéma publié de la facette, à une adresse qui ne change plus (spec/facets/1-0-0/). La
+# version 1-1-0 ajoute ce qu'est devenue la clé lue d'après une règle de lecture : la
+# facette ne s'en réclame que lorsqu'elle le dit.
 TOOL_CALL_FACET_SCHEMA = (
     "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/"
     "ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
+)
+TOOL_CALL_FACET_SCHEMA_READ_KEYS = (
+    "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-1-0/"
+    "ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
+)
+# Clés lues dans un jeu de données d'entrée, sous leurs empreintes à clé (spec/facets/1-0-0/).
+KEYS_FACET = "answerlineage_keys"
+KEYS_FACET_SCHEMA = (
+    "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/"
+    "KeysInputDatasetFacet.json#/$defs/KeysInputDatasetFacet"
 )
 # Qualité de service de l'appel : latence, latence ajoutée, issue, reprises (spec/facets/1-1-0/).
 QOS_FACET = "answerlineage_qos"
@@ -42,6 +56,32 @@ SQL_FACET = "sql"
 SQL_FACET_SCHEMA = "https://openlineage.io/spec/facets/1-1-0/SQLJobFacet.json#/$defs/SQLJobFacet"
 # Nom de job d'un appel dont le nom d'outil n'a pas une forme admise.
 UNRESOLVED_TOOL = "outil-non-resolu"
+# Motif d'une lecture non résolue : l'outil n'a ni règle de lecture ni SQL déclaré.
+UNDESCRIBED_TOOL = "undescribed_tool"
+
+
+def _schema_facet(columns: tuple[str, ...]) -> dict[str, Any]:
+    return {
+        "_producer": PRODUCER,
+        "_schemaURL": SCHEMA_FACET_SCHEMA,
+        "fields": [{"name": column} for column in columns],
+    }
+
+
+def _declared_input(dataset: DeclaredDataset, keys: tuple[str, ...]) -> dict[str, Any]:
+    """Un jeu de données qu'une règle déclare lu : ses colonnes, et les clés lues."""
+    item: dict[str, Any] = {"namespace": dataset.namespace, "name": dataset.name}
+    if dataset.columns:
+        item["facets"] = {"schema": _schema_facet(dataset.columns)}
+    if keys:
+        item["inputFacets"] = {
+            KEYS_FACET: {
+                "_producer": PRODUCER,
+                "_schemaURL": KEYS_FACET_SCHEMA,
+                "hmacs": list(keys),
+            }
+        }
+    return item
 
 
 def format_event_time(moment: datetime) -> str:
@@ -65,6 +105,7 @@ def build_tool_call_event(
     result_fingerprint: str | None = None,
     result_size: int | None = None,
     signals: CallSignals | None = None,
+    declared: DeclaredReads | None = None,
 ) -> dict[str, Any]:
     """Construit le RunEvent d'un appel d'outil relayé.
 
@@ -75,7 +116,8 @@ def build_tool_call_event(
     quand l'analyse en a établi une, va dans la facette de job ``sql``, avec
     ``dialect``. Les empreintes et la taille du résultat vont dans la facette de
     l'appel ; ``signals``, latence, issue et reprises, dans la facette de
-    qualité de service.
+    qualité de service. ``declared`` sont les lectures qu'une règle déclare :
+    chaque jeu de données porte ses colonnes et les empreintes des clés lues.
     """
     facet: dict[str, Any] = {
         "_producer": PRODUCER,
@@ -124,14 +166,14 @@ def build_tool_call_event(
         for table in reads.tables:
             dataset: dict[str, Any] = {"namespace": namespace or "", "name": table.name}
             if table.precision == "columns":
-                dataset["facets"] = {
-                    "schema": {
-                        "_producer": PRODUCER,
-                        "_schemaURL": SCHEMA_FACET_SCHEMA,
-                        "fields": [{"name": column} for column in table.columns],
-                    }
-                }
+                dataset["facets"] = {"schema": _schema_facet(table.columns)}
             inputs.append(dataset)
+    if declared is not None:
+        facet["readResolution"] = "resolved"
+        if declared.key_status is not None:
+            facet["readKeys"] = declared.key_status
+            facet["_schemaURL"] = TOOL_CALL_FACET_SCHEMA_READ_KEYS
+        inputs.extend(_declared_input(dataset, declared.keys) for dataset in declared.datasets)
     run_facets: dict[str, Any] = {TOOL_CALL_FACET: facet}
     if signals is not None:
         run_facets[QOS_FACET] = {

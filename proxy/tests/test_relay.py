@@ -287,8 +287,10 @@ async def test_body_larger_than_the_inspected_size_is_streamed_and_described_by_
         (event,) = b.sink.events
         assert event["job"]["name"] == "get_weather"
         assert facet(event)["headerMismatch"] == ["mcp-name"]
-        # L'outil n'est pas déclaré comme outil SQL : aucune lecture n'est décrite.
-        assert "readResolution" not in facet(event)
+        # L'outil n'a ni SQL ni règle de lecture déclarés : sa lecture n'est pas décrite.
+        assert facet(event)["readResolution"] == "unresolved"
+        assert facet(event)["unresolvedReason"] == "undescribed_tool"
+        assert event["inputs"] == []
         assert (b.proxy.stats.uninspected, b.proxy.stats.inspected_from_prefix) == (0, 1)
         assert b.proxy.stats.header_mismatches == 1
         # Le _meta du corps n'a pas été lu : aucun contexte de trace n'est ajouté à la

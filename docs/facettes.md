@@ -29,7 +29,7 @@ Aucune facette ne ferme ses objets : un champ inconnu est admis, comme dans Open
 | Facette | Versions | Clé | Portée | Où la placer | Obligatoires |
 | --- | --- | --- | --- | --- | --- |
 | `AgentRunFacet` | [1-0-0](../spec/facets/1-0-0/AgentRunFacet.json) | `answerlineage_agent` | Run | `run.facets` | aucun |
-| `ToolCallRunFacet` | [1-0-0](../spec/facets/1-0-0/ToolCallRunFacet.json) | `answerlineage_toolCall` | Run | `run.facets` | `server` |
+| `ToolCallRunFacet` | [1-0-0](../spec/facets/1-0-0/ToolCallRunFacet.json), [1-1-0](../spec/facets/1-1-0/ToolCallRunFacet.json) | `answerlineage_toolCall` | Run | `run.facets` | `server` |
 | `QosRunFacet` | [1-0-0](../spec/facets/1-0-0/QosRunFacet.json), [1-1-0](../spec/facets/1-1-0/QosRunFacet.json) | `answerlineage_qos` | Run | `run.facets` | aucun |
 | `DeliveryOutputDatasetFacet` | [1-0-0](../spec/facets/1-0-0/DeliveryOutputDatasetFacet.json) | `answerlineage_delivery` | Jeu de données de sortie | `outputs[].outputFacets` | `fingerprint`, `channel`, `messageRef` |
 | `KeysInputDatasetFacet` | [1-0-0](../spec/facets/1-0-0/KeysInputDatasetFacet.json) | `answerlineage_keys` | Jeu de données d'entrée | `inputs[].inputFacets` | `hmacs` ou `bloomFilter` |
@@ -44,7 +44,9 @@ Facultatifs : `agentId`, `framework`, `agentVersion`, `owner` (le responsable), 
 
 Décrit un appel d'outil MCP, posé sur le run enfant de l'appel. Le graphe reconnaît un run d'outil à cette facette. C'est ce que le proxy émet.
 
-Facultatifs émis aujourd'hui : `tool` (absent quand le nom reçu n'a pas une forme admise), `transport`, `protocolVersion`, `httpStatus`, `proxyError`, `headerMismatch`, `invalidToolName`, `readResolution` (`resolved` ou `unresolved`), `unresolvedReason`.
+Facultatifs émis aujourd'hui : `tool` (absent quand le nom reçu n'a pas une forme admise), `transport`, `protocolVersion`, `httpStatus`, `proxyError`, `headerMismatch`, `invalidToolName`, `readResolution` (`resolved` ou `unresolved`), `unresolvedReason` (`undescribed_tool` pour un outil sans règle de lecture ni SQL déclaré, voir [le proxy](proxy.md#les-outils-à-décrire)).
+
+La version 1-1-0 ajoute un champ facultatif, `readKeys` : ce qu'est devenue la clé lue quand une [règle de lecture](proxy.md#règles-de-lecture-des-outils-non-sql) nomme l'argument qui la porte, d'une liste fermée (`fingerprinted`, `no_fingerprint_key`, `request_too_large`, `missing_argument`, `unsupported_argument`, `too_many_keys`). Hors de `fingerprinted`, la lecture vaut pour tout le jeu de données. Le proxy ne se réclame de cette version que pour une facette qui porte `readKeys`.
 
 Le contexte de trace W3C de l'appel, d'où dérive l'identifiant de run (voir [le proxy](proxy.md#identifiant-de-run-et-contexte-de-trace)), pour passer du lignage à la trace dans un outil d'observabilité :
 
@@ -84,7 +86,9 @@ Diffusion d'une réponse d'agent. La sortie qui la porte est la réponse, décri
 
 ### `answerlineage_keys`
 
-Clés lues dans un jeu de données, pas encore émise. Jamais en clair : `hmacs` liste des empreintes HMAC calculées avec une clé secrète, `bloomFilter` porte un filtre de Bloom à clé encodé en base64. L'une des deux formes au moins est présente. Les paramètres du filtre ne sont pas encore décrits.
+Clés lues dans un jeu de données, que le proxy émet pour un outil décrit par une règle de lecture. Jamais en clair : `hmacs` liste des empreintes HMAC calculées avec une clé secrète, `bloomFilter` porte un filtre de Bloom à clé encodé en base64. L'une des deux formes au moins est présente. Les paramètres du filtre ne sont pas encore décrits.
+
+Le proxy n'émet que `hmacs` : une empreinte par clé lue, `hmac-sha256:` suivi de HMAC-SHA-256, avec la clé du locataire, de l'étiquette `answerlineage/fingerprint/key/v1`, d'un octet nul et de la forme canonique JSON (RFC 8785) de la valeur, comme ses [autres empreintes](proxy.md#le-calcul-à-loctet-près).
 
 ## Écrire un émetteur
 
@@ -153,5 +157,5 @@ Elle peut ajouter des champs facultatifs. Une rupture demande une nouvelle facet
 ## Limites connues
 
 - Le contrôle compare les champs, leur caractère obligatoire et leur type. Il ne compare ni les bornes (`maxLength`, `maxItems`, `minimum`) ni les valeurs admises (`enum`) : les resserrer dans une nouvelle version casserait des émetteurs sans le faire échouer.
-- La facette `answerlineage_keys` n'a pas encore d'émetteur, et `answerlineage_agent` n'émet encore aucun champ propre ; de `answerlineage_qos`, seul le proxy émet, et seulement ce qu'il voit. Leurs champs sont facultatifs et décrits sobrement ; ils s'étendront.
+- La facette `answerlineage_agent` n'émet encore aucun champ propre ; de `answerlineage_qos` et `answerlineage_keys`, seul le proxy émet, et seulement ce qu'il voit. Leurs champs sont facultatifs et décrits sobrement ; ils s'étendront.
 - Les schémas sont servis par le fichier brut du dépôt sur la branche principale : une adresse n'existe qu'une fois la version fusionnée.

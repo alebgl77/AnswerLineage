@@ -25,6 +25,7 @@ from answerlineage_api.ingest.coverage import router as coverage_router
 from answerlineage_api.ingest.duplicates import router as duplicates_router
 from answerlineage_api.ingest.models import run_event_json_schema
 from answerlineage_api.ingest.routes import router as ingestion_router
+from answerlineage_api.ingest.undescribed import router as undescribed_router
 from answerlineage_api.lineage.reading import (
     ReadTimedOut,
     read_timeout_from_settings,
@@ -107,6 +108,7 @@ def create_app(
     app.state.max_body_bytes = body_limit
     app.include_router(ingestion_router)
     app.include_router(duplicates_router)
+    app.include_router(undescribed_router)
     app.include_router(coverage_router)
     app.include_router(lineage_router)
     app.add_exception_handler(RequestValidationError, reject_invalid_request)

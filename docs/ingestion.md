@@ -11,6 +11,7 @@ ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run 
 | `POST /api/v1/lineage` | Un événement | `201` avec son identifiant, `422` avec les champs fautifs |
 | `POST /api/v1/lineage/batch` | Un tableau d'événements, 1 000 au plus | `202` avec le bilan du lot |
 | `GET /api/v1/ingestion/duplicates` | Aucun | Les doublons reçus, par émetteur et par jour |
+| `GET /api/v1/ingestion/undescribed-tools` | Aucun | Les outils appelés sans règle de lecture, par émetteur |
 | `POST /api/v1/coverage` | Un relevé de couverture | `201` avec l'état de sa fenêtre, `422` avec les champs fautifs |
 
 `/api/v1/lineage` est le point d'entrée standard d'OpenLineage : un émetteur conforme s'y branche sans adaptation. `/api/v1/coverage` reçoit ce que chaque émetteur a vu, pour mesurer la part du trafic réellement captée ([Relevés de couverture](#relevés-de-couverture)).
@@ -127,6 +128,7 @@ La facette `answerlineage_qos` d'un run ([facettes](facettes.md#answerlineage_qo
 | `errorCount`, `retryCount` | Un entier, de 0 à 1 000 000 000 | `int_type`, `greater_than_equal`, `less_than_equal` |
 | `outcome` | `success`, `jsonrpc_error`, `http_error`, `transport_error`, `timeout` ou `client_abort` | `literal_error` |
 | `errorCode` | Un entier signé sur 32 bits | `int_type`, `greater_than_equal`, `less_than_equal` |
+| `readKeys`, dans la facette `answerlineage_toolCall` | `fingerprinted`, `no_fingerprint_key`, `request_too_large`, `missing_argument`, `unsupported_argument` ou `too_many_keys` : ce qu'est devenue la clé lue d'après une [règle de lecture](proxy.md#ce-que-dit-lévénement) | `literal_error` |
 
 Un booléen n'est pas un nombre, ni `null` une valeur. Les versions 1-0-0 et 1-1-0 de la facette sont acceptées toutes deux : la première n'a ni `addedLatencyMs`, ni `outcome`, ni `errorCode`. Les autres champs de la facette (`model`, `inputTokens`, `estimatedCost`…) ne sont pas contrôlés, et la facette posée ailleurs que sur le run non plus. Comme pour tout rejet, l'erreur donne le chemin et un motif fixe, jamais la valeur reçue :
 
@@ -195,6 +197,29 @@ curl "http://127.0.0.1:8000/api/v1/ingestion/duplicates?limit=30"
 Les lignes vont du jour le plus récent au plus ancien, puis par émetteur. Un paramètre invalide répond `422` avec son chemin et son motif, jamais la valeur reçue. Comme toute lecture, cette route s'exécute sous le délai maximal des lectures : au-delà, elle répond `503` et `query_timeout` ([bornes et délais](lecture.md#bornes-et-délais)).
 
 Chaque événement nouveau entre dans la file de traitement, d'où un [worker](workers.md) le projette dans le graphe.
+
+## Outils à décrire
+
+Un point de capture qui voit l'appel d'un outil sans règle de lecture ni SQL déclaré le marque : la lecture de l'appel est non résolue, motif `undescribed_tool` ([le proxy](proxy.md#les-outils-à-décrire)). Cette route rassemble, à partir des événements reçus, les outils ainsi marqués : un exploitant sait quelles règles écrire sans ouvrir le journal de chaque proxy. Elle lit les événements bruts, pas le graphe.
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/ingestion/undescribed-tools?days=7"
+```
+
+```json
+{
+  "tools": [
+    { "emitter": "mcp://catalogue", "tool": "get_weather", "calls": 12, "last_seen": "2026-11-15T10:42:07.120000Z" }
+  ]
+}
+```
+
+| Paramètre | Rôle |
+| --- | --- |
+| `days` | Période lue, en jours de réception jusqu'à maintenant, de 1 à 31, 7 par défaut |
+| `limit` | Nombre maximal d'outils (émetteur et outil), de 1 à 1 000, 100 par défaut |
+
+`calls` compte les événements de la période qui marquent l'outil ; `last_seen` est la réception du plus récent. Les outils vont du plus récemment vu au plus ancien, puis par émetteur et par nom, sous la forme normalisée (NFC) du nom. Un outil décrit depuis disparaît de la liste quand ses derniers appels non décrits sortent de la période. Un paramètre invalide répond `422` avec son chemin et son motif ; comme toute lecture, la route s'exécute sous le délai maximal des lectures.
 
 ## Relevés de couverture
 

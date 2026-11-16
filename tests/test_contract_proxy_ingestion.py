@@ -10,11 +10,12 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 from answerlineage_api.ingest.models import validate_event
 from answerlineage_api.ingest.store import event_identifier
-from answerlineage_proxy.events import build_tool_call_event
+from answerlineage_proxy.events import UNDESCRIBED_TOOL, build_tool_call_event
 from answerlineage_proxy.fingerprint import RESULT_LABEL, FingerprintKey, arguments_fingerprint
 from answerlineage_proxy.inspection import Inspection
+from answerlineage_proxy.rules import KEY_LABEL, DeclaredDataset, DeclaredReads
 from answerlineage_proxy.signals import OUTCOMES, CallOutcome, CallSignals
-from answerlineage_proxy.sql import analyze_sql
+from answerlineage_proxy.sql import SqlAnalysis, analyze_sql
 from answerlineage_proxy.tracecontext import resolve_trace
 from api.tests.events import official_run_event_schema
 
@@ -122,3 +123,54 @@ def test_proxy_event_with_quality_of_service_signals_is_accepted(outcome: CallOu
     qos = accepted.run.facets["answerlineage_qos"].model_dump(by_alias=True, mode="json")
     assert qos["outcome"] == outcome
     assert qos["_schemaURL"].endswith("/spec/facets/1-1-0/QosRunFacet.json#/$defs/QosRunFacet")
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        DeclaredReads(
+            (DeclaredDataset("postgres://referentiel:5432", "ref.tarifs", ("produit", "prix")),),
+            (FingerprintKey(bytes(range(32))).fingerprint(KEY_LABEL, b'"P-1042"'),),
+            "fingerprinted",
+        ),
+        DeclaredReads((DeclaredDataset("gs://documents", "politique%20voyages.pdf"),), (), None),
+    ],
+    ids=["clé lue", "sans clé"],
+)
+def test_proxy_event_with_reads_declared_by_a_rule_is_accepted(declared: DeclaredReads) -> None:
+    event = build_tool_call_event(
+        run_id=uuid4(),
+        event_time=datetime.now(UTC),
+        outcome="COMPLETE",
+        server="catalogue",
+        inspection=Inspection(is_tool_call=True, tool="get_price"),
+        http_status=200,
+        declared=declared,
+    )
+    assert list(OFFICIAL.iter_errors(event)) == []
+    accepted, errors = validate_event(event)
+    assert errors == []
+    assert accepted is not None
+    (dataset,) = accepted.inputs
+    assert (dataset.namespace, dataset.name) == (
+        declared.datasets[0].namespace,
+        declared.datasets[0].name,
+    )
+    assert ("answerlineage_keys" in dataset.input_facets) == bool(declared.keys)
+
+
+def test_proxy_event_of_an_undescribed_tool_is_accepted() -> None:
+    event = build_tool_call_event(
+        run_id=uuid4(),
+        event_time=datetime.now(UTC),
+        outcome="COMPLETE",
+        server="catalogue",
+        inspection=Inspection(is_tool_call=True, tool="get_time"),
+        http_status=200,
+        reads=SqlAnalysis(resolved=False, reason=UNDESCRIBED_TOOL),
+    )
+    assert list(OFFICIAL.iter_errors(event)) == []
+    accepted, errors = validate_event(event)
+    assert errors == []
+    assert accepted is not None
+    assert accepted.inputs == []

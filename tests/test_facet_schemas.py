@@ -32,13 +32,14 @@ from answerlineage_api.ingest.models import (
 from answerlineage_corpus.enterprise import generate
 from answerlineage_corpus.events import render
 from answerlineage_corpus.scenarios import load_corpus
-from answerlineage_proxy.events import SQL_FACET_SCHEMA, build_tool_call_event
+from answerlineage_proxy.events import SQL_FACET_SCHEMA, UNDESCRIBED_TOOL, build_tool_call_event
 from answerlineage_proxy.fingerprint import (
     RESULT_LABEL,
     FingerprintKey,
     arguments_fingerprint,
 )
 from answerlineage_proxy.inspection import Inspection
+from answerlineage_proxy.rules import KEY_LABEL, DeclaredDataset, DeclaredReads
 from answerlineage_proxy.signals import CallSignals
 from answerlineage_proxy.sql import SqlAnalysis, TableRead, analyze_sql
 from answerlineage_proxy.tracecontext import parse_traceparent, resolve_trace
@@ -100,10 +101,11 @@ def facet(name: str, version: str = "1-0-0", **fields: Any) -> dict[str, Any]:
     return {"_producer": PRODUCER, "_schemaURL": address(name, version), **fields}
 
 
-def test_five_facets_are_published_in_1_0_0_and_quality_of_service_in_1_1_0() -> None:
+def test_five_facets_are_published_in_1_0_0_and_two_extended_in_1_1_0() -> None:
     assert {path.relative_to(FACETS).as_posix() for path in schema_files()} == {
         *(f"1-0-0/{name}.json" for name in NAMES.values()),
         "1-1-0/QosRunFacet.json",
+        "1-1-0/ToolCallRunFacet.json",
     }
 
 
@@ -417,6 +419,28 @@ def test_a_schema_closes_the_list_of_outcomes_where_ingestion_does() -> None:
     assert (error.path, error.type) == ("/run/facets/answerlineage_qos/outcome", "literal_error")
 
 
+def test_a_tool_call_1_1_0_says_what_became_of_the_key_read_from_a_closed_list() -> None:
+    """La clé lue d'après une règle : la liste du schéma est celle de l'ingestion."""
+    document = load(FACETS / "1-1-0" / "ToolCallRunFacet.json")
+    read_keys = document["$defs"]["ToolCallRunFacet"]["allOf"][1]["properties"]["readKeys"]
+    check = validator("ToolCallRunFacet", "1-1-0")
+    for value in read_keys["enum"]:
+        emitted = facet("ToolCallRunFacet", "1-1-0", server="s", readKeys=value)
+        assert list(check.iter_errors(emitted)) == []
+        event = _qos_event()
+        event["run"]["facets"]["answerlineage_toolCall"]["readKeys"] = value
+        assert validate_event(event)[1] == []
+    emitted = facet("ToolCallRunFacet", "1-1-0", server="s", readKeys="devinee")
+    assert list(check.iter_errors(emitted)) != []
+    event = _qos_event()
+    event["run"]["facets"]["answerlineage_toolCall"]["readKeys"] = "devinee"
+    ((path, kind),) = [(error.path, error.type) for error in validate_event(event)[1]]
+    assert (path, kind) == ("/run/facets/answerlineage_toolCall/readKeys", "literal_error")
+    # Tout ce que la version 1-0-0 accepte, la version 1-1-0 l'accepte aussi.
+    full = facet("ToolCallRunFacet", "1-1-0", **EXAMPLES["ToolCallRunFacet"]["full"])
+    assert list(check.iter_errors(full)) == []
+
+
 def own_facets(event: Mapping[str, Any]) -> Iterator[tuple[str, Mapping[str, Any]]]:
     """Les facettes propres d'un événement, avec leur clé, sur le run et sur les jeux de données."""
     owners: list[Mapping[str, Any]] = [event["run"]]
@@ -499,6 +523,38 @@ def proxy_events() -> list[dict[str, Any]]:
         reads=SqlAnalysis(resolved=False, reason="too_large"),
         namespace="bigquery",
     )
+    # Avec une règle de lecture : clé empreinte, clé absente, outil non décrit.
+    tarifs = DeclaredDataset("postgres://referentiel:5432", "ref.tarifs", ("produit", "prix"))
+    key_fingerprint = FingerprintKey(bytes(range(32))).fingerprint(KEY_LABEL, b'"P-1042"')
+    for declared in (
+        DeclaredReads((tarifs,), (key_fingerprint,), "fingerprinted"),
+        DeclaredReads(
+            (tarifs, DeclaredDataset("gs://docs", "catalogue.pdf")), (), "missing_argument"
+        ),
+        DeclaredReads((tarifs,)),
+    ):
+        events.append(
+            build_tool_call_event(
+                run_id=uuid4(),
+                event_time=datetime.now(UTC),
+                outcome="COMPLETE",
+                server="entrepot",
+                inspection=Inspection(is_tool_call=True, tool="get_price"),
+                http_status=200,
+                declared=declared,
+            )
+        )
+    events.append(
+        build_tool_call_event(
+            run_id=uuid4(),
+            event_time=datetime.now(UTC),
+            outcome="COMPLETE",
+            server="entrepot",
+            inspection=Inspection(is_tool_call=True, tool="get_time"),
+            http_status=200,
+            reads=SqlAnalysis(resolved=False, reason=UNDESCRIBED_TOOL),
+        )
+    )
     # Avec les signaux de qualité de service : succès, puis erreur JSON-RPC reprise.
     signals = [
         CallSignals(latency_ms=2.5, added_latency_ms=0.05, outcome="success"),
@@ -562,6 +618,7 @@ def test_every_kind_of_facet_that_is_emitted_today_is_covered() -> None:
         "answerlineage_toolCall",
         "answerlineage_delivery",
         "answerlineage_qos",
+        "answerlineage_keys",
     }
 
 

@@ -26,6 +26,7 @@ from answerlineage_proxy.config import (
     ENV_FINGERPRINT_KEY_FILE,
     ENV_HOST,
     ENV_PORT,
+    ENV_READ_RULES_FILE,
     ENV_SERVER_NAME,
     ENV_SQL_BUDGET_MS,
     ENV_SQL_CACHE_SIZE,
@@ -37,6 +38,7 @@ from answerlineage_proxy.config import (
     fingerprint_key,
     integer,
     listed,
+    read_rules,
 )
 from answerlineage_proxy.coverage import DEFAULT_WINDOW, MAX_WINDOW, MIN_WINDOW
 from answerlineage_proxy.guard import LOOPBACK_HOSTS
@@ -147,6 +149,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--read-rules-file",
+        metavar="FICHIER",
+        help=(
+            "fichier YAML des règles de lecture des outils non SQL : jeux de données lus, "
+            f"colonnes, argument de la clé lue (ou {ENV_READ_RULES_FILE})"
+        ),
+    )
+    parser.add_argument(
         "--coverage-window-seconds",
         type=int,
         help=(
@@ -212,6 +222,7 @@ def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str
             else integer(environment, ENV_SQL_CACHE_SIZE, DEFAULT_SQL_CACHE_SIZE)
         ),
         fingerprint_key=fingerprint_key(environment, args.fingerprint_key_file),
+        read_rules=read_rules(environment, args.read_rules_file),
     )
 
 
@@ -242,6 +253,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             ENV_FINGERPRINT_KEY,
             ENV_FINGERPRINT_KEY_FILE,
         )
+    for tool in sorted(set(settings.read_rules) & set(settings.sql_tools)):
+        # Un nom d'outil validé, jamais une valeur reçue.
+        logger.warning(
+            "La règle de lecture de l'outil « %s » est ignorée : c'est un outil SQL, "
+            "sa requête est analysée.",
+            tool,
+        )
+    if settings.read_rules:
+        logger.info("Règles de lecture : %d outils décrits.", len(settings.read_rules))
     logger.warning(
         "Aucune destination d'événements : les appels d'outils et les relevés de couverture "
         "sont comptés, l'envoi vers l'API d'ingestion n'est pas encore disponible."

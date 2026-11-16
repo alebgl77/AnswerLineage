@@ -23,6 +23,7 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrep
 | Fichier de la clé d'empreinte | `--fingerprint-key-file` | `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY_FILE` | aucun |
 | Clé d'empreinte elle-même, en hexadécimal | | `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY` | aucune : pas d'empreinte |
 | Durée d'une fenêtre des relevés de couverture | `--coverage-window-seconds` | `ANSWERLINEAGE_PROXY_COVERAGE_WINDOW_SECONDS` | 60 s (1 à 86 400) |
+| Fichier des règles de lecture des outils non SQL | `--read-rules-file` | `ANSWERLINEAGE_PROXY_READ_RULES_FILE` | aucun : aucun outil non SQL n'est décrit |
 
 L'adresse du serveur MCP ne porte ni identifiant ni paramètre : elle peut apparaître dans la configuration. Son hôte peut être une adresse IPv6, entre crochets (`http://[2001:db8::1]:9000`) ; une adresse IPv6 ne faisant pas un nom de serveur, `--server-name` est alors obligatoire. Un réglage invalide arrête le proxy avec le message « Configuration invalide : … » et le code de sortie 2.
 
@@ -194,6 +195,75 @@ Une analyse abandonnée au budget, ou perdue par un processus mort en plein calc
 | `sql_over_budget` | Analyses abandonnées au budget, processus tué |
 | `sql_refused` | Analyses refusées, file pleine |
 | `sql_analyzer_failures` | Analyses perdues par un processus d'analyse en panne |
+
+## Règles de lecture des outils non SQL
+
+Un outil d'API, de fichiers ou de recherche documentaire ne dit pas ce qu'il lit, et aucun SQL ne le trahit. Une règle de lecture le déclare : quel outil, éventuellement sur quel serveur ; quels jeux de données il lit, et éventuellement quelles colonnes ; quel argument porte la clé lue. Les règles sont dans un fichier YAML, donné par `--read-rules-file` :
+
+```yaml
+version: 1
+rules:
+  - tool: get_price
+    server: catalogue
+    datasets:
+      - namespace: postgres://referentiel:5432
+        name: ref.tarifs
+        columns: [produit, prix]
+    key: produit
+  - tool: search_docs
+    datasets:
+      - { namespace: "gs://documents", name: "politique%20voyages.pdf" }
+    key: [filtre, 0, id]
+```
+
+| Champ | Contenu |
+| --- | --- |
+| `version` | `1`, la version du format |
+| `rules[].tool` | Le nom de l'outil, sous la forme que MCP recommande (1 à 128 lettres, chiffres, `_`, `-`, `.`) |
+| `rules[].server` | Facultatif : le nom du serveur (`--server-name`) pour lequel la règle vaut. Une règle sans serveur vaut pour tous ; celle qui nomme le serveur l'emporte. Un même fichier peut ainsi servir plusieurs proxys |
+| `rules[].datasets` | 1 à 32 jeux de données lus, chacun par son espace de noms (`namespace`) et son nom (`name`), qui ont la forme qu'exige l'[ingestion](ingestion.md#identifiants) |
+| `rules[].datasets[].columns` | Facultatif : 1 à 1 000 colonnes lues, sans doublon. Sans elles, la lecture porte sur tout le jeu de données |
+| `rules[].key` | Facultatif : l'argument qui porte la clé lue, par son nom, ou un chemin de 1 à 8 étapes dans les arguments, noms d'objets et rangs de listes (0 à 9 999) |
+
+### Le fichier, une entrée hostile
+
+Le fichier est lu une fois, au démarrage, et une règle invalide empêche le proxy de démarrer, avec « Configuration invalide : Règles de lecture invalides : … » et le code de sortie 2 : on ne capte pas à moitié en silence. Il ne se relit pas à chaud.
+
+- **Bornes.** 256 Kio au plus, vérifiés avant toute lecture ; 1 000 règles, 8 niveaux d'imbrication. Le fichier est en UTF-8.
+- **Chargeur sûr.** PyYAML lit le fichier avec son chargeur sûr, qui refuse en plus ancres (`&`), alias (`*`) et étiquettes explicites (`!!str`, `!python/…`, `!`) avant de rien composer : pas d'inclusion, pas de référence, pas de bombe d'alias. Le document n'est jamais construit en objets Python : il est parcouru nœud par nœud.
+- **Types.** Une valeur qui n'a pas le type attendu est refusée, pas convertie : une date, un nombre ou un booléen là où un nom est attendu (`name: 2026-11-02`, `tool: yes`), un texte là où la version est attendue.
+- **Champs.** Un champ inconnu, répété ou absent est refusé : une faute de frappe (`colums`) ne fait pas perdre des colonnes en silence. Deux règles pour le même outil sur le même serveur aussi.
+- **Noms.** Un nom de jeu de données, d'espace de noms ou de colonne suit la forme des [identifiants de l'ingestion](ingestion.md#identifiants), écrite une seconde fois dans le proxy pour qu'il ne dépende pas de l'API (`tests/test_contract_identifiers.py` les tient d'accord) ; il est gardé sous sa forme normalisée NFC.
+- **Erreurs.** Le message nomme la règle, le champ et leur position, jamais une valeur du fichier ; d'une erreur de syntaxe YAML, dont le message citerait le texte fautif, seuls la position et le genre sont gardés :
+
+```text
+Configuration invalide : Règles de lecture invalides : règle 2, champ datasets[0].name (ligne 9, colonne 15) : un nom ne contient ni espace ni blanc (identifier_whitespace).
+```
+
+### Ce que dit l'événement
+
+Un appel réussi d'un outil décrit porte en entrée les jeux de données de sa règle, leurs colonnes dans la facette standard `schema`, et sa lecture est résolue. Un appel en échec n'a rien fait lire. Un outil déclaré par `--sql-tool` garde l'analyse de sa requête : sa règle est ignorée, et le proxy le dit au démarrage.
+
+**La clé lue** est une valeur d'argument : elle n'est jamais conservée telle quelle. Elle devient une empreinte à clé, la même fonction que les autres [empreintes](#empreintes-à-clé) du proxy, sur l'étiquette `answerlineage/fingerprint/key/v1` et la forme canonique JSON de la valeur (`"P-1042"` et `1042` n'ont donc pas la même empreinte). Une liste de valeurs simples donne une empreinte par valeur distincte, 100 au plus. Les empreintes sont posées sur chaque jeu de données lu, dans la facette `answerlineage_keys` ([`KeysInputDatasetFacet`](../spec/facets/1-0-0/KeysInputDatasetFacet.json)), champ `hmacs`. Qui détient la clé du locataire retrouve ainsi les appels qui ont lu la ligne d'une donnée reconnue fausse, sans que la valeur entre dans AnswerLineage.
+
+Quand la clé ne peut pas être gardée, la lecture est déclarée pour tout le jeu de données, et `readKeys`, dans la facette `answerlineage_toolCall` ([version 1-1-0](../spec/facets/1-1-0/ToolCallRunFacet.json)), dit pourquoi :
+
+| `readKeys` | Cas |
+| --- | --- |
+| `fingerprinted` | Les empreintes des clés lues sont sur chaque jeu de données |
+| `no_fingerprint_key` | Pas de clé de locataire : aucune empreinte n'est calculée |
+| `request_too_large` | Corps plus grand que la taille lue : les arguments ne sont pas lus |
+| `missing_argument` | L'argument manque, est nul ou une liste vide |
+| `unsupported_argument` | La valeur n'est ni un scalaire ni une liste de scalaires, ou n'a pas de forme canonique |
+| `too_many_keys` | Plus de 100 clés : en garder une partie ferait écarter à tort un appel qui a lu une clé oubliée |
+
+Sans `key` dans la règle, `readKeys` est absent. La facette ne se réclame de la version 1-1-0 que lorsqu'elle porte `readKeys`.
+
+### Les outils à décrire
+
+Un appel d'un outil qui n'a ni règle de lecture ni SQL déclaré est marqué : sa lecture est « non résolue », motif `undescribed_tool`, et il n'a pas d'entrée. Le proxy le compte (`ProxyStats.undescribed_calls`) et le journalise une fois par nom d'outil, un nom validé, jamais un argument ; au-delà de 1 000 noms, il ne journalise plus. Un nom d'outil refusé n'est pas marqué : il porte déjà `invalidToolName`.
+
+La liste des outils à décrire se lit par l'API, à partir des événements reçus : [`GET /api/v1/ingestion/undescribed-tools`](ingestion.md#outils-à-décrire) rend, par émetteur, chaque outil marqué, le nombre de ses appels et le dernier reçu. Ce choix ne touche pas au schéma du graphe, garde le proxy sans état, et rassemble en un lieu ce que voient tous les proxys, qu'une liste en mémoire de chacun perdrait à chaque redémarrage. Tant que les événements ne partent pas encore du proxy vers l'API, la liste est vide pour lui : son journal est alors la seule trace.
 
 ## Relevés de couverture
 
@@ -433,7 +503,7 @@ L'écart entre les deux mesures est le saut lui-même : un serveur HTTP qui lit 
 
 ## Ce qui n'est jamais conservé
 
-Aucun argument, résultat, en-tête ni jeton n'est stocké ou journalisé : des arguments et du résultat, l'événement ne garde que des empreintes à clé et une taille ; d'une requête SQL, sa forme sans littéraux ; d'une erreur, sa catégorie et son code. Seuls le `trace-id` et le `parent-id` d'un contexte de trace bien formé, qui ne disent rien du contenu, sont recopiés dans l'événement ; ils ne sont jamais journalisés. Les en-têtes `Mcp-Param-*`, qui recopient des arguments d'outil, ne sont pas lus. L'en-tête `Mcp-Session-Id` n'est lu que pour reconnaître une reprise, et oublié après l'appel, sauf son empreinte à clé. Le journal d'accès du serveur HTTP est coupé. Les journaux des bibliothèques qui citeraient une URL complète, des en-têtes ou une requête SQL (`httpx`, `httpcore`, `sqlglot`) sont coupés pour tout le processus.
+Aucun argument, résultat, en-tête ni jeton n'est stocké ou journalisé : des arguments et du résultat, l'événement ne garde que des empreintes à clé et une taille ; d'une requête SQL, sa forme sans littéraux ; d'une erreur, sa catégorie et son code ; d'une clé lue d'après une règle, son empreinte à clé. Seuls le `trace-id` et le `parent-id` d'un contexte de trace bien formé, qui ne disent rien du contenu, sont recopiés dans l'événement ; ils ne sont jamais journalisés. Les en-têtes `Mcp-Param-*`, qui recopient des arguments d'outil, ne sont pas lus. L'en-tête `Mcp-Session-Id` n'est lu que pour reconnaître une reprise, et oublié après l'appel, sauf son empreinte à clé. Le journal d'accès du serveur HTTP est coupé. Les journaux des bibliothèques qui citeraient une URL complète, des en-têtes ou une requête SQL (`httpx`, `httpcore`, `sqlglot`) sont coupés pour tout le processus.
 
 ## Autorisation
 
@@ -443,7 +513,7 @@ Un test fait traverser un jeton, un cookie, un paramètre recopié en en-tête e
 
 ## L'événement émis
 
-Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COMPLETE` si le serveur a répondu sans erreur HTTP, `FAIL` sinon, `ABORT` si le client est parti. Le job est `mcp://<serveur>` / `<outil>`, l'identifiant de run celui que dérive le contexte de trace. La facette `answerlineage_toolCall` porte le serveur, l'outil, le transport, la révision du protocole, le statut HTTP, les écarts relevés, la résolution de la lecture, le contexte de trace (`traceId`, `spanId`, `traceOrigin`), les empreintes à clé des arguments et du résultat et la taille du résultat ; son schéma est publié (voir [Facettes OpenLineage](facettes.md)). La facette `answerlineage_qos` porte la latence, la latence ajoutée, l'issue et les reprises ([Qualité de service](#qualité-de-service)). Les tables lues sont les jeux de données d'entrée ; leurs colonnes sont dans la facette standard `schema`. La forme sans littéraux d'une requête SQL est dans la facette de job standard `sql`.
+Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COMPLETE` si le serveur a répondu sans erreur HTTP, `FAIL` sinon, `ABORT` si le client est parti. Le job est `mcp://<serveur>` / `<outil>`, l'identifiant de run celui que dérive le contexte de trace. La facette `answerlineage_toolCall` porte le serveur, l'outil, le transport, la révision du protocole, le statut HTTP, les écarts relevés, la résolution de la lecture, le contexte de trace (`traceId`, `spanId`, `traceOrigin`), les empreintes à clé des arguments et du résultat et la taille du résultat ; son schéma est publié (voir [Facettes OpenLineage](facettes.md)). La facette `answerlineage_qos` porte la latence, la latence ajoutée, l'issue et les reprises ([Qualité de service](#qualité-de-service)). Les tables lues, ou les jeux de données que déclare la règle de lecture de l'outil, sont les jeux de données d'entrée ; leurs colonnes sont dans la facette standard `schema`, les empreintes des clés lues dans la facette `answerlineage_keys`. La forme sans littéraux d'une requête SQL est dans la facette de job standard `sql`.
 
 ## Limites connues
 
@@ -458,6 +528,8 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - Le proxy ne pose lui-même aucun délai de lecture : seul le délai de connexion au serveur MCP (10 s) fait une issue `timeout`, sauf avec un client HTTP qui en a un autre.
 - Sans session MCP ni contexte de trace transmis par le client, la portée d'une reprise est le proxy entier : deux clients qui font le même appel, aux mêmes arguments, dans la minute qui suit un échec, sont comptés comme une reprise.
 - Le transport stdio n'est pas pris en charge.
+- Une règle de lecture se fie à l'outil : si l'outil lit autre chose que ce qu'elle déclare, le lignage le croit. Elle ne dit pas non plus quelles lignes d'un jeu de données correspondent à une clé : l'empreinte rapproche des appels, pas des lignes.
+- Les règles de lecture ne se rechargent pas à chaud : un changement demande de relancer le proxy.
 - Dans un corps plus grand que la taille lue, une clé `method` ou `name` répétée au-delà des 16 premiers Ko ne peut pas être vue : l'événement décrit la première.
 - Le budget se mesure en temps écoulé : sur une machine très chargée, une requête qui tient d'ordinaire dans le budget peut le dépasser et rester « non résolue » tant qu'elle est en cache.
 - Les signaux de qualité de service restent dans l'événement reçu : le graphe ne les stocke pas encore.

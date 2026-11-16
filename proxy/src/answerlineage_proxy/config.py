@@ -12,6 +12,7 @@ import httpx
 
 from answerlineage_proxy.fingerprint import FingerprintKey
 from answerlineage_proxy.guard import LOOPBACK_HOSTS, RequestGuard
+from answerlineage_proxy.rules import ReadRule, ReadRulesError, load_read_rules, rules_for
 from answerlineage_proxy.sql import DIALECTS, Dialect
 
 ENV_UPSTREAM = "ANSWERLINEAGE_PROXY_UPSTREAM"
@@ -26,6 +27,8 @@ ENV_SQL_CACHE_SIZE = "ANSWERLINEAGE_PROXY_SQL_CACHE_SIZE"
 # Clé d'empreinte : jamais sur la ligne de commande, que la liste des processus montre.
 ENV_FINGERPRINT_KEY = "ANSWERLINEAGE_PROXY_FINGERPRINT_KEY"
 ENV_FINGERPRINT_KEY_FILE = "ANSWERLINEAGE_PROXY_FINGERPRINT_KEY_FILE"
+# Fichier des règles de lecture des outils non SQL.
+ENV_READ_RULES_FILE = "ANSWERLINEAGE_PROXY_READ_RULES_FILE"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8717
@@ -93,6 +96,24 @@ def fingerprint_key(
     except ValueError as error:
         # Le message de FingerprintKey ne cite jamais la valeur.
         raise ProxyConfigurationError(str(error)) from None
+
+
+def read_rules(
+    environment: Mapping[str, str], rules_file: str | None = None
+) -> tuple[ReadRule, ...]:
+    """Lit les règles de lecture : dans ``rules_file``, sinon dans le fichier que nomme
+    ``ANSWERLINEAGE_PROXY_READ_RULES_FILE``. Aucune règle sans fichier.
+
+    Une règle invalide empêche le démarrage : le message nomme la règle, le champ et
+    sa position, jamais une valeur du fichier.
+    """
+    path = rules_file or environment.get(ENV_READ_RULES_FILE) or None
+    if path is None:
+        return ()
+    try:
+        return load_read_rules(path)
+    except ReadRulesError as error:
+        raise ProxyConfigurationError(f"Règles de lecture invalides : {error}.") from None
 
 
 def integer(environment: Mapping[str, str], name: str, default: int) -> int:
@@ -168,6 +189,9 @@ class ProxySettings:
     sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE
     # Clé d'empreinte du locataire. Sans clé, aucune empreinte n'est émise.
     fingerprint_key: FingerprintKey | None = field(default=None, repr=False)
+    # Règles de lecture qui valent pour ce serveur, par outil. Un outil SQL garde
+    # l'analyse de sa requête.
+    read_rules: Mapping[str, ReadRule] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.upstream.scheme not in ("http", "https") or not self.upstream.host:
@@ -192,7 +216,7 @@ class ProxySettings:
             raise ProxyConfigurationError("Le port doit être compris entre 0 et 65535.")
         if self.max_inspected_bytes < 0:
             raise ProxyConfigurationError("La taille maximale lue ne peut pas être négative.")
-        if not all(_TOOL_NAME.fullmatch(tool) for tool in self.sql_tools):
+        if not all(_TOOL_NAME.fullmatch(tool) for tool in [*self.sql_tools, *self.read_rules]):
             raise ProxyConfigurationError("Un nom d'outil SQL est invalide.")
         for name, (minimum, maximum) in _SQL_LIMITS.items():
             if not minimum <= getattr(self, name) <= maximum:
@@ -243,14 +267,16 @@ class ProxySettings:
         sql_queue_size: int = DEFAULT_SQL_QUEUE_SIZE,
         sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE,
         fingerprint_key: FingerprintKey | None = None,
+        read_rules: Sequence[ReadRule] = (),
     ) -> ProxySettings:
         try:
             url = httpx.URL(upstream)
         except (httpx.InvalidURL, TypeError) as error:
             raise ProxyConfigurationError("L'adresse du serveur MCP est illisible.") from error
+        name = server_name if server_name is not None else url.host
         return cls(
             upstream=url,
-            server_name=server_name if server_name is not None else url.host,
+            server_name=name,
             host=host,
             port=port,
             preserve_host=preserve_host,
@@ -262,6 +288,7 @@ class ProxySettings:
             sql_queue_size=sql_queue_size,
             sql_cache_size=sql_cache_size,
             fingerprint_key=fingerprint_key,
+            read_rules=rules_for(tuple(read_rules), name),
         )
 
     @classmethod
@@ -286,4 +313,5 @@ class ProxySettings:
             sql_queue_size=integer(environment, ENV_SQL_QUEUE_SIZE, DEFAULT_SQL_QUEUE_SIZE),
             sql_cache_size=integer(environment, ENV_SQL_CACHE_SIZE, DEFAULT_SQL_CACHE_SIZE),
             fingerprint_key=fingerprint_key(environment),
+            read_rules=read_rules(environment),
         )

@@ -47,6 +47,16 @@ Outcome = Literal[
 OUTCOMES: Final[tuple[str, ...]] = get_args(Outcome)
 ERROR_CODE_MIN: Final = -(2**31)
 ERROR_CODE_MAX: Final = 2**31 - 1
+# Ce qu'est devenue la clé lue d'après une règle de lecture : une liste fermée.
+ReadKeys = Literal[
+    "fingerprinted",
+    "no_fingerprint_key",
+    "request_too_large",
+    "missing_argument",
+    "unsupported_argument",
+    "too_many_keys",
+]
+READ_KEYS: Final[tuple[str, ...]] = get_args(ReadKeys)
 
 # Plage admise pour l'heure d'un événement, ramenée en UTC. Aucun événement de
 # lignage ne précède 1970, et un jour d'avance couvre tout décalage d'horloge
@@ -355,36 +365,37 @@ def facet_name_errors(raw: Mapping[str, Any]) -> list[FieldError]:
 _Duration = Annotated[float, Field(strict=True, ge=0, le=SIGNAL_MAX, allow_inf_nan=False)]
 _Count = Annotated[int, Field(strict=True, ge=0, le=SIGNAL_MAX)]
 _ErrorCode = Annotated[int, Field(strict=True, ge=ERROR_CODE_MIN, le=ERROR_CODE_MAX)]
-# Chaque signal présent dans la facette de qualité de service, et ce qu'il admet.
-_SIGNALS: Final[Mapping[str, TypeAdapter[Any]]] = {
-    "latencyMs": TypeAdapter(_Duration),
-    "addedLatencyMs": TypeAdapter(_Duration),
-    "outcome": TypeAdapter(Outcome),
-    "errorCode": TypeAdapter(_ErrorCode),
-    "errorCount": TypeAdapter(_Count),
-    "retryCount": TypeAdapter(_Count),
+# Chaque signal présent dans une facette de run, et ce qu'il admet : ceux de la facette
+# de qualité de service, et ce que la facette d'appel d'outil dit de la clé lue.
+_SIGNALS: Final[Mapping[tuple[str, str], TypeAdapter[Any]]] = {
+    (QOS_FACET, "latencyMs"): TypeAdapter(_Duration),
+    (QOS_FACET, "addedLatencyMs"): TypeAdapter(_Duration),
+    (QOS_FACET, "outcome"): TypeAdapter(Outcome),
+    (QOS_FACET, "errorCode"): TypeAdapter(_ErrorCode),
+    (QOS_FACET, "errorCount"): TypeAdapter(_Count),
+    (QOS_FACET, "retryCount"): TypeAdapter(_Count),
+    (TOOL_CALL_FACET, "readKeys"): TypeAdapter(ReadKeys),
 }
 
 
 def signal_errors(raw: Mapping[str, Any]) -> list[FieldError]:
-    """Signaux de qualité de service hors de leurs bornes.
+    """Signaux d'un run hors de leurs bornes.
 
-    Durées et compteurs sont des nombres bornés, l'issue vient d'une liste
-    fermée, le code d'erreur est un entier sur 32 bits. Un signal absent n'est
-    pas exigé ; ``null`` n'en est pas un. Les autres champs de la facette ne
-    sont pas contrôlés ici.
+    Durées et compteurs sont des nombres bornés, l'issue et le sort de la clé
+    lue viennent de listes fermées, le code d'erreur est un entier sur 32 bits.
+    Un signal absent n'est pas exigé ; ``null`` n'en est pas un. Les autres
+    champs de ces facettes ne sont pas contrôlés ici.
     """
-    facet = _mapping(_mapping(raw.get("run")).get("facets")).get(QOS_FACET)
-    if not isinstance(facet, Mapping):
-        return []
+    facets = _mapping(_mapping(raw.get("run")).get("facets"))
     errors: list[FieldError] = []
-    for name, adapter in _SIGNALS.items():
-        if name not in facet:
+    for (key, name), adapter in _SIGNALS.items():
+        facet = facets.get(key)
+        if not isinstance(facet, Mapping) or name not in facet:
             continue
         try:
             adapter.validate_python(facet[name])
         except ValidationError as error:
-            path = json_pointer(("run", "facets", QOS_FACET, name))
+            path = json_pointer(("run", "facets", key, name))
             errors.extend(
                 FieldError(path=path, type=item["type"], message=item["msg"])
                 for item in error.errors(

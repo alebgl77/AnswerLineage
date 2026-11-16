@@ -128,7 +128,11 @@ async def test_tool_without_sql_rule_is_not_analyzed(bench: BenchFactory) -> Non
     async with bench(sql_tools=SQL_TOOLS) as b:
         await exchange("POST", b.proxy_url + "/mcp", content=body)
         (event,) = b.sink.events
-        assert "readResolution" not in facet(event)
+        # Ni SQL ni règle de lecture déclarés : la lecture n'est pas décrite.
+        assert (facet(event)["readResolution"], facet(event)["unresolvedReason"]) == (
+            "unresolved",
+            "undescribed_tool",
+        )
         assert event["inputs"] == []
 
 

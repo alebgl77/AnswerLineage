@@ -39,7 +39,7 @@ from answerlineage_proxy.coverage import (
     Report,
     report_periodically,
 )
-from answerlineage_proxy.events import Outcome, build_tool_call_event
+from answerlineage_proxy.events import UNDESCRIBED_TOOL, Outcome, build_tool_call_event
 from answerlineage_proxy.fingerprint import RESULT_LABEL, Digest, arguments_fingerprint
 from answerlineage_proxy.inspection import (
     HEADER_METHOD,
@@ -49,6 +49,7 @@ from answerlineage_proxy.inspection import (
     inspect_prefix,
     inspect_request,
 )
+from answerlineage_proxy.rules import DeclaredReads, declared_reads
 from answerlineage_proxy.signals import (
     CallSignals,
     CallTiming,
@@ -112,6 +113,8 @@ _DOT_SEGMENTS = frozenset({b".", b".."})
 # relaie les appels, ne prenne que quelques millisecondes, même sur un début hostile.
 _PREFIX_WINDOW = 16 * 1024
 # Compteur de ProxyStats de chaque origine d'une analyse du SQL qui en a un.
+# Noms d'outils sans règle de lecture journalisés, une fois chacun : au-delà, plus aucun.
+_UNDESCRIBED_LOGGED = 1_000
 _ORIGIN_COUNTERS: dict[Origin, str] = {
     "cache": "sql_from_cache",
     "over_budget": "sql_over_budget",
@@ -167,6 +170,9 @@ class ProxyStats:
     sql_over_budget: int = 0
     sql_refused: int = 0
     sql_analyzer_failures: int = 0
+    # Appels d'un outil sans règle de lecture ni SQL déclaré : leurs lectures ne sont
+    # pas décrites.
+    undescribed_calls: int = 0
 
 
 @dataclass
@@ -275,6 +281,8 @@ class McpProxy:
         self._guard = settings.guard()
         # Chaînes de reprises en cours, en mémoire bornée.
         self.retries = retries if retries is not None else RetryMemory()
+        # Outils sans règle de lecture déjà journalisés, des noms validés seulement.
+        self._undescribed: set[str] = set()
         # Analyses de SQL en cours, menées après la réponse, hors du chemin de l'appel.
         self._pending: set[asyncio.Task[None]] = set()
         # Processus d'analyse du SQL, démarré à la première requête à analyser.
@@ -651,7 +659,17 @@ class McpProxy:
             exchange.sample = None
             exchange.sessions = []
         rule = self.settings.sql_tools.get(inspection.tool) if inspection.tool else None
-        if rule is None or exchange.outcome != "COMPLETE":
+        if rule is None:
+            try:
+                reads, declared = self._without_sql(inspection, exchange)
+            except Exception as error:
+                logger.error("Lectures de l'appel non établies (%s).", type(error).__name__)
+                reads, declared = None, None
+            if declared is not None:
+                details = {**details, "declared": declared}
+            self._emit(inspection, exchange, event_time, details, reads)
+            return
+        if exchange.outcome != "COMPLETE":
             # Un appel qui a échoué n'a rien fait lire à l'agent.
             self._emit(inspection, exchange, event_time, details)
             return
@@ -667,6 +685,35 @@ class McpProxy:
         )
         self._pending.add(task)
         task.add_done_callback(self._pending.discard)
+
+    def _without_sql(
+        self, inspection: Inspection, exchange: _Exchange
+    ) -> tuple[SqlAnalysis | None, DeclaredReads | None]:
+        """Les lectures d'un appel sans SQL : celles que déclare la règle de l'outil, ou
+        une lecture non décrite, comptée, et journalisée une fois par nom d'outil."""
+        tool = inspection.tool
+        if tool is None:
+            return None, None
+        rule = self.settings.read_rules.get(tool)
+        if rule is None:
+            self.stats.undescribed_calls += 1
+            if tool not in self._undescribed and len(self._undescribed) < _UNDESCRIBED_LOGGED:
+                self._undescribed.add(tool)
+                # Un nom d'outil validé, jamais un argument.
+                logger.warning(
+                    "Outil « %s » sans règle de lecture : ses lectures ne sont pas décrites.",
+                    tool,
+                )
+            return SqlAnalysis(resolved=False, reason=UNDESCRIBED_TOOL), None
+        if exchange.outcome != "COMPLETE":
+            # Un appel qui a échoué n'a rien fait lire à l'agent.
+            return None, None
+        return None, declared_reads(
+            rule,
+            inspection.arguments,
+            readable=inspection.has_arguments,
+            key=self.settings.fingerprint_key,
+        )
 
     def _details(self, inspection: Inspection, exchange: _Exchange) -> dict[str, Any]:
         """Empreintes, taille du résultat et signaux de qualité de service de l'appel."""
