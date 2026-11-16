@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/a2a/v1/AgentExtension.json",
+  "$ref": "#/$defs/AgentExtension",
+  "$defs": {
+    "AgentExtension": {
+      "description": "Déclaration de l'extension de lignage d'AnswerLineage, version 1, dans capabilities.extensions de l'Agent Card d'un agent appelé (A2A 1.0, AgentExtension). L'objet est fermé : un champ inconnu est refusé.",
+      "type": "object",
+      "properties": {
+        "uri": {
+          "const": "https://github.com/alebgl77/AnswerLineage/tree/main/spec/a2a/v1",
+          "description": "URI de l'extension, version 1. Toute autre URI désigne une autre extension ou une autre version."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Ce que l'agent fait de l'extension, pour un lecteur humain."
+        },
+        "required": {
+          "const": false,
+          "description": "Toujours faux : le lignage ne conditionne jamais un appel. Absent, il vaut faux."
+        },
+        "params": {
+          "$ref": "#/$defs/Params"
+        }
+      },
+      "required": [
+        "uri",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "Params": {
+      "description": "Paramètres de l'extension, version 1.",
+      "type": "object",
+      "properties": {
+        "callJob": {
+          "$ref": "#/$defs/Job"
+        }
+      },
+      "required": [
+        "callJob"
+      ],
+      "additionalProperties": false
+    },
+    "Job": {
+      "description": "Job OpenLineage d'un appel à cet agent : l'appelant le donne au run de son appel, l'appelé le cite dans la facette parent de son propre run. Chaque champ a la forme d'un nom, au sens de l'ingestion d'AnswerLineage.",
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "namespace",
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

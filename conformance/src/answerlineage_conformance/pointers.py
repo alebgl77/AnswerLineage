@@ -9,7 +9,7 @@ recopiée ne peut valoir : un chevron n'a pas la forme d'un nom.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Final
 
 from answerlineage_api.identifiers import FACET_NAME_MAX, identifier_fault
@@ -28,10 +28,17 @@ def location_of(pointer: str) -> Location:
 
 
 class Masker:
-    """Écrit les pointeurs d'un rapport ; ``searcher`` connaît les canaris à ne pas recopier."""
+    """Écrit les pointeurs d'un rapport.
 
-    def __init__(self, searcher: Searcher | None = None) -> None:
+    ``searcher`` connaît les canaris à ne pas recopier ; ``hidden`` dit d'une
+    clé qu'elle porte un contenu à ne pas recopier.
+    """
+
+    def __init__(
+        self, searcher: Searcher | None = None, hidden: Callable[[str], bool] | None = None
+    ) -> None:
         self._searcher = searcher
+        self._hidden = hidden
 
     def _segment(self, part: int | str) -> str:
         if isinstance(part, int):
@@ -39,6 +46,8 @@ class Masker:
         if identifier_fault(part, max_length=FACET_NAME_MAX) is not None:
             return MASKED
         if self._searcher is not None and self._searcher.sightings(part):
+            return MASKED
+        if self._hidden is not None and self._hidden(part):
             return MASKED
         return part.replace("~", "~0").replace("/", "~1")
 

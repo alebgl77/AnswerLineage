@@ -381,6 +381,54 @@ def test_a_file_that_is_not_json_fails(
     assert "JSON" in capsys.readouterr().out
 
 
+def write_extension(repository: Path, version: str, name: str, content: str) -> Path:
+    path = repository / "spec" / "a2a" / version / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, "utf-8")
+    return path
+
+
+@pytest.mark.parametrize("name", ["LineageSummary.json", "README.md"])
+def test_a_published_file_of_the_a2a_extension_never_changes(
+    tmp_path: Path, published: dict[str, str], capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    """Une URI d'extension désigne pour toujours les mêmes fichiers, texte compris."""
+    path = write_extension(tmp_path, "v1", name, '{"type": "object"}\n')
+    base = commit(tmp_path, "extension")
+    assert main({"BASE_SHA": base}) == 0
+
+    path.write_text('{"type": "object", "maxItems": 1}\n', "utf-8")
+    assert main({"BASE_SHA": base}) == 1
+    assert f"spec/a2a/v1/{name} : publié et modifié" in capsys.readouterr().out
+
+    path.unlink()
+    assert main({"BASE_SHA": base}) == 1
+    assert f"spec/a2a/v1/{name} : publié et retiré" in capsys.readouterr().out
+
+
+def test_a_new_version_of_the_a2a_extension_is_a_new_folder(
+    tmp_path: Path, published: dict[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_extension(tmp_path, "v1", "LineageSummary.json", '{"type": "object"}\n')
+    base = commit(tmp_path, "extension")
+    write_extension(tmp_path, "v2", "LineageSummary.json", '{"type": "array"}\n')
+    assert main({"BASE_SHA": base}) == 0
+    assert "compatibles" in capsys.readouterr().out
+
+
+def test_an_extension_published_without_facets_is_compared(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git(tmp_path, "init", "--quiet", "--initial-branch", "main")
+    path = write_extension(tmp_path, "v1", "CallerContext.json", "{}\n")
+    base = commit(tmp_path, "extension seule")
+    monkeypatch.chdir(tmp_path)
+    assert main({"BASE_SHA": base}) == 0
+    assert "compatibles" in capsys.readouterr().out
+    path.write_text("[]\n", "utf-8")
+    assert main({"BASE_SHA": base}) == 1
+
+
 def test_the_repository_facets_respect_the_layout_and_chain_without_a_break() -> None:
     root = Path(__file__).resolve().parents[1] / "spec" / "facets"
     assert any(root.glob("*/*.json"))

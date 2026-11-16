@@ -140,6 +140,8 @@ Pour valider ses événements, on charge le schéma d'OpenLineage depuis [sa cop
 
 Le [kit de conformité](conformite.md) juge ensuite l'émetteur sur ce qu'il a émis : la forme des événements et des facettes, ce qui les relie, ce que le graphe en retiendrait, et l'absence de contenu, prouvée par des canaris.
 
+Entre deux agents qui se parlent par le protocole A2A, l'[extension A2A](a2a.md) transmet le contexte de trace de l'appel : l'agent appelé rattache son run à celui de l'appel par la facette standard `parent`, et renvoie un résumé de lignage sans contenu.
+
 ## Versions et immutabilité
 
 Un fichier de version publié ne change plus jamais, pas d'un octet : l'adresse d'un `_schemaURL` désigne toujours le même schéma. Une évolution passe par une nouvelle version, dans un nouveau dossier (`1-1-0`).

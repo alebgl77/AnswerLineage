@@ -17,6 +17,11 @@ continuer de fonctionner : ce contrôle échoue dès que
 Ajouter un champ facultatif est compatible. Le contrôle compare les champs, leur
 caractère obligatoire et leur type, pas les bornes ni les valeurs admises.
 
+Les fichiers de l'extension A2A (``spec/a2a/<version>/``) sont figés de même, tous,
+schémas et texte : un fichier publié ne change ni ne disparaît. Ils n'ont pas
+d'autre règle : leur version est dans l'URI de l'extension, et une évolution est
+une nouvelle version, dans un nouveau dossier.
+
 Usage : ``python -m scripts.check_facets_compat`` (``BASE_SHA`` désigne la
 branche cible ; à défaut, ``origin/main``).
 """
@@ -34,6 +39,8 @@ from pathlib import Path
 from typing import Any
 
 FACETS = Path("spec/facets")
+# Dossiers figés : chaque fichier publié y est immuable, sans autre règle de rangement.
+FROZEN = (Path("spec/a2a"),)
 BASE_URL = "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/"
 JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 OPENLINEAGE_DEFINITIONS = "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/"
@@ -241,8 +248,11 @@ def local_problems(root: Path = FACETS) -> list[str]:
     return problems + version_changes(schemas)
 
 
-def published_on(reference: str, root: Path = FACETS) -> dict[str, bytes]:
-    """Fichiers de facettes publiés sur une référence Git, vides si elle n'en a pas."""
+def published_on(reference: str, root: Path = FACETS, suffix: str = ".json") -> dict[str, bytes]:
+    """Fichiers publiés sous ``root`` sur une référence Git, vides si elle n'en a pas.
+
+    Seuls comptent les fichiers dont le nom finit par ``suffix`` ; tous, s'il est vide.
+    """
     listing = subprocess.run(  # noqa: S603 — commande fixe, référence validée par l'appelant.
         ["git", "ls-tree", "-r", "--name-only", reference, "--", root.as_posix()],  # noqa: S607
         capture_output=True,
@@ -253,7 +263,7 @@ def published_on(reference: str, root: Path = FACETS) -> dict[str, bytes]:
     if listing.returncode != 0:
         return published
     for path in sorted(listing.stdout.splitlines()):
-        if not path.endswith(".json"):
+        if not path.endswith(suffix):
             continue
         content = subprocess.run(  # noqa: S603 — commande fixe, référence validée par l'appelant.
             ["git", "show", f"{reference}:{path}"],  # noqa: S607
@@ -277,16 +287,24 @@ def published_changes(published: Mapping[str, bytes]) -> list[str]:
     return problems
 
 
-def main(environment: Mapping[str, str] | None = None, root: Path = FACETS) -> int:
+def main(
+    environment: Mapping[str, str] | None = None,
+    root: Path = FACETS,
+    frozen: tuple[Path, ...] = FROZEN,
+) -> int:
     env = os.environ if environment is None else environment
     reference = env.get("BASE_SHA") or "origin/main"
     if not re.fullmatch(r"[0-9a-f]{40}|[\w./-]{1,200}", reference) or reference.startswith("-"):
         print("Référence de la branche cible illisible.")
         return 2
     published = published_on(reference, root)
+    for folder in frozen:
+        published.update(published_on(reference, folder, suffix=""))
     problems = local_problems(root) + published_changes(published)
     if problems:
-        print("Schémas de facettes incompatibles avec ceux qui sont publiés :")
+        print(
+            "Schémas de facettes ou de l'extension A2A incompatibles avec ceux qui sont publiés :"
+        )
         for problem in problems:
             print(f"  {problem}")
         print(
@@ -295,9 +313,9 @@ def main(environment: Mapping[str, str] | None = None, root: Path = FACETS) -> i
         )
         return 1
     if not published:
-        print(f"Aucune facette publiée sur {reference} : rien à comparer.")
+        print(f"Aucun schéma publié sur {reference} : rien à comparer.")
         return 0
-    print(f"Schémas de facettes compatibles avec ceux qui sont publiés sur {reference}.")
+    print(f"Schémas compatibles avec ceux qui sont publiés sur {reference}.")
     return 0
 
 

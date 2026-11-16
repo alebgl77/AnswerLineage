@@ -18,6 +18,8 @@ uv run answerlineage-conformance check evenements.json --canaries canaris.json -
 
 Le kit ne lit que les fichiers qu'on lui donne. Il n'ouvre aucune connexion et n'a besoin d'aucune base de données : il juge avec le code même de l'ingestion et des workers, et avec la copie des schémas publiés qu'il embarque. Ce que le kit accepte est ce que le produit accepte.
 
+Il juge aussi l'[extension A2A](a2a.md#la-suite-de-conformité) entre deux agents : `answerlineage-conformance a2a --card carte.json --exchange echange.json`, sur l'Agent Card de l'appelé et un échange capturé, avec ses propres codes.
+
 ## Intégrer un émetteur, pas à pas
 
 **1. Tirer les canaris.** `canaries` écrit trois valeurs inventées, une par rôle :
@@ -255,7 +257,7 @@ uv run answerlineage-conformance check evenements.jsonl \
 
 ## Les schémas embarqués
 
-Le kit installé juge sans le dépôt. Son paquet porte, dans `answerlineage_conformance/schemas/`, la copie de [`spec/facets/`](../spec/facets/1-0-0) et du [schéma d'OpenLineage](../spec/openlineage/README.md) que ces facettes prolongent. `spec/` reste la seule source : un test tient la copie identique à l'octet près, fichier pour fichier. Une nouvelle version d'une facette se recopie donc dans le paquet, et le kit la reconnaît sans autre changement : la clé d'une facette, ses versions, leur adresse et sa place viennent de son schéma. Les références vers le schéma d'OpenLineage se résolvent dans cette copie, jamais par le réseau.
+Le kit installé juge sans le dépôt. Son paquet porte, dans `answerlineage_conformance/schemas/`, la copie de [`spec/facets/`](../spec/facets/1-0-0), du [schéma d'OpenLineage](../spec/openlineage/README.md) que ces facettes prolongent, et des schémas de l'[extension A2A](../spec/a2a/v1/README.md). `spec/` reste la seule source : un test tient la copie identique à l'octet près, fichier pour fichier. Une nouvelle version d'une facette se recopie donc dans le paquet, et le kit la reconnaît sans autre changement : la clé d'une facette, ses versions, leur adresse et sa place viennent de son schéma. Les références vers le schéma d'OpenLineage se résolvent dans cette copie, jamais par le réseau.
 
 ## Ce que le kit ne prouve pas
 

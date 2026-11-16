@@ -119,9 +119,16 @@ def violations(address: str, facet: object) -> list[tuple[Location, str]]:
     Chaque écart est un emplacement dans la facette et la règle violée, mot-clé
     de JSON Schema : ``required``, ``type``, ``maxLength``, ``pattern``…
     """
+    return rule_violations(_validator(address), facet)
+
+
+def rule_violations(
+    validator: Draft202012Validator, instance: object
+) -> list[tuple[Location, str]]:
+    """Les écarts d'un document avec un schéma : un emplacement et la règle violée, triés."""
     found = {
         (location, str(error.validator))
-        for error in _validator(address).iter_errors(facet)
+        for error in validator.iter_errors(instance)
         for location in _fields(error)
     }
     return sorted(found, key=lambda item: ([str(part) for part in item[0]], item[1]))

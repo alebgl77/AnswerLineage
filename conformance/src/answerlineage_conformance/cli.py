@@ -1,9 +1,11 @@
 """Ligne de commande du kit de conformité : ``answerlineage-conformance``.
 
 ``canaries`` écrit trois canaris. ``check`` juge un émetteur sur les fichiers
-qu'une demande jouée avec eux a laissés : il sort ``0`` quand l'émetteur est
-conforme, ``1`` quand il ne l'est pas, ``2`` quand une entrée est illisible ou
-l'usage fautif. Rien n'est lu que ces fichiers : ni réseau, ni base de données.
+qu'une demande jouée avec eux a laissés. ``a2a`` juge l'extension A2A sur une
+Agent Card et un échange capturé. Chaque jugement sort ``0`` quand ce qui est
+jugé est conforme, ``1`` quand il ne l'est pas, ``2`` quand une entrée est
+illisible ou l'usage fautif. Rien n'est lu que ces fichiers : ni réseau, ni
+base de données.
 """
 
 from __future__ import annotations
@@ -14,8 +16,10 @@ import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from answerlineage_api.ingest.models import parse_event_time
+from answerlineage_conformance import a2a, a2a_report
 from answerlineage_conformance.canaries import (
     Canary,
     canaries_document,
@@ -29,6 +33,7 @@ from answerlineage_conformance.report import Report, render_json, render_text
 from answerlineage_conformance.sources import InputError, SourceFile, parse_events, parse_json, read
 
 _RENDERERS = {"text": render_text, "json": render_json}
+_A2A_RENDERERS = {"text": a2a_report.render_text, "json": a2a_report.render_json}
 
 
 def _now() -> datetime:
@@ -80,6 +85,21 @@ def _parser() -> argparse.ArgumentParser:
         help="heure de référence (RFC 3339) : l'ingestion borne l'heure d'un événement par "
         "celle de sa réception ; par défaut, l'heure courante",
     )
+    extension = commands.add_parser(
+        "a2a",
+        help="juge l'extension A2A sur une Agent Card et un échange capturé : "
+        "0 conforme, 1 non conforme",
+    )
+    extension.add_argument(
+        "--card", type=Path, required=True, help="Agent Card de l'agent appelé (JSON)"
+    )
+    extension.add_argument(
+        "--exchange",
+        type=Path,
+        required=True,
+        help="échange capturé : la requête de l'appelant et la réponse de l'appelé (JSON)",
+    )
+    extension.add_argument("--format", choices=sorted(_A2A_RENDERERS), default="text")
     return parser
 
 
@@ -140,12 +160,47 @@ def _check(args: argparse.Namespace) -> int:
     return 0 if judgement.conformant else 1
 
 
+def _exchange(file: SourceFile) -> dict[str, Any]:
+    document = parse_json(file)
+    if not isinstance(document, dict) or not all(
+        isinstance(document.get(side), dict) for side in ("request", "response")
+    ):
+        raise InputError(
+            f"{file.path} : ce n'est pas un échange capturé : un objet JSON est attendu, "
+            "avec un objet « request » et un objet « response »."
+        )
+    return document
+
+
+def _a2a(args: argparse.Namespace) -> int:
+    try:
+        card = read("card", args.card)
+        exchange = read("exchange", args.exchange)
+        card_document = parse_json(card)
+        if not isinstance(card_document, dict):
+            raise InputError(
+                f"{card.path} : ce n'est pas une Agent Card : un objet JSON est attendu."
+            )
+        exchange_document = _exchange(exchange)
+    except InputError as error:
+        print(f"Entrée illisible : {error}", file=sys.stderr)
+        return 2
+    judgement = a2a.judge(
+        card_document, exchange_document, card_file=card.path, exchange_file=exchange.path
+    )
+    report = a2a_report.A2aReport(judgement, (card, exchange))
+    _write(_A2A_RENDERERS[args.format](report))
+    return 0 if judgement.conformant else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "canaries":
         json.dump(canaries_document(new_canaries()), sys.stdout, indent=2)
         sys.stdout.write("\n")
         return 0
+    if args.command == "a2a":
+        return _a2a(args)
     return _check(args)
 
 

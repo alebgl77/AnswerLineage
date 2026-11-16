@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal
 
-FileRole = Literal["events", "canaries", "witness", "logs", "metrics"]
+FileRole = Literal["events", "canaries", "witness", "logs", "metrics", "card", "exchange"]
 
 # Une demande jouée tient en quelques kilo-octets : la borne arrête un fichier pris pour un autre.
 MAX_FILE_BYTES: Final = 256 * 1024 * 1024

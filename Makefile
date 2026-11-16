@@ -13,7 +13,7 @@ check: policy contract format-check lint typecheck packages test coverage-gate #
 policy: ## Politique du dépôt (actions et images épinglées, permissions minimales, agents de code)
 	uv run python -m scripts.check_policy
 
-contract: ## Compatibilité de l'API et des schémas de facettes avec ceux publiés sur la branche cible
+contract: ## Compatibilité de l'API, des schémas de facettes et de l'extension A2A avec ceux publiés sur la branche cible
 	uv run python -m scripts.check_openapi_compat
 	uv run python -m scripts.check_facets_compat
 
