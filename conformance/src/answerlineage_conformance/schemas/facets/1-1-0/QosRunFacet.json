@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-1-0/QosRunFacet.json",
+  "type": "object",
+  "$defs": {
+    "QosRunFacet": {
+      "description": "Qualité de service d'un run : modèle, volumes, latence, coût, issue, erreurs, reprises. Facette de run. Aucun champ n'est obligatoire : chaque émetteur porte ce qu'il voit. Une erreur se dit par une catégorie et un code, jamais par son message.",
+      "allOf": [
+        {
+          "$ref": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunFacet"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Modèle utilisé."
+            },
+            "route": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Route empruntée jusqu'au modèle."
+            },
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Jetons en entrée."
+            },
+            "outputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Jetons en sortie."
+            },
+            "latencyMs": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1000000000,
+              "description": "Latence du run, en millisecondes. Pour un appel d'outil vu par le proxy : de l'arrivée de la requête à la réponse rendue, ou à l'échec de l'échange."
+            },
+            "addedLatencyMs": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1000000000,
+              "description": "Latence ajoutée par l'émetteur lui-même sur le chemin du run, en millisecondes, mesurée sur une horloge monotone. Pour le proxy : le temps qu'il passe à traiter la requête avant de la relayer, et chaque partie de la réponse avant de la rendre ; les attentes du client et du serveur n'y comptent pas."
+            },
+            "estimatedCost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Coût estimé du run, dans l'unité monétaire de l'émetteur : cette version ne porte pas la devise."
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "success",
+                "jsonrpc_error",
+                "http_error",
+                "transport_error",
+                "timeout",
+                "client_abort"
+              ],
+              "description": "Issue du run vue par l'émetteur : succès, erreur JSON-RPC dans la réponse, statut HTTP d'erreur, échec de transport (serveur injoignable, réponse interrompue), délai dépassé, ou abandon par le client."
+            },
+            "errorCode": {
+              "type": "integer",
+              "minimum": -2147483648,
+              "maximum": 2147483647,
+              "description": "Code numérique de l'erreur : le code de l'erreur JSON-RPC (jsonrpc_error) ou le statut HTTP (http_error). Absent quand l'issue n'a pas de code, ou que le code reçu n'est pas un entier sur 32 bits. Jamais le message."
+            },
+            "errorCount": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000,
+              "description": "Nombre d'erreurs rencontrées. Un abandon par le client n'en est pas une."
+            },
+            "retryCount": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000,
+              "description": "Nombre de reprises : pour un appel d'outil vu par le proxy, le nombre d'appels qui le précèdent dans sa chaîne de reprises (même outil, mêmes arguments, même portée, le précédent en échec). Absent quand l'émetteur ne peut pas reconnaître une reprise, jamais zéro par défaut."
+            },
+            "skill": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Skill utilisé."
+            }
+          }
+        }
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "answerlineage_qos": {
+      "$ref": "#/$defs/QosRunFacet"
+    }
+  }
+}

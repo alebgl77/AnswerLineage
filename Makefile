@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check policy contract openapi format format-check lint typecheck test coverage-gate measure abuse secrets image ui e2e demo
+.PHONY: help setup check policy contract openapi format format-check lint typecheck test coverage-gate measure abuse bench secrets image ui e2e demo
 
 help: ## Liste les cibles
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -45,6 +45,9 @@ measure: ## Mesure le moteur d'impact sur le corpus de vérité, imprime le tabl
 abuse: ## Rejoue le corpus d'abus seul : chaque cas d'attaque doit être bloqué (Docker requis)
 	uv run answerlineage-corpus check
 	uv run pytest tests/test_abuse_corpus.py tests/test_abuse_explorer.py
+
+bench: ## Banc de latence du proxy : 100 000 appels, p99 de la latence ajoutée au plus 5 ms
+	uv run python -m scripts.bench_proxy $(BENCH_ARGS)
 
 secrets: ## Détection de secrets sur tout l'historique (gitleaks, Docker requis)
 	scripts/gitleaks.sh selftest

@@ -13,6 +13,7 @@ from uuid import UUID
 
 from answerlineage_proxy import __version__
 from answerlineage_proxy.inspection import Inspection
+from answerlineage_proxy.signals import CallSignals
 from answerlineage_proxy.sql import SqlAnalysis
 from answerlineage_proxy.tracecontext import CallTrace
 
@@ -25,6 +26,12 @@ TOOL_CALL_FACET = "answerlineage_toolCall"
 TOOL_CALL_FACET_SCHEMA = (
     "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/"
     "ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
+)
+# Qualité de service de l'appel : latence, latence ajoutée, issue, reprises (spec/facets/1-1-0/).
+QOS_FACET = "answerlineage_qos"
+QOS_FACET_SCHEMA = (
+    "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-1-0/"
+    "QosRunFacet.json#/$defs/QosRunFacet"
 )
 # Facette standard : les champs d'un jeu de données lu sont ceux que la requête lit.
 SCHEMA_FACET_SCHEMA = (
@@ -57,6 +64,7 @@ def build_tool_call_event(
     arguments_fingerprint: str | None = None,
     result_fingerprint: str | None = None,
     result_size: int | None = None,
+    signals: CallSignals | None = None,
 ) -> dict[str, Any]:
     """Construit le RunEvent d'un appel d'outil relayé.
 
@@ -66,7 +74,8 @@ def build_tool_call_event(
     pour passer du lignage à la trace. La forme sans littéraux de la requête,
     quand l'analyse en a établi une, va dans la facette de job ``sql``, avec
     ``dialect``. Les empreintes et la taille du résultat vont dans la facette de
-    l'appel.
+    l'appel ; ``signals``, latence, issue et reprises, dans la facette de
+    qualité de service.
     """
     facet: dict[str, Any] = {
         "_producer": PRODUCER,
@@ -123,12 +132,19 @@ def build_tool_call_event(
                     }
                 }
             inputs.append(dataset)
+    run_facets: dict[str, Any] = {TOOL_CALL_FACET: facet}
+    if signals is not None:
+        run_facets[QOS_FACET] = {
+            "_producer": PRODUCER,
+            "_schemaURL": QOS_FACET_SCHEMA,
+            **signals.fields(),
+        }
     return {
         "eventType": outcome,
         "eventTime": format_event_time(event_time),
         "producer": PRODUCER,
         "schemaURL": RUN_EVENT_SCHEMA,
-        "run": {"runId": str(run_id), "facets": {TOOL_CALL_FACET: facet}},
+        "run": {"runId": str(run_id), "facets": run_facets},
         "job": job,
         "inputs": inputs,
         "outputs": [],

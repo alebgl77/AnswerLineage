@@ -70,6 +70,8 @@ Le proxy lit le corps des requêtes `POST` pour reconnaître un appel d'outil. I
 - l'événement décrit l'outil du corps ;
 - la requête est relayée telle quelle : c'est le serveur MCP qui la refuse, comme la révision 2026-07-28 l'y oblige.
 
+De la réponse à un appel d'outil, le proxy ne lit qu'une copie bornée, une fois la réponse rendue, pour y trouver une erreur JSON-RPC et son code ([Qualité de service](#lissue)).
+
 Un nom d'outil hors de la forme recommandée par MCP (1 à 128 lettres, chiffres, `_`, `-`, `.`) n'est pas recopié : l'événement porte `invalidToolName`.
 
 ### Ce que le proxy ne peut pas inspecter
@@ -335,9 +337,103 @@ L'empreinte du résultat se calcule au fil du relais, morceau par morceau, aprè
 
 L'empreinte des arguments se calcule après l'échange, quand l'événement est construit : quelques microsecondes pour des arguments ordinaires, de l'ordre de 7 ms pour 1 Mo, la taille lue par défaut, pendant lesquelles la boucle ne relaie rien d'autre.
 
+## Qualité de service
+
+Chaque appel porte, dans la facette `answerlineage_qos` ([`QosRunFacet` 1-1-0](../spec/facets/1-1-0/QosRunFacet.json)), ce que le proxy voit de l'échange : sa latence, la latence que le proxy y ajoute, son issue et ses reprises. Le proxy ne voit ni modèle, ni jetons, ni coût : ces champs de la facette restent absents.
+
+```json
+"answerlineage_qos": {
+  "_producer": "https://github.com/alebgl77/AnswerLineage/tree/0.0.0/proxy",
+  "_schemaURL": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-1-0/QosRunFacet.json#/$defs/QosRunFacet",
+  "latencyMs": 3.217,
+  "addedLatencyMs": 0.243,
+  "outcome": "jsonrpc_error",
+  "errorCode": -32602,
+  "errorCount": 1,
+  "retryCount": 1
+}
+```
+
+| Champ | Ce que le proxy mesure |
+| --- | --- |
+| `latencyMs` | De l'arrivée de la requête à la réponse rendue au client, ou à l'échec de l'échange : la latence de l'appel vue du proxy |
+| `addedLatencyMs` | Ce que le proxy dépense lui-même avant de relayer la requête et avant de rendre chaque partie de la réponse : les attentes du client et du serveur MCP n'y comptent pas |
+| `outcome` | L'issue de l'échange, d'une liste fermée (ci-dessous) |
+| `errorCode` | Le code numérique de l'erreur : celui de l'erreur JSON-RPC, ou le statut HTTP. Absent quand l'issue n'a pas de code |
+| `errorCount` | 1 pour une erreur, 0 sinon ; un abandon par le client n'est pas une erreur |
+| `retryCount` | Le nombre d'appels qui précèdent celui-ci dans sa chaîne de reprises. Absent quand une reprise ne peut pas être reconnue, jamais zéro par défaut |
+
+Les durées sont en millisecondes, à la microseconde, prises sur une horloge monotone : un réglage de l'horloge du système ne les fausse pas.
+
+### L'issue
+
+Dans cet ordre, la première qui s'applique :
+
+| `outcome` | Cas | `errorCode` |
+| --- | --- | --- |
+| `client_abort` | Le client est parti avant la fin de la réponse | absent |
+| `timeout` | Un délai du client HTTP du proxy est dépassé : connexion au serveur MCP (10 s), ou, quand le client HTTP en a un, lecture de la réponse | absent |
+| `transport_error` | Serveur MCP injoignable, réponse interrompue | absent |
+| `http_error` | Statut HTTP 400 ou plus, rendu par le serveur MCP ou par le proxy lui-même (chemin refusé) | le statut |
+| `jsonrpc_error` | Statut de succès, mais la réponse JSON-RPC porte une erreur (`error`) | le code JSON-RPC, s'il est un entier sur 32 bits |
+| `success` | Tout le reste | absent |
+
+Une erreur se dit par sa catégorie et son code, jamais par son message : un message d'erreur peut citer les arguments de l'appel. Un code reçu qui n'est pas un entier signé sur 32 bits n'est pas recopié.
+
+Pour y lire une erreur JSON-RPC, le proxy garde de la réponse une copie bornée à 16 Ko, au fil du relais, après l'envoi de chaque morceau au client : le début d'un corps `application/json`, la fin d'un flux `text/event-stream`, où le serveur écrit la réponse avant de le fermer. Il la lit une fois la réponse rendue, puis l'oublie :
+
+- un corps JSON qui tient dans la copie est lu en entier, strictement : une clé répétée, un document illisible n'établissent aucune erreur ;
+- un corps plus grand est lu par son début, avec le lecteur strict des corps trop grands ([ci-dessus](#corps-plus-grand-que-la-taille-lue)) : `error` au premier niveau, puis `error.code` ;
+- dans un flux SSE, c'est la dernière réponse JSON-RPC complète qui compte ; une requête ou une notification du serveur n'en est pas une, et le premier événement d'une fin tronquée n'est pas lu.
+
+Un corps compressé, ou d'un autre type, n'est pas lu : son issue tient au seul statut HTTP. L'issue ne change pas le type de l'événement : une erreur JSON-RPC rendue avec un statut de succès reste un événement `COMPLETE`, et l'état du run dans le graphe ne change pas.
+
+### Les reprises
+
+MCP ne marque pas une reprise. Le proxy la reconnaît ainsi : un appel reprend le précédent quand
+
+- il nomme le même outil, avec la même empreinte des arguments ;
+- il vient de la même portée : la même session MCP (en-tête `Mcp-Session-Id`, s'il est unique), sinon la même trace transmise par le client (`trace-id` de `_meta` ou de l'en-tête `traceparent`), sinon le même proxy ;
+- le précédent n'a pas réussi (toute issue autre que `success`, abandon compris : un client qui renonce puis recommence reprend son appel) ;
+- il commence après la fin du précédent, et au plus 60 secondes après.
+
+`retryCount` compte les appels qui le précèdent dans cette chaîne : 0 pour un premier appel, 1 pour la première reprise, 2 pour la deuxième. Un succès clôt la chaîne : le même appel ensuite n'est pas une reprise. Deux appels identiques menés en même temps ne se reprennent pas l'un l'autre.
+
+Sans clé d'empreinte, ou sans empreinte des arguments (corps plus grand que la taille lue, arguments sans forme canonique), une reprise ne peut pas être reconnue : `retryCount` est absent, et non nul. Un nom d'outil refusé fait de même.
+
+La mémoire des chaînes est bornée : 10 000 chaînes ouvertes au plus, oubliées 60 secondes après leur dernier échec ; au-delà, la plus ancienne est oubliée, et sa reprise compte pour un premier appel. L'identifiant de session n'y est gardé que sous une empreinte BLAKE2b à clé tirée au démarrage : il n'est conservé ni dans la mémoire, ni dans l'événement, ni dans le journal. Une session étant celle que le client déclare, un client qui en usurpe une autre ne fausse que le compte de ses reprises.
+
+### Rien ne retarde l'appel
+
+Sur le chemin de l'appel, le proxy ne prend que des horodatages et garde la copie bornée de la réponse, après l'envoi de chaque morceau. L'issue, les reprises et l'événement se calculent une fois la réponse rendue, dans l'ordre où les appels s'achèvent. Un calcul de signaux qui échoue est journalisé par sa classe ; l'événement part sans la facette.
+
+La latence ajoutée compte le travail du proxy entre deux attentes : contrôle des en-têtes, lecture du corps, contexte de trace, préparation de la requête relayée, puis, pour chaque morceau de la réponse, son envoi préparé, l'empreinte et la copie qui le suivent. Elle ne compte pas ce que font, pendant ces attentes, le serveur HTTP qui lit la requête du client et la bibliothèque HTTP qui écrit vers le serveur MCP : c'est une borne basse de ce qu'ajoute le saut par le proxy. Le banc mesure aussi le saut entier, par comparaison.
+
+### Le banc de latence
+
+`make bench` lance un serveur MCP de test et le vrai proxy devant lui, chacun dans son processus, servis comme la ligne de commande sert le proxy, avec une clé d'empreinte. Il appelle l'outil 100 000 fois directement et 100 000 fois à travers le proxy, en alternance, après 50 appels de mise en route, et rend les p50, p99 et maximum de deux mesures de la latence ajoutée :
+
+- **par comparaison** : chaque percentile des appels à travers le proxy, moins le même percentile des appels directs, vus du client ;
+- **par la mesure interne** : `addedLatencyMs` de l'événement de chaque appel.
+
+Il échoue quand le p99 de l'une ou de l'autre dépasse 5 ms, et quand la mesure interne n'est pas cohérente : un événement réussi par appel mesuré, une latence ajoutée qui ne dépasse pas la latence de l'échange, une latence vue par le proxy qui ne dépasse jamais celle vue par le client. `BENCH_ARGS` règle le nombre d'appels, les appels menés à la fois et le seuil (`make bench BENCH_ARGS='--calls 20000 --concurrency 4'`).
+
+Le banc tourne chaque nuit dans son propre workflow (`.github/workflows/bench.yml`), sur une machine qui ne fait que lui. Dans `make check`, un test de 2 000 appels vérifie que le banc fonctionne et que la mesure interne est cohérente, sans seuil de temps : sur une machine partagée, la charge des autres tests le ferait échouer à tort.
+
+Mesuré sur un poste à 4 cœurs, 100 000 appels un à la fois :
+
+| Mesure | p50 | p99 | max |
+| --- | --- | --- | --- |
+| Appel direct, vu du client | 1,32 ms | 2,76 ms | 77,96 ms |
+| À travers le proxy, vu du client | 2,75 ms | 5,31 ms | 53,56 ms |
+| Latence ajoutée, par comparaison | 1,43 ms | 2,55 ms | — |
+| Latence ajoutée, mesure interne | 0,24 ms | 0,49 ms | 14,13 ms |
+
+L'écart entre les deux mesures est le saut lui-même : un serveur HTTP qui lit la requête et une bibliothèque HTTP qui la réécrit vers le serveur MCP, que la mesure interne ne voit pas. Un maximum est une valeur isolée, une pause du ramasse-miettes ou de l'ordonnanceur ; par comparaison, la différence de deux maxima n'a pas de sens, et le banc ne la juge pas.
+
 ## Ce qui n'est jamais conservé
 
-Aucun argument, résultat, en-tête ni jeton n'est stocké ou journalisé : des arguments et du résultat, l'événement ne garde que des empreintes à clé et une taille ; d'une requête SQL, sa forme sans littéraux. Seuls le `trace-id` et le `parent-id` d'un contexte de trace bien formé, qui ne disent rien du contenu, sont recopiés dans l'événement ; ils ne sont jamais journalisés. Les en-têtes `Mcp-Param-*`, qui recopient des arguments d'outil, ne sont pas lus. Le journal d'accès du serveur HTTP est coupé. Les journaux des bibliothèques qui citeraient une URL complète, des en-têtes ou une requête SQL (`httpx`, `httpcore`, `sqlglot`) sont coupés pour tout le processus.
+Aucun argument, résultat, en-tête ni jeton n'est stocké ou journalisé : des arguments et du résultat, l'événement ne garde que des empreintes à clé et une taille ; d'une requête SQL, sa forme sans littéraux ; d'une erreur, sa catégorie et son code. Seuls le `trace-id` et le `parent-id` d'un contexte de trace bien formé, qui ne disent rien du contenu, sont recopiés dans l'événement ; ils ne sont jamais journalisés. Les en-têtes `Mcp-Param-*`, qui recopient des arguments d'outil, ne sont pas lus. L'en-tête `Mcp-Session-Id` n'est lu que pour reconnaître une reprise, et oublié après l'appel, sauf son empreinte à clé. Le journal d'accès du serveur HTTP est coupé. Les journaux des bibliothèques qui citeraient une URL complète, des en-têtes ou une requête SQL (`httpx`, `httpcore`, `sqlglot`) sont coupés pour tout le processus.
 
 ## Autorisation
 
@@ -347,7 +443,7 @@ Un test fait traverser un jeton, un cookie, un paramètre recopié en en-tête e
 
 ## L'événement émis
 
-Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COMPLETE` si le serveur a répondu sans erreur HTTP, `FAIL` sinon, `ABORT` si le client est parti. Le job est `mcp://<serveur>` / `<outil>`, l'identifiant de run celui que dérive le contexte de trace. La facette `answerlineage_toolCall` porte le serveur, l'outil, le transport, la révision du protocole, le statut HTTP, les écarts relevés, la résolution de la lecture, le contexte de trace (`traceId`, `spanId`, `traceOrigin`), les empreintes à clé des arguments et du résultat et la taille du résultat ; son schéma est publié (voir [Facettes OpenLineage](facettes.md)). Les tables lues sont les jeux de données d'entrée ; leurs colonnes sont dans la facette standard `schema`. La forme sans littéraux d'une requête SQL est dans la facette de job standard `sql`.
+Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COMPLETE` si le serveur a répondu sans erreur HTTP, `FAIL` sinon, `ABORT` si le client est parti. Le job est `mcp://<serveur>` / `<outil>`, l'identifiant de run celui que dérive le contexte de trace. La facette `answerlineage_toolCall` porte le serveur, l'outil, le transport, la révision du protocole, le statut HTTP, les écarts relevés, la résolution de la lecture, le contexte de trace (`traceId`, `spanId`, `traceOrigin`), les empreintes à clé des arguments et du résultat et la taille du résultat ; son schéma est publié (voir [Facettes OpenLineage](facettes.md)). La facette `answerlineage_qos` porte la latence, la latence ajoutée, l'issue et les reprises ([Qualité de service](#qualité-de-service)). Les tables lues sont les jeux de données d'entrée ; leurs colonnes sont dans la facette standard `schema`. La forme sans littéraux d'une requête SQL est dans la facette de job standard `sql`.
 
 ## Limites connues
 
@@ -357,11 +453,14 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - Sans authentification des émetteurs, un identifiant dérivé n'est pas une preuve d'origine : qui connaît le contexte d'un appel peut émettre un événement pour son run.
 - Une reprise HTTP garde son run quand le contexte vient de `_meta`. Quand il vient de l'en-tête d'un client HTTP qui ouvre un span par tentative, ou quand le proxy le crée, chaque tentative est un run distinct.
 - Le proxy ne rattache pas un appel au run de l'agent : la facette standard `parent` exige le job de l'agent, que le proxy ne connaît pas. Un émetteur qui connaît l'agent peut le faire ; `traceId` relie déjà les appels d'une même trace.
-- Le résultat de l'appel n'est pas lu : une erreur d'outil rendue en `200` compte comme `COMPLETE`.
+- Le résultat de l'appel n'est pas lu, sauf pour y trouver une erreur JSON-RPC : une erreur d'outil rendue comme un résultat (`isError`) compte comme un succès, et une erreur JSON-RPC rendue en `200` reste un événement `COMPLETE`, dont l'issue dit l'erreur.
+- L'issue d'une réponse compressée tient à son seul statut HTTP : son corps n'est pas lu.
+- Le proxy ne pose lui-même aucun délai de lecture : seul le délai de connexion au serveur MCP (10 s) fait une issue `timeout`, sauf avec un client HTTP qui en a un autre.
+- Sans session MCP ni contexte de trace transmis par le client, la portée d'une reprise est le proxy entier : deux clients qui font le même appel, aux mêmes arguments, dans la minute qui suit un échec, sont comptés comme une reprise.
 - Le transport stdio n'est pas pris en charge.
 - Dans un corps plus grand que la taille lue, une clé `method` ou `name` répétée au-delà des 16 premiers Ko ne peut pas être vue : l'événement décrit la première.
 - Le budget se mesure en temps écoulé : sur une machine très chargée, une requête qui tient d'ordinaire dans le budget peut le dépasser et rester « non résolue » tant qu'elle est en cache.
-- La latence ajoutée par le proxy n'est pas encore mesurée.
+- Les signaux de qualité de service restent dans l'événement reçu : le graphe ne les stocke pas encore.
 - La forme d'une requête garde les noms d'un seul mot choisis par son auteur : un alias qui serait une donnée métier (`AS "Dupont"`) est conservé tel quel. Un nom qui n'a pas la forme d'un identifiant fait renoncer à la forme.
 - L'empreinte du résultat porte sur les octets relayés : le même résultat, compressé ou non, ou découpé autrement en événements SSE, a deux empreintes différentes.
 - Les arguments d'un appel dont le corps dépasse la taille lue ne sont pas lus : pas d'empreinte des arguments.

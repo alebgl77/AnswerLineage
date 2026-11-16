@@ -22,7 +22,13 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 from answerlineage_api import identifiers
-from answerlineage_api.ingest.models import RECIPIENTS_MAX
+from answerlineage_api.ingest.models import (
+    ERROR_CODE_MAX,
+    ERROR_CODE_MIN,
+    RECIPIENTS_MAX,
+    SIGNAL_MAX,
+    validate_event,
+)
 from answerlineage_corpus.enterprise import generate
 from answerlineage_corpus.events import render
 from answerlineage_corpus.scenarios import load_corpus
@@ -33,6 +39,7 @@ from answerlineage_proxy.fingerprint import (
     arguments_fingerprint,
 )
 from answerlineage_proxy.inspection import Inspection
+from answerlineage_proxy.signals import CallSignals
 from answerlineage_proxy.sql import SqlAnalysis, TableRead, analyze_sql
 from answerlineage_proxy.tracecontext import parse_traceparent, resolve_trace
 from api.tests.events import OFFICIAL_SCHEMA
@@ -93,9 +100,10 @@ def facet(name: str, version: str = "1-0-0", **fields: Any) -> dict[str, Any]:
     return {"_producer": PRODUCER, "_schemaURL": address(name, version), **fields}
 
 
-def test_there_are_five_facets_published_in_version_1_0_0() -> None:
+def test_five_facets_are_published_in_1_0_0_and_quality_of_service_in_1_1_0() -> None:
     assert {path.relative_to(FACETS).as_posix() for path in schema_files()} == {
-        f"1-0-0/{name}.json" for name in NAMES.values()
+        *(f"1-0-0/{name}.json" for name in NAMES.values()),
+        "1-1-0/QosRunFacet.json",
     }
 
 
@@ -322,6 +330,93 @@ def test_a_field_the_schema_does_not_know_is_accepted() -> None:
     assert list(validator("QosRunFacet").iter_errors(facet("QosRunFacet", futur=1))) == []
 
 
+# Les signaux qu'un point de capture voit d'un appel d'outil : version 1-1-0.
+QOS_SIGNALS: dict[str, Any] = {
+    "latencyMs": 3.217,
+    "addedLatencyMs": 0.042,
+    "outcome": "jsonrpc_error",
+    "errorCode": -32602,
+    "errorCount": 1,
+    "retryCount": 2,
+}
+QOS_FAULTY: dict[str, dict[str, Any]] = {
+    "issue inconnue": {"outcome": "peut-etre"},
+    "issue en nombre": {"outcome": 1},
+    "code d'erreur fractionnaire": {"errorCode": 1.5},
+    "code d'erreur au-delà de 32 bits": {"errorCode": ERROR_CODE_MAX + 1},
+    "code d'erreur en texte": {"errorCode": "-32602"},
+    "latence ajoutée négative": {"addedLatencyMs": -0.001},
+    "latence ajoutée en texte": {"addedLatencyMs": "0.1"},
+    "latence au-delà de la borne": {"latencyMs": SIGNAL_MAX + 1},
+    "reprises au-delà de la borne": {"retryCount": SIGNAL_MAX + 1},
+}
+
+
+@pytest.mark.parametrize(
+    "fields", [{}, QOS_SIGNALS, EXAMPLES["QosRunFacet"]["full"]], ids=["vide", "proxy", "1-0-0"]
+)
+def test_quality_of_service_1_1_0_accepts_what_a_capture_point_and_version_1_0_0_emit(
+    fields: dict[str, Any],
+) -> None:
+    emitted = facet("QosRunFacet", "1-1-0", **fields)
+    assert list(validator("QosRunFacet", "1-1-0").iter_errors(emitted)) == []
+
+
+@pytest.mark.parametrize("case", list(QOS_FAULTY))
+def test_quality_of_service_1_1_0_refuses_a_faulty_signal(case: str) -> None:
+    emitted = facet("QosRunFacet", "1-1-0", **QOS_FAULTY[case])
+    assert list(validator("QosRunFacet", "1-1-0").iter_errors(emitted)) != []
+
+
+def _qos_event(**fields: Any) -> dict[str, Any]:
+    event = build_tool_call_event(
+        run_id=uuid4(),
+        event_time=datetime.now(UTC),
+        outcome="COMPLETE",
+        server="entrepot",
+        inspection=Inspection(is_tool_call=True, tool="get_weather"),
+        signals=CallSignals(latency_ms=1.0, added_latency_ms=0.1, outcome="success"),
+    )
+    event["run"]["facets"]["answerlineage_qos"].update(fields)
+    return event
+
+
+@pytest.mark.parametrize(
+    ("field", "lowest", "highest"),
+    [
+        ("latencyMs", 0, SIGNAL_MAX),
+        ("addedLatencyMs", 0, SIGNAL_MAX),
+        ("errorCount", 0, SIGNAL_MAX),
+        ("retryCount", 0, SIGNAL_MAX),
+        ("errorCode", ERROR_CODE_MIN, ERROR_CODE_MAX),
+    ],
+)
+def test_a_schema_bounds_a_signal_where_ingestion_does(
+    field: str, lowest: int, highest: int
+) -> None:
+    """Qui respecte le schéma 1-1-0 n'est pas rejeté pour une valeur de signal, et inversement."""
+    check = validator("QosRunFacet", "1-1-0")
+    for value in (lowest, highest):
+        event = _qos_event(**{field: value})
+        assert list(check.iter_errors(event["run"]["facets"]["answerlineage_qos"])) == []
+        assert validate_event(event)[1] == []
+    for value in (lowest - 1, highest + 1):
+        event = _qos_event(**{field: value})
+        assert list(check.iter_errors(event["run"]["facets"]["answerlineage_qos"])) != []
+        assert [error.path for error in validate_event(event)[1]] == [
+            f"/run/facets/answerlineage_qos/{field}"
+        ]
+
+
+def test_a_schema_closes_the_list_of_outcomes_where_ingestion_does() -> None:
+    document = load(FACETS / "1-1-0" / "QosRunFacet.json")
+    outcome = document["$defs"]["QosRunFacet"]["allOf"][1]["properties"]["outcome"]
+    for value in outcome["enum"]:
+        assert validate_event(_qos_event(outcome=value))[1] == []
+    (error,) = validate_event(_qos_event(outcome="peut-etre"))[1]
+    assert (error.path, error.type) == ("/run/facets/answerlineage_qos/outcome", "literal_error")
+
+
 def own_facets(event: Mapping[str, Any]) -> Iterator[tuple[str, Mapping[str, Any]]]:
     """Les facettes propres d'un événement, avec leur clé, sur le run et sur les jeux de données."""
     owners: list[Mapping[str, Any]] = [event["run"]]
@@ -404,6 +499,29 @@ def proxy_events() -> list[dict[str, Any]]:
         reads=SqlAnalysis(resolved=False, reason="too_large"),
         namespace="bigquery",
     )
+    # Avec les signaux de qualité de service : succès, puis erreur JSON-RPC reprise.
+    signals = [
+        CallSignals(latency_ms=2.5, added_latency_ms=0.05, outcome="success"),
+        CallSignals(
+            latency_ms=12.0,
+            added_latency_ms=0.2,
+            outcome="jsonrpc_error",
+            error_code=-32602,
+            retry_count=1,
+        ),
+    ]
+    events.extend(
+        build_tool_call_event(
+            run_id=uuid4(),
+            event_time=datetime.now(UTC),
+            outcome="COMPLETE",
+            server="entrepot",
+            inspection=inspections[0],
+            http_status=200,
+            signals=signal,
+        )
+        for signal in signals
+    )
     # Avec une clé d'empreinte, et la forme sans littéraux d'une requête.
     key = FingerprintKey(bytes(range(32)))
     fingerprinted = build_tool_call_event(
@@ -439,7 +557,12 @@ def emitted_addresses() -> set[str]:
 
 def test_every_kind_of_facet_that_is_emitted_today_is_covered() -> None:
     keys = {key for event in EMITTED for key, _ in own_facets(event)}
-    assert keys == {"answerlineage_agent", "answerlineage_toolCall", "answerlineage_delivery"}
+    assert keys == {
+        "answerlineage_agent",
+        "answerlineage_toolCall",
+        "answerlineage_delivery",
+        "answerlineage_qos",
+    }
 
 
 @pytest.mark.parametrize("url", sorted(emitted_addresses()))
@@ -465,10 +588,11 @@ def test_every_emitted_facet_is_announced_under_its_own_key_and_respects_its_sch
     for event in EMITTED:
         for key, emitted in own_facets(event):
             name = NAMES[key]
-            document = load(next(path for path in schema_files() if path.stem == name))
-            assert emitted["_schemaURL"] == address(name)
+            version = emitted["_schemaURL"].removeprefix(PUBLISHED).split("/", 1)[0]
+            document = load(FACETS / version / f"{name}.json")
+            assert emitted["_schemaURL"] == address(name, version)
             assert key in document["properties"]
-            assert list(validator(name).iter_errors(emitted)) == []
+            assert list(validator(name, version).iter_errors(emitted)) == []
             checked += 1
     assert checked > 1000
 

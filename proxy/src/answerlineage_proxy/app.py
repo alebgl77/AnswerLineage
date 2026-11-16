@@ -9,6 +9,10 @@ section 7.6.1) ne sont pas transmis.
 d'outil et émet un événement par appel, une fois l'échange terminé. Aucun
 en-tête, argument ou résultat n'est conservé ni journalisé.
 
+Sur le chemin de l'appel, le relais ne fait que prendre des horodatages et
+garder une copie bornée de la réponse : latence, latence ajoutée, issue et
+reprises se calculent après l'échange (``signals.py``).
+
 Seule exception à la transparence : un appel d'outil qui ne porte aucun
 contexte de trace W3C reçoit celui que le proxy crée, dans un en-tête
 ``traceparent`` ajouté à la requête relayée, sauf si son corps est trop grand
@@ -20,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, MutableMapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import unquote_to_bytes
@@ -44,6 +48,16 @@ from answerlineage_proxy.inspection import (
     Inspection,
     inspect_prefix,
     inspect_request,
+)
+from answerlineage_proxy.signals import (
+    CallSignals,
+    CallTiming,
+    Failure,
+    ReplySample,
+    RetryKey,
+    RetryMemory,
+    assess,
+    milliseconds,
 )
 from answerlineage_proxy.sink import EventSink
 from answerlineage_proxy.sql import SqlAnalysis
@@ -76,6 +90,8 @@ _INSPECTED_HEADERS = frozenset(
     name.encode("ascii") for name in (HEADER_METHOD, HEADER_NAME, HEADER_PROTOCOL_VERSION)
 )
 _TRACEPARENT = TRACEPARENT.encode("ascii")
+# Session MCP (révision 2025-11-25) : lue pour reconnaître une reprise, jamais conservée.
+_SESSION = b"mcp-session-id"
 _BAD_GATEWAY_BODY = b'{"error":"upstream_unreachable"}'
 _BAD_REQUEST_BODY = b'{"error":"invalid_request_target"}'
 _FORBIDDEN_BODIES = {
@@ -167,6 +183,17 @@ class _Exchange:
     digest: Digest | None = None
     size: int = 0
     relayed_whole: bool = False
+    # Qualité de service : horodatages, échec du relais, statut rendu au client (du
+    # serveur MCP ou du proxy), réponse rendue en entier ou non.
+    timing: CallTiming = field(default_factory=CallTiming)
+    failure: Failure | None = None
+    answered: int | None = None
+    delivered: bool = False
+    # Appel d'outil : sa réponse est échantillonnée pour y lire une erreur JSON-RPC.
+    observed: bool = False
+    sample: ReplySample | None = None
+    # En-têtes Mcp-Session-Id reçus, gardés le temps de calculer la portée d'une reprise.
+    sessions: list[bytes] = field(default_factory=list, repr=False)
 
 
 def _now() -> datetime:
@@ -187,6 +214,10 @@ def end_to_end_headers(headers: Iterable[Header]) -> list[Header]:
         for name, value in items
         if name.lower() not in _HOP_BY_HOP and name.lower() not in named
     ]
+
+
+def _failure(error: httpx.HTTPError) -> Failure:
+    return "timeout" if isinstance(error, httpx.TimeoutException) else "transport_error"
 
 
 def _traceparents(headers: Iterable[Header]) -> list[str]:
@@ -224,6 +255,7 @@ class McpProxy:
         clock: Callable[[], datetime] = _now,
         analyzer: SqlAnalyzer | None = None,
         coverage_window: timedelta = DEFAULT_WINDOW,
+        retries: RetryMemory | None = None,
     ) -> None:
         quiet_transport_logs()
         self.settings = settings
@@ -241,6 +273,8 @@ class McpProxy:
         self._prefix = settings.upstream.raw_path.rstrip(b"/")
         self._sql_arguments = {tool: rule.argument for tool, rule in settings.sql_tools.items()}
         self._guard = settings.guard()
+        # Chaînes de reprises en cours, en mémoire bornée.
+        self.retries = retries if retries is not None else RetryMemory()
         # Analyses de SQL en cours, menées après la réponse, hors du chemin de l'appel.
         self._pending: set[asyncio.Task[None]] = set()
         # Processus d'analyse du SQL, démarré à la première requête à analyser.
@@ -314,6 +348,8 @@ class McpProxy:
                 return
 
     async def _http(self, scope: Scope, receive: Receive, send: Send) -> None:
+        # Premier geste : l'horodatage d'arrivée de la requête.
+        timing = CallTiming()
         headers: list[Header] = [(bytes(name), bytes(value)) for name, value in scope["headers"]]
         refusal = self._guard.refusal(headers)
         if refusal is not None:
@@ -324,18 +360,22 @@ class McpProxy:
             return
         self.stats.relayed += 1
         upload_done = asyncio.Event()
+        timing.pause()
         try:
             body, stream = await self._receive_body(receive, upload_done)
         except _ClientGoneError:
             self.stats.client_disconnects += 1
             return
+        timing.resume()
 
         # Au-delà de la taille lue, seul le début du corps est décrit.
         oversized = stream is not None or len(body) > self.settings.max_inspected_bytes
         inspection = self._inspect(scope["method"], headers, body, oversized)
-        exchange = _Exchange()
+        exchange = _Exchange(timing=timing)
         relayed = headers
         if inspection is not None and inspection.is_tool_call:
+            exchange.observed = True
+            exchange.sessions = [value for name, value in headers if name.lower() == _SESSION]
             exchange.trace = resolve_trace(inspection.trace_context, _traceparents(headers))
             if self.settings.fingerprint_key is not None:
                 exchange.digest = self.settings.fingerprint_key.digest(RESULT_LABEL)
@@ -350,6 +390,7 @@ class McpProxy:
         try:
             await self._exchange(scope, relayed, body, stream, upload_done, receive, send, exchange)
         finally:
+            timing.finish()
             if inspection is not None and inspection.is_tool_call:
                 self._describe(inspection, exchange, oversized=oversized)
 
@@ -467,7 +508,7 @@ class McpProxy:
         request = self._upstream_request(scope, headers, body, stream)
         if request is None:
             exchange.error = "invalid_request_target"
-            await self._respond(send, 400, _BAD_REQUEST_BODY)
+            await self._answer(send, 400, _BAD_REQUEST_BODY, exchange)
             return
 
         relay = asyncio.ensure_future(self._relay(request, send, exchange))
@@ -478,8 +519,10 @@ class McpProxy:
                 relay.result()
             else:
                 # Le client est parti : fermer le flux annule l'appel côté serveur.
+                exchange.timing.finish()
                 await _settle(relay)
                 exchange.outcome = "ABORT"
+                exchange.failure = "client_abort"
                 self.stats.client_disconnects += 1
         finally:
             await _settle(watcher)
@@ -495,49 +538,83 @@ class McpProxy:
                 return
 
     async def _relay(self, request: httpx.Request, send: Send, exchange: _Exchange) -> None:
+        """Relaie la requête et rend la réponse au fil de l'eau.
+
+        Le temps que le proxy passe entre deux attentes, avant de relayer la
+        requête et avant de rendre chaque partie de la réponse, est sa latence
+        ajoutée ; les copies pour l'empreinte et l'échantillon y comptent.
+        """
+        timing = exchange.timing
+        timing.pause()
         try:
             response = await self._upstream_client().send(request, stream=True)
         except _ClientGoneError:
+            timing.finish()
             exchange.outcome = "ABORT"
+            exchange.failure = "client_abort"
             self.stats.client_disconnects += 1
             return
         except httpx.HTTPError as error:
+            timing.resume()
             self.stats.upstream_failures += 1
             logger.warning("Serveur MCP injoignable (%s).", type(error).__name__)
             exchange.error = "upstream_unreachable"
-            await self._respond(send, 502, _BAD_GATEWAY_BODY)
+            exchange.failure = _failure(error)
+            await self._answer(send, 502, _BAD_GATEWAY_BODY, exchange)
             return
+        timing.resume()
         try:
-            exchange.status = response.status_code
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": response.status_code,
-                    "headers": [
-                        (name.lower(), value)
-                        for name, value in end_to_end_headers(response.headers.raw)
-                    ],
-                }
-            )
+            exchange.status = exchange.answered = response.status_code
+            if exchange.observed:
+                exchange.sample = ReplySample(
+                    response.headers.get("content-type"), response.headers.get("content-encoding")
+                )
+            start = {
+                "type": "http.response.start",
+                "status": response.status_code,
+                "headers": [
+                    (name.lower(), value)
+                    for name, value in end_to_end_headers(response.headers.raw)
+                ],
+            }
+            timing.pause()
+            await send(start)
             try:
                 async for chunk in response.aiter_raw():
+                    timing.resume()
                     if chunk:
+                        timing.pause()
                         await send({"type": "http.response.body", "body": chunk, "more_body": True})
+                        timing.resume()
                         exchange.size += len(chunk)
                         if exchange.digest is not None:
                             exchange.digest.update(chunk)
+                        if exchange.sample is not None:
+                            exchange.sample.add(chunk)
+                    timing.pause()
             except httpx.HTTPError as error:
                 # La réponse reste inachevée : le serveur HTTP ferme la connexion,
                 # le client sait qu'elle est tronquée.
+                timing.finish()
                 self.stats.upstream_failures += 1
                 logger.warning("Réponse du serveur MCP interrompue (%s).", type(error).__name__)
                 exchange.error = "upstream_interrupted"
+                exchange.failure = _failure(error)
                 return
             await send({"type": "http.response.body", "body": b"", "more_body": False})
-            exchange.relayed_whole = True
+            timing.finish()
+            exchange.relayed_whole = exchange.delivered = True
             exchange.outcome = "COMPLETE" if response.status_code < 400 else "FAIL"
         finally:
             await response.aclose()
+
+    async def _answer(self, send: Send, status: int, body: bytes, exchange: _Exchange) -> None:
+        """Répond à la place du serveur MCP, avec un corps fixe."""
+        exchange.timing.pause()
+        await self._respond(send, status, body)
+        exchange.timing.finish()
+        exchange.answered = status
+        exchange.delivered = True
 
     @staticmethod
     async def _respond(send: Send, status: int, body: bytes) -> None:
@@ -556,27 +633,88 @@ class McpProxy:
     def _describe(
         self, inspection: Inspection, exchange: _Exchange, *, oversized: bool = False
     ) -> None:
-        """Émet l'événement de l'appel, après analyse du SQL si l'outil est déclaré."""
+        """Émet l'événement de l'appel, après analyse du SQL si l'outil est déclaré.
+
+        Empreintes et signaux de qualité de service se calculent ici, l'échange
+        terminé, dans l'ordre où les appels s'achèvent : c'est cet ordre qui
+        relie une reprise à l'appel qu'elle reprend.
+        """
         event_time = self._clock()
         self.coverage.begin(event_time)
+        try:
+            details = self._details(inspection, exchange)
+        except Exception as error:
+            logger.error("Signaux de l'appel non établis (%s).", type(error).__name__)
+            details = {}
+        finally:
+            # Rien de la réponse ni de la session n'est gardé au-delà.
+            exchange.sample = None
+            exchange.sessions = []
         rule = self.settings.sql_tools.get(inspection.tool) if inspection.tool else None
         if rule is None or exchange.outcome != "COMPLETE":
             # Un appel qui a échoué n'a rien fait lire à l'agent.
-            self._emit(inspection, exchange, event_time)
+            self._emit(inspection, exchange, event_time, details)
             return
         if oversized:
             # La requête n'a pas été lue : sa lecture n'est pas connue.
             reads = SqlAnalysis(resolved=False, reason="request_too_large")
-            self._emit(inspection, exchange, event_time, reads, rule.namespace, rule.dialect)
+            self._emit(
+                inspection, exchange, event_time, details, reads, rule.namespace, rule.dialect
+            )
             return
         task = asyncio.ensure_future(
-            self._analyze_then_emit(inspection, exchange, event_time, rule)
+            self._analyze_then_emit(inspection, exchange, event_time, details, rule)
         )
         self._pending.add(task)
         task.add_done_callback(self._pending.discard)
 
+    def _details(self, inspection: Inspection, exchange: _Exchange) -> dict[str, Any]:
+        """Empreintes, taille du résultat et signaux de qualité de service de l'appel."""
+        details = self._fingerprints(inspection, exchange)
+        details["signals"] = self._signals(
+            inspection, exchange, details.get("arguments_fingerprint")
+        )
+        return details
+
+    def _signals(
+        self, inspection: Inspection, exchange: _Exchange, arguments: str | None
+    ) -> CallSignals:
+        """Latence, latence ajoutée, issue et reprises d'un appel terminé.
+
+        Une reprise se reconnaît à l'outil et à l'empreinte des arguments : sans
+        clé d'empreinte, ou sans empreinte des arguments, le nombre de reprises
+        n'est pas connu, et il est absent.
+        """
+        timing = exchange.timing
+        timing.finish()
+        ended = timing.ended if timing.ended is not None else timing.started
+        failure = exchange.failure
+        if failure is None and not exchange.delivered:
+            # Échange interrompu sans cause connue : la réponse n'a pas été rendue.
+            failure = "transport_error"
+        outcome, code = assess(failure=failure, status=exchange.answered, sample=exchange.sample)
+        key = None
+        if arguments is not None and inspection.tool is not None:
+            scope = self.retries.scope(exchange.sessions, exchange.trace)
+            key = RetryKey(scope, inspection.tool, arguments)
+        retries = self.retries.record(
+            key, started=timing.started, ended=ended, failed=outcome != "success"
+        )
+        return CallSignals(
+            latency_ms=milliseconds(ended - timing.started),
+            added_latency_ms=milliseconds(timing.added),
+            outcome=outcome,
+            error_code=code,
+            retry_count=retries,
+        )
+
     async def _analyze_then_emit(
-        self, inspection: Inspection, exchange: _Exchange, event_time: datetime, rule: SqlTool
+        self,
+        inspection: Inspection,
+        exchange: _Exchange,
+        event_time: datetime,
+        details: dict[str, Any],
+        rule: SqlTool,
     ) -> None:
         # Tant que l'analyse n'a pas abouti, la lecture est non résolue : l'événement
         # part quoi qu'il arrive, même si l'attente est interrompue.
@@ -602,13 +740,16 @@ class McpProxy:
             logger.error("Analyse du SQL en échec (%s).", type(error).__name__)
             reads = SqlAnalysis(resolved=False, reason="analyzer_failed")
         finally:
-            self._emit(inspection, exchange, event_time, reads, rule.namespace, rule.dialect)
+            self._emit(
+                inspection, exchange, event_time, details, reads, rule.namespace, rule.dialect
+            )
 
     def _emit(
         self,
         inspection: Inspection,
         exchange: _Exchange,
         event_time: datetime,
+        details: dict[str, Any],
         reads: SqlAnalysis | None = None,
         namespace: str | None = None,
         dialect: str | None = None,
@@ -631,7 +772,7 @@ class McpProxy:
                 namespace=namespace,
                 trace=trace,
                 dialect=dialect,
-                **self._fingerprints(inspection, exchange),
+                **details,
             )
             self._sink.emit(event)
         except Exception as error:

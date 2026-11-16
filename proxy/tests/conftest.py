@@ -28,6 +28,12 @@ TOOL_RESULT = (
 SSE_FIRST = b'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/progress"}\n\n'
 SSE_LAST = b'event: message\r\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\r\n\r\n'
 HEADER_MISMATCH = b'{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"Header mismatch"}}'
+# Erreur JSON-RPC dont le message cite un argument : il ne doit sortir nulle part.
+JSONRPC_ERROR = (
+    b'{"jsonrpc":"2.0","id":1,"error":{"code":-32602,'
+    b'"message":"Lieu inconnu : canari-message-erreur-5e1d"}}'
+)
+SSE_ERROR = b"event: message\ndata: " + JSONRPC_ERROR + b"\n\n"
 # Défi d'un serveur MCP protégé : il désigne ses métadonnées OAuth (RFC 9728).
 CHALLENGE = 'Bearer resource_metadata="https://mcp.exemple.fr/.well-known/oauth-protected-resource"'
 UNAUTHORIZED = b'{"error":"invalid_token"}'
@@ -119,6 +125,17 @@ class FakeMcpServer:
         path = scope["path"]
         if path.endswith("/sse"):
             await self._sse(send)
+        elif path.endswith("/sse-error"):
+            await _respond(
+                send, 200, SSE_FIRST + SSE_ERROR, [(b"content-type", b"text/event-stream")]
+            )
+        elif path.endswith("/fail"):
+            await _respond(send, 500, JSONRPC_ERROR, [(b"content-type", b"application/json")])
+        elif path.endswith("/silent"):
+            # Ne répond rien, pas même ses en-têtes, jusqu'au départ du client.
+            while (await receive())["type"] != "http.disconnect":
+                pass
+            self.cancelled.set()
         elif path.endswith("/hang"):
             await self._hang(receive, send)
         elif path.endswith("/gzip"):

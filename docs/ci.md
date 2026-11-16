@@ -135,6 +135,12 @@ L'attestation désigne l'image par son empreinte : la même commande vaut pour `
 
 Le seuil et la liste des chemins suivis sont dans `pyproject.toml`, section `[tool.answerlineage.coverage_gate]`. Un chemin listé dont aucun fichier n'est mesuré fait échouer la porte : une faute de frappe ne peut pas la désactiver.
 
+## Banc de latence du proxy
+
+Le budget de performance du proxy, un p99 de la latence ajoutée à un appel d'outil d'au plus 5 ms, se vérifie chaque nuit, et à la demande, dans un workflow à lui : `.github/workflows/bench.yml`. Son job lance `make bench` : 100 000 appels directs et autant à travers le proxy, sur une machine qui ne fait que cela. Le banc et ses deux mesures, par comparaison et par le proxy lui-même, sont décrits avec [le proxy](proxy.md#le-banc-de-latence).
+
+Le workflow n'a que le droit de lire le dépôt et n'utilise aucun secret. Il ne bloque pas une merge request : un seuil de temps n'a de sens que sur une machine au repos. Dans `make check`, et donc dans le job `tests`, un banc de 2 000 appels vérifie seulement qu'il fonctionne et que sa mesure interne est cohérente.
+
 ## Chaîne d'approvisionnement
 
 Le contrôle `make policy` (`scripts/check_policy.py`) échoue dès que :

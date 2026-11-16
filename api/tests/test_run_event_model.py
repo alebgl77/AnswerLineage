@@ -17,11 +17,16 @@ from answerlineage_api.ingest.models import (
     DELIVERY_FACET as DELIVERY,
 )
 from answerlineage_api.ingest.models import (
+    ERROR_CODE_MAX,
+    ERROR_CODE_MIN,
     FACETS_MAX,
     INPUTS_MAX,
+    OUTCOMES,
     OUTPUTS_MAX,
+    QOS_FACET,
     RECIPIENTS_MAX,
     SCHEMA_FIELDS_MAX,
+    SIGNAL_MAX,
     TOO_MANY_ITEMS,
     json_pointer,
     parse_event_time,
@@ -537,3 +542,82 @@ def test_facet_names_of_real_emitters_are_accepted() -> None:
 def test_an_admitted_facet_name_points_to_the_faulty_field() -> None:
     _, errors = validate_event(mutated(["run", "facets", "spark/plan~1"], without_producer()))
     assert [error.path for error in errors] == ["/run/facets/spark~1plan~01/_producer"]
+
+
+QOS: list[str | int] = ["run", "facets", QOS_FACET]
+# Les signaux d'un appel d'outil, tels qu'un point de capture les émet (version 1-1-0).
+SIGNALS: dict[str, Any] = {
+    "latencyMs": 12.345,
+    "addedLatencyMs": 0.087,
+    "outcome": "jsonrpc_error",
+    "errorCode": -32602,
+    "errorCount": 1,
+    "retryCount": 3,
+}
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},
+        # Version 1-0-0 : ni latence ajoutée, ni issue, ni code.
+        {"latencyMs": 812.5, "errorCount": 0, "retryCount": 0, "model": "m", "inputTokens": 3},
+        SIGNALS,
+        {**SIGNALS, "latencyMs": 3, "addedLatencyMs": 0, "errorCode": ERROR_CODE_MIN},
+        {**SIGNALS, "latencyMs": SIGNAL_MAX, "retryCount": SIGNAL_MAX, "errorCode": ERROR_CODE_MAX},
+        *({"outcome": outcome} for outcome in OUTCOMES),
+    ],
+)
+def test_quality_of_service_signals_within_their_bounds_are_accepted(
+    fields: dict[str, Any],
+) -> None:
+    event, errors = validate_event(mutated(QOS, facet(**fields)))
+    assert errors == []
+    assert event is not None
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        ("latencyMs", -0.5, "greater_than_equal"),
+        ("latencyMs", SIGNAL_MAX + 0.5, "less_than_equal"),
+        ("latencyMs", "12", "float_type"),
+        ("latencyMs", True, "float_type"),
+        ("latencyMs", None, "float_type"),
+        ("addedLatencyMs", 1e300, "less_than_equal"),
+        ("addedLatencyMs", [1], "float_type"),
+        ("outcome", "abandon", "literal_error"),
+        ("outcome", "SUCCESS", "literal_error"),
+        ("outcome", 0, "literal_error"),
+        ("errorCode", ERROR_CODE_MAX + 1, "less_than_equal"),
+        ("errorCode", ERROR_CODE_MIN - 1, "greater_than_equal"),
+        ("errorCode", -32602.5, "int_type"),
+        ("errorCode", "-32602", "int_type"),
+        ("errorCount", -1, "greater_than_equal"),
+        ("retryCount", 1.0, "int_type"),
+        ("retryCount", SIGNAL_MAX + 1, "less_than_equal"),
+        ("retryCount", False, "int_type"),
+    ],
+)
+def test_a_quality_of_service_signal_out_of_its_bounds_rejects_the_event(
+    field: str, value: object, code: str
+) -> None:
+    event, errors = validate_event(mutated([*QOS, field], value, base=mutated(QOS, facet())))
+    assert event is None
+    assert [(error.path, error.type) for error in errors] == [
+        (f"/run/facets/{QOS_FACET}/{field}", code)
+    ]
+
+
+def test_a_rejected_signal_is_never_echoed() -> None:
+    received = "canari-issue-recue-71c0"
+    _, errors = validate_event(mutated(QOS, facet(outcome=received, errorCode=received)))
+    assert len(errors) == 2
+    assert received not in str([error.model_dump() for error in errors])
+
+
+def test_quality_of_service_elsewhere_than_on_the_run_is_left_to_the_projection() -> None:
+    faulty = {QOS_FACET: facet(latencyMs=-1, outcome="abandon")}
+    event, errors = validate_event(mutated(["job", "facets"], faulty))
+    assert errors == []
+    assert event is not None

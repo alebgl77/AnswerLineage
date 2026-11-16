@@ -12,7 +12,7 @@ Un fichier par facette et par version, dans [`spec/facets/`](../spec/facets/1-0-
 spec/facets/<version>/<NomDeLaFacette>.json
 ```
 
-La première version est `1-0-0`. Le fichier suit la convention d'OpenLineage pour les facettes personnalisées :
+La première version est `1-0-0` ; une facette qui s'étend publie une nouvelle version à côté de la précédente, qui reste servie. Le fichier suit la convention d'OpenLineage pour les facettes personnalisées :
 
 - `$schema` est JSON Schema 2020-12 ;
 - `$id` est l'adresse du fichier brut sur la branche principale :
@@ -26,13 +26,13 @@ Suivre le `_schemaURL` d'une facette donne donc le schéma exact de la version d
 
 Aucune facette ne ferme ses objets : un champ inconnu est admis, comme dans OpenLineage. Les champs de la colonne « Facultatifs » peuvent être absents.
 
-| Facette | Clé | Portée | Où la placer | Obligatoires |
-| --- | --- | --- | --- | --- |
-| [`AgentRunFacet`](../spec/facets/1-0-0/AgentRunFacet.json) | `answerlineage_agent` | Run | `run.facets` | aucun |
-| [`ToolCallRunFacet`](../spec/facets/1-0-0/ToolCallRunFacet.json) | `answerlineage_toolCall` | Run | `run.facets` | `server` |
-| [`QosRunFacet`](../spec/facets/1-0-0/QosRunFacet.json) | `answerlineage_qos` | Run | `run.facets` | aucun |
-| [`DeliveryOutputDatasetFacet`](../spec/facets/1-0-0/DeliveryOutputDatasetFacet.json) | `answerlineage_delivery` | Jeu de données de sortie | `outputs[].outputFacets` | `fingerprint`, `channel`, `messageRef` |
-| [`KeysInputDatasetFacet`](../spec/facets/1-0-0/KeysInputDatasetFacet.json) | `answerlineage_keys` | Jeu de données d'entrée | `inputs[].inputFacets` | `hmacs` ou `bloomFilter` |
+| Facette | Versions | Clé | Portée | Où la placer | Obligatoires |
+| --- | --- | --- | --- | --- | --- |
+| `AgentRunFacet` | [1-0-0](../spec/facets/1-0-0/AgentRunFacet.json) | `answerlineage_agent` | Run | `run.facets` | aucun |
+| `ToolCallRunFacet` | [1-0-0](../spec/facets/1-0-0/ToolCallRunFacet.json) | `answerlineage_toolCall` | Run | `run.facets` | `server` |
+| `QosRunFacet` | [1-0-0](../spec/facets/1-0-0/QosRunFacet.json), [1-1-0](../spec/facets/1-1-0/QosRunFacet.json) | `answerlineage_qos` | Run | `run.facets` | aucun |
+| `DeliveryOutputDatasetFacet` | [1-0-0](../spec/facets/1-0-0/DeliveryOutputDatasetFacet.json) | `answerlineage_delivery` | Jeu de données de sortie | `outputs[].outputFacets` | `fingerprint`, `channel`, `messageRef` |
+| `KeysInputDatasetFacet` | [1-0-0](../spec/facets/1-0-0/KeysInputDatasetFacet.json) | `answerlineage_keys` | Jeu de données d'entrée | `inputs[].inputFacets` | `hmacs` ou `bloomFilter` |
 
 ### `answerlineage_agent`
 
@@ -66,9 +66,17 @@ Pour un outil SQL déclaré, la requête n'est pas dans cette facette : sa forme
 
 ### `answerlineage_qos`
 
-Qualité de service d'un run, pas encore émise. Tous les champs sont facultatifs : `model`, `route`, `inputTokens`, `outputTokens`, `latencyMs`, `estimatedCost`, `errorCount`, `retryCount`, `skill`.
+Qualité de service d'un run : chaque émetteur porte ce qu'il voit de son étape. Tous les champs sont facultatifs : `model`, `route`, `inputTokens`, `outputTokens`, `latencyMs`, `estimatedCost`, `errorCount`, `retryCount`, `skill`.
 
-La version 1-0-0 ne dit pas dans quelle monnaie est `estimatedCost` : c'est l'unité de l'émetteur.
+La version 1-1-0 ajoute trois champs facultatifs, que le proxy émet sur chaque appel d'outil avec `latencyMs`, `errorCount` et `retryCount` (voir [le proxy](proxy.md#qualité-de-service) pour leur mesure) :
+
+- `addedLatencyMs` : la latence que l'émetteur ajoute lui-même sur le chemin du run, en millisecondes ;
+- `outcome` : l'issue du run, d'une liste fermée : `success`, `jsonrpc_error`, `http_error`, `transport_error`, `timeout`, `client_abort` ;
+- `errorCode` : le code numérique de l'erreur, code JSON-RPC ou statut HTTP, entier signé sur 32 bits. Une erreur se dit par sa catégorie et son code, jamais par son message.
+
+Elle borne les durées et les compteurs à un milliard, comme l'[ingestion](ingestion.md#signaux-de-qualité-de-service). `retryCount` absent signifie que l'émetteur ne sait pas reconnaître une reprise, pas qu'il n'y en a pas eu.
+
+Aucune des deux versions ne dit dans quelle monnaie est `estimatedCost` : c'est l'unité de l'émetteur.
 
 ### `answerlineage_delivery`
 
@@ -145,5 +153,5 @@ Elle peut ajouter des champs facultatifs. Une rupture demande une nouvelle facet
 ## Limites connues
 
 - Le contrôle compare les champs, leur caractère obligatoire et leur type. Il ne compare ni les bornes (`maxLength`, `maxItems`, `minimum`) ni les valeurs admises (`enum`) : les resserrer dans une nouvelle version casserait des émetteurs sans le faire échouer.
-- Les facettes `answerlineage_qos` et `answerlineage_keys` n'ont pas encore d'émetteur, et `answerlineage_agent` n'émet encore aucun champ propre. Leurs champs sont facultatifs et décrits sobrement ; ils s'étendront.
+- La facette `answerlineage_keys` n'a pas encore d'émetteur, et `answerlineage_agent` n'émet encore aucun champ propre ; de `answerlineage_qos`, seul le proxy émet, et seulement ce qu'il voit. Leurs champs sont facultatifs et décrits sobrement ; ils s'étendront.
 - Les schémas sont servis par le fichier brut du dépôt sur la branche principale : une adresse n'existe qu'une fois la version fusionnée.

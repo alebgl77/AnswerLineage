@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Final, Literal
+from typing import Annotated, Any, Final, Literal, get_args
 from uuid import UUID
 
 from pydantic import (
@@ -34,6 +34,19 @@ from answerlineage_api.identifiers import identifier_fault
 AGENT_FACET: Final = "answerlineage_agent"
 TOOL_CALL_FACET: Final = "answerlineage_toolCall"
 DELIVERY_FACET: Final = "answerlineage_delivery"
+# Facette de qualité de service d'un run : ses signaux restent dans l'événement reçu.
+QOS_FACET: Final = "answerlineage_qos"
+
+# Signaux de qualité de service : durées en millisecondes et compteurs, un milliard au
+# plus (plus de onze jours, plus de dix mille par seconde sur un jour) ; une issue
+# d'une liste fermée ; un code d'erreur, JSON-RPC ou HTTP, entier sur 32 bits.
+SIGNAL_MAX: Final = 1_000_000_000
+Outcome = Literal[
+    "success", "jsonrpc_error", "http_error", "transport_error", "timeout", "client_abort"
+]
+OUTCOMES: Final[tuple[str, ...]] = get_args(Outcome)
+ERROR_CODE_MIN: Final = -(2**31)
+ERROR_CODE_MAX: Final = 2**31 - 1
 
 # Plage admise pour l'heure d'un événement, ramenée en UTC. Aucun événement de
 # lignage ne précède 1970, et un jour d'avance couvre tout décalage d'horloge
@@ -339,6 +352,48 @@ def facet_name_errors(raw: Mapping[str, Any]) -> list[FieldError]:
     return list(found.values())
 
 
+_Duration = Annotated[float, Field(strict=True, ge=0, le=SIGNAL_MAX, allow_inf_nan=False)]
+_Count = Annotated[int, Field(strict=True, ge=0, le=SIGNAL_MAX)]
+_ErrorCode = Annotated[int, Field(strict=True, ge=ERROR_CODE_MIN, le=ERROR_CODE_MAX)]
+# Chaque signal présent dans la facette de qualité de service, et ce qu'il admet.
+_SIGNALS: Final[Mapping[str, TypeAdapter[Any]]] = {
+    "latencyMs": TypeAdapter(_Duration),
+    "addedLatencyMs": TypeAdapter(_Duration),
+    "outcome": TypeAdapter(Outcome),
+    "errorCode": TypeAdapter(_ErrorCode),
+    "errorCount": TypeAdapter(_Count),
+    "retryCount": TypeAdapter(_Count),
+}
+
+
+def signal_errors(raw: Mapping[str, Any]) -> list[FieldError]:
+    """Signaux de qualité de service hors de leurs bornes.
+
+    Durées et compteurs sont des nombres bornés, l'issue vient d'une liste
+    fermée, le code d'erreur est un entier sur 32 bits. Un signal absent n'est
+    pas exigé ; ``null`` n'en est pas un. Les autres champs de la facette ne
+    sont pas contrôlés ici.
+    """
+    facet = _mapping(_mapping(raw.get("run")).get("facets")).get(QOS_FACET)
+    if not isinstance(facet, Mapping):
+        return []
+    errors: list[FieldError] = []
+    for name, adapter in _SIGNALS.items():
+        if name not in facet:
+            continue
+        try:
+            adapter.validate_python(facet[name])
+        except ValidationError as error:
+            path = json_pointer(("run", "facets", QOS_FACET, name))
+            errors.extend(
+                FieldError(path=path, type=item["type"], message=item["msg"])
+                for item in error.errors(
+                    include_url=False, include_input=False, include_context=False
+                )
+            )
+    return errors
+
+
 def _admitted(location: Location) -> bool:
     """Vrai si chaque clé d'un emplacement a la forme d'un nom, et peut donc être citée."""
     return all(
@@ -380,6 +435,7 @@ def validate_event(
         ]
     errors.extend(facet_name_errors(raw))
     errors.extend(identifier_errors(raw))
+    errors.extend(signal_errors(raw))
     if errors:
         return None, errors
     return event, []

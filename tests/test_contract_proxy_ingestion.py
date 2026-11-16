@@ -13,6 +13,7 @@ from answerlineage_api.ingest.store import event_identifier
 from answerlineage_proxy.events import build_tool_call_event
 from answerlineage_proxy.fingerprint import RESULT_LABEL, FingerprintKey, arguments_fingerprint
 from answerlineage_proxy.inspection import Inspection
+from answerlineage_proxy.signals import OUTCOMES, CallOutcome, CallSignals
 from answerlineage_proxy.sql import analyze_sql
 from answerlineage_proxy.tracecontext import resolve_trace
 from api.tests.events import official_run_event_schema
@@ -97,3 +98,27 @@ def test_proxy_event_with_fingerprints_and_a_sql_shape_is_accepted() -> None:
     assert errors == []
     assert accepted is not None
     assert set(accepted.job.facets) == {"sql"}
+
+
+@pytest.mark.parametrize("outcome", OUTCOMES)
+def test_proxy_event_with_quality_of_service_signals_is_accepted(outcome: CallOutcome) -> None:
+    """Chaque issue que le proxy émet, avec ses signaux, passe le schéma officiel et l'ingestion."""
+    code = {"jsonrpc_error": -32602, "http_error": 503}.get(outcome)
+    signals = CallSignals(
+        latency_ms=4.5, added_latency_ms=0.12, outcome=outcome, error_code=code, retry_count=1
+    )
+    event = build_tool_call_event(
+        run_id=uuid4(),
+        event_time=datetime.now(UTC),
+        outcome="COMPLETE",
+        server="entrepot",
+        inspection=Inspection(is_tool_call=True, tool="get_weather"),
+        signals=signals,
+    )
+    assert list(OFFICIAL.iter_errors(event)) == []
+    accepted, errors = validate_event(event)
+    assert errors == []
+    assert accepted is not None
+    qos = accepted.run.facets["answerlineage_qos"].model_dump(by_alias=True, mode="json")
+    assert qos["outcome"] == outcome
+    assert qos["_schemaURL"].endswith("/spec/facets/1-1-0/QosRunFacet.json#/$defs/QosRunFacet")

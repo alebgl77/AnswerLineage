@@ -8,6 +8,7 @@ import os
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
+from typing import Any, Final
 
 import uvicorn
 
@@ -44,6 +45,16 @@ from answerlineage_proxy.sink import NullSink
 logger = logging.getLogger("answerlineage_proxy")
 
 ENV_COVERAGE_WINDOW = "ANSWERLINEAGE_PROXY_COVERAGE_WINDOW_SECONDS"
+
+# Réglages du serveur HTTP qui sert le proxy. Le journal d'accès contiendrait
+# chemins et paramètres de requête ; les en-têtes Server et Date du serveur MCP
+# sont relayés tels quels, le serveur HTTP n'en ajoute pas.
+SERVER_OPTIONS: Final[Mapping[str, Any]] = {
+    "access_log": False,
+    "server_header": False,
+    "date_header": False,
+    "log_level": "warning",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -239,12 +250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         McpProxy(settings, NullSink(), coverage_window=coverage_window),
         host=settings.host,
         port=settings.port,
-        # Le journal d'accès contiendrait chemins et paramètres de requête ; les
-        # en-têtes Server et Date du serveur MCP sont relayés tels quels.
-        access_log=False,
-        server_header=False,
-        date_header=False,
-        log_level="warning",
+        **SERVER_OPTIONS,
     )
     return 0
 

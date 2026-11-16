@@ -103,7 +103,7 @@ Un nom fait d'une phrase est refusé parce qu'il contient des espaces : une inst
 
 Un nom réel qui contient des espaces, celui d'un document par exemple, s'envoie encodé (`Politique%20voyages%202026.pdf`) : `%` est admis, et le nom reste lisible. Les schémas publiés des [facettes](facettes.md) portent les mêmes longueurs maximales que ce tableau.
 
-Une facette inconnue, et un champ d'une facette connue qui n'est pas dans ce tableau, ne sont pas contrôlés : ils n'entrent pas dans le graphe. Une valeur de ces champs qui n'est pas un texte est tolérée : la projection l'ignore.
+Une facette inconnue, et un champ d'une facette connue qui n'est ni dans ce tableau ni parmi les [signaux de qualité de service](#signaux-de-qualité-de-service), ne sont pas contrôlés : ils n'entrent pas dans le graphe. Une valeur de ces champs qui n'est pas un texte est tolérée : la projection l'ignore.
 
 Le nom d'une facette est choisi par l'émetteur, et une erreur de validation le citerait dans son chemin (`/run/facets/<nom>/_producer`). Il suit donc la règle des identifiants : un nom qui n'en a pas la forme rejette l'événement, et l'erreur désigne l'objet qui le porte sans le citer. Les erreurs internes à cette facette ne sont pas rapportées : le nom suffit au rejet.
 
@@ -116,6 +116,23 @@ Les noms des émetteurs réels ont cette forme : `spark.logicalPlan`, `environme
 ### Forme normalisée
 
 Le contrôle porte sur la forme normalisée NFC de l'identifiant, et c'est elle qui entre dans le graphe : `société` écrit avec un `é` composé ou avec un `e` suivi d'un accent combinant désigne un seul jeu de données. L'événement brut, lui, reste enregistré tel qu'il a été reçu, et son identifiant reste l'empreinte de cette forme reçue. Les [workers](workers.md) normalisent chaque identifiant qu'ils recopient dans le graphe.
+
+### Signaux de qualité de service
+
+La facette `answerlineage_qos` d'un run ([facettes](facettes.md#answerlineage_qos)) porte des signaux qu'un émetteur a mesurés : le proxy y met la latence d'un appel d'outil, celle qu'il y ajoute, son issue et ses reprises. Ils restent dans l'événement reçu : le graphe ne les stocke pas encore. Chacun, quand il est présent, est borné ; un signal hors de ses bornes rejette l'événement :
+
+| Champ | Admis | Code d'un refus |
+| --- | --- | --- |
+| `latencyMs`, `addedLatencyMs` | Un nombre fini, de 0 à 1 000 000 000 (millisecondes : plus de onze jours) | `float_type`, `finite_number`, `greater_than_equal`, `less_than_equal` |
+| `errorCount`, `retryCount` | Un entier, de 0 à 1 000 000 000 | `int_type`, `greater_than_equal`, `less_than_equal` |
+| `outcome` | `success`, `jsonrpc_error`, `http_error`, `transport_error`, `timeout` ou `client_abort` | `literal_error` |
+| `errorCode` | Un entier signé sur 32 bits | `int_type`, `greater_than_equal`, `less_than_equal` |
+
+Un booléen n'est pas un nombre, ni `null` une valeur. Les versions 1-0-0 et 1-1-0 de la facette sont acceptées toutes deux : la première n'a ni `addedLatencyMs`, ni `outcome`, ni `errorCode`. Les autres champs de la facette (`model`, `inputTokens`, `estimatedCost`…) ne sont pas contrôlés, et la facette posée ailleurs que sur le run non plus. Comme pour tout rejet, l'erreur donne le chemin et un motif fixe, jamais la valeur reçue :
+
+```json
+{ "path": "/run/facets/answerlineage_qos/outcome", "type": "literal_error", "message": "Input should be 'success', 'jsonrpc_error', 'http_error', 'transport_error', 'timeout' or 'client_abort'" }
+```
 
 ## Contrat
 

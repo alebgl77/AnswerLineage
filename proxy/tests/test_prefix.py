@@ -11,7 +11,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from answerlineage_proxy.inspection import inspect_prefix
-from answerlineage_proxy.prefix import CallPrefix, read_call_prefix
+from answerlineage_proxy.prefix import CallPrefix, ReplyPrefix, read_call_prefix, read_reply_prefix
 
 
 def whole(document: bytes) -> CallPrefix:
@@ -216,3 +216,39 @@ def test_a_prefix_never_gives_a_value_the_whole_document_does_not(
     assert found.name in (None, expected.name)
     # Le document entier est lu jusqu'au bout.
     assert read_call_prefix(document) == expected
+
+
+ERROR_REPLY = (
+    b'{"jsonrpc":"2.0","id":7,"error":{"code":-32602,"message":"argument inconnu",'
+    b'"data":{"detail":"' + b"x" * 100_000 + b'"}}}'
+)
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        # L'erreur et son code se lisent au début, la suite n'est pas nécessaire.
+        (ERROR_REPLY, ReplyPrefix(error=True, code=-32602)),
+        (ERROR_REPLY[:200], ReplyPrefix(error=True, code=-32602)),
+        (b' {"error" : { "message":"m", "code" : 0 , "data":[1,{"code":2}]', ReplyPrefix(True, 0)),
+        # Un code coupé au bord du préfixe peut continuer au-delà : il n'est pas établi.
+        (b'{"error":{"code":-326', ReplyPrefix(error=True)),
+        (b'{"error":{"code":-32602.5,"message":"m"}}', ReplyPrefix(error=True)),
+        (b'{"error":{"code":"-32602"}}', ReplyPrefix(error=True)),
+        (b'{"error":{"code":1,"code":2}}', ReplyPrefix(error=True)),
+        (b'{"error":"en clair"}', ReplyPrefix(error=True)),
+        # Pas d'erreur : un résultat, une erreur nulle, une clé imbriquée ou dans une chaîne.
+        (b'{"jsonrpc":"2.0","id":1,"result":{"error":{"code":1}}}', ReplyPrefix()),
+        (b'{"result":{},"error":null}', ReplyPrefix()),
+        (b'{"texte":"\\"error\\":{\\"code\\":1}"}', ReplyPrefix()),
+        (b'{"error":nu', ReplyPrefix()),
+        # Erreur vue deux fois, préfixe illisible ou qui n'est pas un objet : rien n'est établi.
+        (b'{"error":{"code":1},"error":{"code":2}}', ReplyPrefix()),
+        (b'{"error":{"code":1},}', ReplyPrefix()),
+        (b'{"error" {"code":1}}', ReplyPrefix()),
+        (b'[{"error":{"code":1}}]', ReplyPrefix()),
+        (b"", ReplyPrefix()),
+    ],
+)
+def test_the_error_of_a_reply_is_read_from_its_start(data: bytes, expected: ReplyPrefix) -> None:
+    assert read_reply_prefix(data) == expected
