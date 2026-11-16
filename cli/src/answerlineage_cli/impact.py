@@ -77,12 +77,14 @@ def _hole(value: Any, where: str) -> dict[str, Any]:
 def coverage(value: Any, where: str) -> dict[str, Any]:
     """La couverture du lignage, sous la forme commune à l'impact et aux sources."""
     fields = ("status", "rate", "calls_seen", "events_in_graph", "events_lost", "uninspected")
-    cover = shape.obj(value, where, (*fields, "holes", "truncated"))
+    # Les instances qui ont publié : une API plus ancienne ne les dit pas.
+    cover = shape.obj(value, where, (*fields, "holes", "truncated"), ("instances",))
     holes = shape.items(cover["holes"], f"{where}/holes", MAX_HOLES)
+    counts = [key for key in (*fields[2:], "instances") if key in cover]
     return {
         "status": shape.choice(cover["status"], f"{where}/status", COVERAGE_STATUSES),
         "rate": shape.rate(cover["rate"], f"{where}/rate"),
-        **{key: shape.count(cover[key], f"{where}/{key}") for key in fields[2:]},
+        **{key: shape.count(cover[key], f"{where}/{key}") for key in counts},
         "holes": [_hole(item, f"{where}/holes/{rank}") for rank, item in enumerate(holes)],
         "truncated": shape.flag(cover["truncated"], f"{where}/truncated"),
     }

@@ -42,6 +42,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
+from answerlineage_api.identifiers import INSTANCE_MAX
 from answerlineage_api.store.partitions import RECEPTION_MONTH, create_partitions_ahead
 
 NAMING_CONVENTION = {
@@ -331,6 +332,8 @@ coverage_report = Table(
     "coverage_report",
     metadata,
     Column("emitter", Text, nullable=False),
+    # Instance de l'émetteur ; vide pour un relevé qui n'en porte pas, une instance à part.
+    Column("instance", Text, nullable=False, server_default=text("''")),
     Column("window_start", DateTime(timezone=True), nullable=False),
     Column("window_end", DateTime(timezone=True), nullable=False),
     Column("calls_seen", BigInteger, nullable=False),
@@ -340,8 +343,9 @@ coverage_report = Table(
     Column("uninspected", BigInteger, nullable=False),
     _recorded_at(),
     _recorded_month(),
-    PrimaryKeyConstraint("emitter", "window_start", "window_end", "recorded_month"),
+    PrimaryKeyConstraint("emitter", "instance", "window_start", "window_end", "recorded_month"),
     CheckConstraint("window_start < window_end", name="window"),
+    CheckConstraint(f"char_length(instance) <= {INSTANCE_MAX}", name="instance"),
     CheckConstraint(
         "calls_seen >= 0 AND events_emitted >= 0 AND events_lost >= 0 AND uninspected >= 0",
         name="counts",

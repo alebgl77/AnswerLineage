@@ -6,11 +6,16 @@ qu'il a émis et perdus, et de requêtes qu'il a relayées sans pouvoir les
 inspecter. Comparés au graphe, ces compteurs disent la part du trafic
 réellement captée (``lineage/coverage.py``).
 
-Le relevé est une entrée hostile comme une autre : identifiant de l'émetteur
-contrôlé, fenêtre et compteurs bornés et cohérents, aucune valeur recopiée dans
-une erreur. Deux relevés de la même fenêtre se fusionnent compteur par
-compteur, au plus grand : rejouer un relevé ne change rien, et l'ordre
-d'arrivée de deux relevés ne change pas l'état obtenu.
+Plusieurs instances d'un même émetteur, des proxys placés devant un même
+serveur, publient chacune ses relevés sous son identifiant d'instance : ils se
+rangent par émetteur, instance et fenêtre, et la lecture les additionne. Un
+relevé sans instance est rangé sous l'instance vide, une instance à part.
+
+Le relevé est une entrée hostile comme une autre : identifiants de l'émetteur
+et de l'instance contrôlés, fenêtre et compteurs bornés et cohérents, aucune
+valeur recopiée dans une erreur. Deux relevés de la même instance et de la même
+fenêtre se fusionnent compteur par compteur, au plus grand : rejouer un relevé
+ne change rien, et l'ordre d'arrivée de deux relevés ne change pas l'état obtenu.
 """
 
 from __future__ import annotations
@@ -74,6 +79,15 @@ class CoverageReport(BaseModel):
             " pour le proxy placé devant ce serveur."
         ),
         json_schema_extra={"minLength": 1, "maxLength": identifiers.NAMESPACE_MAX},
+    )
+    instance: str | None = Field(
+        default=None,
+        description=(
+            "Instance de l'émetteur, facultative : plusieurs proxys placés devant un même"
+            " serveur partagent l'émetteur, chacun publie sous son instance, et leurs relevés"
+            " s'additionnent. Un relevé sans instance compte pour une instance à part."
+        ),
+        json_schema_extra={"minLength": 1, "maxLength": identifiers.INSTANCE_MAX},
     )
     window: ReportWindow
     calls_seen: Count = Field(description="Appels d'outils vus pendant la fenêtre.")
@@ -148,6 +162,11 @@ def validate_report(
         fault = identifier_fault(emitter, max_length=identifiers.NAMESPACE_MAX)
         if fault is not None:
             errors.append(_error("/emitter", fault.code, fault.message))
+    instance = raw.get("instance")
+    if isinstance(instance, str):
+        fault = identifier_fault(instance, max_length=identifiers.INSTANCE_MAX)
+        if fault is not None:
+            errors.append(_error("/instance", fault.code, fault.message))
 
     window = report.window if report is not None else _valid_window(raw.get("window"))
     if window is not None:
@@ -163,7 +182,11 @@ def validate_report(
         )
     if errors or report is None:
         return None, errors
-    return report.model_copy(update={"emitter": normalize_identifier(report.emitter)}), []
+    normalized = {
+        "emitter": normalize_identifier(report.emitter),
+        "instance": None if report.instance is None else normalize_identifier(report.instance),
+    }
+    return report.model_copy(update=normalized), []
 
 
 def _valid_window(raw: object) -> ReportWindow | None:
@@ -174,7 +197,8 @@ def _valid_window(raw: object) -> ReportWindow | None:
 
 
 async def store_report(conn: AsyncConnection, report: CoverageReport) -> CoverageReport:
-    """Range le relevé, fusionné au plus grand avec celui de la même fenêtre ; rend l'état obtenu.
+    """Range le relevé, fusionné au plus grand avec celui de la même instance et de la même
+    fenêtre ; rend l'état obtenu. Un relevé sans instance est rangé sous l'instance vide.
 
     Un relevé qui fait grandir un compteur, ou qui ouvre une fenêtre, fait de
     son émetteur un émetteur connu et date son dernier relevé : c'est ce que
@@ -186,8 +210,10 @@ async def store_report(conn: AsyncConnection, report: CoverageReport) -> Coverag
     réceptions simultanées s'y fusionnent par la clé primaire.
     """
     table = schema.coverage_report
+    instance = report.instance or ""
     window = and_(
         table.c.emitter == report.emitter,
+        table.c.instance == instance,
         table.c.window_start == report.window.start,
         table.c.window_end == report.window.end,
     )
@@ -208,9 +234,10 @@ async def store_report(conn: AsyncConnection, report: CoverageReport) -> Coverag
     ).first()
     if changed is None:
         statement = insert(table).from_select(
-            ["emitter", "window_start", "window_end", *COUNTERS],
+            ["emitter", "instance", "window_start", "window_end", *COUNTERS],
             select(
                 literal(report.emitter),
+                literal(instance),
                 literal(report.window.start, DateTime(timezone=True)),
                 literal(report.window.end, DateTime(timezone=True)),
                 *(literal(value, BigInteger) for value in counters.values()),
@@ -222,6 +249,7 @@ async def store_report(conn: AsyncConnection, report: CoverageReport) -> Coverag
                 statement.on_conflict_do_update(
                     index_elements=[
                         table.c.emitter,
+                        table.c.instance,
                         table.c.window_start,
                         table.c.window_end,
                         table.c.recorded_month,
@@ -283,7 +311,8 @@ def _report_schema() -> dict[str, Any]:
     },
 )
 async def publish_report(request: Request) -> JSONResponse:
-    """Rend l'état de la fenêtre après fusion : un relevé rejoué ne change rien.
+    """Rend l'état de la fenêtre de cette instance après fusion : un relevé rejoué ne
+    change rien.
 
     Le corps est lu comme celui des événements : borné, et compressé ou non (``gzip``)."""
     body, refusal = await read_json(request)
@@ -295,4 +324,6 @@ async def publish_report(request: Request) -> JSONResponse:
     engine: AsyncEngine = request.app.state.engine
     async with engine.begin() as conn:
         stored = await store_report(conn, report)
-    return JSONResponse(status_code=201, content=stored.model_dump(mode="json", by_alias=True))
+    return JSONResponse(
+        status_code=201, content=stored.model_dump(mode="json", by_alias=True, exclude_none=True)
+    )

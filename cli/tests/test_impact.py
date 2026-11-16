@@ -62,6 +62,21 @@ def test_the_json_output_is_the_response_of_the_api(monkeypatch: pytest.MonkeyPa
     assert json.loads(result.out) == document
 
 
+def test_the_json_output_keeps_the_instances_that_published(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L'API dit combien d'instances des émetteurs ont publié ; une plus ancienne ne le dit pas."""
+    document = impact_result(1)
+    document["coverage"]["instances"] = 2
+    result = run(["impact", *INCIDENT, "--format", "json"], api_with(document), monkeypatch)
+    assert result.code == Exit.OK
+    assert json.loads(result.out)["coverage"]["instances"] == 2
+
+    document["coverage"]["instances"] = -1
+    refused = run(["impact", *INCIDENT, "--format", "json"], api_with(document), monkeypatch)
+    assert refused.code != Exit.OK
+
+
 def test_the_request_carries_every_parameter_of_the_route(monkeypatch: pytest.MonkeyPatch) -> None:
     api = api_with(impact_result(1))
     options = [

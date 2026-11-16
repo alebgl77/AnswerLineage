@@ -78,6 +78,35 @@ def test_the_emitter_is_kept_under_its_normal_form() -> None:
     assert accepted.emitter == "mcp://société"
 
 
+def test_an_instance_is_optional_and_kept_under_its_normal_form() -> None:
+    accepted, errors = validate_report(report(), received_at=RECEIVED)
+    assert errors == []
+    assert accepted is not None
+    assert accepted.instance is None
+    composed = "pod-socie" + chr(0x301) + "te" + chr(0x301)
+    accepted, errors = validate_report(report(instance=composed), received_at=RECEIVED)
+    assert errors == []
+    assert accepted is not None
+    assert accepted.instance == "pod-société"
+
+
+@pytest.mark.parametrize(
+    ("instance", "code"),
+    [
+        (f"pod {CANARY}", "identifier_whitespace"),
+        (f"<{CANARY}>", "identifier_markup"),
+        ("i" * 256, "identifier_too_long"),
+        ("", "identifier_empty"),
+    ],
+)
+def test_a_trapped_instance_is_refused_without_being_cited(instance: str, code: str) -> None:
+    assert errors_of(report(instance=instance)) == [("/instance", code)]
+
+
+def test_an_instance_is_text() -> None:
+    assert errors_of(report(instance=7)) == [("/instance", "string_type")]
+
+
 def test_an_unknown_field_is_ignored_and_never_cited() -> None:
     accepted, errors = validate_report(report(**{CANARY: 1}), received_at=RECEIVED)
     assert errors == []

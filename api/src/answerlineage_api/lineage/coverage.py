@@ -23,6 +23,14 @@ n'en couvrent qu'une part, « unknown » quand aucun ne la touche. La partie de
 la période qui n'est pas encore passée n'est pas mesurable : elle n'est ni
 couverte ni un trou. Un relevé qui déborde de la période compte en entier.
 
+Un émetteur peut publier par plusieurs instances, des proxys placés devant un
+même serveur : sa mesure les additionne. Leurs fenêtres qui se recoupent ne font
+qu'une, dont chaque compteur est la somme de ceux des instances, et que l'on
+compare au graphe d'un bloc ; un relevé sans instance compte pour une instance à
+part. Le silence reste celui de l'émetteur : un intervalle n'est muet que si
+aucune de ses instances ne l'a couvert. La couverture dit combien d'instances
+ont publié sur la période.
+
 Chaque analyse dit sa couverture, du même calcul : la propagation d'un incident
 sur sa fenêtre, par tous les émetteurs connus (``over_period``) ; la remontée
 d'une réponse sur la période de son run, par les émetteurs qui l'ont vu
@@ -99,31 +107,94 @@ _KNOWN_BEFORE = text(
     """
 )
 
-# Les relevés qui recoupent la période, et pour chacun ses événements d'appel
-# reçus et déjà projetés (sortis de la file), comptés au plus jusqu'aux appels vus.
+# Les relevés qui recoupent la période, un par émetteur, instance et fenêtre : une
+# fenêtre reçue à cheval sur deux mois a deux lignes, réunies au plus grand comme à
+# la réception.
 _REPORTS = text(
     """
-    SELECT r.emitter, r.window_start, r.window_end, r.calls_seen, r.events_emitted,
-           r.events_lost, r.uninspected,
-           (SELECT count(*) FROM (
-                SELECT 1 FROM event_raw e
-                WHERE e.tool_call AND e.emitter = r.emitter
-                  AND e.event_time >= r.window_start AND e.event_time < r.window_end
-                  AND NOT EXISTS (SELECT 1 FROM ingest_queue q WHERE q.event_id = e.event_id)
-                LIMIT r.calls_seen
-           ) AS projected) AS in_graph
+    SELECT r.emitter, r.instance, r.window_start, r.window_end,
+           max(r.calls_seen) AS calls_seen, max(r.events_emitted) AS events_emitted,
+           max(r.events_lost) AS events_lost, max(r.uninspected) AS uninspected
     FROM coverage_report r
     WHERE r.emitter = ANY(CAST(:emitters AS text[]))
       AND r.window_start < :end AND r.window_end > :start
-    ORDER BY r.emitter, r.window_start, r.window_end
+    GROUP BY r.emitter, r.instance, r.window_start, r.window_end
+    ORDER BY r.emitter, r.window_start, r.window_end, r.instance
     LIMIT :limit
     """
 )
 
+# Pour chaque fenêtre d'un émetteur, ses événements d'appel reçus et déjà projetés
+# (sortis de la file), comptés au plus jusqu'aux appels vus.
+_IN_GRAPH = text(
+    """
+    SELECT w.rank,
+           (SELECT count(*) FROM (
+                SELECT 1 FROM event_raw e
+                WHERE e.tool_call AND e.emitter = w.emitter
+                  AND e.event_time >= w.window_start AND e.event_time < w.window_end
+                  AND NOT EXISTS (SELECT 1 FROM ingest_queue q WHERE q.event_id = e.event_id)
+                LIMIT w.calls_seen
+           ) AS projected) AS in_graph
+    FROM unnest(
+        CAST(:emitters AS text[]), CAST(:starts AS timestamptz[]),
+        CAST(:ends AS timestamptz[]), CAST(:calls AS bigint[])
+    ) WITH ORDINALITY AS w(emitter, window_start, window_end, calls_seen, rank)
+    """
+)
+
+
+@dataclass
+class _Window:
+    """Une fenêtre d'un émetteur : un relevé, ou ceux de ses instances qui se recoupent."""
+
+    emitter: str
+    start: datetime
+    end: datetime
+    calls_seen: int
+    events_emitted: int
+    events_lost: int
+    uninspected: int
+
+    def add(self, row: Any) -> None:
+        self.end = max(self.end, row.window_end)
+        self.calls_seen += row.calls_seen
+        self.events_emitted += row.events_emitted
+        self.events_lost += row.events_lost
+        self.uninspected += row.uninspected
+
+
+def _windows(emitter: str, rows: Iterable[Any]) -> list[_Window]:
+    """Les relevés d'un émetteur, ses instances réunies.
+
+    Les fenêtres qui se recoupent n'en font qu'une, dont chaque compteur est la
+    somme : deux instances alignées sur les mêmes fenêtres s'additionnent fenêtre
+    par fenêtre ; une instance démarrée en cours de fenêtre, ou réglée sur une autre
+    durée, élargit la fenêtre commune. Les fenêtres d'une seule instance se suivent
+    sans se recouper : chacune reste seule.
+    """
+    windows: list[_Window] = []
+    for row in sorted(rows, key=lambda row: (row.window_start, row.window_end)):
+        if windows and row.window_start < windows[-1].end:
+            windows[-1].add(row)
+            continue
+        windows.append(
+            _Window(
+                emitter,
+                row.window_start,
+                row.window_end,
+                row.calls_seen,
+                row.events_emitted,
+                row.events_lost,
+                row.uninspected,
+            )
+        )
+    return windows
+
 
 @dataclass(frozen=True)
 class Report:
-    """Un relevé et ce que le graphe en contient."""
+    """Une fenêtre d'un émetteur, instances réunies, et ce que le graphe en contient."""
 
     emitter: str
     start: datetime
@@ -146,6 +217,8 @@ class _Tally:
     events_lost: int = 0
     uninspected: int = 0
     holes: list[CoverageHole] = field(default_factory=list)
+    # Instances qui ont publié un relevé recoupant la période.
+    instances: int = 0
 
     def add(self, report: Report) -> None:
         self.calls_seen += report.calls_seen
@@ -238,6 +311,7 @@ def _coverage(status: CoverageStatus, tally: _Tally, *, truncated: bool) -> Cove
         events_in_graph=tally.events_in_graph,
         events_lost=tally.events_lost,
         uninspected=tally.uninspected,
+        instances=tally.instances,
         holes=holes[:MAX_HOLES],
         truncated=truncated,
     )
@@ -246,6 +320,7 @@ def _coverage(status: CoverageStatus, tally: _Tally, *, truncated: bool) -> Cove
 @dataclass(frozen=True)
 class _Read:
     reports: dict[str, list[Report]]
+    instances: dict[str, int]
     known_before: set[str]
     truncated: bool
 
@@ -254,22 +329,39 @@ async def _read(reader: Reader, emitters: list[str], start: datetime, end: datet
     found = await reader.fetch(
         _REPORTS, {"emitters": emitters, "start": start, "end": end}, limit=MAX_REPORTS
     )
-    reports: dict[str, list[Report]] = {emitter: [] for emitter in emitters}
+    rows: dict[str, list[Any]] = {emitter: [] for emitter in emitters}
     for row in found.rows:
-        reports[row.emitter].append(
+        rows[row.emitter].append(row)
+    windows = [window for emitter in emitters for window in _windows(emitter, rows[emitter])]
+    in_graph: dict[int, int] = {}
+    if windows:
+        counted = await reader.execute(
+            _IN_GRAPH,
+            {
+                "emitters": [window.emitter for window in windows],
+                "starts": [window.start for window in windows],
+                "ends": [window.end for window in windows],
+                "calls": [window.calls_seen for window in windows],
+            },
+        )
+        in_graph = {row.rank: row.in_graph for row in counted}
+    reports: dict[str, list[Report]] = {emitter: [] for emitter in emitters}
+    for rank, window in enumerate(windows, start=1):
+        reports[window.emitter].append(
             Report(
-                emitter=row.emitter,
-                start=row.window_start,
-                end=row.window_end,
-                calls_seen=row.calls_seen,
-                events_emitted=row.events_emitted,
-                events_lost=row.events_lost,
-                uninspected=row.uninspected,
-                in_graph=row.in_graph,
+                emitter=window.emitter,
+                start=window.start,
+                end=window.end,
+                calls_seen=window.calls_seen,
+                events_emitted=window.events_emitted,
+                events_lost=window.events_lost,
+                uninspected=window.uninspected,
+                in_graph=in_graph.get(rank, 0),
             )
         )
+    instances = {emitter: len({row.instance for row in rows[emitter]}) for emitter in emitters}
     before = await reader.execute(_KNOWN_BEFORE, {"emitters": emitters, "start": start})
-    return _Read(reports, {row.emitter for row in before}, found.truncated)
+    return _Read(reports, instances, {row.emitter for row in before}, found.truncated)
 
 
 def _muted_since(row: Any) -> datetime | None:
@@ -295,6 +387,7 @@ async def by_emitter(
             end=end,
             now=now,
         )
+        tally.instances = read.instances[row.emitter]
         result.append(
             EmitterCoverage(
                 emitter=row.emitter,
@@ -342,6 +435,7 @@ async def _combined(
             now=now,
         )
         statuses.add(status)
+        total.instances += read.instances[emitter]
         total.calls_seen += tally.calls_seen
         total.events_in_graph += tally.events_in_graph
         total.events_lost += tally.events_lost

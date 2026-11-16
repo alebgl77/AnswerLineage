@@ -24,12 +24,17 @@ Les fenêtres sont alignées sur des multiples de leur durée depuis l'origine
 des temps Unix : deux proxys découpent le temps de la même façon. La première
 commence au démarrage du proxy, la dernière s'achève à son arrêt : deux vies
 successives du proxy publient des fenêtres disjointes.
+
+Plusieurs proxys devant un même serveur partagent l'émetteur : chacun publie
+sous son identifiant d'instance, réglé ou tiré au démarrage, et l'API additionne
+leurs relevés au lieu de les confondre.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -47,6 +52,11 @@ _RETRY_SECONDS: Final = 0.1
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 
 Report = dict[str, Any]
+
+
+def drawn_instance() -> str:
+    """Un identifiant d'instance tiré au hasard : seize chiffres hexadécimaux."""
+    return secrets.token_hex(8)
 
 
 def _instant(moment: datetime) -> str:
@@ -68,10 +78,19 @@ class _Counts:
 class CoverageWindows:
     """Les compteurs d'un émetteur, fenêtre par fenêtre, et leur clôture."""
 
-    def __init__(self, emitter: str, *, length: timedelta, started_at: datetime) -> None:
+    def __init__(
+        self,
+        emitter: str,
+        *,
+        length: timedelta,
+        started_at: datetime,
+        instance: str | None = None,
+    ) -> None:
         if not MIN_WINDOW <= length <= MAX_WINDOW:
             raise ValueError("La fenêtre dure d'une seconde à un jour.")
         self.emitter = emitter
+        # Instance de l'émetteur, portée par chaque relevé quand elle est connue.
+        self.instance = instance
         self.length = length
         # Début de la plus ancienne fenêtre pas encore remise.
         self._open = started_at
@@ -156,8 +175,11 @@ class CoverageWindows:
 
     def _report(self, start: datetime, end: datetime, counts: _Counts | None) -> Report:
         counts = counts or _Counts()
+        report: Report = {"emitter": self.emitter}
+        if self.instance is not None:
+            report["instance"] = self.instance
         return {
-            "emitter": self.emitter,
+            **report,
             "window": {"from": _instant(start), "to": _instant(end)},
             "calls_seen": counts.calls_seen,
             "events_emitted": counts.events_emitted,

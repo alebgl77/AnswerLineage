@@ -248,6 +248,13 @@ class Coverage(BaseModel):
     events_in_graph: int = Field(description="Événements de ces appels présents dans le graphe.")
     events_lost: int = Field(description="Événements déclarés perdus par les émetteurs.")
     uninspected: int = Field(description="Requêtes relayées sans pouvoir être inspectées.")
+    instances: int = Field(
+        description=(
+            "Instances des émetteurs qui ont publié un relevé recoupant la période, des proxys"
+            " placés devant un même serveur ; un relevé sans instance compte pour une instance"
+            " à part."
+        )
+    )
     holes: list[CoverageHole] = Field(description="Trous connus, par heure de début.")
     truncated: bool = Field(
         description=(

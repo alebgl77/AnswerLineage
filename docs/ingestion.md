@@ -228,6 +228,7 @@ Un outil de rappel qui ne dit pas ce qu'il ignore rassure à tort : « aucune r�
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/coverage -H 'content-type: application/json' -d '{
   "emitter": "mcp://entrepot",
+  "instance": "proxy-entrepot-7f9c",
   "window": { "from": "2026-11-11T09:00:00Z", "to": "2026-11-11T09:01:00Z" },
   "calls_seen": 1000,
   "events_emitted": 990,
@@ -239,6 +240,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/coverage -H 'content-type: application
 | Champ | Contenu |
 | --- | --- |
 | `emitter` | L'émetteur, sous la même définition que le [compteur de doublons](#compteur-de-doublons) : l'espace de noms de ses jobs, `mcp://entrepot` pour le proxy placé devant ce serveur |
+| `instance` | Facultatif : l'instance de l'émetteur qui publie. Plusieurs proxys placés devant un même serveur partagent l'émetteur ; chacun publie sous son instance, et leurs relevés s'additionnent ([Fusion](#fusion)). Un relevé sans instance compte pour une instance à part |
 | `window` | La fenêtre du relevé, début inclus, fin exclue (RFC 3339, avec fuseau) |
 | `calls_seen` | Appels d'outils vus pendant la fenêtre |
 | `events_emitted` | Événements remis à leur destination |
@@ -253,7 +255,7 @@ Le relevé est une entrée hostile comme une autre. Chaque faute est rapportée 
 
 | Code | Motif |
 | --- | --- |
-| `identifier_…` | L'émetteur n'a pas la forme d'un [identifiant](#identifiants) d'espace de noms (512 caractères au plus) |
+| `identifier_…` | L'émetteur n'a pas la forme d'un [identifiant](#identifiants) d'espace de noms (512 caractères au plus), ou l'instance celle d'un identifiant de 255 caractères au plus (`/instance`) |
 | `window_inverted` | La fin de la fenêtre ne suit pas son début |
 | `window_too_long` | La fenêtre dure plus d'un jour |
 | `window_out_of_range` | La fenêtre commence avant le 1er janvier 1970 |
@@ -266,11 +268,13 @@ Un champ inconnu est ignoré. Le corps est lu comme celui des événements : mê
 
 ### Fusion
 
-Les relevés se rangent dans la table `coverage_report` ([schéma](schema.md#couverture-du-lignage)), un par émetteur et par fenêtre. Deux relevés de la même fenêtre se fusionnent compteur par compteur, au plus grand : un relevé rejoué ne change rien, deux relevés arrivés dans un ordre ou dans l'autre donnent le même état, et un émetteur peut republier une fenêtre complétée. La réponse rend l'état de la fenêtre après fusion.
+Les relevés se rangent dans la table `coverage_report` ([schéma](schema.md#couverture-du-lignage)), un par émetteur, instance et fenêtre. Deux relevés de la même instance et de la même fenêtre se fusionnent compteur par compteur, au plus grand : un relevé rejoué ne change rien, deux relevés arrivés dans un ordre ou dans l'autre donnent le même état, et un émetteur peut republier une fenêtre complétée. La réponse rend l'état de la fenêtre de cette instance après fusion ; elle ne porte `instance` que si le relevé en portait une.
+
+Deux instances ne se fusionnent jamais : leurs relevés d'une même fenêtre restent deux lignes, et la [lecture de la couverture](lecture.md#couverture-du-lignage) les additionne pour mesurer l'émetteur. Un relevé sans instance est rangé sous une instance à part : un émetteur qui ne connaît pas d'instance, le seul de son espace de noms, est mesuré comme avant.
 
 Un émetteur republie ainsi une fenêtre déjà close quand il apprend plus tard ce qu'il est advenu de ses événements : la [boîte d'envoi du proxy](proxy.md#boîte-denvoi) compte un événement émis une fois accepté par l'API, perdu s'il se perd, et corrige la fenêtre de l'événement. Un relevé corrigé ne fait que grandir les compteurs du précédent, appels vus inchangés : la fusion au plus grand rend le dernier, quel que soit l'ordre d'arrivée des corrections, rejeux compris. Un émetteur qui republierait une fenêtre en diminuant un compteur verrait garder l'ancienne valeur : ses compteurs doivent être monotones.
 
-Un relevé qui ouvre une fenêtre ou fait grandir un compteur date le dernier relevé de son émetteur : c'est ce que surveille le contrôle des émetteurs muets. Un rejeu ne ranime pas un émetteur muet.
+Un relevé qui ouvre une fenêtre ou fait grandir un compteur date le dernier relevé de son émetteur, quelle que soit son instance : c'est ce que surveille le contrôle des émetteurs muets, émetteur par émetteur. Un rejeu ne ranime pas un émetteur muet.
 
 La couverture qui s'en déduit se lit par `GET /api/v1/coverage` et dans chaque résultat d'impact ([API de lecture](lecture.md#couverture-du-lignage)).
 
@@ -314,4 +318,4 @@ Tout ce que l'ingestion reçoit est borné, pour qu'une entrée piégée ne puis
 - L'heure d'un événement est bornée par l'horloge de l'API : le corpus synthétique, daté à partir du 2 novembre 2026, voit refuser ses événements qui tombent plus d'un jour après la date du jour (`--days` élevé).
 - L'API n'exporte pas encore de métriques.
 - Un relevé n'est pas authentifié plus qu'un événement : un émetteur mal réglé, ou qui en usurpe un autre, peut gonfler les appels vus d'une fenêtre, et la fusion au plus grand ne peut pas le défaire.
-- Plusieurs instances d'un même émetteur, des répliques du proxy devant un même serveur, publient sous le même identifiant : leurs relevés d'une même fenêtre se fusionnent au plus grand au lieu de s'additionner, et la couverture est alors surestimée. Une instance par émetteur, en attendant un identifiant d'instance.
+- Les instances d'un émetteur se déclarent elles-mêmes : deux émetteurs qui publient sous la même instance se fusionnent au plus grand, et la couverture est alors surestimée. Le proxy en tire une au hasard quand elle n'est pas réglée.

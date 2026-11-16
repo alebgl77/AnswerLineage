@@ -394,6 +394,7 @@ async def test_an_impact_without_report_says_its_coverage_is_not_measured(
         "events_in_graph": 0,
         "events_lost": 0,
         "uninspected": 0,
+        "instances": 0,
         "holes": [],
         "truncated": False,
     }
@@ -529,6 +530,7 @@ async def test_the_trace_of_an_answer_gives_the_period_of_its_run_and_its_covera
         "events_in_graph": 1,
         "events_lost": 0,
         "uninspected": 0,
+        "instances": 1,
         "holes": [],
         "truncated": False,
     }

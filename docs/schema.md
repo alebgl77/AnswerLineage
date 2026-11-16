@@ -68,13 +68,15 @@ Une ligne qu'aucun événement reçu ne rattache garde l'heure qu'elle portait, 
 
 ## Couverture du lignage
 
-Les [relevés de couverture](ingestion.md#relevés-de-couverture) des émetteurs se rangent dans `coverage_report`, un par émetteur (sous sa forme normalisée) et par fenêtre. Deux relevés de la même fenêtre se fusionnent compteur par compteur, au plus grand : l'écriture est idempotente et commutative. La table est partitionnée par mois de première réception de la fenêtre (`recorded_month`) : un relevé republié est d'abord fusionné dans la ligne existante, quelle que soit sa partition, par une mise à jour qui ne la déplace pas ; une fenêtre nouvelle est insérée dans le mois courant, et deux premières réceptions simultanées s'y fusionnent par la clé primaire (`INSERT … ON CONFLICT DO UPDATE`). Les compteurs sont positifs et la fenêtre non vide, contraintes nommées comprises.
+Les [relevés de couverture](ingestion.md#relevés-de-couverture) des émetteurs se rangent dans `coverage_report`, un par émetteur (sous sa forme normalisée), instance et fenêtre. L'instance d'un relevé qui n'en porte pas est le texte vide, une instance à part ; une instance compte au plus 255 caractères (`ck_coverage_report_instance`). Deux relevés de la même instance et de la même fenêtre se fusionnent compteur par compteur, au plus grand : l'écriture est idempotente et commutative. La table est partitionnée par mois de première réception de la fenêtre (`recorded_month`) : un relevé republié est d'abord fusionné dans la ligne existante, quelle que soit sa partition, par une mise à jour qui ne la déplace pas ; une fenêtre nouvelle est insérée dans le mois courant, et deux premières réceptions simultanées s'y fusionnent par la clé primaire (`INSERT … ON CONFLICT DO UPDATE`). Les compteurs sont positifs et la fenêtre non vide, contraintes nommées comprises.
 
 `coverage_emitter` tient un émetteur par ligne, dès son premier relevé : `last_report_at`, la réception de son dernier relevé qui a changé quelque chose, et, posés par le [contrôle des émetteurs muets](workers.md#émetteurs-muets), `silent_since` (l'heure de ce dernier relevé quand le silence a été signalé) et `signalled_at`. Un émetteur est muet tant que `silent_since` égale `last_report_at`.
 
 Pour comparer ces relevés au graphe, `event_raw` porte l'émetteur de chaque événement (`emitter`, l'espace de noms de son job sous sa forme NFC) et `tool_call`, vrai pour l'événement d'un appel d'outil. Un index partiel range les appels par émetteur et par heure. La migration `0006` remplit ces colonnes pour les événements reçus avant elle. Un événement est dans le graphe quand il n'est plus dans `ingest_queue`.
 
-Un relevé par minute et par émetteur fait 1 440 lignes par jour : `coverage_report` et `event_raw` sont purgés avec la conservation, au même rythme, pour que la couverture d'une période purgée soit inconnue plutôt que fausse. `coverage_emitter`, une ligne par émetteur, n'est pas purgée.
+La migration `0009` ajoute l'instance : les relevés reçus avant elle prennent l'instance vide et gardent leur place, et la clé primaire devient émetteur, instance, fenêtre et mois de réception. Sa descente réunit les instances d'une même fenêtre, reçues le même mois, en une ligne dont chaque compteur est leur somme.
+
+Un relevé par minute et par instance fait 1 440 lignes par jour : `coverage_report` et `event_raw` sont purgés avec la conservation, au même rythme, pour que la couverture d'une période purgée soit inconnue plutôt que fausse. `coverage_emitter`, une ligne par émetteur, n'est pas purgée.
 
 ## Partitions et conservation
 
@@ -125,7 +127,7 @@ La migration `0008` recrée chaque table partitionnée : ses lignes sont mises d
 
 ### Limites connues
 
-- Deux réceptions simultanées d'un même événement, à cheval sur deux mois à quelques millisecondes près, ne se voient pas l'une l'autre : l'événement est enregistré deux fois, une fois dans chaque partition. Le graphe n'en est pas changé (la projection est idempotente) ; le doublon n'est pas compté, et la couverture de sa fenêtre compte l'appel deux fois, au plus jusqu'aux appels vus. Il en va de même pour une fenêtre de relevé, dont les compteurs sont alors lus deux fois.
+- Deux réceptions simultanées d'un même événement, à cheval sur deux mois à quelques millisecondes près, ne se voient pas l'une l'autre : l'événement est enregistré deux fois, une fois dans chaque partition. Le graphe n'en est pas changé (la projection est idempotente) ; le doublon n'est pas compté, et la couverture de sa fenêtre compte l'appel deux fois, au plus jusqu'aux appels vus. Une fenêtre de relevé reçue ainsi a deux lignes ; la lecture les réunit au plus grand, comme la réception.
 - Un relevé reçu juste après un changement de mois survit un mois de plus que les événements de sa fenêtre : pendant ce mois, la couverture de cette fenêtre, la plus ancienne de la conservation, compte ses appels comme manquants.
 
 ## Migrations

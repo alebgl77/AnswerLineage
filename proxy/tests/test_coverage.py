@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
-from answerlineage_proxy import cli
+from answerlineage_proxy import cli, stdio
+from answerlineage_proxy.app import McpProxy
+from answerlineage_proxy.config import (
+    ENV_INSTANCE_ID,
+    ENV_UPSTREAM,
+    ProxyConfigurationError,
+    ProxySettings,
+    StdioSettings,
+)
 from answerlineage_proxy.coverage import (
     CoverageWindows,
     Report,
@@ -340,6 +349,80 @@ async def test_a_lost_event_is_counted_lost_in_its_window(bench: BenchFactory) -
         assert proxied.status == 200
     [report] = [report for report in sink.reports if report["calls_seen"]]
     assert (report["calls_seen"], report["events_emitted"], report["events_lost"]) == (1, 0, 1)
+
+
+# L'instance : plusieurs proxys devant un même serveur partagent l'émetteur.
+
+
+def test_reports_carry_the_instance_when_it_is_known() -> None:
+    counter = CoverageWindows("mcp://meteo", instance="pod-7", length=MINUTE, started_at=at(0))
+    [report] = counter.close_due(at(60))
+    assert list(report)[:3] == ["emitter", "instance", "window"]
+    assert report["instance"] == "pod-7"
+    # Sans instance, le relevé n'en porte pas.
+    assert "instance" not in windows().close_due(at(60))[0]
+
+
+@pytest.mark.anyio
+async def test_the_proxy_takes_its_instance_from_its_settings_or_draws_one() -> None:
+    upstream = "http://127.0.0.1:1"
+    sink = MemorySink()
+    named = McpProxy(ProxySettings.create(upstream, "meteo", instance_id="pod-7"), sink)
+    drawn = [McpProxy(ProxySettings.create(upstream, "meteo"), MemorySink()) for _ in range(2)]
+    assert named.instance == "pod-7"
+    assert drawn[0].instance != drawn[1].instance
+    assert all(re.fullmatch(r"[0-9a-f]{16}", proxy.instance) for proxy in drawn)
+    for proxy in (named, *drawn):
+        await proxy.aclose()
+    assert sink.reports
+    assert {report["instance"] for report in sink.reports} == {"pod-7"}
+
+
+CANARY = "canari-instance-31d7"
+
+
+@pytest.mark.parametrize(
+    ("value", "code"),
+    [
+        (f"pod {CANARY}", "identifier_whitespace"),
+        (f"<{CANARY}>", "identifier_markup"),
+        (CANARY * 20, "identifier_too_long"),
+        ("", "identifier_empty"),
+    ],
+)
+def test_an_invalid_instance_stops_the_proxy_without_being_cited(value: str, code: str) -> None:
+    with pytest.raises(ProxyConfigurationError, match=code) as refused:
+        ProxySettings.create("http://127.0.0.1:1", "meteo", instance_id=value)
+    assert CANARY not in str(refused.value)
+
+
+def test_the_instance_is_kept_under_its_normal_form() -> None:
+    composed = "pod-socie" + chr(0x301) + "te" + chr(0x301)
+    settings = ProxySettings.create("http://127.0.0.1:1", "meteo", instance_id=composed)
+    assert settings.instance_id == "pod-société"
+
+
+def test_the_instance_is_set_by_option_or_environment() -> None:
+    upstream = ["--upstream", "http://127.0.0.1:9000"]
+    assert cli.settings_from_args(upstream, {}).instance_id is None
+    assert cli.settings_from_args(upstream, {ENV_INSTANCE_ID: "pod-a"}).instance_id == "pod-a"
+    assert (
+        cli.settings_from_args(
+            [*upstream, "--instance-id", "pod-b"], {ENV_INSTANCE_ID: "pod-a"}
+        ).instance_id
+        == "pod-b"
+    )
+    environment = {ENV_UPSTREAM: "http://127.0.0.1:9000", ENV_INSTANCE_ID: "pod-c"}
+    assert ProxySettings.from_environment(environment).instance_id == "pod-c"
+
+
+def test_the_stdio_proxy_takes_its_instance_the_same_way() -> None:
+    settings, _ = stdio.settings_from_args(["--instance-id", "pod-s", "--", "serveur"], {})
+    assert settings.instance_id == "pod-s"
+    from_environment, _ = stdio.settings_from_args(["--", "serveur"], {ENV_INSTANCE_ID: "pod-e"})
+    assert from_environment.instance_id == "pod-e"
+    with pytest.raises(ProxyConfigurationError, match="identifier_whitespace"):
+        StdioSettings.create(["serveur"], "meteo", instance_id=f"pod {CANARY}")
 
 
 # La durée des fenêtres, réglée à la ligne de commande.

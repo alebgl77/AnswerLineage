@@ -41,7 +41,7 @@ Chaque ligne que l'événement fait connaître prend pour heure d'enregistrement
 
 Un émetteur publie ses [relevés de couverture](ingestion.md#relevés-de-couverture) fenêtre par fenêtre, y compris une fenêtre sans appel : c'est le battement qui prouve qu'il n'est pas muet. Un émetteur qui se tait ne capte plus rien, et rien d'autre ne le dirait.
 
-Au démarrage puis chaque minute, la boucle du worker contrôle les émetteurs connus, ceux qui ont publié au moins un relevé. Un émetteur dont le dernier relevé a été reçu il y a plus de dix minutes est signalé :
+Au démarrage puis chaque minute, la boucle du worker contrôle les émetteurs connus, ceux qui ont publié au moins un relevé. Un émetteur dont le dernier relevé, de quelque instance qu'il vienne, a été reçu il y a plus de dix minutes est signalé :
 
 - une ligne de journal qui le nomme, par son identifiant contrôlé à la réception, jamais par un contenu :
 
@@ -50,6 +50,8 @@ Au démarrage puis chaque minute, la boucle du worker contrôle les émetteurs c
   ```
 
 - un état que lit l'API : `muted_since`, l'heure de son dernier relevé, dans `GET /api/v1/coverage` ([API de lecture](lecture.md#émetteurs)).
+
+Le silence se suit par émetteur, pas par instance : un émetteur est muet quand aucune de ses instances ne publie. Une instance arrêtée par une mise à l'échelle, tant qu'une autre publie, n'est pas une alerte ; la [couverture](lecture.md#instances) dit combien d'instances ont publié sur une période.
 
 Un épisode de silence est signalé une fois, pas à chaque passage : l'état retient le relevé après lequel le silence a commencé. Un émetteur qui republie cesse d'être muet, aussitôt pour l'API ; s'il se tait de nouveau, c'est un nouvel épisode, signalé à son tour. Un relevé rejoué ne ranime pas un émetteur.
 

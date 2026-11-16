@@ -56,6 +56,8 @@ CHANNEL_MAX: Final = 64
 MESSAGE_REF_MAX: Final = 512
 RECIPIENT_MAX: Final = 255
 FINGERPRINT_MAX: Final = 255
+# Instance d'un émetteur, dans un relevé de couverture : un nom de pod, d'hôte, un tirage.
+INSTANCE_MAX: Final = 255
 # Nom d'une facette, choisi par l'émetteur : ``answerlineage_toolCall``,
 # ``spark.logicalPlan``, ``environment-properties``.
 FACET_NAME_MAX: Final = 128

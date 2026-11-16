@@ -20,6 +20,7 @@ BOUNDS = [
     (proxy.NAMESPACE_MAX, api.NAMESPACE_MAX),
     (proxy.DATASET_NAME_MAX, api.DATASET_NAME_MAX),
     (proxy.COLUMN_MAX, api.COLUMN_MAX),
+    (proxy.INSTANCE_MAX, api.INSTANCE_MAX),
 ]
 SAMPLES = [
     "ref.tarifs",

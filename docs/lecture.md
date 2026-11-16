@@ -183,6 +183,7 @@ curl "http://127.0.0.1:8000/api/v1/coverage?from=2026-11-11T09:00:00Z&to=2026-11
         "events_in_graph": 990,
         "events_lost": 10,
         "uninspected": 0,
+        "instances": 2,
         "holes": [
           {
             "emitter": "mcp://entrepot",
@@ -215,6 +216,15 @@ Pour chaque fenêtre d'un relevé, on compte les événements d'appel d'outil de
 - **Un événement reçu mais pas encore projeté** n'est pas dans le graphe : juste après un envoi, la dernière fenêtre peut paraître incomplète le temps qu'un worker passe.
 - **Un événement encore en route** non plus : pendant une panne de l'API, le relevé d'une fenêtre close peut précéder ses événements, qui attendent dans la [boîte d'envoi](proxy.md#boîte-denvoi) du proxy. La fenêtre montre des événements manquants jusqu'à leur arrivée ; ceux que la boîte perd y deviennent des événements perdus, par un relevé corrigé.
 - Un relevé qui déborde de la période compte en entier : la mesure se fait à la fenêtre près.
+
+### Instances
+
+Un émetteur peut publier par plusieurs instances : des proxys placés devant un même serveur partagent l'émetteur, chacun publie sous son instance ([relevés](ingestion.md#fusion)). La mesure de l'émetteur les additionne :
+
+- **Des fenêtres qui se recoupent ne font qu'une.** Les relevés de ses instances dont les fenêtres se recoupent forment une seule fenêtre de mesure, de la plus tôt à la plus tard, dont chaque compteur est la somme ; ses événements dans le graphe sont comptés sur toute cette fenêtre. Deux instances alignées sur les mêmes fenêtres s'additionnent fenêtre par fenêtre ; une instance qui démarre en cours de fenêtre, ou réglée sur une autre durée, élargit la fenêtre commune, et ses trous se disent à cette échelle.
+- **Le silence reste celui de l'émetteur.** Un intervalle n'est muet que si aucune instance ne l'a couvert : une instance arrêtée par une mise à l'échelle n'ouvre pas de trou tant qu'une autre publie.
+- **Un relevé sans instance** compte pour une instance à part.
+- `instances` dit combien d'instances ont publié un relevé recoupant la période ; pour le résultat d'impact et les sources d'une réponse, la somme sur les émetteurs pris en compte.
 
 ### Trois états
 

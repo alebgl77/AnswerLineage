@@ -12,6 +12,7 @@ import httpx
 
 from answerlineage_proxy.fingerprint import FingerprintKey
 from answerlineage_proxy.guard import LOOPBACK_HOSTS, RequestGuard
+from answerlineage_proxy.names import INSTANCE_MAX, name_fault, normalize_name
 from answerlineage_proxy.rules import ReadRule, ReadRulesError, load_read_rules, rules_for
 from answerlineage_proxy.sql import DIALECTS, Dialect
 
@@ -29,6 +30,8 @@ ENV_FINGERPRINT_KEY = "ANSWERLINEAGE_PROXY_FINGERPRINT_KEY"
 ENV_FINGERPRINT_KEY_FILE = "ANSWERLINEAGE_PROXY_FINGERPRINT_KEY_FILE"
 # Fichier des règles de lecture des outils non SQL.
 ENV_READ_RULES_FILE = "ANSWERLINEAGE_PROXY_READ_RULES_FILE"
+# Identifiant d'instance des relevés de couverture.
+ENV_INSTANCE_ID = "ANSWERLINEAGE_PROXY_INSTANCE_ID"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8717
@@ -92,6 +95,10 @@ class CaptureSettings(Protocol):
     def read_rules(self) -> Mapping[str, ReadRule]:
         """Règles de lecture qui valent pour ce serveur, par outil."""
 
+    @property
+    def instance_id(self) -> str | None:
+        """Identifiant d'instance des relevés de couverture ; sans lui, tiré au démarrage."""
+
 
 def _check_server_name(name: str, hint: str) -> None:
     if not _SERVER_NAME.fullmatch(name):
@@ -110,6 +117,18 @@ def _check_capture(settings: CaptureSettings) -> None:
     for name, (minimum, maximum) in _SQL_LIMITS.items():
         if not minimum <= getattr(settings, name) <= maximum:
             raise ProxyConfigurationError(f"{name} doit être compris entre {minimum} et {maximum}.")
+    if settings.instance_id is not None:
+        fault = name_fault(settings.instance_id, max_length=INSTANCE_MAX)
+        if fault is not None:
+            # Le motif est un texte fixe : il ne cite jamais la valeur reçue.
+            raise ProxyConfigurationError(
+                f"L'identifiant d'instance est invalide : {fault.message} ({fault.code})."
+            )
+
+
+def instance(value: str | None) -> str | None:
+    """L'identifiant d'instance sous sa forme normalisée NFC ; ``None`` sans réglage."""
+    return None if value is None else normalize_name(value)
 
 
 def listed(value: str | None) -> tuple[str, ...]:
@@ -247,6 +266,9 @@ class ProxySettings:
     # Règles de lecture qui valent pour ce serveur, par outil. Un outil SQL garde
     # l'analyse de sa requête.
     read_rules: Mapping[str, ReadRule] = field(default_factory=dict)
+    # Identifiant d'instance des relevés de couverture, sous sa forme NFC. Sans lui, le
+    # proxy en tire un au démarrage.
+    instance_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.upstream.scheme not in ("http", "https") or not self.upstream.host:
@@ -313,6 +335,7 @@ class ProxySettings:
         sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE,
         fingerprint_key: FingerprintKey | None = None,
         read_rules: Sequence[ReadRule] = (),
+        instance_id: str | None = None,
     ) -> ProxySettings:
         try:
             url = httpx.URL(upstream)
@@ -334,6 +357,7 @@ class ProxySettings:
             sql_cache_size=sql_cache_size,
             fingerprint_key=fingerprint_key,
             read_rules=rules_for(tuple(read_rules), name),
+            instance_id=instance(instance_id),
         )
 
     @classmethod
@@ -359,6 +383,7 @@ class ProxySettings:
             sql_cache_size=integer(environment, ENV_SQL_CACHE_SIZE, DEFAULT_SQL_CACHE_SIZE),
             fingerprint_key=fingerprint_key(environment),
             read_rules=read_rules(environment),
+            instance_id=environment.get(ENV_INSTANCE_ID) or None,
         )
 
 
@@ -377,6 +402,7 @@ class StdioSettings:
     sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE
     fingerprint_key: FingerprintKey | None = field(default=None, repr=False)
     read_rules: Mapping[str, ReadRule] = field(default_factory=dict)
+    instance_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.command or not self.command[0]:
@@ -400,6 +426,7 @@ class StdioSettings:
         sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE,
         fingerprint_key: FingerprintKey | None = None,
         read_rules: Sequence[ReadRule] = (),
+        instance_id: str | None = None,
     ) -> StdioSettings:
         """Sans nom de serveur, celui du programme lancé, sans son chemin."""
         name = server_name
@@ -415,4 +442,5 @@ class StdioSettings:
             sql_cache_size=sql_cache_size,
             fingerprint_key=fingerprint_key,
             read_rules=rules_for(tuple(read_rules), name),
+            instance_id=instance(instance_id),
         )

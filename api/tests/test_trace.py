@@ -45,6 +45,7 @@ NOT_MEASURED: dict[str, Any] = {
     "events_in_graph": 0,
     "events_lost": 0,
     "uninspected": 0,
+    "instances": 0,
     "holes": [],
     "truncated": False,
 }

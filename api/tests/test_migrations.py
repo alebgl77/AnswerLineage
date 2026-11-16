@@ -444,6 +444,58 @@ def test_rows_received_before_the_partitions_keep_their_place(empty_database: UR
     assert "fk_ingest_queue_event_id_event_raw" in constraints
 
 
+_REPORT_COLUMNS = (
+    "emitter, window_start, window_end, calls_seen, events_emitted, events_lost, uninspected"
+)
+
+
+def test_reports_received_before_their_instance_keep_their_place(empty_database: URL) -> None:
+    """Un relevé reçu avant l'instance prend l'instance vide ; la descente réunit les instances
+    d'une fenêtre, en additionnant leurs compteurs."""
+    window = {
+        "start": datetime(2026, 11, 2, 9, 0, tzinfo=UTC),
+        "end": datetime(2026, 11, 2, 9, 1, tzinfo=UTC),
+    }
+    insert = text(
+        f"INSERT INTO coverage_report (instance, {_REPORT_COLUMNS})"  # noqa: S608 — constantes.
+        " VALUES (:instance, 'mcp://entrepot', :start, :end, :seen, :seen, 0, 1)"
+    )
+    upgrade(empty_database, "0008")
+    engine = create_engine(empty_database)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    f"INSERT INTO coverage_report ({_REPORT_COLUMNS})"  # noqa: S608 — constantes.
+                    " VALUES ('mcp://entrepot', :start, :end, 10, 9, 1, 2)"
+                ),
+                window,
+            )
+        upgrade(empty_database, "0009")
+        with engine.begin() as connection:
+            kept = connection.execute(
+                text("SELECT instance, calls_seen, events_lost FROM coverage_report")
+            ).all()
+            assert [tuple(row) for row in kept] == [("", 10, 1)]
+            connection.execute(insert, {**window, "instance": "a", "seen": 5})
+        with (
+            pytest.raises(IntegrityError, match="ck_coverage_report_instance"),
+            engine.begin() as connection,
+        ):
+            connection.execute(insert, {**window, "instance": "i" * 256, "seen": 1})
+
+        downgrade(empty_database, "0008")
+        with engine.connect() as connection:
+            merged = connection.execute(
+                text(f"SELECT {_REPORT_COLUMNS} FROM coverage_report")  # noqa: S608
+            ).all()
+        assert [tuple(row) for row in merged] == [
+            ("mcp://entrepot", window["start"], window["end"], 15, 14, 1, 3)
+        ]
+    finally:
+        engine.dispose()
+
+
 def test_the_partition_key_follows_the_reception(database: URL) -> None:
     """Le mois de partition est celui de la réception : un autre est refusé."""
     engine = create_engine(database)

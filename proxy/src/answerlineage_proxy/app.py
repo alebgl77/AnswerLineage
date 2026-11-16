@@ -44,6 +44,7 @@ from answerlineage_proxy.coverage import (
     DEFAULT_WINDOW,
     CoverageWindows,
     Report,
+    drawn_instance,
     report_periodically,
 )
 from answerlineage_proxy.events import (
@@ -292,9 +293,14 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
         self.settings = settings
         self.stats = ProxyStats()
         # Compteurs par fenêtre, remis à la destination des événements comme relevés de
-        # couverture. L'émetteur est l'espace de noms des jobs du proxy.
+        # couverture. L'émetteur est l'espace de noms des jobs du proxy ; l'instance, réglée
+        # ou tirée au démarrage, distingue les proxys placés devant un même serveur.
+        self.instance = settings.instance_id or drawn_instance()
         self.coverage = CoverageWindows(
-            f"mcp://{settings.server_name}", length=coverage_window, started_at=clock()
+            f"mcp://{settings.server_name}",
+            instance=self.instance,
+            length=coverage_window,
+            started_at=clock(),
         )
         self._reporting: asyncio.Task[None] | None = None
         self._sink = sink

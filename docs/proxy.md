@@ -26,6 +26,7 @@ La première ligne écoute devant un serveur HTTP. La seconde lance un serveur l
 | Fichier de la clé d'empreinte | `--fingerprint-key-file` | `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY_FILE` | aucun |
 | Clé d'empreinte elle-même, en hexadécimal | | `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY` | aucune : pas d'empreinte |
 | Durée d'une fenêtre des relevés de couverture | `--coverage-window-seconds` | `ANSWERLINEAGE_PROXY_COVERAGE_WINDOW_SECONDS` | 60 s (1 à 86 400) |
+| Identifiant d'instance des relevés de couverture | `--instance-id` | `ANSWERLINEAGE_PROXY_INSTANCE_ID` | tiré au démarrage |
 | Fichier des règles de lecture des outils non SQL | `--read-rules-file` | `ANSWERLINEAGE_PROXY_READ_RULES_FILE` | aucun : aucun outil non SQL n'est décrit |
 | Adresse de l'API d'AnswerLineage, où partent événements et relevés | `--api-url` | `ANSWERLINEAGE_PROXY_API_URL` | aucune : rien n'est envoyé |
 | Événements gardés au plus dans la boîte d'envoi | `--outbox-max-events` | `ANSWERLINEAGE_PROXY_OUTBOX_MAX_EVENTS` | 10 000 (1 à 1 000 000) |
@@ -279,6 +280,7 @@ Le proxy publie ce qu'il a vu, pour que l'on sache quelle part du trafic le lign
 ```json
 {
   "emitter": "mcp://entrepot",
+  "instance": "3f9a0c1b7d2e4a65",
   "window": { "from": "2026-11-11T09:00:00.000000Z", "to": "2026-11-11T09:01:00.000000Z" },
   "calls_seen": 42,
   "events_emitted": 42,
@@ -290,6 +292,7 @@ Le proxy publie ce qu'il a vu, pour que l'on sache quelle part du trafic le lign
 | Champ | Ce que le proxy compte |
 | --- | --- |
 | `emitter` | Son identifiant d'émetteur : `mcp://<serveur>`, l'espace de noms des jobs de ses événements |
+| `instance` | Son identifiant d'instance : celui de `--instance-id`, sinon seize chiffres hexadécimaux tirés au démarrage |
 | `calls_seen` | Appels d'outils décrits, y compris d'après le seul début d'un corps trop grand |
 | `events_emitted` | Événements remis : acceptés par l'API quand la [boîte d'envoi](#boîte-denvoi) les envoie, pris en charge par la destination sinon |
 | `events_lost` | Événements perdus : refusés par la destination, abandonnés par la boîte d'envoi (pleine, rejet de l'API, arrêt), et, à l'arrêt, ceux d'appels dont l'analyse n'avait pas abouti ; en stdio, ceux d'appels dont la réponse n'a pas pu être rattachée |
@@ -302,7 +305,9 @@ Le proxy publie ce qu'il a vu, pour que l'on sache quelle part du trafic le lign
 - **Une fenêtre ne s'attarde pas sur ses événements en route.** Avec la boîte d'envoi, un appel compte parmi les vus dès que son événement est pris en charge, parmi les émis une fois l'événement accepté par l'API, parmi les perdus s'il se perd. La fenêtre se clôt sans attendre : son relevé dit ce qui est déjà su, et la différence, `calls_seen − events_emitted − events_lost`, est encore en route.
 - **Une issue après la clôture corrige la fenêtre.** Quand un événement d'une fenêtre déjà close est remis ou perdu, le proxy republie la même fenêtre avec ses compteurs à jour. Un relevé corrigé ne fait que grandir les compteurs du précédent : l'API, qui [fusionne](ingestion.md#fusion) au plus grand, garde le dernier, dans quelque ordre qu'ils arrivent. Dans la boîte, la correction remplace le relevé de la même fenêtre qui attendait encore.
 
-Les relevés ne portent que des nombres, des heures et l'identifiant de l'émetteur : rien d'une requête.
+Plusieurs proxys placés devant un même serveur partagent l'identifiant d'émetteur : chacun publie sous son instance, et l'API les [additionne](lecture.md#instances) au lieu de les confondre. L'identifiant d'instance suit la forme des [identifiants de l'ingestion](ingestion.md#identifiants), 255 caractères au plus, gardé sous sa forme NFC ; un identifiant invalide arrête le proxy avec « Configuration invalide : … », sans le citer. Réglé, il sert à reconnaître une instance d'un redémarrage à l'autre (le nom d'un pod, par exemple) ; tiré, il change à chaque démarrage, ce qui ne change rien à la mesure. Le proxy le journalise au démarrage.
+
+Les relevés ne portent que des nombres, des heures et les identifiants de l'émetteur et de l'instance : rien d'une requête.
 
 Sans adresse d'API, la destination par défaut compte les événements et les relevés sans les envoyer. Une destination fournie au proxy (`EventSink`) les reçoit ; une destination qui remet plus tard (`DeferredSink`, comme la boîte d'envoi) dit ensuite, événement par événement, s'il a été remis ou perdu.
 
@@ -609,7 +614,7 @@ Dans la configuration d'un client MCP, la commande devient `answerlineage-proxy`
 - Sa sortie d'erreur est celle du proxy : le proxy ne la lit pas et ne la recopie pas, ce sont les journaux du serveur. Le journal du proxy y passe aussi. Sur sa sortie standard, le proxy n'écrit que ce que l'enfant écrit.
 - Une commande qui ne démarre pas arrête le proxy avec un message fixe, qui ne cite ni la commande ni ses arguments : « Serveur MCP non lancé : commande introuvable. » (code 127) ou « Serveur MCP non lancé : commande non exécutable. » (code 126), comme un shell POSIX.
 - Sans `--server-name` ni `ANSWERLINEAGE_PROXY_SERVER_NAME`, le nom du serveur dans le lignage est celui du programme lancé, sans son chemin (`serveur-fichiers` pour `/opt/mcp/serveur-fichiers`). Un lanceur (`npx`, `uvx`, `docker`, `python`) n'est pas un nom de serveur : il confondrait tous les serveurs qu'il lance, d'où `--server-name`.
-- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, l'adresse de l'API et les bornes de la [boîte d'envoi](#boîte-denvoi), et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin` et `--no-preserve-host` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
+- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, `--instance-id`, l'adresse de l'API et les bornes de la [boîte d'envoi](#boîte-denvoi), et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin` et `--no-preserve-host` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
 
 ### Le relais
 
@@ -690,7 +695,7 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - Un lot interrompu à l'arrêt est compté perdu même si l'API l'a reçu : le trou est surestimé.
 - La boîte ne s'authentifie pas auprès de l'API, comme tout émetteur aujourd'hui, et ne lit ni mandataire ni autorité de certification de l'environnement : une API derrière une autorité de certification privée n'est pas encore joignable.
 - Le seuil de 5 ms au p99 ne se vérifie qu'au banc de chaque nuit ; l'intégration continue, sur une machine partagée, n'en garde qu'un seuil tolérant.
-- Plusieurs proxys devant un même serveur publient sous le même identifiant d'émetteur : l'API fusionne leurs relevés d'une même fenêtre au plus grand au lieu de les additionner. Un seul proxy par serveur, en attendant un identifiant d'instance.
+- Deux proxys réglés par erreur sur le même identifiant d'instance se confondent : l'API fusionne leurs relevés d'une même fenêtre au plus grand.
 - Un client qui réutilise le même span pour deux appels d'outil leur donne le même identifiant de run : le graphe fusionne alors les deux appels en un seul run, qui porte les lectures des deux mais l'outil du premier événement projeté, donc selon l'ordre d'arrivée (`tests/test_trace_context_graph.py` le constate).
 - Sans authentification des émetteurs, un identifiant dérivé n'est pas une preuve d'origine : qui connaît le contexte d'un appel peut émettre un événement pour son run.
 - Une reprise HTTP garde son run quand le contexte vient de `_meta`. Quand il vient de l'en-tête d'un client HTTP qui ouvre un span par tentative, ou quand le proxy le crée, chaque tentative est un run distinct.

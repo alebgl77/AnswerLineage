@@ -53,6 +53,7 @@ from answerlineage_proxy.config import (
     DEFAULT_SQL_QUEUE_SIZE,
     ENV_FINGERPRINT_KEY,
     ENV_FINGERPRINT_KEY_FILE,
+    ENV_INSTANCE_ID,
     ENV_SERVER_NAME,
     ENV_SQL_BUDGET_MS,
     ENV_SQL_CACHE_SIZE,
@@ -948,6 +949,7 @@ def settings_from_args(
         sql_cache_size=tuned(args.sql_cache_size, ENV_SQL_CACHE_SIZE, DEFAULT_SQL_CACHE_SIZE),
         fingerprint_key=fingerprint_key(environment, args.fingerprint_key_file),
         read_rules=read_rules(environment, args.read_rules_file),
+        instance_id=args.instance_id or environment.get(ENV_INSTANCE_ID) or None,
     )
     return settings, coverage_window_from_args(options, environment)
 
@@ -959,7 +961,7 @@ def main(arguments: Sequence[str], environment: Mapping[str, str]) -> int:
     L'arrêt suit la fin du serveur : la boîte s'y vide dans son délai, qui borne le temps
     que la sortie du proxy peut suivre celle du serveur.
     """
-    from answerlineage_proxy.cli import event_sink, outbox_settings_from_args
+    from answerlineage_proxy.cli import event_sink, log_instance, outbox_settings_from_args
 
     try:
         settings, coverage_window = settings_from_args(arguments, environment)
@@ -982,4 +984,5 @@ def main(arguments: Sequence[str], environment: Mapping[str, str]) -> int:
             tool,
         )
     proxy = StdioProxy(settings, event_sink(outbox), coverage_window=coverage_window)
+    log_instance(proxy.instance)
     return asyncio.run(proxy.run())

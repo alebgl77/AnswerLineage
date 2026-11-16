@@ -27,6 +27,8 @@ PUNCTUATION: Final = frozenset("._-/:@=+~%,#$*[]")
 NAMESPACE_MAX: Final = 512
 DATASET_NAME_MAX: Final = 1024
 COLUMN_MAX: Final = 300
+# Instance d'un émetteur, dans un relevé de couverture.
+INSTANCE_MAX: Final = 255
 
 FaultCode = Literal[
     "identifier_empty",

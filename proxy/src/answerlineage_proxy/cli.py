@@ -25,6 +25,7 @@ from answerlineage_proxy.config import (
     ENV_FINGERPRINT_KEY,
     ENV_FINGERPRINT_KEY_FILE,
     ENV_HOST,
+    ENV_INSTANCE_ID,
     ENV_PORT,
     ENV_READ_RULES_FILE,
     ENV_SERVER_NAME,
@@ -181,6 +182,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--instance-id",
+        metavar="INSTANCE",
+        help=(
+            "identifiant d'instance des relevés de couverture, qui distingue les proxys placés "
+            f"devant un même serveur (ou {ENV_INSTANCE_ID}) ; sans lui, tiré au démarrage"
+        ),
+    )
+    parser.add_argument(
         "--api-url",
         metavar="URL",
         help=(
@@ -307,6 +316,7 @@ def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str
         ),
         fingerprint_key=fingerprint_key(environment, args.fingerprint_key_file),
         read_rules=read_rules(environment, args.read_rules_file),
+        instance_id=args.instance_id or environment.get(ENV_INSTANCE_ID) or None,
     )
 
 
@@ -328,6 +338,13 @@ def event_sink(outbox: OutboxSettings | None) -> EventSink:
         outbox.flush_seconds,
     )
     return Outbox(outbox)
+
+
+def log_instance(instance: str) -> None:
+    """Journalise l'instance du proxy : un identifiant réglé ou tiré, qui ne dit rien du trafic.
+
+    Le nom du serveur n'y figure pas : en stdio, il peut venir de la commande lancée."""
+    logger.info("Relevés de couverture publiés sous l'instance « %s ».", instance)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -373,8 +390,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if settings.read_rules:
         logger.info("Règles de lecture : %d outils décrits.", len(settings.read_rules))
+    proxy = McpProxy(settings, event_sink(outbox), coverage_window=coverage_window)
+    log_instance(proxy.instance)
     uvicorn.run(
-        McpProxy(settings, event_sink(outbox), coverage_window=coverage_window),
+        proxy,
         host=settings.host,
         port=settings.port,
         **SERVER_OPTIONS,

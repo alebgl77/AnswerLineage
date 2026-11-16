@@ -275,6 +275,11 @@
             "title": "Holes",
             "type": "array"
           },
+          "instances": {
+            "description": "Instances des émetteurs qui ont publié un relevé recoupant la période, des proxys placés devant un même serveur ; un relevé sans instance compte pour une instance à part.",
+            "title": "Instances",
+            "type": "integer"
+          },
           "rate": {
             "anyOf": [
               {
@@ -315,6 +320,7 @@
           "events_in_graph",
           "events_lost",
           "uninspected",
+          "instances",
           "holes",
           "truncated"
         ],
@@ -424,6 +430,20 @@
             "minimum": 0.0,
             "title": "Events Lost",
             "type": "integer"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Instance de l'émetteur, facultative : plusieurs proxys placés devant un même serveur partagent l'émetteur, chacun publie sous son instance, et leurs relevés s'additionnent. Un relevé sans instance compte pour une instance à part.",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Instance"
           },
           "uninspected": {
             "default": 0,
@@ -1869,7 +1889,7 @@
         ]
       },
       "post": {
-        "description": "Rend l'état de la fenêtre après fusion : un relevé rejoué ne change rien.\n\nLe corps est lu comme celui des événements : borné, et compressé ou non (``gzip``).",
+        "description": "Rend l'état de la fenêtre de cette instance après fusion : un relevé rejoué ne\nchange rien.\n\nLe corps est lu comme celui des événements : borné, et compressé ou non (``gzip``).",
         "operationId": "publish_report_api_v1_coverage_post",
         "requestBody": {
           "content": {
