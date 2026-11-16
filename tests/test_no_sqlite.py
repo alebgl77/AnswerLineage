@@ -21,6 +21,7 @@ ENTRY_POINTS = [
     "answerlineage_proxy.analyzer",
     "answerlineage_corpus.cli",
     "answerlineage_conformance.cli",
+    "answerlineage_cli.cli",
     "alembic.command",
     "uvicorn",
 ]

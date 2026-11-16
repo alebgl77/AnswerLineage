@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from answerlineage_api.lineage.trace import answer_key
+from answerlineage_cli.doctor import ANOMALIES, CHECKS
 from answerlineage_corpus.abuse import (
     CASES_DIRECTORY,
     FAMILIES,
@@ -105,6 +106,30 @@ def test_the_documented_address_opens_the_first_incident_of_the_demonstration(
     assert set(_COUNTED.findall(text)) == {
         (str(len(first["answers"])), str(len(first["recipients"])))
     }
+
+
+# La commande d'exemple, écrite sur une ligne ou plusieurs, et ce qu'elle affiche.
+_CLI_IMPACT = re.compile(
+    rf"answerlineage impact --namespace {_VALUE} --name {_VALUE} --from {_VALUE} --to {_VALUE}"
+)
+_CLI_COUNTED = re.compile(r"(\d+) réponses touchées, (\d+) destinataires")
+
+
+def test_the_documented_command_propagates_the_first_incident_of_the_demonstration() -> None:
+    text = re.sub(r"\\\n\s*", "", (ROOT / "docs" / "cli.md").read_text(encoding="utf-8"))
+    first = truth(generate(DEFAULT_SEED))["incidents"][0]
+    assert set(_CLI_IMPACT.findall(text)) == {
+        (first["dataset"]["namespace"], first["dataset"]["name"], first["from"], first["to"])
+    }
+    assert set(_CLI_COUNTED.findall(text)) == {
+        (str(len(first["answers"])), str(len(first["recipients"])))
+    }
+
+
+def test_every_check_and_anomaly_of_doctor_is_documented() -> None:
+    text = (ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
+    for name in (*CHECKS, *ANOMALIES):
+        assert f"| `{name}` |" in text, name
 
 
 def test_every_open_case_of_the_abuse_corpus_is_documented_with_its_reason() -> None:

@@ -1,6 +1,6 @@
 # Image de démonstration d'AnswerLineage : l'API et l'explorateur, le worker,
-# le proxy, l'entreprise synthétique et le kit de conformité, installés depuis les
-# versions verrouillées.
+# le proxy, l'entreprise synthétique, le kit de conformité et la ligne de commande,
+# installés depuis les versions verrouillées.
 
 FROM public.ecr.aws/docker/library/node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS explorer
 
@@ -27,6 +27,7 @@ ENV UV_PYTHON_DOWNLOADS=never \
 WORKDIR /src
 COPY pyproject.toml uv.lock ./
 COPY api/ api/
+COPY cli/ cli/
 COPY conformance/ conformance/
 COPY corpus/ corpus/
 COPY proxy/ proxy/

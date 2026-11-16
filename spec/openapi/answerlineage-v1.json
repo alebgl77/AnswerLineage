@@ -687,6 +687,33 @@
         "title": "EmitterCoverage",
         "type": "object"
       },
+      "EmitterHealth": {
+        "description": "Les émetteurs qui publient des relevés de couverture.",
+        "properties": {
+          "known": {
+            "description": "Émetteurs qui ont publié au moins un relevé.",
+            "title": "Known",
+            "type": "integer"
+          },
+          "lower_bound": {
+            "description": "Vrai au-delà de 10000 émetteurs : les décomptes sont des minimums.",
+            "title": "Lower Bound",
+            "type": "boolean"
+          },
+          "muted": {
+            "description": "Émetteurs signalés muets par le contrôle des workers, sans relevé reçu depuis.",
+            "title": "Muted",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "known",
+          "muted",
+          "lower_bound"
+        ],
+        "title": "EmitterHealth",
+        "type": "object"
+      },
       "EventRejected": {
         "properties": {
           "errors": {
@@ -859,6 +886,86 @@
           "truncated"
         ],
         "title": "GraphView",
+        "type": "object"
+      },
+      "Health": {
+        "description": "L'état de l'installation : des états d'une liste fermée et des décomptes bornés.",
+        "properties": {
+          "api_version": {
+            "description": "Version de l'API.",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "database": {
+            "description": "« available » : l'API lit sa base. « unavailable » : elle ne la joint pas.",
+            "enum": [
+              "available",
+              "unavailable"
+            ],
+            "title": "Database",
+            "type": "string"
+          },
+          "emitters": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmitterHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Les émetteurs connus et muets ; nuls tant que le schéma n'est pas à jour."
+          },
+          "migrations": {
+            "anyOf": [
+              {
+                "enum": [
+                  "current",
+                  "behind",
+                  "unknown_revision",
+                  "not_migrated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "« current » : le schéma est à jour. « behind » : des migrations restent à appliquer. « unknown_revision » : la base porte une révision que l'API ne connaît pas. « not_migrated » : aucune migration n'est appliquée. Nul quand la base est indisponible.",
+            "title": "Migrations"
+          },
+          "partitions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PartitionHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Les partitions manquantes ; nulles tant que le schéma n'est pas à jour."
+          },
+          "queue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QueueHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "La file d'ingestion ; nulle tant que le schéma n'est pas à jour."
+          }
+        },
+        "required": [
+          "api_version",
+          "database",
+          "migrations",
+          "queue",
+          "emitters",
+          "partitions"
+        ],
+        "title": "Health",
         "type": "object"
       },
       "ImpactCounts": {
@@ -1050,6 +1157,61 @@
           "name"
         ],
         "title": "OutputDataset",
+        "type": "object"
+      },
+      "PartitionHealth": {
+        "description": "Les partitions mensuelles que le contrôle des workers signale manquantes.",
+        "properties": {
+          "lower_bound": {
+            "description": "Vrai au-delà de 10000 : « missing » est un minimum.",
+            "title": "Lower Bound",
+            "type": "boolean"
+          },
+          "missing": {
+            "description": "Partitions manquantes, par table et par mois.",
+            "title": "Missing",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "missing",
+          "lower_bound"
+        ],
+        "title": "PartitionHealth",
+        "type": "object"
+      },
+      "QueueHealth": {
+        "description": "La file d'ingestion : ce qui attend d'être projeté dans le graphe.",
+        "properties": {
+          "lower_bound": {
+            "description": "Vrai au-delà de 10000 événements : « pending » est un minimum.",
+            "title": "Lower Bound",
+            "type": "boolean"
+          },
+          "oldest_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Depuis combien de secondes le plus ancien attend, à l'horloge de la base ; nul quand la file est vide.",
+            "title": "Oldest Age Seconds"
+          },
+          "pending": {
+            "description": "Événements reçus en attente de projection.",
+            "title": "Pending",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending",
+          "lower_bound",
+          "oldest_age_seconds"
+        ],
+        "title": "QueueHealth",
         "type": "object"
       },
       "RecipientNode": {
@@ -1976,6 +2138,38 @@
         "summary": "Donne le graphe en cinq colonnes des réponses les plus récentes, ou d'une réponse",
         "tags": [
           "lignage"
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "description": "Base, migrations, file d'ingestion, émetteurs muets, partitions manquantes.\n\nUne base injoignable n'est pas une erreur de la route : elle répond\n« unavailable », sans dire pourquoi.",
+        "operationId": "installation_health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Donne l'état de l'installation",
+        "tags": [
+          "installation"
         ]
       }
     },

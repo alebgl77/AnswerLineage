@@ -33,6 +33,7 @@ http://127.0.0.1:8000/#/propager?namespace=bigquery&name=ventes.suivi.commandes&
 ```
 
 - Interroger l'[API de lecture](lecture.md) avec `curl`, sur `http://127.0.0.1:8000/api/v1/`.
+- Tout faire depuis le terminal avec la [ligne de commande](cli.md) : `answerlineage demo` lance la démonstration depuis un clone et attend qu'elle réponde, `answerlineage doctor` vérifie chacun de ses composants, `answerlineage impact` propage un incident.
 - Comparer avec la vérité de l'entreprise, établie sans passer par AnswerLineage, pendant que la démonstration tourne :
 
 ```bash

@@ -13,6 +13,8 @@ L'API de lecture interroge le graphe de lignage. Elle est versionnée sous `/api
 
 Les cinq premières routes lisent aussi le graphe tel qu'il était connu à une date, avec `known_at` ([plus bas](#le-graphe-tel-que-connu-à-une-date)).
 
+Depuis le terminal, `answerlineage impact` propage un incident et dit par son code de sortie si l'on peut conclure, et `answerlineage doctor` lit l'état de l'installation sur `GET /api/v1/health` : voir la [ligne de commande](cli.md).
+
 ## Remonter d'une réponse à ses sources
 
 Le destinataire d'un message veut savoir sur quelles données la réponse s'appuie. Il part de ce qu'il a sous les yeux, le canal et la référence du message :

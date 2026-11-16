@@ -20,6 +20,7 @@ from starlette.types import ASGIApp
 from answerlineage_api.explorer import explorer_files
 from answerlineage_api.guard import HostOriginMiddleware, guard_from_settings
 from answerlineage_api.headers import SecurityHeadersMiddleware
+from answerlineage_api.health import router as health_router
 from answerlineage_api.ingest.body import max_body_bytes_from_settings
 from answerlineage_api.ingest.coverage import router as coverage_router
 from answerlineage_api.ingest.duplicates import router as duplicates_router
@@ -111,6 +112,7 @@ def create_app(
     app.include_router(undescribed_router)
     app.include_router(coverage_router)
     app.include_router(lineage_router)
+    app.include_router(health_router)
     app.add_exception_handler(RequestValidationError, reject_invalid_request)
     app.add_exception_handler(ReadTimedOut, refuse_timed_out)
     app.add_middleware(HostOriginMiddleware, guard=guard)

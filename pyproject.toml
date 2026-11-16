@@ -39,6 +39,7 @@ exclude-newer = "7 days"
 [tool.uv.workspace]
 members = [
     "api",
+    "cli",
     "conformance",
     "corpus",
     "proxy",
@@ -50,6 +51,7 @@ line-length = 100
 target-version = "py313"
 src = [
     "api/src",
+    "cli/src",
     "conformance/src",
     "corpus/src",
     "proxy/src",
@@ -74,6 +76,7 @@ namespace_packages = true
 explicit_package_bases = true
 mypy_path = [
     "api/src",
+    "cli/src",
     "conformance/src",
     "corpus/src",
     "proxy/src",
@@ -82,6 +85,7 @@ mypy_path = [
 ]
 files = [
     "api",
+    "cli",
     "conformance",
     "corpus",
     "proxy",
@@ -101,6 +105,7 @@ pythonpath = ["."]
 testpaths = [
     "tests",
     "api",
+    "cli",
     "conformance",
     "corpus",
     "proxy",
@@ -121,6 +126,7 @@ concurrency = ["greenlet", "thread"]
 source = [
     "scripts",
     "api/src",
+    "cli/src",
     "conformance/src",
     "corpus/src",
     "proxy/src",
@@ -138,6 +144,7 @@ minimum = 85
 paths = [
     "scripts",
     "api/src",
+    "cli/src",
     "conformance/src",
     "corpus/src",
     "proxy/src",

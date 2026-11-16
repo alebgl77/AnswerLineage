@@ -15,6 +15,7 @@ exclude-newer-span = "P7D"
 members = [
     "answerlineage",
     "answerlineage-api",
+    "answerlineage-cli",
     "answerlineage-conformance",
     "answerlineage-corpus",
     "answerlineage-proxy",
@@ -118,6 +119,17 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.40" },
     { name = "uvicorn", specifier = ">=0.38" },
 ]
+
+[[package]]
+name = "answerlineage-cli"
+version = "0.0.0"
+source = { editable = "cli" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.28" }]
 
 [[package]]
 name = "answerlineage-conformance"

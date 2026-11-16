@@ -165,6 +165,7 @@ Le nom de distribution du projet est `answerlineage`, celui de son `pyproject.to
 | --- | --- | --- |
 | PyPI | `answerlineage` | Aucun job : le nom de distribution, à réserver |
 | PyPI | `answerlineage-api` | Le job `pypi` |
+| PyPI | `answerlineage-cli` | Le job `pypi` |
 | PyPI | `answerlineage-conformance` | Le job `pypi` |
 | PyPI | `answerlineage-corpus` | Le job `pypi` |
 | PyPI | `answerlineage-proxy` | Le job `pypi` |
