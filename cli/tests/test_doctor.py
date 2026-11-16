@@ -44,12 +44,15 @@ def test_a_sound_installation_has_no_anomaly(monkeypatch: pytest.MonkeyPatch) ->
         "database": ("ok", None),
         "migrations": ("ok", None),
         "queue": ("ok", None),
+        "dead_letters": ("ok", None),
         "emitters": ("ok", None),
         "partitions": ("ok", None),
         "explorer": ("ok", None),
         "workers": ("not_checked", None),
     }
     assert [item["check"] for item in report["checks"]] == list(CHECKS)
+    (buried,) = [item for item in report["checks"] if item["check"] == "dead_letters"]
+    assert buried["message"] == "La file de rebut est vide."
 
 
 def test_the_readable_report_says_each_check_and_the_verdict(
@@ -143,12 +146,12 @@ def test_an_origin_refused_by_the_api_is_named_and_the_rest_is_checked(
 def test_a_database_or_schema_anomaly_leaves_what_depends_on_it_unchecked(
     monkeypatch: pytest.MonkeyPatch, changes: dict[str, Any], check: str, code: str
 ) -> None:
-    changes |= {"emitters": None, "partitions": None}
+    changes |= {"dead_letters": None, "emitters": None, "partitions": None}
     result = doctor(with_health(**changes), monkeypatch)
 
     found = statuses(result.out)
     assert found[check] == ("anomaly", code)
-    for later in ("queue", "emitters", "partitions"):
+    for later in ("queue", "dead_letters", "emitters", "partitions"):
         assert found[later] == ("not_checked", None)
     assert found["explorer"] == ("ok", None)
     assert json.loads(result.out)["anomalies"] == [code]
@@ -169,6 +172,42 @@ def test_a_queue_that_does_not_move_is_an_anomaly_beyond_the_threshold(
     relaxed = doctor(api, monkeypatch, "--queue-max-age", "900")
     assert relaxed.code == Exit.OK
     assert statuses(relaxed.out)["queue"] == ("ok", None)
+
+
+def test_events_waiting_in_the_dead_letters_are_an_anomaly_with_its_remedy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = with_health(dead_letters={"events": 3, "lower_bound": False, "oldest_age_seconds": 5400})
+    result = doctor(api, monkeypatch)
+
+    assert result.code == Exit.ANOMALY
+    report = json.loads(result.out)
+    assert report["anomalies"] == ["dead_letters_waiting"]
+    (buried,) = [item for item in report["checks"] if item["check"] == "dead_letters"]
+    assert buried["status"] == "anomaly"
+    assert buried["message"] == (
+        "3 événements au rebut, que les workers n'ont pas pu intégrer au graphe ;"
+        " le plus ancien y est depuis 1 h 30 min."
+    )
+    # Le remède écrit d'avance : lire les motifs, puis rejouer une fois la cause corrigée.
+    assert buried["remedy"] == ANOMALIES["dead_letters_waiting"].remedy
+    assert "answerlineage dead-letters list" in buried["remedy"]
+    assert "answerlineage dead-letters replay" in buried["remedy"]
+    readable = run(["doctor"], api, monkeypatch)
+    assert "dead_letters_waiting : 3 événements au rebut" in readable.out
+    assert f"Remède : {ANOMALIES['dead_letters_waiting'].remedy}" in readable.out
+
+
+def test_a_dead_letter_count_beyond_its_bound_says_it_is_a_minimum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = with_health(dead_letters={"events": 10000, "lower_bound": True, "oldest_age_seconds": 30})
+    (buried,) = [
+        item
+        for item in json.loads(doctor(api, monkeypatch).out)["checks"]
+        if item["check"] == "dead_letters"
+    ]
+    assert buried["message"].startswith("Plus de 10000 événements au rebut")
 
 
 def test_muted_emitters_and_missing_partitions_are_anomalies(
@@ -218,11 +257,49 @@ def test_an_address_that_does_not_serve_the_explorer_is_an_anomaly(
         httpx.Response(200, json=health(migrations=CANARY)),
         httpx.Response(200, json=health(api_version=CANARY)),
         httpx.Response(200, json=health(queue={"pending": "1", "lower_bound": False})),
+        httpx.Response(
+            200,
+            json=health(
+                dead_letters={"events": CANARY, "lower_bound": False, "oldest_age_seconds": 1}
+            ),
+        ),
+        httpx.Response(
+            200,
+            json=health(dead_letters={"events": -1, "lower_bound": False, "oldest_age_seconds": 1}),
+        ),
+        httpx.Response(
+            200,
+            json=health(
+                dead_letters={"events": 2, "lower_bound": False, "oldest_age_seconds": None}
+            ),
+        ),
+        httpx.Response(
+            200,
+            json=health(dead_letters={"events": 0, "lower_bound": False, "oldest_age_seconds": 9}),
+        ),
+        httpx.Response(200, json=health(dead_letters=None)),
+        httpx.Response(
+            200, json={k: v for k, v in health().items() if k != "dead_letters"} | {CANARY: 1}
+        ),
         httpx.Response(500, json={"detail": CANARY}),
         httpx.Response(404, json={"detail": "Not Found"}),
         httpx.Response(403, json={"error": CANARY}),
     ],
-    ids=["not-json", "unknown-state", "version", "wrong-type", "server-error", "no-route", "403"],
+    ids=[
+        "not-json",
+        "unknown-state",
+        "version",
+        "wrong-type",
+        "dead-letters-text",
+        "dead-letters-negative",
+        "dead-letters-without-age",
+        "dead-letters-empty-with-age",
+        "dead-letters-null",
+        "dead-letters-missing",
+        "server-error",
+        "no-route",
+        "403",
+    ],
 )
 def test_an_unexpected_answer_of_the_api_is_an_anomaly_that_cites_nothing(
     monkeypatch: pytest.MonkeyPatch, answer: httpx.Response

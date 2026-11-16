@@ -212,6 +212,7 @@ def health(**changes: Any) -> dict[str, Any]:
         "database": "available",
         "migrations": "current",
         "queue": {"pending": 0, "lower_bound": False, "oldest_age_seconds": None},
+        "dead_letters": {"events": 0, "lower_bound": False, "oldest_age_seconds": None},
         "emitters": {"known": 2, "muted": 0, "lower_bound": False},
         "partitions": {"missing": 0, "lower_bound": False},
     }

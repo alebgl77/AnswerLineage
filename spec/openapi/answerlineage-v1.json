@@ -846,6 +846,40 @@
         "title": "DeadLetter",
         "type": "object"
       },
+      "DeadLetterHealth": {
+        "description": "La file de rebut : les événements que la projection n'a pas pu intégrer au graphe.",
+        "properties": {
+          "events": {
+            "description": "Événements au rebut, qui attendent d'être rejoués.",
+            "title": "Events",
+            "type": "integer"
+          },
+          "lower_bound": {
+            "description": "Vrai au-delà de 10000 événements : « events » est un minimum.",
+            "title": "Lower Bound",
+            "type": "boolean"
+          },
+          "oldest_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Depuis combien de secondes le plus ancien est au rebut, à l'horloge de la base ; nul quand le rebut est vide.",
+            "title": "Oldest Age Seconds"
+          }
+        },
+        "required": [
+          "events",
+          "lower_bound",
+          "oldest_age_seconds"
+        ],
+        "title": "DeadLetterHealth",
+        "type": "object"
+      },
       "DeadLetterList": {
         "description": "Une page du rebut, et les décomptes par motif.",
         "properties": {
@@ -1342,6 +1376,17 @@
             "title": "Database",
             "type": "string"
           },
+          "dead_letters": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeadLetterHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "La file de rebut ; nulle tant que le schéma n'est pas à jour."
+          },
           "emitters": {
             "anyOf": [
               {
@@ -1399,6 +1444,7 @@
           "database",
           "migrations",
           "queue",
+          "dead_letters",
           "emitters",
           "partitions"
         ],
@@ -2888,7 +2934,7 @@
     },
     "/api/v1/health": {
       "get": {
-        "description": "Base, migrations, file d'ingestion, émetteurs muets, partitions manquantes.\n\nUne base injoignable n'est pas une erreur de la route : elle répond\n« unavailable », sans dire pourquoi.",
+        "description": "Base, migrations, file d'ingestion, rebut, émetteurs muets, partitions manquantes.\n\nUne base injoignable n'est pas une erreur de la route : elle répond\n« unavailable », sans dire pourquoi.",
         "operationId": "installation_health_api_v1_health_get",
         "responses": {
           "200": {

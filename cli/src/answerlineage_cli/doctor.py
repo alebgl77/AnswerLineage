@@ -2,9 +2,10 @@
 
 Les vérifications, dans l'ordre : l'API répond et sa version ; elle accepte
 l'adresse utilisée (en-têtes Host et Origin) ; elle lit sa base ; le schéma
-est à jour ; la file d'ingestion avance ; aucun émetteur n'est muet ; aucune
-partition mensuelle ne manque ; l'explorateur est servi. Les quatre du milieu
-viennent de la route ``GET /api/v1/health``.
+est à jour ; la file d'ingestion avance ; aucun événement n'attend au rebut ;
+aucun émetteur n'est muet ; aucune partition mensuelle ne manque ;
+l'explorateur est servi. Les six du milieu viennent de la route
+``GET /api/v1/health``.
 
 Chaque anomalie a un code stable, un message et un remède écrits d'avance :
 aucun texte reçu de l'API n'y est recopié, seulement des nombres et l'adresse
@@ -40,6 +41,7 @@ CHECKS: Final = (
     "database",
     "migrations",
     "queue",
+    "dead_letters",
     "emitters",
     "partitions",
     "explorer",
@@ -51,6 +53,7 @@ _LABELS: Final = {
     "database": "Base",
     "migrations": "Migrations",
     "queue": "File",
+    "dead_letters": "Rebut",
     "emitters": "Émetteurs",
     "partitions": "Partitions",
     "explorer": "Explorateur",
@@ -140,6 +143,14 @@ ANOMALIES: Final[Mapping[str, Anomaly]] = {
         "Lancer un worker (answerlineage-worker) ; s'il tourne, lire son journal : un "
         "événement fautif y est remis à plus tard, de plus en plus espacé.",
     ),
+    "dead_letters_waiting": Anomaly(
+        "dead_letters",
+        "{events} au rebut, que les workers n'ont pas pu intégrer au graphe ; le plus ancien "
+        "y est depuis {age}.",
+        "Lire le motif de chacun (answerlineage dead-letters list) et corriger sa cause, puis "
+        "les rejouer (answerlineage dead-letters replay) : un événement qui échoue encore "
+        "revient au rebut.",
+    ),
     "emitters_muted": Anomaly(
         "emitters",
         "{muted} : aucun relevé de couverture reçu depuis le seuil du contrôle des workers.",
@@ -213,6 +224,7 @@ class _Tallies:
     """Les décomptes de la route de santé, donnés quand le schéma est à jour."""
 
     queue: dict[str, Any]
+    dead_letters: dict[str, Any]
     emitters: dict[str, Any]
     partitions: dict[str, Any]
 
@@ -242,7 +254,15 @@ def _tally(value: Any, where: str, fields: Sequence[str]) -> dict[str, Any] | No
 
 def parse_health(document: Any) -> _Health:
     """La réponse de la route de santé, validée ; ``InvalidResponseError`` si incohérente."""
-    fields = ("api_version", "database", "migrations", "queue", "emitters", "partitions")
+    fields = (
+        "api_version",
+        "database",
+        "migrations",
+        "queue",
+        "dead_letters",
+        "emitters",
+        "partitions",
+    )
     found = shape.obj(document, "", fields)
     version = shape.version(found["api_version"], "/api_version")
     database = shape.choice(found["database"], "/database", DATABASE_STATES)
@@ -250,18 +270,24 @@ def parse_health(document: Any) -> _Health:
     if migrations is not None:
         migrations = shape.choice(migrations, "/migrations", MIGRATION_STATES)
     queue = _tally(found["queue"], "/queue", ("pending", "lower_bound", "oldest_age_seconds"))
+    buried = _tally(
+        found["dead_letters"], "/dead_letters", ("events", "lower_bound", "oldest_age_seconds")
+    )
     emitters = _tally(found["emitters"], "/emitters", ("known", "muted", "lower_bound"))
     partitions = _tally(found["partitions"], "/partitions", ("missing", "lower_bound"))
     # Une base disponible a un état de ses migrations ; un schéma à jour, ses décomptes.
     if (database == "available") != (migrations is not None):
         raise shape.fault("/migrations")
-    if queue is None or emitters is None or partitions is None:
+    if queue is None or buried is None or emitters is None or partitions is None:
         if migrations == "current":
             raise shape.fault("/queue")
         return _Health(version, database, migrations, None)
     if migrations != "current":
         raise shape.fault("/queue")
-    return _Health(version, database, migrations, _Tallies(queue, emitters, partitions))
+    # Le rebut a un plus ancien dès qu'il n'est pas vide, et seulement alors.
+    if (buried["events"] == 0) != (buried["oldest_age_seconds"] is None):
+        raise shape.fault("/dead_letters/oldest_age_seconds")
+    return _Health(version, database, migrations, _Tallies(queue, buried, emitters, partitions))
 
 
 def _refusal_code(received: Received) -> str | None:
@@ -371,6 +397,7 @@ def _installation(health: _Health, report: _Report, queue_max_age: int) -> None:
     if health.tallies is None:  # pragma: no cover — parse_health le refuse pour un schéma à jour.
         return
     report.add(_queue(health.tallies.queue, queue_max_age))
+    report.add(_dead_letters(health.tallies.dead_letters))
     report.add(_emitters(health.tallies.emitters))
     partitions = health.tallies.partitions
     if partitions["missing"]:
@@ -403,6 +430,17 @@ def _queue(queue: Mapping[str, Any], max_age: int) -> Check:
         )
     oldest = duration(age)
     return _ok("queue", f"La file d'ingestion avance : {pending}, le plus ancien depuis {oldest}.")
+
+
+def _dead_letters(buried: Mapping[str, Any]) -> Check:
+    if buried["events"] == 0:
+        return _ok("dead_letters", "La file de rebut est vide.")
+    events = _plural(buried["events"], "événement", "événements", beyond=buried["lower_bound"])
+    return _anomaly(
+        "dead_letters_waiting",
+        events=_sentence(events),
+        age=duration(buried["oldest_age_seconds"]),
+    )
 
 
 def _emitters(emitters: Mapping[str, Any]) -> Check:

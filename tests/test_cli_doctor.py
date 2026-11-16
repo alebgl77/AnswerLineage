@@ -25,6 +25,7 @@ from answerlineage_api.app import create_app
 from answerlineage_api.store.engine import create_engine
 from answerlineage_cli.doctor import ANOMALIES
 from answerlineage_cli.exits import Exit
+from answerlineage_workers import queue
 from answerlineage_workers.queue import process_batch
 from answerlineage_workers.silence import check_silent_emitters
 from api.tests.events import run_event
@@ -101,6 +102,7 @@ async def test_a_sound_installation_has_no_anomaly(
         "database": "ok",
         "migrations": "ok",
         "queue": "ok",
+        "dead_letters": "ok",
         "emitters": "ok",
         "partitions": "ok",
         "explorer": "ok",
@@ -164,6 +166,24 @@ async def test_a_queue_left_behind_is_named(
     only(report, "queue_stalled")
     (queue,) = [check for check in report["checks"] if check["check"] == "queue"]
     assert queue["message"].startswith("La file d'ingestion n'avance pas : 1 événement en attente")
+
+
+async def test_an_event_the_projection_refuses_is_named_from_the_dead_letters(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine, explorer: Path
+) -> None:
+    def refused(_: Any) -> Any:
+        raise ValueError("projection en défaut")
+
+    async with served(engine, explorer) as url:
+        with monkeypatch.context() as defect:
+            # Une projection en défaut met l'événement au rebut dès le premier échec.
+            defect.setattr(queue, "project", refused)
+            await feed(url, process=engine)
+        code, report = await doctor(monkeypatch, url)
+    assert code == Exit.ANOMALY
+    only(report, "dead_letters_waiting")
+    (buried,) = [check for check in report["checks"] if check["check"] == "dead_letters"]
+    assert buried["message"].startswith("1 événement au rebut")
 
 
 async def test_a_muted_emitter_is_named(

@@ -1,11 +1,12 @@
 """État de l'installation, tel que la vérifie ``answerlineage doctor``.
 
 La route dit si l'API lit sa base, si le schéma est à jour, si la file
-d'ingestion avance, combien d'émetteurs sont muets et combien de partitions
-manquent. Elle reste petite et bornée : quelques requêtes indexées, des
-décomptes plafonnés, sous le délai maximal des lectures. Elle ne dit aucun
-détail interne : ni révision du schéma, ni adresse de la base, ni message
-d'erreur, seulement des états d'une liste fermée et des nombres.
+d'ingestion avance, combien d'événements attendent au rebut, combien
+d'émetteurs sont muets et combien de partitions manquent. Elle reste petite et
+bornée : quelques requêtes indexées, des décomptes plafonnés, sous le délai
+maximal des lectures. Elle ne dit aucun détail interne : ni révision du
+schéma, ni adresse de la base, ni message d'erreur, seulement des états d'une
+liste fermée et des nombres.
 """
 
 from __future__ import annotations
@@ -46,6 +47,19 @@ _OLDEST = text(
     FROM ingest_queue ORDER BY id LIMIT 1
     """
 )
+# Le rebut et son plus ancien, par l'index des heures d'échec, en une seule
+# lecture : le décompte et l'âge s'accordent, même pendant un rejeu. Les lignes
+# lues sont les plus anciennes : la borne ne change pas l'âge. GREATEST ignore
+# un âge nul (NULL) : un rebut vide n'a pas d'âge, il ne vaut pas zéro seconde.
+_BURIED = text(
+    """
+    SELECT count(*) AS events,
+           CASE WHEN count(*) > 0 THEN
+               GREATEST(0, floor(EXTRACT(EPOCH FROM now() - min(last_failed_at))))::bigint
+           END AS oldest
+    FROM (SELECT last_failed_at FROM dead_letter ORDER BY last_failed_at LIMIT :limit) AS buried
+    """
+)
 _KNOWN = text("SELECT count(*) FROM (SELECT 1 FROM coverage_emitter LIMIT :limit) AS known")
 # Muet tant que le contrôle des workers l'a signalé et qu'aucun relevé n'est venu depuis.
 _MUTED = text(
@@ -69,6 +83,21 @@ class QueueHealth(BaseModel):
         description=(
             "Depuis combien de secondes le plus ancien attend, à l'horloge de la base ;"
             " nul quand la file est vide."
+        )
+    )
+
+
+class DeadLetterHealth(BaseModel):
+    """La file de rebut : les événements que la projection n'a pas pu intégrer au graphe."""
+
+    events: int = Field(description="Événements au rebut, qui attendent d'être rejoués.")
+    lower_bound: bool = Field(
+        description=f"Vrai au-delà de {COUNT_LIMIT} événements : « events » est un minimum."
+    )
+    oldest_age_seconds: int | None = Field(
+        description=(
+            "Depuis combien de secondes le plus ancien est au rebut, à l'horloge de la base ;"
+            " nul quand le rebut est vide."
         )
     )
 
@@ -113,6 +142,9 @@ class Health(BaseModel):
     )
     queue: QueueHealth | None = Field(
         description="La file d'ingestion ; nulle tant que le schéma n'est pas à jour."
+    )
+    dead_letters: DeadLetterHealth | None = Field(
+        description="La file de rebut ; nulle tant que le schéma n'est pas à jour."
     )
     emitters: EmitterHealth | None = Field(
         description="Les émetteurs connus et muets ; nuls tant que le schéma n'est pas à jour."
@@ -160,6 +192,15 @@ async def _queue(reader: Reader) -> QueueHealth:
     )
 
 
+async def _dead_letters(reader: Reader) -> DeadLetterHealth:
+    found = (await reader.execute(_BURIED, {"limit": COUNT_LIMIT + 1})).one()
+    return DeadLetterHealth(
+        events=min(found.events, COUNT_LIMIT),
+        lower_bound=found.events > COUNT_LIMIT,
+        oldest_age_seconds=None if found.oldest is None else int(found.oldest),
+    )
+
+
 async def _emitters(reader: Reader) -> EmitterHealth:
     known, beyond_known = await _count(reader, _KNOWN)
     muted, beyond_muted = await _count(reader, _MUTED)
@@ -178,7 +219,7 @@ async def _partitions(reader: Reader) -> PartitionHealth:
     responses={**TIMED_OUT},
 )
 async def installation_health(request: Request) -> Health:
-    """Base, migrations, file d'ingestion, émetteurs muets, partitions manquantes.
+    """Base, migrations, file d'ingestion, rebut, émetteurs muets, partitions manquantes.
 
     Une base injoignable n'est pas une erreur de la route : elle répond
     « unavailable », sans dire pourquoi.
@@ -200,6 +241,7 @@ async def installation_health(request: Request) -> Health:
                     database="available",
                     migrations=migrations,
                     queue=None,
+                    dead_letters=None,
                     emitters=None,
                     partitions=None,
                 )
@@ -208,6 +250,7 @@ async def installation_health(request: Request) -> Health:
                 database="available",
                 migrations=migrations,
                 queue=await _queue(reader),
+                dead_letters=await _dead_letters(reader),
                 emitters=await _emitters(reader),
                 partitions=await _partitions(reader),
             )
@@ -217,6 +260,7 @@ async def installation_health(request: Request) -> Health:
                 database="unavailable",
                 migrations=None,
                 queue=None,
+                dead_letters=None,
                 emitters=None,
                 partitions=None,
             )

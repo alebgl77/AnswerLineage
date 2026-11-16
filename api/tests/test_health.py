@@ -1,4 +1,4 @@
-"""L'état de l'installation : base, migrations, file d'ingestion, émetteurs, partitions.
+"""L'état de l'installation : base, migrations, file d'ingestion, rebut, émetteurs, partitions.
 
 La route sert la vérification d'une installation (``answerlineage doctor``) :
 elle dit des états et des décomptes bornés, jamais un détail interne.
@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api import health
 from answerlineage_api.app import API_VERSION, create_app
+from answerlineage_api.ingest.dead_letters import bury
 from answerlineage_api.store.engine import create_engine
 from answerlineage_api.store.migrate import downgrade, upgrade
 from api.tests.events import run_event
@@ -48,6 +49,16 @@ async def state(engine: AsyncEngine) -> dict[str, Any]:
     return body
 
 
+async def bury_the_queue(engine: AsyncEngine) -> None:
+    """Met au rebut tout ce qui attend dans la file, comme un worker au premier échec."""
+    async with engine.begin() as conn:
+        waiting = (await conn.execute(text("SELECT id FROM ingest_queue ORDER BY id"))).scalars()
+        for queue_id in waiting.all():
+            await bury(
+                conn, queue_id=queue_id, emitter="mcp://entrepot", reason="constraint_violation"
+            )
+
+
 @pytest.fixture
 async def bare(empty_database: URL) -> AsyncIterator[AsyncEngine]:
     engine = create_engine(empty_database)
@@ -63,6 +74,7 @@ async def test_a_sound_installation_says_so_with_empty_tallies(engine: AsyncEngi
         "database": "available",
         "migrations": "current",
         "queue": {"pending": 0, "lower_bound": False, "oldest_age_seconds": None},
+        "dead_letters": {"events": 0, "lower_bound": False, "oldest_age_seconds": None},
         "emitters": {"known": 0, "muted": 0, "lower_bound": False},
         "partitions": {"missing": 0, "lower_bound": False},
     }
@@ -74,6 +86,7 @@ async def test_a_database_without_schema_is_not_migrated(bare: AsyncEngine) -> N
         "database": "available",
         "migrations": "not_migrated",
         "queue": None,
+        "dead_letters": None,
         "emitters": None,
         "partitions": None,
     }
@@ -94,6 +107,7 @@ async def test_a_schema_with_migrations_left_to_apply_is_behind(
     upgrade(empty_database, "0007")
     body = await state(bare)
     assert (body["migrations"], body["queue"], body["emitters"]) == ("behind", None, None)
+    assert body["dead_letters"] is None
 
 
 async def test_a_revision_the_api_does_not_know_is_reported_without_being_cited(
@@ -124,6 +138,7 @@ async def test_an_unreachable_database_is_unavailable_and_nothing_else_is_said()
         "database": "unavailable",
         "migrations": None,
         "queue": None,
+        "dead_letters": None,
         "emitters": None,
         "partitions": None,
     }
@@ -147,6 +162,53 @@ async def test_the_queue_says_how_many_events_wait_and_since_when(engine: AsyncE
     assert queue["pending"] == 3
     assert queue["lower_bound"] is False
     assert 7200 <= queue["oldest_age_seconds"] < 7260
+
+
+async def test_the_dead_letters_say_how_many_events_wait_and_since_when(
+    engine: AsyncEngine,
+) -> None:
+    async with client(engine) as api:
+        for minute in range(3):
+            assert (await api.post("/api/v1/lineage", json=run_event(minute))).status_code == 201
+    await bury_the_queue(engine)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE dead_letter SET first_failed_at = now() - interval '2 hours',"
+                " last_failed_at = now() - interval '2 hours'"
+                " WHERE event_id = (SELECT min(event_id) FROM dead_letter)"
+            )
+        )
+    body = await state(engine)
+    buried = body["dead_letters"]
+    assert (buried["events"], buried["lower_bound"]) == (3, False)
+    assert 7200 <= buried["oldest_age_seconds"] < 7260
+    # Au rebut, ils ont quitté la file.
+    assert body["queue"]["pending"] == 0
+
+    # Rejoués, ils quittent le rebut : il redevient vide, sans âge.
+    async with client(engine) as api:
+        replayed = await api.post("/api/v1/ingestion/dead-letters/replay", json={})
+    assert replayed.json() == {"replayed": 3, "more": False}
+    assert (await state(engine))["dead_letters"] == {
+        "events": 0,
+        "lower_bound": False,
+        "oldest_age_seconds": None,
+    }
+
+
+async def test_the_dead_letter_count_stops_at_its_bound_and_says_so(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(health, "COUNT_LIMIT", 2)
+    async with client(engine) as api:
+        for minute in range(3):
+            assert (await api.post("/api/v1/lineage", json=run_event(minute))).is_success
+    await bury_the_queue(engine)
+    buried = (await state(engine))["dead_letters"]
+    assert (buried["events"], buried["lower_bound"]) == (2, True)
+    # Le plus ancien reste celui du rebut entier : la borne compte, elle ne choisit pas.
+    assert buried["oldest_age_seconds"] is not None
 
 
 async def test_counts_stop_at_their_bound_and_say_so(

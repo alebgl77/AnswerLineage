@@ -82,6 +82,8 @@ ERROR answerlineage_workers Événement 2a8b9477e2742f3eaeb18f4910603feb800eff1b
 
 `GET /api/v1/ingestion/dead-letters` liste le rebut, `POST /api/v1/ingestion/dead-letters/replay` le remet en file ([API d'ingestion](ingestion.md#file-de-rebut)) ; depuis le terminal, [`answerlineage dead-letters`](cli.md#answerlineage-dead-letters) fait l'un et l'autre.
 
+Un rebut qui se remplit ne passe pas inaperçu : la [route de santé](cli.md#la-route-de-santé) compte ses événements et donne l'âge du plus ancien, et [`answerlineage doctor`](cli.md#answerlineage-doctor) signale un rebut non vide comme une anomalie (`dead_letters_waiting`), avec son remède : lire les motifs, corriger la cause, puis rejouer.
+
 Le rejeu retire les événements du rebut et les remet en file dans une seule transaction ; un worker les projette comme les autres. Rejouer est sans risque : la projection est idempotente, et un événement intégré n'entre au graphe qu'une fois, avec sa réception d'origine pour heure d'enregistrement. Un événement rejoué repart sans essai : s'il échoue encore, il revient au rebut avec son nouveau motif, ses essais et ses heures d'échec comptés depuis le rejeu.
 
 Le chemin d'une erreur de schéma :
@@ -186,6 +188,5 @@ L'horloge de la maintenance est celle du worker, injectée dans les tests : les 
 - Une analyse est un instantané : elle ne voit que les événements déjà projetés. Un événement reçu avant elle mais encore dans la file lui échappe, et la couverture le signale par un trou `missing_from_graph` ; aucune route ne relance encore une analyse ([rejouer une analyse](incidents.md#rejouer-une-analyse)).
 
 - Le motif suit la classe de l'erreur : un défaut de la projection qui lève `KeyError`, `TypeError` ou `ValueError` met l'événement au rebut dès le premier échec, comme un événement mal formé. Le correctif déployé, il se rejoue.
-- `answerlineage doctor` ne compte pas encore le rebut : `answerlineage dead-letters list` sort avec le code `1` quand des événements y attendent, de quoi alerter.
 - Les essais d'un événement remis à plus tard avant la migration `0011` n'avaient pas d'heure : sa mise en file tient lieu de premier échec.
 - Un émetteur retiré pour de bon est signalé muet une fois, puis le reste : rien ne permet encore de le déclarer retiré, ni de l'oublier. Sa dernière couverture reste lisible, et son silence rend partielle la couverture des périodes qui suivent.

@@ -374,8 +374,9 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor",
         help="vérifie chaque composant d'une installation et liste les anomalies",
         description=(
-            "Vérifie l'API, l'adresse, la base et ses migrations, la file d'ingestion, les "
-            "émetteurs, les partitions et l'explorateur. Codes de sortie : 0 aucune anomalie ; "
+            "Vérifie l'API, l'adresse, la base et ses migrations, la file d'ingestion, la file "
+            "de rebut, les émetteurs, les partitions et l'explorateur. Codes de sortie : 0 aucune "
+            "anomalie ; "
             "1 au moins une anomalie ; 2 usage."
         ),
     )

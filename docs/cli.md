@@ -337,6 +337,7 @@ Vérification de l'installation : http://127.0.0.1:8000
   bon          Migrations   Le schéma de la base est à jour.
   anomalie     File         queue_stalled : La file d'ingestion n'avance pas : 12 événements en attente, le plus ancien depuis 1 h 02 min (seuil : 5 min).
                             Remède : Lancer un worker (answerlineage-worker) ; s'il tourne, lire son journal : un événement fautif y est remis à plus tard, de plus en plus espacé.
+  bon          Rebut        La file de rebut est vide.
   bon          Émetteurs    3 émetteurs connus, aucun muet.
   bon          Partitions   Aucune partition mensuelle ne manque.
   bon          Explorateur  L'explorateur est servi : http://127.0.0.1:8000/
@@ -345,7 +346,7 @@ Vérification de l'installation : http://127.0.0.1:8000
 1 anomalie.
 ```
 
-Chaque vérification rend `bon`, `anomalie` ou `non vérifié`. Une vérification qui dépend d'une autre en échec n'est pas faite, et le dit : quand l'API ne répond pas, rien d'autre n'est vérifié ; quand la base est injoignable, ni les migrations, ni la file, ni les émetteurs, ni les partitions. Ce que la commande ne peut pas savoir n'est jamais donné pour bon.
+Chaque vérification rend `bon`, `anomalie` ou `non vérifié`. Une vérification qui dépend d'une autre en échec n'est pas faite, et le dit : quand l'API ne répond pas, rien d'autre n'est vérifié ; quand la base est injoignable, ni les migrations, ni la file, ni le rebut, ni les émetteurs, ni les partitions. Ce que la commande ne peut pas savoir n'est jamais donné pour bon.
 
 | Vérification | Ce qui est vérifié | Anomalies |
 | --- | --- | --- |
@@ -354,6 +355,7 @@ Chaque vérification rend `bon`, `anomalie` ou `non vérifié`. Une vérificatio
 | `database` | L'API lit sa base dans son délai | `database_unavailable` |
 | `migrations` | Le schéma de la base est à la dernière révision des migrations | `schema_not_migrated`, `schema_behind`, `schema_unknown_revision` |
 | `queue` | La file d'ingestion avance : le plus ancien événement en attente n'attend pas depuis plus que `--queue-max-age` | `queue_stalled` |
+| `dead_letters` | Aucun événement n'attend à la [file de rebut](workers.md#file-de-rebut) : la projection a intégré au graphe tout ce qu'elle a reçu. Un seul suffit à l'anomalie : son lignage manque au graphe tant qu'il n'est pas rejoué | `dead_letters_waiting` |
 | `emitters` | Aucun émetteur n'est signalé [muet](workers.md#émetteurs-muets). Sans émetteur qui publie de relevés, leur silence ne se mesure pas : non vérifié | `emitters_muted` |
 | `partitions` | Aucune [partition mensuelle](workers.md#partitions-mensuelles) n'est signalée manquante | `partitions_missing` |
 | `explorer` | L'adresse sert la page de l'explorateur | `explorer_missing` |
@@ -383,6 +385,7 @@ Chaque anomalie a un code stable, un message et un remède écrits d'avance. Auc
 | `schema_behind` | Des migrations restent à appliquer | Le même |
 | `schema_unknown_revision` | La base porte une révision que l'API ne connaît pas : l'API est plus ancienne que la base | Mettre l'API à la version qui a migré la base |
 | `queue_stalled` | La file n'avance pas : combien attendent, depuis quand, le seuil | Lancer un worker ; s'il tourne, lire son journal |
+| `dead_letters_waiting` | Combien d'événements attendent au rebut, et depuis quand le plus ancien | Lire leur motif (`answerlineage dead-letters list`) et corriger sa cause, puis les rejouer (`answerlineage dead-letters replay`) |
 | `emitters_muted` | Combien d'émetteurs sont muets | Vérifier qu'ils tournent et joignent l'API ; `GET /api/v1/coverage` les nomme |
 | `partitions_missing` | Combien de partitions manquent : l'ingestion d'un mois sans partition échouera | Vérifier qu'un worker tourne ; son journal nomme la table et le mois |
 | `explorer_missing` | L'adresse ne sert pas l'explorateur | `make ui`, puis l'API avec `ANSWERLINEAGE_UI_DIR=ui/dist` |
@@ -410,7 +413,7 @@ Chaque anomalie a un code stable, un message et un remède écrits d'avance. Auc
 | Champ | Contenu |
 | --- | --- |
 | `url` | L'adresse vérifiée |
-| `checks` | Les neuf vérifications, toujours dans l'ordre du tableau plus haut |
+| `checks` | Les dix vérifications, toujours dans l'ordre du tableau plus haut |
 | `checks[].check` | Le nom de la vérification |
 | `checks[].status` | `ok`, `anomaly` ou `not_checked` |
 | `checks[].code` | Le code de l'anomalie, nul sinon |
@@ -421,7 +424,7 @@ Un script lit `status` et `code` ; `message` et `remedy` sont faits pour être l
 
 ### La route de santé
 
-`doctor` lit l'état de la base, des migrations, de la file, des émetteurs et des partitions par une route de l'API, `GET /api/v1/health`. Elle est petite et bornée : quelques requêtes indexées, des décomptes plafonnés, sous le [délai maximal des lectures](lecture.md#délai-maximal). Elle ne dit aucun détail interne, ni révision du schéma, ni adresse de la base, ni message d'erreur : seulement des états d'une liste fermée et des nombres.
+`doctor` lit l'état de la base, des migrations, de la file, du rebut, des émetteurs et des partitions par une route de l'API, `GET /api/v1/health`. Elle est petite et bornée : quelques requêtes indexées, des décomptes plafonnés, sous le [délai maximal des lectures](lecture.md#délai-maximal). Elle ne dit aucun détail interne, ni révision du schéma, ni adresse de la base, ni message d'erreur : seulement des états d'une liste fermée et des nombres.
 
 ```json
 {
@@ -429,6 +432,7 @@ Un script lit `status` et `code` ; `message` et `remedy` sont faits pour être l
   "database": "available",
   "migrations": "current",
   "queue": { "pending": 12, "lower_bound": false, "oldest_age_seconds": 3725 },
+  "dead_letters": { "events": 0, "lower_bound": false, "oldest_age_seconds": null },
   "emitters": { "known": 3, "muted": 0, "lower_bound": false },
   "partitions": { "missing": 0, "lower_bound": false }
 }
@@ -440,10 +444,11 @@ Un script lit `status` et `code` ; `message` et `remedy` sont faits pour être l
 | `database` | `available` quand l'API lit sa base, `unavailable` sinon. Une base injoignable n'est pas une erreur de la route : elle répond `200` |
 | `migrations` | `current`, `behind`, `unknown_revision` ou `not_migrated` ; nul quand la base est indisponible |
 | `queue` | Événements en attente de projection, et depuis combien de secondes attend le plus ancien, à l'horloge de la base ; nul quand la file est vide |
+| `dead_letters` | Événements au [rebut](workers.md#file-de-rebut), et l'âge du plus ancien en secondes, compté depuis sa mise au rebut à l'horloge de la base ; nul quand le rebut est vide. Le décompte et l'âge sont lus ensemble : ils s'accordent, même pendant un rejeu |
 | `emitters` | Émetteurs connus, ceux qui ont publié un relevé, et ceux que le contrôle des workers a signalés muets sans relevé reçu depuis |
 | `partitions` | Partitions mensuelles signalées manquantes par les workers |
 
-`queue`, `emitters` et `partitions` sont nuls tant que le schéma n'est pas à jour. Chaque décompte s'arrête à 10 000 : au-delà, `lower_bound` vaut `true`. Comme toute route, elle n'accepte que les hôtes et les origines attendus, et une lecture qui dépasse son délai répond `503` (`query_timeout`).
+`queue`, `dead_letters`, `emitters` et `partitions` sont nuls tant que le schéma n'est pas à jour. Chaque décompte s'arrête à 10 000 : au-delà, `lower_bound` vaut `true`. Comme toute route, elle n'accepte que les hôtes et les origines attendus, et une lecture qui dépasse son délai répond `503` (`query_timeout`).
 
 ## `answerlineage demo`
 
@@ -520,6 +525,5 @@ La commande n'écrit dans aucun journal. Le client HTTP qu'elle emploie, httpx, 
 - `impact` lit une page de réponses à la fois, 200 au plus ; les décomptes sont ceux de tout l'incident, et `--cursor` donne la suite. `incident show` de même.
 - `incident declare` n'attend pas l'analyse : `incident show` la lit quand un worker l'a faite.
 - `doctor` ne voit pas les workers : une file vide ne dit pas qu'un worker tourne, et sans worker, aucun émetteur n'est signalé muet.
-- `doctor` ne compte pas encore le rebut : `dead-letters list` le dit, par son code de sortie.
 - `demo` attend la démonstration sur le port que publie `compose.yaml`, 8000 : il doit être libre.
 - La commande ignore les variables de mandataire : une API qu'on ne joint que par un mandataire ne lui est pas accessible.
