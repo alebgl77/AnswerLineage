@@ -180,10 +180,26 @@ class Api:
         headers: Mapping[str, str] | None = None,
     ) -> Received:
         """Une requête GET, sa réponse lue dans ses bornes de taille et de durée."""
+        return self._send("GET", path, max_bytes=max_bytes, params=params, headers=headers)
+
+    def post(self, path: str, *, document: Any, max_bytes: int) -> Received:
+        """Une requête POST d'un document JSON, sa réponse lue dans ses bornes."""
+        return self._send("POST", path, max_bytes=max_bytes, document=document)
+
+    def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        max_bytes: int,
+        params: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
+        document: Any = None,
+    ) -> Received:
         deadline = time.monotonic() + self._timeout
         try:
             with self._client.stream(
-                "GET", self.base + path, params=params, headers=headers
+                method, self.base + path, params=params, headers=headers, json=document
             ) as response:
                 encoding = response.headers.get("content-encoding", "identity").strip().lower()
                 if encoding != "identity":

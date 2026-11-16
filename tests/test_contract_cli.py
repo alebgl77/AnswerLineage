@@ -18,7 +18,8 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from answerlineage_api import identifiers as api
-from answerlineage_cli import doctor, impact, names
+from answerlineage_api.store.schema import INCIDENT_WINDOW_DAYS
+from answerlineage_cli import doctor, impact, incident, names
 from answerlineage_cli.names import is_identifier
 from tests.test_contract_identifiers import SAMPLES
 
@@ -92,3 +93,24 @@ def test_the_parameters_the_command_accepts_are_those_of_the_route(
     for name in ("namespace", "name"):
         assert parameters[name]["maxLength"] == impact.MAX_DATASET_PARAMETER
     assert parameters["cursor"]["anyOf"][0]["pattern"] == f"^{impact.CURSOR.pattern}$"
+
+
+def test_the_incident_lists_and_bounds_of_the_command_are_those_of_the_api(
+    contract: dict[str, Any],
+) -> None:
+    schemas = contract["components"]["schemas"]
+    assert enum(schemas["IncidentDeclaration"]["properties"]["severity"]) == list(
+        incident.SEVERITIES
+    )
+    assert enum(schemas["Incident"]["properties"]["severity"]) == list(incident.SEVERITIES)
+    assert enum(schemas["Incident"]["properties"]["state"]) == list(incident.INCIDENT_STATES)
+    assert enum(schemas["Analysis"]["properties"]["state"]) == list(incident.ANALYSIS_STATES)
+    assert enum(schemas["Analysis"]["properties"]["error"]) == list(incident.ANALYSIS_ERRORS)
+    assert schemas["DeclaredScope"]["properties"]["datasets"]["maxItems"] == incident.MAX_DATASETS
+    assert incident.MAX_WINDOW_DAYS == INCIDENT_WINDOW_DAYS
+
+    route = contract["paths"]["/api/v1/incidents/{incident_id}"]["get"]
+    parameters = {parameter["name"]: parameter["schema"] for parameter in route["parameters"]}
+    assert parameters["limit"]["maximum"] == incident.MAX_LIMIT
+    assert parameters["cursor"]["anyOf"][0]["pattern"] == f"^{impact.CURSOR.pattern}$"
+    assert parameters["incident_id"]["pattern"] == f"^{incident.INCIDENT_ID.pattern}$"

@@ -6,7 +6,7 @@ Un worker lit la file de traitement et projette chaque événement reçu dans le
 ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run answerlineage-worker
 ```
 
-Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Il contrôle aussi les [émetteurs muets](#émetteurs-muets) et entretient les [partitions mensuelles](#partitions-mensuelles).
+Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés, contrôle les [émetteurs muets](#émetteurs-muets) et entretient les [partitions mensuelles](#partitions-mensuelles).
 
 ## Garanties
 
@@ -36,6 +36,29 @@ Chaque identifiant recopié dans le graphe (agent, outil, jeu de données, versi
 L'ordre d'arrivée ne compte pas : deux événements d'un même run reçus dans le désordre donnent le même graphe.
 
 Chaque ligne que l'événement fait connaître prend pour heure d'enregistrement sa réception par l'API (`event_raw.recorded_at`), pas l'heure du passage du worker : un événement projeté plus tard, après une panne des workers ou parce qu'il a été remis dans la file, garde sa réception d'origine ([deux heures](schema.md#deux-heures)).
+
+## Analyse des incidents
+
+La déclaration d'un [incident](incidents.md) écrit une demande d'analyse dans sa transaction (`incident_analysis`, état `pending`). Après chaque lot d'événements, la boucle du worker en réclame une, si une attend, et la traite :
+
+1. elle lance la [propagation](lecture.md#propager-un-incident) sur chaque jeu de données du périmètre et sur la fenêtre de validité, telle que le graphe était connu à l'heure de l'analyse (`known_at`) ;
+2. elle réunit les runs touchés, et garde les réponses de ces runs, par leur run et leur empreinte, et les pseudonymes de leurs destinataires ;
+3. elle mesure la [couverture du lignage](lecture.md#couverture-du-lignage) sur la fenêtre, et note les jeux du périmètre que le graphe ne connaît pas ;
+4. elle enregistre le résultat et passe l'analyse à l'état `done`.
+
+Les garanties sont celles de la file d'ingestion :
+
+- **Une analyse, un worker.** La demande est réclamée, traitée et close dans une seule transaction ; les workers sautent une demande verrouillée par un autre (`FOR UPDATE SKIP LOCKED`).
+- **Aucune perte.** Un worker arrêté en cours d'analyse n'écrit rien : la demande redevient visible, telle quelle.
+- **Sans doublon.** Le résultat remplace celui d'une analyse précédente du même incident : rejouer une analyse ne duplique ni réponse ni destinataire.
+- **Le même graphe à chaque essai.** `known_at` est l'heure de la base au premier essai, gardée pour les suivants.
+- **Un échec se dit par un code.** Une analyse en échec est remise à plus tard, avec un délai qui double à chaque essai (5 s, 10 s, 20 s…) ; au huitième essai en échec, elle passe à l'état `failed`. La demande garde le nombre d'essais et le code du dernier échec, d'une liste fermée : `query_timeout` quand une lecture dépasse le délai de l'analyse, `analysis_error` pour toute autre erreur. Le journal en donne la classe, jamais le message :
+
+  ```text
+  WARNING answerlineage_workers Analyse de l'incident 974e7c80-6643-4065-a541-e4c029abbdab remise à plus tard (OperationalError).
+  ```
+
+Une analyse dispose d'une minute : chaque lecture part sous le temps qui en reste, et PostgreSQL l'annule au-delà, comme les [lectures de l'API](lecture.md#délai-maximal). Le journal ne nomme un incident que par son identifiant, tiré par l'API.
 
 ## Émetteurs muets
 
@@ -104,6 +127,8 @@ Plusieurs workers entretiennent en même temps sans double travail : la maintena
 L'horloge de la maintenance est celle du worker, injectée dans les tests : les mois y passent sans attendre.
 
 ## Limites connues
+
+- Une analyse est un instantané : elle ne voit que les événements déjà projetés. Un événement reçu avant elle mais encore dans la file lui échappe, et la couverture le signale par un trou `missing_from_graph` ; aucune route ne relance encore une analyse ([rejouer une analyse](incidents.md#rejouer-une-analyse)).
 
 - Un événement toujours fautif reste dans la file, de plus en plus espacé : il n'y a pas encore de file de rebut à consulter et à rejouer. Il en sort quand son mois est purgé.
 - Un émetteur retiré pour de bon est signalé muet une fois, puis le reste : rien ne permet encore de le déclarer retiré, ni de l'oublier. Sa dernière couverture reste lisible, et son silence rend partielle la couverture des périodes qui suivent.

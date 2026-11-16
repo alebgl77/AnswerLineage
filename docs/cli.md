@@ -1,10 +1,11 @@
 # Ligne de commande
 
-`answerlineage` fait depuis le terminal ce que fait l'explorateur, et un peu plus : propager un incident jusqu'aux réponses et aux destinataires touchés, vérifier une installation, lancer la démonstration. Elle parle à l'API par HTTP, comme l'explorateur, et ne lit jamais la base. Elle lance aussi le proxy MCP.
+`answerlineage` fait depuis le terminal ce que fait l'explorateur, et un peu plus : propager un incident jusqu'aux réponses et aux destinataires touchés, déclarer un incident et lire son analyse, vérifier une installation, lancer la démonstration. Elle parle à l'API par HTTP, comme l'explorateur, et ne lit jamais la base. Elle lance aussi le proxy MCP.
 
 | Sous-commande | Ce qu'elle fait |
 | --- | --- |
 | [`answerlineage impact`](#answerlineage-impact) | Les réponses et les destinataires touchés par un jeu de données faux pendant une fenêtre ; le code de sortie dit si l'on peut conclure |
+| [`answerlineage incident`](#answerlineage-incident) | Déclare un incident de données, puis lit l'analyse d'impact que les workers en font ; le code de sortie de `show` dit si l'on peut conclure |
 | [`answerlineage doctor`](#answerlineage-doctor) | Vérifie chaque composant d'une installation et liste les anomalies, chacune avec son remède |
 | [`answerlineage demo`](#answerlineage-demo) | Lance la démonstration d'un clone du dépôt, attend qu'elle réponde et donne l'adresse de l'explorateur |
 | [`answerlineage proxy`](#answerlineage-proxy) | Le proxy MCP : devant un serveur HTTP, ou qui lance un serveur stdio donné après `--` |
@@ -144,6 +145,99 @@ Réponse de l'API invalide en /graph/tools/0/name : un champ manque ou n'a pas l
 ```
 
 Un refus de l'API est dit par un message écrit d'avance, choisi d'après son code (`unknown_dataset`, `query_timeout`, `host_not_allowed`…) ; un code inconnu n'est pas recopié, seul le statut HTTP l'est.
+
+## `answerlineage incident`
+
+Un [incident de données](incidents.md) se déclare avec son périmètre, sa fenêtre de validité et sa gravité ; l'API le crée à l'état « qualifié » et en demande l'analyse d'impact, que les workers font. `declare` déclare, `show` lit l'incident et son analyse.
+
+### `answerlineage incident declare`
+
+```bash
+answerlineage incident declare --dataset bigquery ventes.suivi.commandes --from 2026-11-11T06:00:00Z --to 2026-11-12T12:00:00Z --severity high
+```
+
+```text
+Incident déclaré : 974e7c80-6643-4065-a541-e4c029abbdab
+  état : qualifié
+  gravité : élevée (high)
+  périmètre : ventes.suivi.commandes (espace de noms bigquery)
+  fenêtre : du 2026-11-11T06:00:00Z au 2026-11-12T12:00:00Z, fin exclue
+  déclaré le 2026-11-16T08:53:16.793908Z
+Analyse : demandée, en attente d'un worker.
+Suivre l'analyse : answerlineage incident show 974e7c80-6643-4065-a541-e4c029abbdab
+```
+
+| Option | Rôle | Défaut |
+| --- | --- | --- |
+| `--dataset ESPACE NOM` | Un jeu de données faux, par son espace de noms et son nom ; à répéter, 20 fois au plus, sans doublon | obligatoire |
+| `--from`, `--to` | La fenêtre de validité, début inclus, fin exclue, en RFC 3339 avec fuseau ; `--to` suit `--from`, de 31 jours au plus | obligatoires |
+| `--severity` | La gravité : `low`, `medium`, `high` ou `critical` ([gravité](incidents.md#gravité)) | obligatoire |
+| `--format` | `text` ou `json` ; en JSON, l'incident que rend `POST /api/v1/incidents` | `text` |
+
+La commande contrôle la déclaration avant de l'envoyer, comme l'API la contrôlera : chaque espace de noms et chaque nom ont la forme d'un nom, celle que l'[ingestion](ingestion.md#identifiants) admet ; la fenêtre n'est ni vide, ni inversée, ni trop longue. Une déclaration fautive est un usage fautif, et le message ne recopie aucune valeur :
+
+```text
+Usage fautif : --to doit suivre --from.
+```
+
+| Code | Sens |
+| --- | --- |
+| `0` | L'incident est déclaré, son analyse demandée |
+| `2` | Usage fautif : option absente ou mal formée, fenêtre vide, inversée ou trop longue, nom refusé ; ou déclaration refusée par l'API (`422`), qui nomme l'option |
+| `4` | L'API ne répond pas, ou pas dans le délai |
+| `5` | L'API a refusé la requête ou rendu une réponse invalide |
+
+### `answerlineage incident show`
+
+```bash
+answerlineage incident show 974e7c80-6643-4065-a541-e4c029abbdab
+```
+
+```text
+Incident 974e7c80-6643-4065-a541-e4c029abbdab
+  état : qualifié
+  gravité : élevée (high)
+  périmètre : ventes.suivi.commandes (espace de noms bigquery)
+  fenêtre : du 2026-11-11T06:00:00Z au 2026-11-12T12:00:00Z, fin exclue
+  déclaré le 2026-11-16T08:53:16.793908Z
+Analyse : faite le 2026-11-16T08:53:16.849328Z, sur le graphe tel que connu le 2026-11-16T08:53:16.814594Z
+
+16 réponses touchées, 13 destinataires
+Couverture du lignage : mesurée, 100 % des appels vus sont dans le graphe, sans trou connu
+
+Réponses touchées, les plus récentes d'abord (16 sur cette page) :
+  2026-11-12T10:47:56Z  01a1cf5e5bb078b991a908d485d5acfdb4c70313c6faa097
+    destinataires : 821743431def23772bbc6215495e30c7, a71b66a14ed697845fee1dc093de55a0, d3675030f72fc8499edef4ab380c2c44
+  …
+
+Destinataires, pseudonymisés (13 sur cette page) :
+  237937de45af1b1cc4811a3b5a1152bd
+  …
+
+Liste complète : aucune réponse touchée ne peut y manquer.
+```
+
+C'est le premier incident de la démonstration : l'analyse trouve exactement sa vérité. Tant que l'analyse attend un worker, la commande le dit (`Analyse : en attente d'un worker.`) et sort avec le code `6` ; une fois faite, la sortie suit celle d'[`impact`](#answerlineage-impact) : les décomptes de tout l'incident, la couverture et ses trous, chaque réponse touchée avec ses destinataires, et ce que le résultat permet de conclure. Elle nomme aussi les jeux du périmètre que le graphe ne connaissait pas.
+
+| Option | Rôle | Défaut |
+| --- | --- | --- |
+| `IDENTIFIANT` | L'identifiant de l'incident, tel que le rend `declare` | obligatoire |
+| `--limit` | Réponses touchées par page, de 1 à 200 | 200 |
+| `--cursor` | La page suivante : la valeur de `next_cursor`, que la sortie lisible rappelle | aucun |
+| `--format` | `text` ou `json` ; en JSON, la réponse de `GET /api/v1/incidents/{id}`, réduite aux champs du contrat | `text` |
+
+| Code | Sens |
+| --- | --- |
+| `0` | Analyse faite : des réponses sont touchées, et la liste est complète |
+| `1` | Analyse faite : aucune réponse touchée, et le résultat le prouve, complet sous une couverture mesurée sans trou |
+| `2` | Usage fautif : identifiant mal formé, option mal formée ; ou paramètre refusé par l'API |
+| `3` | Analyse faite, résultat incomplet : tronqué, couverture non mesurée, partielle ou trouée, ou jeu du périmètre inconnu du graphe. Zéro réponse ne prouve rien |
+| `4` | L'API ne répond pas, ou pas dans le délai |
+| `5` | L'API a refusé la requête (incident inconnu, délai de lecture dépassé, adresse refusée) ou rendu une réponse invalide |
+| `6` | L'analyse attend un worker, ou a été remise à plus tard après un échec : relancer plus tard |
+| `7` | L'analyse est en échec ; la sortie dit pourquoi, par un message écrit d'avance |
+
+La réponse est validée comme celle d'`impact` ([une réponse de l'API est hostile](#une-réponse-de-lapi-est-hostile)), et un peu plus : l'incident rendu est celui demandé, un état et ce qu'il porte vont ensemble (un résultat pour une analyse faite, et seulement pour elle ; un code d'échec pour une analyse en échec), et chaque état, gravité ou code d'échec appartient à sa liste fermée.
 
 ## `answerlineage doctor`
 
@@ -320,14 +414,16 @@ Le paquet `answerlineage-cli` ne dépend pas du proxy. Sans le paquet `answerlin
 
 ## Tous les codes de sortie
 
-| Code | `impact` | `doctor` | `demo` |
-| --- | --- | --- | --- |
-| `0` | Réponses touchées, liste complète | Aucune anomalie | La démonstration répond |
-| `1` | Aucune réponse touchée, résultat complet | Au moins une anomalie | Docker absent ou en échec |
-| `2` | Usage fautif | Usage fautif | Usage fautif, hors d'un clone |
-| `3` | Résultat incomplet | | |
-| `4` | API injoignable | | La démonstration ne répond pas |
-| `5` | Refus de l'API ou réponse invalide | | |
+| Code | `impact` | `incident declare` | `incident show` | `doctor` | `demo` |
+| --- | --- | --- | --- | --- | --- |
+| `0` | Réponses touchées, liste complète | Incident déclaré | Réponses touchées, liste complète | Aucune anomalie | La démonstration répond |
+| `1` | Aucune réponse touchée, résultat complet | | Aucune réponse touchée, résultat complet | Au moins une anomalie | Docker absent ou en échec |
+| `2` | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif, hors d'un clone |
+| `3` | Résultat incomplet | | Résultat incomplet | | |
+| `4` | API injoignable | API injoignable | API injoignable | | La démonstration ne répond pas |
+| `5` | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | | |
+| `6` | | | Analyse en attente | | |
+| `7` | | | Analyse en échec | | |
 
 `answerlineage proxy` rend les codes du proxy, et `2` quand le proxy n'est pas installé.
 
@@ -338,7 +434,8 @@ La commande n'écrit dans aucun journal. Le client HTTP qu'elle emploie, httpx, 
 ## Limites connues
 
 - L'API n'authentifie pas ses appelants : la commande non plus. Elle est faite pour une API sur la boucle locale ou derrière un contrôle d'accès.
-- `impact` lit une page de réponses à la fois, 200 au plus ; les décomptes sont ceux de tout l'incident, et `--cursor` donne la suite.
+- `impact` lit une page de réponses à la fois, 200 au plus ; les décomptes sont ceux de tout l'incident, et `--cursor` donne la suite. `incident show` de même.
+- `incident declare` n'attend pas l'analyse : `incident show` la lit quand un worker l'a faite.
 - `doctor` ne voit pas les workers : une file vide ne dit pas qu'un worker tourne, et sans worker, aucun émetteur n'est signalé muet.
 - `demo` attend la démonstration sur le port que publie `compose.yaml`, 8000 : il doit être libre.
 - La commande ignore les variables de mandataire : une API qu'on ne joint que par un mandataire ne lui est pas accessible.

@@ -45,6 +45,19 @@ class CursorError(ValueError):
     """Le curseur a la forme attendue, mais ne désigne aucun instant représentable."""
 
 
+def encode_instant(moment: datetime) -> str:
+    """Un instant écrit pour un curseur : ses microsecondes depuis le 1er janvier de l'an 1."""
+    return str((moment - _ORIGIN) // _MICROSECOND)
+
+
+def decode_instant(micros: str) -> datetime:
+    """L'instant d'un curseur à la forme déjà validée ; ``CursorError`` s'il n'en est pas un."""
+    try:
+        return _ORIGIN + int(micros) * _MICROSECOND
+    except OverflowError:
+        raise CursorError from None
+
+
 @dataclass(frozen=True)
 class Cursor:
     """Position dans la liste des réponses : juste après celle-ci."""
@@ -54,17 +67,13 @@ class Cursor:
     digest: bytes
 
     def encode(self) -> str:
-        micros = (self.produced_at - _ORIGIN) // _MICROSECOND
-        return f"{micros}.{self.run_id.hex}{self.digest.hex()}"
+        return f"{encode_instant(self.produced_at)}.{self.run_id.hex}{self.digest.hex()}"
 
     @classmethod
     def decode(cls, value: str) -> Cursor:
         """Lit un curseur dont la forme est déjà validée (``CURSOR_PATTERN``)."""
         micros, identifier = value.split(".")
-        try:
-            produced_at = _ORIGIN + int(micros) * _MICROSECOND
-        except OverflowError:
-            raise CursorError from None
+        produced_at = decode_instant(micros)
         return cls(produced_at, UUID(hex=identifier[:32]), bytes.fromhex(identifier[32:]))
 
     @classmethod

@@ -10,10 +10,12 @@ L'API de lecture interroge le graphe de lignage. Elle est versionnée sous `/api
 | `GET /api/v1/graph` | Le graphe en cinq colonnes des réponses les plus récentes, ou d'une réponse |
 | `GET /api/v1/datasets` | Les jeux de données connus du graphe |
 | `GET /api/v1/coverage?from=…&to=…` | La couverture du lignage de chaque émetteur sur une période |
+| `GET /api/v1/incidents` | Les incidents déclarés, les plus récents d'abord, et l'état de leur analyse |
+| `GET /api/v1/incidents/{id}` | Un incident déclaré, l'état de son analyse d'impact et, quand elle est faite, les réponses touchées et leurs destinataires |
 
-Les cinq premières routes lisent aussi le graphe tel qu'il était connu à une date, avec `known_at` ([plus bas](#le-graphe-tel-que-connu-à-une-date)).
+Les cinq premières routes lisent aussi le graphe tel qu'il était connu à une date, avec `known_at` ([plus bas](#le-graphe-tel-que-connu-à-une-date)). Les incidents se déclarent par `POST /api/v1/incidents` ; leurs deux routes de lecture sont décrites avec eux, dans [Incidents de données](incidents.md).
 
-Depuis le terminal, `answerlineage impact` propage un incident et dit par son code de sortie si l'on peut conclure, et `answerlineage doctor` lit l'état de l'installation sur `GET /api/v1/health` : voir la [ligne de commande](cli.md).
+Depuis le terminal, `answerlineage impact` propage un incident et dit par son code de sortie si l'on peut conclure, `answerlineage incident` déclare un incident et lit son analyse, et `answerlineage doctor` lit l'état de l'installation sur `GET /api/v1/health` : voir la [ligne de commande](cli.md).
 
 ## Remonter d'une réponse à ses sources
 
@@ -155,6 +157,10 @@ Une réponse est touchée quand un run de son arbre a lu le jeu de données pend
 - **Un run qui a lu sans répondre n'a rien à rappeler.**
 
 `limit` (200 au plus) et `cursor` parcourent la liste des réponses comme pour le graphe ; `counts` reste celui de tout l'incident. Un jeu de données inconnu répond `404` (`unknown_dataset`), une fenêtre vide `422`.
+
+### Déclarer l'incident
+
+`GET /api/v1/impact` répond à une question posée sur un jeu de données, et ne garde rien. Un incident déclaré par `POST /api/v1/incidents` nomme son périmètre, un jeu de données ou plusieurs, sa fenêtre de validité et sa gravité ; les workers en font l'analyse : la même propagation, sur chaque jeu du périmètre, sur le graphe tel qu'il était connu à l'heure de l'analyse. Le résultat reste avec l'incident : les réponses touchées, leurs destinataires pseudonymisés, la couverture de la fenêtre et ses trous, et si une borne a été dépassée. Voir [Incidents de données](incidents.md).
 
 ### Mesure
 
@@ -350,6 +356,7 @@ Toute requête porte une borne sur les lignes qu'elle lit. Un dépassement se di
 | Graphe en cinq colonnes | 200 réponses par page ; pour leurs chaînes, 20 000 runs, 50 000 couples run et jeu de données lu, 50 000 liens de diffusion |
 | Propagation | 20 000 lectures du jeu de données dans la fenêtre, 20 000 runs parents, 100 000 réponses et 200 000 liens de diffusion comptés |
 | Jeux de données connus | 500 par page |
+| Incidents | 100 par page ; pour un incident, 200 réponses touchées par page et 200 000 liens vers leurs destinataires |
 | Couverture | 1 000 émetteurs pour un résultat d'impact ou une remontée, 500 par page ; 50 000 relevés lus ; 1 000 trous rendus ; dans chaque fenêtre, les événements comptés au plus jusqu'aux appels vus |
 
 Une couverture tronquée (`coverage.truncated`) n'est jamais donnée pour `measured` : ses trous peuvent être incomplets. Réduire la période la rend complète.

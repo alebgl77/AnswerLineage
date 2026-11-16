@@ -43,6 +43,160 @@
         "title": "AgentNode",
         "type": "object"
       },
+      "Analysis": {
+        "description": "L'état de l'analyse d'impact de l'incident.",
+        "properties": {
+          "attempts": {
+            "description": "Essais en échec.",
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImpactCounts"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Réponses touchées et destinataires distincts. Nuls avant l'analyse faite."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "enum": [
+                  "query_timeout",
+                  "analysis_error"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Code du dernier échec : « query_timeout », une lecture a dépassé le délai de l'analyse ; « analysis_error », toute autre erreur. Nul pour une analyse faite.",
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fin de l'analyse, faite ou en échec. Nulle tant qu'elle est en attente.",
+            "title": "Finished At"
+          },
+          "known_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Le graphe est lu tel qu'il était connu à cette heure, fixée au premier essai. Nulle avant lui.",
+            "title": "Known At"
+          },
+          "requested_at": {
+            "description": "Demande, à la déclaration de l'incident.",
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "state": {
+            "description": "« pending » : en attente d'un worker, ou remise à plus tard après un échec. « done » : faite, son résultat se lit. « failed » : en échec après plusieurs essais, « error » dit pourquoi.",
+            "enum": [
+              "pending",
+              "done",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Vrai quand la propagation dépasse une de ses bornes : le résultat est partiel. Nul avant l'analyse faite.",
+            "title": "Truncated"
+          }
+        },
+        "required": [
+          "state",
+          "requested_at",
+          "attempts",
+          "error",
+          "known_at",
+          "finished_at",
+          "counts",
+          "truncated"
+        ],
+        "title": "Analysis",
+        "type": "object"
+      },
+      "AnalysisResult": {
+        "description": "Ce que l'analyse a trouvé : une page des réponses touchées, et ce qu'elle n'a pas pu voir.",
+        "properties": {
+          "answers": {
+            "description": "Les plus récentes d'abord.",
+            "items": {
+              "$ref": "#/components/schemas/TouchedAnswer"
+            },
+            "title": "Answers",
+            "type": "array"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/Coverage",
+            "description": "Couverture du lignage sur la fenêtre de l'incident, tous émetteurs confondus, à l'heure de l'analyse : une réponse dont l'appel n'a pas été capté manque."
+          },
+          "more": {
+            "description": "Vrai quand des réponses plus anciennes suivent.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor ». Nul quand il n'y a plus de réponse.",
+            "title": "Next Cursor"
+          },
+          "unknown_datasets": {
+            "description": "Jeux du périmètre que le graphe ne connaissait pas à l'heure de l'analyse : aucune lecture n'en est connue, ou leur nom est mal écrit.",
+            "items": {
+              "$ref": "#/components/schemas/IncidentDataset"
+            },
+            "title": "Unknown Datasets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "unknown_datasets",
+          "coverage",
+          "answers",
+          "more",
+          "next_cursor"
+        ],
+        "title": "AnalysisResult",
+        "type": "object"
+      },
       "AnswerList": {
         "properties": {
           "answers": {
@@ -623,6 +777,77 @@
         "title": "DatasetSource",
         "type": "object"
       },
+      "DeclaredDataset": {
+        "additionalProperties": false,
+        "description": "Un jeu de données faux, tel que le déclarant le nomme.",
+        "properties": {
+          "name": {
+            "description": "Nom du jeu de données, tel que le graphe le connaît.",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Espace de noms du jeu de données, par exemple « bigquery ».",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ],
+        "title": "DeclaredDataset",
+        "type": "object"
+      },
+      "DeclaredScope": {
+        "additionalProperties": false,
+        "description": "Le périmètre de l'incident.",
+        "properties": {
+          "datasets": {
+            "description": "Les jeux de données faux, sans doublon.",
+            "items": {
+              "$ref": "#/components/schemas/DeclaredDataset"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Datasets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "datasets"
+        ],
+        "title": "DeclaredScope",
+        "type": "object"
+      },
+      "DeclaredWindow": {
+        "additionalProperties": false,
+        "description": "La fenêtre de validité : début inclus, fin exclue, avec fuseau.",
+        "properties": {
+          "from": {
+            "description": "Début, inclus (RFC 3339, avec fuseau).",
+            "format": "date-time",
+            "title": "From",
+            "type": "string"
+          },
+          "to": {
+            "description": "Fin, exclue (RFC 3339, avec fuseau).",
+            "format": "date-time",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "DeclaredWindow",
+        "type": "object"
+      },
       "DuplicateCount": {
         "description": "Doublons reçus d'un émetteur, un jour.",
         "properties": {
@@ -1063,6 +1288,230 @@
           "truncated"
         ],
         "title": "ImpactResult",
+        "type": "object"
+      },
+      "Incident": {
+        "description": "Un incident déclaré et l'état de son analyse.",
+        "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/Analysis"
+          },
+          "declared_at": {
+            "format": "date-time",
+            "title": "Declared At",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifiant de l'incident, tiré par l'API.",
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/IncidentScope"
+          },
+          "severity": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "state": {
+            "description": "« qualified » : déclaré, son périmètre et sa fenêtre sont établis. La liste est fermée ; elle s'allongera avec les étapes du rappel.",
+            "enum": [
+              "qualified"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/Window",
+            "description": "Fenêtre de validité : début inclus, fin exclue."
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "severity",
+          "scope",
+          "window",
+          "declared_at",
+          "analysis"
+        ],
+        "title": "Incident",
+        "type": "object"
+      },
+      "IncidentDataset": {
+        "description": "Un jeu de données du périmètre.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ],
+        "title": "IncidentDataset",
+        "type": "object"
+      },
+      "IncidentDeclaration": {
+        "additionalProperties": false,
+        "description": "Ce que le responsable de données déclare. Aucun texte libre.",
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/DeclaredScope"
+          },
+          "severity": {
+            "description": "Gravité de l'incident, de « low » à « critical » : elle ne change pas l'analyse, elle ordonnera les rappels.",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/DeclaredWindow"
+          }
+        },
+        "required": [
+          "scope",
+          "window",
+          "severity"
+        ],
+        "title": "IncidentDeclaration",
+        "type": "object"
+      },
+      "IncidentDetail": {
+        "description": "Un incident, l'état de son analyse et, quand elle est faite, son résultat.",
+        "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/Analysis"
+          },
+          "declared_at": {
+            "format": "date-time",
+            "title": "Declared At",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifiant de l'incident, tiré par l'API.",
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisResult"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Nul tant que l'analyse n'est pas faite."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/IncidentScope"
+          },
+          "severity": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "state": {
+            "description": "« qualified » : déclaré, son périmètre et sa fenêtre sont établis. La liste est fermée ; elle s'allongera avec les étapes du rappel.",
+            "enum": [
+              "qualified"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/Window",
+            "description": "Fenêtre de validité : début inclus, fin exclue."
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "severity",
+          "scope",
+          "window",
+          "declared_at",
+          "analysis",
+          "result"
+        ],
+        "title": "IncidentDetail",
+        "type": "object"
+      },
+      "IncidentList": {
+        "description": "Les incidents déclarés, les plus récents d'abord.",
+        "properties": {
+          "incidents": {
+            "items": {
+              "$ref": "#/components/schemas/Incident"
+            },
+            "title": "Incidents",
+            "type": "array"
+          },
+          "more": {
+            "description": "Vrai quand des incidents plus anciens suivent.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor ». Nul quand il n'y en a plus.",
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "incidents",
+          "more",
+          "next_cursor"
+        ],
+        "title": "IncidentList",
+        "type": "object"
+      },
+      "IncidentScope": {
+        "properties": {
+          "datasets": {
+            "description": "Par espace de noms, puis par nom.",
+            "items": {
+              "$ref": "#/components/schemas/IncidentDataset"
+            },
+            "title": "Datasets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "datasets"
+        ],
+        "title": "IncidentScope",
         "type": "object"
       },
       "InputDataset": {
@@ -1535,6 +1984,42 @@
           "calls"
         ],
         "title": "ToolUse",
+        "type": "object"
+      },
+      "TouchedAnswer": {
+        "description": "Une réponse touchée, désignée par son identifiant stable et son empreinte.",
+        "properties": {
+          "fingerprint": {
+            "description": "Empreinte de la réponse : son contenu n'est pas conservé.",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifiant stable de la réponse.",
+            "title": "Id",
+            "type": "string"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "title": "Produced At",
+            "type": "string"
+          },
+          "recipients": {
+            "description": "Pseudonymes de ses destinataires.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Recipients",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "fingerprint",
+          "produced_at",
+          "recipients"
+        ],
+        "title": "TouchedAnswer",
         "type": "object"
       },
       "UndescribedTool": {
@@ -2348,6 +2833,252 @@
         "summary": "Propage un incident de données jusqu'aux réponses et aux destinataires",
         "tags": [
           "lignage"
+        ]
+      }
+    },
+    "/api/v1/incidents": {
+      "get": {
+        "description": "Chaque incident avec son périmètre, sa fenêtre, sa gravité et l'état de son analyse.",
+        "operationId": "incidents_api_v1_incidents_get",
+        "parameters": [
+          {
+            "description": "Nombre maximal d'incidents renvoyés.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "description": "Nombre maximal d'incidents renvoyés.",
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{1,18}\\.[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Liste les incidents déclarés, les plus récents d'abord",
+        "tags": [
+          "incidents"
+        ]
+      },
+      "post": {
+        "description": "L'incident est créé à l'état « qualified », avec une demande d'analyse que les workers\nréclament. Le corps est lu borné, compressé ou non (``gzip``).",
+        "operationId": "declare_api_v1_incidents_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentDeclaration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Incident"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`)."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "La déclaration est invalide."
+          }
+        },
+        "summary": "Déclare un incident de données et lance son analyse d'impact",
+        "tags": [
+          "incidents"
+        ]
+      }
+    },
+    "/api/v1/incidents/{incident_id}": {
+      "get": {
+        "description": "Le périmètre, la fenêtre, la gravité, l'état de l'analyse et, quand elle est faite, une\npage des réponses touchées avec leurs destinataires, la couverture et ses trous.",
+        "operationId": "incident_api_v1_incidents__incident_id__get",
+        "parameters": [
+          {
+            "description": "Identifiant de l'incident, tel que l'API le donne.",
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "description": "Identifiant de l'incident, tel que l'API le donne.",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Nombre maximal de réponses touchées renvoyées.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "description": "Nombre maximal de réponses touchées renvoyées.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque de la page suivante des réponses touchées, tel que l'API le donne dans « result.next_cursor ».",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{1,18}\\.[0-9a-f]{48}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque de la page suivante des réponses touchées, tel que l'API le donne dans « result.next_cursor ».",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Aucun incident ne porte cet identifiant."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Donne un incident, l'état de son analyse et les réponses touchées",
+        "tags": [
+          "incidents"
         ]
       }
     },

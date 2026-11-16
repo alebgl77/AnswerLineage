@@ -1,7 +1,8 @@
 """Codes de sortie de ``answerlineage``, communs aux sous-commandes.
 
 Un script distingue ainsi « rien n'est touché » (1) de « je ne sais pas » (3),
-et une erreur d'usage (2) d'une API injoignable (4) ou fautive (5).
+et une erreur d'usage (2) d'une API injoignable (4) ou fautive (5). Une analyse
+d'incident pas encore faite (6) se distingue d'une analyse en échec (7).
 """
 
 from __future__ import annotations
@@ -23,3 +24,7 @@ class Exit(IntEnum):
     UNREACHABLE = 4
     # L'API a refusé la requête, ou rendu une réponse invalide.
     API_ERROR = 5
+    # incident show : l'analyse attend un worker ; relancer plus tard.
+    PENDING = 6
+    # incident show : l'analyse est en échec après plusieurs essais.
+    ANALYSIS_FAILED = 7

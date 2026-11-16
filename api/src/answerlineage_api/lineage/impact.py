@@ -23,11 +23,17 @@ ce qui mène aux réponses passe d'abord :
 
 Le résultat dit aussi ce que la propagation n'a pas pu voir : la couverture du
 lignage sur la fenêtre de l'incident et ses trous connus (``coverage.py``).
+
+``touched_runs`` est le cœur de la propagation : les runs dont les réponses sont
+touchées. La route d'impact en tire une page de réponses ; l'analyse d'un
+incident déclaré, faite par les workers, en garde toutes les réponses.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlalchemy import TextClause, text
 
@@ -136,6 +142,49 @@ def _answers(cursor: Cursor | None) -> TextClause:
     )
 
 
+@dataclass(frozen=True)
+class Touched:
+    """Les runs dont une réponse est touchée : les lecteurs et leurs runs parents."""
+
+    kind: str
+    run_ids: list[UUID]
+    # Vrai quand les lectures ou la remontée aux runs parents dépassent leur borne.
+    truncated: bool
+
+
+async def touched_runs(
+    reader: Reader,
+    *,
+    namespace: str,
+    name: str,
+    start: datetime,
+    end: datetime,
+    known_at: datetime | None = None,
+) -> Touched | None:
+    """Les runs touchés par ce jeu de données pendant la fenêtre ; ``None`` s'il est inconnu.
+
+    Avec ``known_at``, sur le graphe tel qu'il était connu à cette date.
+    """
+    as_of = {"known_at": known_at}
+    found = await reader.fetch(_DATASET, {"namespace": namespace, "name": name, **as_of}, limit=1)
+    if not found.rows:
+        return None
+    dataset = found.rows[0]
+
+    readers = await reader.fetch(
+        _READERS,
+        {"dataset_id": dataset.id, "start": start, "end": end, **as_of},
+        limit=MAX_READS,
+    )
+    reader_ids = list(dict.fromkeys(row.run_id for row in readers.rows))
+    ancestors = await reader.fetch(_ANCESTORS, {"readers": reader_ids, **as_of}, limit=MAX_RUNS)
+    return Touched(
+        kind=dataset.kind,
+        run_ids=list(dict.fromkeys([*reader_ids, *(row.run_id for row in ancestors.rows)])),
+        truncated=readers.truncated or ancestors.truncated,
+    )
+
+
 async def propagate(
     reader: Reader,
     *,
@@ -156,20 +205,13 @@ async def propagate(
     ``known_at``, la propagation porte sur le graphe tel qu'il était connu à
     cette date ; la couverture, elle, est celle d'aujourd'hui.
     """
-    as_of = {"known_at": known_at}
-    found = await reader.fetch(_DATASET, {"namespace": namespace, "name": name, **as_of}, limit=1)
-    if not found.rows:
-        return None
-    dataset = found.rows[0]
-
-    readers = await reader.fetch(
-        _READERS,
-        {"dataset_id": dataset.id, "start": start, "end": end, **as_of},
-        limit=MAX_READS,
+    touched = await touched_runs(
+        reader, namespace=namespace, name=name, start=start, end=end, known_at=known_at
     )
-    reader_ids = list(dict.fromkeys(row.run_id for row in readers.rows))
-    ancestors = await reader.fetch(_ANCESTORS, {"readers": reader_ids, **as_of}, limit=MAX_RUNS)
-    run_ids = list(dict.fromkeys([*reader_ids, *(row.run_id for row in ancestors.rows)]))
+    if touched is None:
+        return None
+    as_of = {"known_at": known_at}
+    run_ids = touched.run_ids
 
     counts = (
         await reader.execute(
@@ -182,17 +224,12 @@ async def propagate(
             },
         )
     ).one()
-    truncated = (
-        readers.truncated
-        or ancestors.truncated
-        or counts.answers > MAX_ANSWERS
-        or counts.links > MAX_LINKS
-    )
+    truncated = touched.truncated or counts.answers > MAX_ANSWERS or counts.links > MAX_LINKS
 
     params = {"run_ids": run_ids, **as_of} | ({} if cursor is None else cursor.parameters())
     picked = await reader.fetch(_answers(cursor), params, limit=limit)
     return ImpactResult(
-        dataset=DatasetName(namespace=namespace, name=name, kind=dataset.kind),
+        dataset=DatasetName(namespace=namespace, name=name, kind=touched.kind),
         window=Window(start=start, end=end),
         counts=ImpactCounts(
             answers=counts.answers, recipients=counts.recipients, lower_bound=truncated

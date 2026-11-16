@@ -12,12 +12,18 @@ Les événements bruts, les relevés de couverture et le compteur de doublons
 sont partitionnés par mois de réception (``partitions.py``) ; le graphe ne
 l'est pas.
 
+Les incidents déclarés, leur périmètre et le résultat de leur analyse sont
+rangés à côté du graphe (``incident`` et les tables qui en dépendent) : des
+identifiants, des heures et des décomptes, jamais de texte libre.
+
 Les migrations d'Alembic font foi pour la base ; un test vérifie qu'elles
 produisent exactement ce schéma, partitions du mois courant et des deux
 suivants comprises.
 """
 
 from __future__ import annotations
+
+from typing import Final, Literal, get_args
 
 from sqlalchemy import (
     BigInteger,
@@ -27,6 +33,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Identity,
     Index,
     Integer,
@@ -58,6 +65,21 @@ RUN_STATES = ("START", "RUNNING", "COMPLETE", "ABORT", "FAIL", "OTHER")
 DATASET_KINDS = ("table", "document", "api", "memory", "answer")
 READ_PRECISIONS = ("table", "columns", "subset", "keys")
 READ_ORIGINS = ("analysis", "reconciliation")
+
+# Gravité d'un incident, de la plus faible à la plus forte.
+Severity = Literal["low", "medium", "high", "critical"]
+SEVERITIES: Final[tuple[str, ...]] = get_args(Severity)
+# État d'un incident. La liste est fermée et s'allonge avec le cycle de vie de
+# l'incident : une révision de la base étend la contrainte qui la tient.
+IncidentState = Literal["qualified"]
+INCIDENT_STATES: Final[tuple[str, ...]] = get_args(IncidentState)
+# État de l'analyse d'impact d'un incident, et code de son dernier échec.
+AnalysisState = Literal["pending", "done", "failed"]
+ANALYSIS_STATES: Final[tuple[str, ...]] = get_args(AnalysisState)
+AnalysisError = Literal["query_timeout", "analysis_error"]
+ANALYSIS_ERRORS: Final[tuple[str, ...]] = get_args(AnalysisError)
+# Durée maximale de la fenêtre de validité d'un incident.
+INCIDENT_WINDOW_DAYS: Final = 31
 
 READ_EDGE_KEY = "uq_read_edge_run_id_dataset_id_dataset_version_id"
 WRITE_EDGE_KEY = "uq_write_edge_run_id_dataset_id_dataset_version_id"
@@ -376,6 +398,110 @@ partition_alert = Table(
     Column("month", Date, nullable=False),
     Column("signalled_at", DateTime(timezone=True), nullable=False),
     PrimaryKeyConstraint("table_name", "month"),
+)
+
+# Incident déclaré par un responsable de données : un jeu de données ou plusieurs
+# (``incident_dataset``), faux pendant une fenêtre de validité, d'une gravité
+# donnée. Aucun texte libre : ni titre, ni description.
+incident = Table(
+    "incident",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("state", Text, nullable=False),
+    Column("severity", Text, nullable=False),
+    Column("window_start", DateTime(timezone=True), nullable=False),
+    Column("window_end", DateTime(timezone=True), nullable=False),
+    Column("declared_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint(_in("state", INCIDENT_STATES), name="state"),
+    CheckConstraint(_in("severity", SEVERITIES), name="severity"),
+    CheckConstraint("window_start < window_end", name="window"),
+    CheckConstraint(
+        f"window_end - window_start <= interval '{INCIDENT_WINDOW_DAYS} days'",
+        name="window_length",
+    ),
+    # Les incidents les plus récents d'abord, pour la liste.
+    Index(None, "declared_at", "id"),
+)
+
+# Périmètre d'un incident : les jeux de données faux, par espace de noms et nom.
+incident_dataset = Table(
+    "incident_dataset",
+    metadata,
+    Column("incident_id", Uuid, ForeignKey("incident.id"), nullable=False),
+    Column("namespace", Text, nullable=False),
+    Column("name", Text, nullable=False),
+    PrimaryKeyConstraint("incident_id", "namespace", "name"),
+)
+
+# Demande d'analyse d'un incident et son résultat : écrite avec l'incident, dans
+# la même transaction, réclamée par un worker (``FOR UPDATE SKIP LOCKED``). Les
+# colonnes du résultat ne sont remplies que pour une analyse faite.
+incident_analysis = Table(
+    "incident_analysis",
+    metadata,
+    Column("incident_id", Uuid, ForeignKey("incident.id"), primary_key=True),
+    Column("state", Text, nullable=False, server_default=text("'pending'")),
+    Column("requested_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("available_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    # Code du dernier échec, d'une liste fermée : jamais un message.
+    Column("error", Text),
+    # Le graphe est lu tel qu'il était connu à cette heure, fixée au premier essai.
+    Column("known_at", DateTime(timezone=True)),
+    Column("finished_at", DateTime(timezone=True)),
+    Column("answers", BigInteger),
+    Column("recipients", BigInteger),
+    Column("truncated", Boolean),
+    # Couverture du lignage sur la fenêtre et ses trous : des émetteurs, des heures, des nombres.
+    Column("coverage", JSONB),
+    # Jeux du périmètre que le graphe ne connaissait pas : espace de noms et nom.
+    Column("unknown_datasets", JSONB),
+    CheckConstraint(_in("state", ANALYSIS_STATES), name="state"),
+    CheckConstraint(f"error IS NULL OR {_in('error', ANALYSIS_ERRORS)}", name="error"),
+    CheckConstraint("state <> 'failed' OR error IS NOT NULL", name="failure"),
+    CheckConstraint("(state = 'pending') = (finished_at IS NULL)", name="finished"),
+    CheckConstraint(
+        "(state = 'done') = (known_at IS NOT NULL AND answers IS NOT NULL"
+        " AND recipients IS NOT NULL AND truncated IS NOT NULL AND coverage IS NOT NULL"
+        " AND unknown_datasets IS NOT NULL)",
+        name="result",
+    ),
+    CheckConstraint("attempts >= 0 AND answers >= 0 AND recipients >= 0", name="counts"),
+)
+# Les demandes en attente, par heure de reprise : ce que les workers réclament.
+Index(
+    "ix_incident_analysis_available_at",
+    incident_analysis.c.available_at,
+    postgresql_where=incident_analysis.c.state == "pending",
+)
+
+# Réponses touchées par un incident, désignées comme dans le graphe : run et
+# empreinte, jamais le contenu. Leur identifiant stable s'en déduit.
+incident_answer = Table(
+    "incident_answer",
+    metadata,
+    Column("incident_id", Uuid, ForeignKey("incident.id"), nullable=False),
+    Column("run_id", Uuid, nullable=False),
+    Column("fingerprint", Text, nullable=False),
+    Column("produced_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("incident_id", "run_id", "fingerprint"),
+    # Les réponses d'un incident, les plus récentes d'abord, page par page.
+    Index(None, "incident_id", "produced_at", "run_id"),
+)
+
+# Destinataires de chaque réponse touchée, par leur pseudonyme.
+incident_recipient = Table(
+    "incident_recipient",
+    metadata,
+    Column("incident_id", Uuid, nullable=False),
+    Column("run_id", Uuid, nullable=False),
+    Column("fingerprint", Text, nullable=False),
+    Column("pseudonym", Text, nullable=False),
+    PrimaryKeyConstraint("incident_id", "run_id", "fingerprint", "pseudonym"),
+    ForeignKeyConstraint(
+        ["incident_id", "run_id", "fingerprint"],
+        [incident_answer.c.incident_id, incident_answer.c.run_id, incident_answer.c.fingerprint],
+    ),
 )
 
 # Une table partitionnée naît avec la partition du mois courant et des mois à venir.

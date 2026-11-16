@@ -11,6 +11,9 @@ Un lot est réclamé, traité et retiré de la file dans une seule transaction :
 
 Le graphe reçoit, avec chaque événement, l'heure à laquelle AnswerLineage l'a
 reçu : c'est son heure d'enregistrement, que le passage du worker ne change pas.
+
+Entre deux lots, la boucle du worker analyse aussi un incident déclaré, quand
+une demande attend (``incidents.py``).
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from answerlineage_api.store.graph import record_run
+from answerlineage_workers.incidents import DEFAULT_ANALYSIS_TIMEOUT, process_analysis
 from answerlineage_workers.partitions import (
     DEFAULT_MAINTENANCE_EVERY,
     DEFAULT_RETENTION,
@@ -139,9 +143,13 @@ async def run_worker(
     silence_every: timedelta = DEFAULT_SILENCE_CHECK_EVERY,
     retention: Retention = DEFAULT_RETENTION,
     maintenance_every: timedelta = DEFAULT_MAINTENANCE_EVERY,
+    analysis_timeout: timedelta = DEFAULT_ANALYSIS_TIMEOUT,
     clock: Callable[[], datetime] = _now,
 ) -> None:
     """Traite la file jusqu'à ce que ``stop`` soit levé.
+
+    Après chaque lot, le worker analyse un incident déclaré si une demande
+    attend, sous le délai ``analysis_timeout``.
 
     Au démarrage, puis toutes les ``silence_every`` sur l'horloge ``clock``, le
     worker contrôle les émetteurs muets depuis plus que ``silence_threshold``.
@@ -170,12 +178,13 @@ async def run_worker(
         delay = 0.0
         try:
             result = await process_batch(engine, batch_size=batch_size, handler=handler)
+            analysed = await process_analysis(engine, timeout=analysis_timeout)
         except Exception as error:
-            # Base injoignable, interblocage : le lot est resté dans la file.
+            # Base injoignable, interblocage : le lot ou la demande est resté dans la file.
             logger.error("Lot non traité (%s), nouvel essai à suivre.", type(error).__name__)
             delay = error_delay
         else:
-            if result.empty:
+            if result.empty and analysed is None:
                 delay = idle_delay
         if delay:
             try:

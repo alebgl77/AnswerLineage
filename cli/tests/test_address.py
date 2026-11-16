@@ -73,7 +73,7 @@ def test_the_default_address_is_the_loopback_of_the_demonstration(
 def test_help_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
     result = run(["--help"], FakeApi(), monkeypatch)
     assert result.code == Exit.OK
-    for command in ("impact", "doctor", "demo"):
+    for command in ("impact", "incident", "doctor", "demo"):
         assert command in result.out
     assert run([], FakeApi(), monkeypatch).code == Exit.USAGE
 
@@ -88,5 +88,7 @@ def test_the_exit_codes_are_those_a_script_reads_in_the_documentation() -> None:
         "INCOMPLETE": 3,
         "UNREACHABLE": 4,
         "API_ERROR": 5,
+        "PENDING": 6,
+        "ANALYSIS_FAILED": 7,
     }
     assert {name: int(code) for name, code in Exit.__members__.items()} == documented

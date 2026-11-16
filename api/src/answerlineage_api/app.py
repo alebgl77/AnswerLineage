@@ -21,6 +21,8 @@ from answerlineage_api.explorer import explorer_files
 from answerlineage_api.guard import HostOriginMiddleware, guard_from_settings
 from answerlineage_api.headers import SecurityHeadersMiddleware
 from answerlineage_api.health import router as health_router
+from answerlineage_api.incidents.models import declaration_json_schema
+from answerlineage_api.incidents.routes import router as incidents_router
 from answerlineage_api.ingest.body import max_body_bytes_from_settings
 from answerlineage_api.ingest.coverage import router as coverage_router
 from answerlineage_api.ingest.duplicates import router as duplicates_router
@@ -112,6 +114,7 @@ def create_app(
     app.include_router(undescribed_router)
     app.include_router(coverage_router)
     app.include_router(lineage_router)
+    app.include_router(incidents_router)
     app.include_router(health_router)
     app.add_exception_handler(RequestValidationError, reject_invalid_request)
     app.add_exception_handler(ReadTimedOut, refuse_timed_out)
@@ -129,6 +132,9 @@ def create_app(
             run_event = run_event_json_schema()
             schemas.update(run_event.pop("$defs", {}))
             schemas["RunEvent"] = run_event
+            declaration = declaration_json_schema()
+            schemas.update(declaration.pop("$defs", {}))
+            schemas["IncidentDeclaration"] = declaration
             app.openapi_schema = document
         return app.openapi_schema
 

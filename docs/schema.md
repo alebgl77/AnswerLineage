@@ -29,6 +29,11 @@ write_edge   agent, tool
 | `coverage_report` | émetteur, début et fin de fenêtre | Relevé de couverture : appels vus, événements émis et perdus, requêtes non inspectées |
 | `coverage_emitter` | émetteur | Émetteur connu : réception de son dernier relevé, silence signalé |
 | `partition_alert` | table et mois | Partition manquante signalée par le contrôle des workers |
+| `incident` | identifiant tiré par l'API | Incident déclaré : état, gravité, fenêtre de validité, heure de déclaration |
+| `incident_dataset` | incident, espace de noms et nom | Périmètre d'un incident : les jeux de données faux |
+| `incident_analysis` | incident | Demande d'analyse d'un incident, son état, et les décomptes, la couverture et les jeux inconnus de son résultat |
+| `incident_answer` | incident, run et empreinte | Réponse touchée par un incident |
+| `incident_recipient` | incident, réponse et pseudonyme | Destinataire d'une réponse touchée |
 
 ## Deux heures
 
@@ -129,6 +134,24 @@ La migration `0008` recrée chaque table partitionnée : ses lignes sont mises d
 
 - Deux réceptions simultanées d'un même événement, à cheval sur deux mois à quelques millisecondes près, ne se voient pas l'une l'autre : l'événement est enregistré deux fois, une fois dans chaque partition. Le graphe n'en est pas changé (la projection est idempotente) ; le doublon n'est pas compté, et la couverture de sa fenêtre compte l'appel deux fois, au plus jusqu'aux appels vus. Une fenêtre de relevé reçue ainsi a deux lignes ; la lecture les réunit au plus grand, comme la réception.
 - Un relevé reçu juste après un changement de mois survit un mois de plus que les événements de sa fenêtre : pendant ce mois, la couverture de cette fenêtre, la plus ancienne de la conservation, compte ses appels comme manquants.
+
+## Incidents
+
+Un [incident de données](incidents.md) se range à côté du graphe, sans clé vers lui : le graphe se reconstruit à partir des événements, et ses identifiants internes changeraient. Les réponses touchées se désignent donc comme l'identifiant stable d'une réponse, par leur run et leur empreinte ; un jeu de données du périmètre, par son espace de noms et son nom. Aucune de ces tables ne porte de texte libre : des identifiants, des heures, des décomptes et des codes de listes fermées.
+
+| Table | Contraintes |
+| --- | --- |
+| `incident` | État (`ck_incident_state`) et gravité (`ck_incident_severity`) de leurs listes fermées ; fenêtre non vide (`ck_incident_window`) de 31 jours au plus (`ck_incident_window_length`) |
+| `incident_dataset` | Un jeu de données une fois par incident, clé étrangère vers l'incident |
+| `incident_analysis` | Une demande par incident, écrite dans la transaction de la déclaration. État (`ck_incident_analysis_state`) et code d'échec (`ck_incident_analysis_error`) de leurs listes fermées ; une analyse en échec porte son code (`ck_incident_analysis_failure`) ; seule une analyse en attente n'a pas d'heure de fin (`ck_incident_analysis_finished`) ; les colonnes du résultat sont remplies pour une analyse faite, et seulement pour elle (`ck_incident_analysis_result`) |
+| `incident_answer` | Une réponse une fois par incident, clé étrangère vers l'incident |
+| `incident_recipient` | Un pseudonyme une fois par réponse touchée, clé étrangère vers elle |
+
+Un index partiel range les demandes en attente par heure de reprise : c'est ce que les [workers](workers.md#analyse-des-incidents) réclament. Un autre range les incidents par heure de déclaration, pour la liste, et un troisième les réponses d'un incident par heure, pour leurs pages.
+
+`incident_analysis.coverage` garde la couverture du lignage de la fenêtre à l'heure de l'analyse, sous la forme que rend l'API (état, taux, compteurs, trous) ; `unknown_datasets`, les jeux du périmètre que le graphe ne connaissait pas. Ce sont des colonnes `jsonb` : un instantané, qu'aucune requête ne parcourt.
+
+Les incidents ne sont ni partitionnés ni purgés : ils sont rares, et un rappel s'appuie sur eux. La migration `0010` crée ces tables ; sa descente les retire, incidents compris.
 
 ## Migrations
 

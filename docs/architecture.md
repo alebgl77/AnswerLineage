@@ -27,9 +27,9 @@ Chaque composant est un membre de l'espace de travail uv, publié comme son prop
 | Composant | Rôle | Dépend de | Documentation |
 | --- | --- | --- | --- |
 | `proxy/` | Proxy MCP transparent, en HTTP ou en stdio : relaie à l'identique, émet un événement par appel d'outil, analyse le SQL à côté de l'appel, publie ce qu'il a vu | aucun autre composant | [Proxy MCP](proxy.md) |
-| `api/` | Schéma du graphe, migrations, écriture du graphe, API d'ingestion OpenLineage, API de lecture du lignage, route de santé, service de l'explorateur | aucun autre composant | [Ingestion](ingestion.md), [lecture](lecture.md), [schéma](schema.md) |
-| `workers/` | File de traitement dans PostgreSQL, projection des événements dans le graphe, contrôle des émetteurs muets, maintenance des partitions | `api` (schéma, écriture du graphe) | [Workers](workers.md) |
-| `cli/` | La commande `answerlineage` : `impact`, `doctor`, `demo`, `proxy`. Parle à l'API par HTTP, ne lit jamais la base | httpx seulement | [Ligne de commande](cli.md) |
+| `api/` | Schéma du graphe, migrations, écriture du graphe, API d'ingestion OpenLineage, API de lecture du lignage, déclaration et lecture des incidents, route de santé, service de l'explorateur | aucun autre composant | [Ingestion](ingestion.md), [lecture](lecture.md), [incidents](incidents.md), [schéma](schema.md) |
+| `workers/` | File de traitement dans PostgreSQL, projection des événements dans le graphe, analyse d'impact des incidents déclarés, contrôle des émetteurs muets, maintenance des partitions | `api` (schéma, écriture du graphe, propagation) | [Workers](workers.md) |
+| `cli/` | La commande `answerlineage` : `impact`, `incident`, `doctor`, `demo`, `proxy`. Parle à l'API par HTTP, ne lit jamais la base | httpx seulement | [Ligne de commande](cli.md) |
 | `corpus/` | Entreprise synthétique à vérité connue, corpus de vérité des incidents, corpus d'abus : tout est déterminé par une graine | bibliothèque standard seule | [Entreprise synthétique](corpus.md) |
 | `conformance/` | Kit qui juge un émetteur : forme des événements, contexte de trace, absence de contenu par canaris, projection | `workers` | [Kit de conformité](conformite.md) |
 | `ui/` | Explorateur : le graphe en cinq colonnes, les modes Remonter et Propager, les adresses partageables. Fichiers statiques servis par l'API | l'API de lecture, rien d'autre | [Explorateur](explorateur.md) |
@@ -52,7 +52,7 @@ Une demande d'agent est un run ; chaque appel d'outil, un run enfant que la face
 
 **4. Lecture.** L'API de lecture (`api/src/answerlineage_api/lineage/`) interroge le graphe dans les deux sens. Les sources d'une réponse sont les lectures de son run et de ses runs enfants (`trace.py`). La vue en cinq colonnes part des réponses les plus récentes et donne à chacune sa chaîne (`overview.py`). La propagation part des lectures d'un jeu de données dans une fenêtre et remonte aux runs parents (`impact.py`). La couverture compare les relevés des émetteurs au graphe (`coverage.py`). Toute lecture est bornée en lignes et en durée, et dit quand elle est tronquée. L'explorateur et la commande `answerlineage` ne lisent que cette API.
 
-**À côté du flux,** les workers contrôlent chaque minute les émetteurs muets, et chaque heure entretiennent les partitions mensuelles des tables qui grossissent avec le trafic.
+**À côté du flux,** les workers analysent les incidents déclarés par l'API : ils réclament chaque demande d'analyse comme un lot de la file, lancent la propagation sur le périmètre et la fenêtre de l'incident, et en gardent le résultat ([incidents](incidents.md)). Ils contrôlent aussi chaque minute les émetteurs muets, et entretiennent chaque heure les partitions mensuelles des tables qui grossissent avec le trafic.
 
 ## Le modèle de données
 
@@ -107,7 +107,7 @@ L'invariant 1 se vérifie au plus près de l'émetteur par le [kit de conformit�
 | `postgres` | PostgreSQL 18 | La base, seule dépendance. Non publiée : joignable des seuls autres services |
 | `migrate` | `python -m answerlineage_api.store.migrate upgrade` | Crée ou met à jour le schéma, puis s'arrête |
 | `api` | `uvicorn` sur le port 8000 | L'ingestion, la lecture et l'explorateur, qu'elle sert depuis `/opt/answerlineage-ui`. Seul port publié, sur `127.0.0.1` |
-| `worker` | `answerlineage-worker` | Projette les événements dans le graphe, contrôle les émetteurs muets, entretient les partitions |
+| `worker` | `answerlineage-worker` | Projette les événements dans le graphe, analyse les incidents déclarés, contrôle les émetteurs muets, entretient les partitions |
 | `seed` | `answerlineage-corpus load` | Envoie l'entreprise synthétique à l'API, puis s'arrête. Partage l'espace réseau de l'API : il la joint par `127.0.0.1` |
 
 Le proxy ne tourne pas dans la démonstration : les événements viennent de l'entreprise synthétique, qui les construit comme le proxy le ferait, et non d'agents réels. L'image contient pourtant le proxy, le kit de conformité et la ligne de commande : `docker compose exec api answerlineage doctor` vérifie l'installation de l'intérieur.

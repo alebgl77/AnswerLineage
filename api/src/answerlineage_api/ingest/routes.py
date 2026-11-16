@@ -65,10 +65,18 @@ def _not_a_number(_: str) -> Any:
     raise ValueError("NaN et Infinity ne sont pas du JSON")
 
 
-async def read_json(request: Request) -> tuple[Any, JSONResponse | None]:
-    """Le corps JSON d'une requête d'ingestion, lu borné ; ou la réponse qui le refuse."""
+async def read_json(
+    request: Request, *, max_bytes: int | None = None
+) -> tuple[Any, JSONResponse | None]:
+    """Le corps JSON d'une requête, lu borné ; ou la réponse qui le refuse.
+
+    La taille maximale est celle de l'ingestion, ou ``max_bytes`` s'il est plus petit.
+    """
+    limit: int = request.app.state.max_body_bytes
+    if max_bytes is not None:
+        limit = min(limit, max_bytes)
     try:
-        body = await read_body(request.stream(), request.headers, request.app.state.max_body_bytes)
+        body = await read_body(request.stream(), request.headers, limit)
     except BodyRefusedError as refusal:
         return None, refused(refusal.status, refusal.code)
     try:

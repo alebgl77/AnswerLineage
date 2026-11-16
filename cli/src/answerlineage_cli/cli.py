@@ -1,15 +1,18 @@
-"""Ligne de commande : ``answerlineage impact | doctor | demo | proxy``.
+"""Ligne de commande : ``answerlineage impact | incident | doctor | demo | proxy``.
 
 ``impact`` propage un incident de données jusqu'aux réponses et aux
-destinataires touchés ; ``doctor`` vérifie chaque composant d'une
-installation ; ``demo`` lance la démonstration d'un clone du dépôt. Toutes
-trois parlent à l'API par HTTP, à l'adresse de ``--url`` ou de
-``ANSWERLINEAGE_API_URL``, ``http://127.0.0.1:8000`` par défaut. ``proxy``
-cède la place au proxy MCP, avec ses arguments (``proxy.py``).
+destinataires touchés ; ``incident`` déclare un incident et lit son analyse ;
+``doctor`` vérifie chaque composant d'une installation ; ``demo`` lance la
+démonstration d'un clone du dépôt. Toutes parlent à l'API par HTTP, à
+l'adresse de ``--url`` ou de ``ANSWERLINEAGE_API_URL``,
+``http://127.0.0.1:8000`` par défaut. ``proxy`` cède la place au proxy MCP,
+avec ses arguments (``proxy.py``).
 
-Codes de sortie (``exits.py``) : 0 succès ; 1 rien de touché (impact), une
-anomalie (doctor) ou un échec de Docker (demo) ; 2 usage fautif ; 3 résultat
-incomplet (impact) ; 4 API injoignable ; 5 refus de l'API ou réponse invalide.
+Codes de sortie (``exits.py``) : 0 succès ; 1 rien de touché (impact,
+incident show), une anomalie (doctor) ou un échec de Docker (demo) ; 2 usage
+fautif ; 3 résultat incomplet (impact, incident show) ; 4 API injoignable ;
+5 refus de l'API ou réponse invalide ; 6 analyse en attente et 7 analyse en
+échec (incident show).
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ from typing import TextIO
 
 import httpx
 
-from answerlineage_cli import demo, doctor, impact, proxy
+from answerlineage_cli import demo, doctor, impact, incident, proxy
 from answerlineage_cli.client import (
     DEFAULT_TIMEOUT,
     DEFAULT_URL,
@@ -85,6 +88,31 @@ def _dataset_parameter(value: str) -> str:
 def _cursor(value: str) -> str:
     if not impact.CURSOR.fullmatch(value):
         raise argparse.ArgumentTypeError("la valeur de next_cursor d'une page précédente")
+    return value
+
+
+def _severity(value: str) -> str:
+    if value not in incident.SEVERITIES:
+        raise argparse.ArgumentTypeError(
+            "une gravité de la liste : " + ", ".join(incident.SEVERITIES)
+        )
+    return value
+
+
+def _incident_id(value: str) -> str:
+    identifier = value.lower()
+    if not incident.INCIDENT_ID.fullmatch(identifier):
+        raise argparse.ArgumentTypeError(
+            "l'identifiant d'un incident, tel que le rend answerlineage incident declare"
+        )
+    return identifier
+
+
+def _dataset_part(value: str) -> str:
+    if len(value) > incident.MAX_DATASET_ARGUMENT or "\x00" in value:
+        raise argparse.ArgumentTypeError(
+            f"un espace de noms et un nom de {incident.MAX_DATASET_ARGUMENT} caractères au plus"
+        )
     return value
 
 
@@ -156,6 +184,87 @@ def build_parser() -> argparse.ArgumentParser:
     )
     propagate.add_argument("--format", choices=("text", "json"), default="text")
     _common(propagate)
+
+    incidents = commands.add_parser(
+        "incident",
+        help="déclarer un incident de données et lire son analyse d'impact",
+        description=(
+            "Déclare un incident de données (declare) et lit l'analyse d'impact que les "
+            "workers en font (show)."
+        ),
+    )
+    actions = incidents.add_subparsers(dest="action", required=True)
+    declare = actions.add_parser(
+        "declare",
+        help="déclare un incident : périmètre, fenêtre de validité et gravité",
+        description=(
+            "Déclare un incident de données. L'API le crée à l'état « qualifié » et demande "
+            "son analyse d'impact. Codes de sortie : 0 incident déclaré ; 2 usage, ou "
+            "déclaration refusée par l'API ; 4 API injoignable ; 5 refus de l'API."
+        ),
+    )
+    declare.add_argument(
+        "--dataset",
+        dest="datasets",
+        nargs=2,
+        action="append",
+        required=True,
+        metavar=("ESPACE", "NOM"),
+        type=_dataset_part,
+        help=(
+            "un jeu de données faux, par son espace de noms et son nom ; à répéter, "
+            f"{incident.MAX_DATASETS} fois au plus"
+        ),
+    )
+    declare.add_argument(
+        "--from",
+        dest="start",
+        required=True,
+        type=instant,
+        help="début de la fenêtre de validité, inclus (RFC 3339, avec fuseau)",
+    )
+    declare.add_argument(
+        "--to",
+        dest="end",
+        required=True,
+        type=instant,
+        help=(
+            "fin de la fenêtre de validité, exclue (RFC 3339, avec fuseau) ; "
+            f"{incident.MAX_WINDOW_DAYS} jours au plus après --from"
+        ),
+    )
+    declare.add_argument(
+        "--severity",
+        required=True,
+        type=_severity,
+        help="gravité : " + ", ".join(incident.SEVERITIES),
+    )
+    declare.add_argument("--format", choices=("text", "json"), default="text")
+    _common(declare)
+    show = actions.add_parser(
+        "show",
+        help="l'incident, l'état de son analyse et les réponses touchées",
+        description=(
+            "Lit un incident et son analyse d'impact. Codes de sortie : 0 réponses touchées, "
+            "liste complète ; 1 aucune réponse touchée, résultat complet ; 3 résultat "
+            "incomplet ; 6 analyse en attente ; 7 analyse en échec ; 2 usage ; "
+            "4 API injoignable ; 5 refus de l'API."
+        ),
+    )
+    show.add_argument(
+        "incident_id",
+        metavar="IDENTIFIANT",
+        type=_incident_id,
+        help="l'identifiant de l'incident, tel que le rend answerlineage incident declare",
+    )
+    show.add_argument(
+        "--limit",
+        type=_bounded(1, incident.MAX_LIMIT, "de réponses"),
+        help=f"réponses par page, de 1 à {incident.MAX_LIMIT}, {incident.MAX_LIMIT} par défaut",
+    )
+    show.add_argument("--cursor", type=_cursor, help="page suivante : la valeur de next_cursor")
+    show.add_argument("--format", choices=("text", "json"), default="text")
+    _common(show)
 
     check = commands.add_parser(
         "doctor",
@@ -259,6 +368,34 @@ def _impact(api: Api, args: argparse.Namespace) -> Exit:
         return code
 
 
+def _incident(api: Api, args: argparse.Namespace) -> Exit:
+    try:
+        if args.action == "show":
+            return incident.run_show(
+                api,
+                args.incident_id,
+                limit=args.limit,
+                cursor=args.cursor,
+                output=args.format,
+                write=out,
+            )
+        fault = incident.declaration_fault(args.datasets, args.start, args.end)
+        if fault is not None:
+            err(f"Usage fautif : {fault}")
+            return Exit.USAGE
+        declaration = incident.Declaration(
+            datasets=tuple((namespace, name) for namespace, name in args.datasets),
+            start=args.start,
+            end=args.end,
+            severity=args.severity,
+        )
+        return incident.run_declare(api, declaration, args.format, out)
+    except incident.RefusedError as refused:
+        code, message = incident.refusal_message(refused)
+        err(message)
+        return code
+
+
 def _doctor(api: Api, args: argparse.Namespace) -> Exit:
     checks = doctor.diagnose(api, queue_max_age=args.queue_max_age)
     render = doctor.render_json if args.format == "json" else doctor.render_text
@@ -282,7 +419,7 @@ def _demo(api: Api, args: argparse.Namespace) -> Exit:
     return Exit.OK
 
 
-_COMMANDS = {"impact": _impact, "doctor": _doctor, "demo": _demo}
+_COMMANDS = {"impact": _impact, "incident": _incident, "doctor": _doctor, "demo": _demo}
 
 
 def main(argv: Sequence[str] | None = None, *, transport: httpx.BaseTransport | None = None) -> int:
