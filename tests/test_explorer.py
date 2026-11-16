@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import pytest
-from playwright.async_api import Browser, Error, Page, async_playwright
+from playwright.async_api import Browser, Error, Page, async_playwright, expect
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -107,6 +107,15 @@ def recipients_of(requests: list[Request]) -> set[str]:
     }
 
 
+def identifier_of(request: Request) -> str:
+    assert request.answer is not None
+    return answer_key(request.run_id, request.answer.fingerprint)
+
+
+def plural(count: int, one: str, many: str) -> str:
+    return f"{count} {many if count > 1 else one}"
+
+
 def links_of(requests: list[Request]) -> set[tuple[Any, Any]]:
     """Les liens d'une colonne à l'autre, d'après l'entreprise générée."""
     links: set[tuple[Any, Any]] = set()
@@ -121,6 +130,19 @@ def links_of(requests: list[Request]) -> set[tuple[Any, Any]]:
             links.update((("dataset", read.table.name), tool) for read in call.reads)
         links.update((answer, ("recipient", pseudonym)) for pseudonym in request.answer.recipients)
     return links
+
+
+def upstream_links_of(request: Request) -> set[tuple[Any, Any]]:
+    """Le chemin d'une réponse jusqu'aux données : ses liens, sans ceux vers ses destinataires."""
+    return {link for link in links_of([request]) if link[1][0] != "recipient"}
+
+
+async def labels(page: Page, selector: str) -> list[str]:
+    """Libellés complets des nœuds, ceux que lit un lecteur d'écran."""
+    found: list[str] = await page.locator(selector).evaluate_all(
+        "nodes => nodes.map((node) => node.getAttribute('aria-label'))"
+    )
+    return sorted(found)
 
 
 async def count(page: Page, selector: str) -> int:
@@ -214,7 +236,8 @@ async def test_nothing_overflows_on_a_screen_400_pixels_wide(
         f"{explorer}#/propager?namespace={incident.table.namespace}&name={incident.table.name}"
         f"&from={incident.start:%Y-%m-%dT%H:%M:%SZ}&to={incident.end:%Y-%m-%dT%H:%M:%SZ}"
     )
-    for url in (explorer, address):
+    traced = f"{explorer}#/remonter/{identifier_of(answered(enterprise)[0])}"
+    for url in (explorer, address, traced):
         page, errors = await opened(browser, url, width=400)
         await drawn(page)
         measured = await overflow(page)
@@ -456,6 +479,9 @@ async def test_the_address_of_an_answer_opens_on_its_chain(
     summary = await page.locator("[data-testid=summary]").text_content() or ""
     assert oldest.answer.fingerprint[7:15] in summary
     assert f"{len(tables)} jeu" in summary
+    # La page d'une réponse mène à son chemin jusqu'aux données, en mode Remonter.
+    trace = page.locator(".status a.action", has_text="Remonter jusqu'aux données")
+    assert await trace.get_attribute("href") == f"#/remonter/{identifier}"
     assert errors == []
 
     # Depuis la vue d'ensemble, une réponse choisie donne cette même adresse.
@@ -535,6 +561,220 @@ async def test_a_truncated_incident_gives_minimums_and_never_says_nothing_is_tou
     assert await page.locator(".notice", has_text="Aucune réponse ne s'appuie").count() == 0
     notices = " ".join(await page.locator(".notice").all_text_contents())
     assert "ne permet pas de conclure qu'aucune réponse n'est touchée" in notices
+    assert errors == []
+
+
+UNKNOWN_ANSWER = "Cette réponse n'est pas connue du graphe."
+# Ce que le navigateur consigne de lui-même quand l'API refuse : le message fixe suit.
+REFUSED_BY_THE_API = "Failed to load resource: the server responded with a status of"
+
+
+def tables_of(request: Request) -> list[str]:
+    """Les jeux de données lus pour une réponse, tels que leurs nœuds se nomment."""
+    return sorted(
+        {
+            f"{read.table.name} ({read.table.namespace})"
+            for call in request.calls
+            for read in call.reads
+        }
+    )
+
+
+def tools_of(request: Request) -> list[str]:
+    return sorted({f"{call.tool.name}, serveur {call.tool.server}" for call in request.calls})
+
+
+async def test_tracing_back_an_answer_keeps_only_its_agents_tools_and_datasets_in_view(
+    browser: Browser, explorer: str, enterprise: Enterprise
+) -> None:
+    """Étant donné une réponse, quand je la sélectionne en mode Remonter, alors seuls ses
+    agents, outils et jeux de données restent en évidence."""
+    recent = answered(enterprise)[:SHOWN]
+    chosen = next(request for request in recent if len(tables_of(request)) > 1)
+    assert chosen.answer is not None
+    identifier = identifier_of(chosen)
+
+    page, errors = await opened(browser, f"{explorer}#/remonter")
+    await drawn(page)
+    assert await page.locator('nav a[aria-current="page"]').text_content() == "Remonter"
+    shown = await count(page, ".node")
+    assert await count(page, ".node.is-off") == 0
+
+    chosen_node = page.locator(f'.node-answer[data-node="{identifier}"]')
+    await chosen_node.click()
+    await page.mouse.move(2, 2)
+    assert page.url == f"{explorer}#/remonter/{identifier}"
+    # L'adresse change d'abord, la page suit : l'état affiché s'attend.
+    await expect(chosen_node).to_have_attribute("aria-pressed", "true")
+
+    # La réponse, son agent, ses outils et ses jeux de données restent en évidence.
+    lit = page.locator(".node-answer.is-on")
+    assert [
+        await lit.nth(rank).get_attribute("data-node") for rank in range(await lit.count())
+    ] == [identifier]
+    assert await labels(page, ".node-agent.is-on") == [
+        f"{chosen.agent.name} ({chosen.agent.namespace})"
+    ]
+    assert await labels(page, ".node-tool.is-on") == tools_of(chosen)
+    assert await labels(page, ".node-dataset.is-on") == tables_of(chosen)
+    # Tout le reste s'efface sans disparaître, ses destinataires comme les autres réponses.
+    assert await count(page, ".node-recipient.is-on") == 0
+    assert await count(page, ".node") == shown
+    assert await count(page, ".node.is-off") == shown - 2 - len(tools_of(chosen)) - len(
+        tables_of(chosen)
+    )
+    assert await count(page, ".link.is-on") == len(upstream_links_of(chosen))
+
+    summary = await page.locator("[data-testid=summary]").text_content() or ""
+    assert summary.startswith(f"Réponse {chosen.answer.fingerprint[7:15]} du ")
+    assert summary.endswith(
+        f" : 1 agent, {plural(len(tools_of(chosen)), 'outil', 'outils')}, "
+        f"{plural(len(tables_of(chosen)), 'jeu de données', 'jeux de données')}."
+    )
+    # La couverture de la remontée, comme celle d'un incident.
+    await page.wait_for_selector("[data-testid=counters]")
+    assert await page.locator("[data-testid=counters] dt").all_text_contents() == [
+        "Jeux de données",
+        "Outils",
+        "Couverture du lignage",
+    ]
+    assert await page.locator("[data-testid=counters] dd").all_text_contents() == [
+        str(len(tables_of(chosen))),
+        str(len(tools_of(chosen))),
+        "non mesurée",
+    ]
+    note = await page.locator("[data-testid=coverage-note]").text_content() or ""
+    assert "la période de son run" in note
+    assert errors == []
+
+
+async def test_the_address_of_a_trace_reopens_the_same_view(
+    browser: Browser, explorer: str, enterprise: Enterprise
+) -> None:
+    chosen = answered(enterprise)[5]
+    identifier = identifier_of(chosen)
+
+    # L'adresse, ouverte dans un nouvel onglet : même mode, même réponse choisie.
+    page, errors = await opened(browser, f"{explorer}#/remonter/{identifier}")
+    await drawn(page)
+    await page.wait_for_selector("[data-testid=counters]")
+    assert await page.locator('nav a[aria-current="page"]').text_content() == "Remonter"
+    assert await page.locator('.node[aria-pressed="true"]').get_attribute("data-node") == (
+        identifier
+    )
+    assert await count(page, ".node-answer") == SHOWN
+    assert await count(page, ".node-answer.is-on") == 1
+    assert await labels(page, ".node-dataset.is-on") == tables_of(chosen)
+    assert await count(page, ".node-recipient.is-on") == 0
+    link = page.locator(".status a.action", has_text="Ouvrir cette réponse")
+    assert await link.get_attribute("href") == f"#/reponse/{identifier}"
+
+    # Une réponse ancienne, absente des plus récentes : sa chaîne seule, ses destinataires effacés.
+    oldest = answered(enterprise)[-1]
+    assert oldest.answer is not None
+    await page.goto(f"{explorer}#/remonter/{identifier_of(oldest)}")
+    await page.locator(".notice", has_text="n'est pas parmi les plus récentes").wait_for()
+    await drawn(page)
+    assert await count(page, ".node-answer") == 1
+    assert await labels(page, ".node-dataset.is-on") == tables_of(oldest)
+    assert await labels(page, ".node-tool.is-on") == tools_of(oldest)
+    assert await count(page, ".node-recipient.is-off") == len(oldest.answer.recipients)
+
+    # Choisir à nouveau la réponse la rend : l'adresse revient au mode seul.
+    await page.locator(".node-answer").click()
+    assert page.url == f"{explorer}#/remonter"
+    assert errors == []
+
+
+async def test_a_hostile_or_unknown_trace_address_gives_a_fixed_message(
+    browser: Browser, explorer: str
+) -> None:
+    page = await browser.new_page(viewport={"width": 1280, "height": 800})
+    errors: list[str] = []
+    requested: list[str] = []
+    page.on(
+        "console", lambda message: errors.append(message.text) if message.type == "error" else None
+    )
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.on("request", lambda request: requested.append(request.url))
+
+    await page.goto(f"{explorer}#/remonter/%3Cimg%20src%3Dx%20onerror%3Dcanari7c1d%3E")
+    await page.wait_for_selector(".notice-error")
+    await drawn(page)
+    assert await page.locator(".notice-error").text_content() == UNKNOWN_ANSWER
+    # Rien de la valeur n'atteint la page, ni l'API : aucune requête ne la porte.
+    assert "canari7c1d" not in await page.evaluate("() => document.body.innerHTML")
+    assert not any("canari7c1d" in url for url in requested)
+    assert all(url.startswith(explorer) for url in requested)
+    assert await count(page, ".node.is-on") == 0
+    assert errors == []
+
+    await page.goto(f"{explorer}#/remonter/{'0' * 48}")
+    await page.locator(".notice-error", has_text=UNKNOWN_ANSWER).wait_for()
+    assert await count(page, ".node.is-on") == 0
+    assert [error for error in errors if not error.startswith(REFUSED_BY_THE_API)] == []
+
+
+async def test_the_coverage_of_a_trace_shows_like_that_of_an_incident(
+    browser: Browser, explorer: str, enterprise: Enterprise, engine: AsyncEngine
+) -> None:
+    first_day = min(request.started_at for request in enterprise.requests).date()
+    chosen = next(
+        request
+        for request in answered(enterprise)
+        if len({call.tool.server for call in request.calls}) > 1
+        and request.started_at.date() > first_day
+    )
+    silent = sorted({call.tool.server for call in chosen.calls})[0]
+    day = f"{chosen.started_at:%Y-%m-%d}T00:00:00Z"
+    reports = coverage_reports(enterprise)
+    late = [
+        report
+        for report in reports
+        if report["emitter"] == f"mcp://{silent}" and report["window"]["from"] == day
+    ]
+    assert len(late) == 1
+    # Le serveur se tait le jour de la réponse : la période de son run n'est pas couverte.
+    await publish(engine, [report for report in reports if report not in late])
+    page, errors = await opened(browser, f"{explorer}#/remonter/{identifier_of(chosen)}")
+
+    value, holes = await coverage_shown(page)
+    assert value == "partielle"
+    assert len(holes) == 1
+    assert holes[0].startswith(f"mcp://{silent} : aucun relevé (silence), du ")
+    note = await page.locator("[data-testid=coverage-note]").text_content() or ""
+    assert "qu'une partie de la période de son run" in note
+
+    # Le relevé de ce jour arrive : toute la période est couverte.
+    await publish(engine, late)
+    await page.reload()
+    assert await coverage_shown(page) == ("100" + PERCENT, [])
+    note = await page.locator("[data-testid=coverage-note]").text_content() or ""
+    assert "sans trou connu" in note
+    assert errors == []
+
+
+async def test_the_trace_mode_works_with_the_keyboard(
+    browser: Browser, explorer: str, enterprise: Enterprise
+) -> None:
+    identifier = identifier_of(answered(enterprise)[0])
+    page, errors = await opened(browser, f"{explorer}#/remonter")
+    await drawn(page)
+
+    answer = page.locator(f'.node-answer[data-node="{identifier}"]')
+    await answer.focus()
+    await page.keyboard.press("Enter")
+    await page.wait_for_url(f"{explorer}#/remonter/{identifier}")
+    # L'adresse change d'abord, la page suit : l'état affiché s'attend.
+    await expect(answer).to_have_attribute("aria-pressed", "true")
+    await expect(page.locator("[data-testid=counters]")).to_be_visible()
+    # Le nœud garde le focus : la navigation au clavier continue d'où elle était.
+    assert await page.evaluate("() => document.activeElement?.dataset.node") == identifier
+
+    await page.keyboard.press("Space")
+    await page.wait_for_url(f"{explorer}#/remonter")
+    await expect(answer).to_have_attribute("aria-pressed", "false")
+    assert await page.evaluate("() => document.activeElement?.dataset.node") == identifier
     assert errors == []
 
 

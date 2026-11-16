@@ -85,32 +85,52 @@ def hash_query(url: str) -> dict[str, list[str]]:
 async def test_tracing_back_an_answer_shows_what_it_read_through_which_tools_for_whom(
     demo: str, browser: Browser, enterprise: Enterprise
 ) -> None:
-    """Remonter : de la vue d'ensemble à la page d'une réponse, et à ses sources."""
+    """Remonter : en mode Remonter, une réponse choisie et son chemin jusqu'aux données, puis
+    sa page, et ses destinataires."""
     newest: Request = answered(enterprise)[0]
     answer = newest.answer
     assert answer is not None
-    tables = {read.table for call in newest.calls for read in call.reads}
-    tools = {call.tool for call in newest.calls}
+    tables = sorted(
+        {f"{read.table.name} ({read.table.namespace})" for c in newest.calls for read in c.reads}
+    )
+    tools = sorted({f"{call.tool.name}, serveur {call.tool.server}" for call in newest.calls})
+    agent = f"{newest.agent.name} ({newest.agent.namespace})"
 
     page, errors = await opened(browser, demo)
     await drawn(page)
+    await page.get_by_role("link", name="Remonter", exact=True).click()
+    await expect(page).to_have_url(f"{demo}#/remonter")
+    await expect(page.get_by_test_id("summary")).to_contain_text(
+        "Choisissez une réponse", timeout=FIRST_VIEW_MS
+    )
     # La réponse la plus récente, reconnue à son empreinte.
-    await page.locator(f'.node-answer[aria-label^="Réponse {short(answer.fingerprint)} "]').click()
-    await page.get_by_role("link", name="Ouvrir cette réponse").click()
+    chosen = page.locator(f'.node-answer[aria-label^="Réponse {short(answer.fingerprint)} "]')
+    await chosen.click(timeout=FIRST_VIEW_MS)
 
     identifier = answer_key(newest.run_id, answer.fingerprint)
+    await expect(page).to_have_url(f"{demo}#/remonter/{identifier}")
+    # Seul son chemin jusqu'aux données reste en évidence : ses destinataires s'effacent.
+    assert await labels(page, ".node-dataset.is-on") == tables
+    assert await labels(page, ".node-tool.is-on") == tools
+    assert await labels(page, ".node-agent.is-on") == [agent]
+    assert await page.locator(".node-answer.is-on").count() == 1
+    assert await page.locator(".node-recipient.is-on").count() == 0
+    # La démonstration publie les relevés de ses serveurs : la période du run est couverte.
+    await expect(page.get_by_test_id("coverage")).to_have_text(
+        "100\N{NO-BREAK SPACE}%", timeout=FIRST_VIEW_MS
+    )
+
+    await page.get_by_role("link", name="Ouvrir cette réponse").click()
     await expect(page).to_have_url(f"{demo}#/reponse/{identifier}")
     await expect(page.locator(".node-answer")).to_have_count(1, timeout=FIRST_VIEW_MS)
     await drawn(page)
+    # Le pointeur, resté où était le lien, ne survole aucun nœud.
+    await page.mouse.move(2, 2)
 
     # Ce qu'elle a lu, par quels outils, par quel agent, pour qui.
-    assert await labels(page, ".node-dataset") == sorted(
-        f"{table.name} ({table.namespace})" for table in tables
-    )
-    assert await labels(page, ".node-tool") == sorted(
-        f"{tool.name}, serveur {tool.server}" for tool in tools
-    )
-    assert await labels(page, ".node-agent") == [f"{newest.agent.name} ({newest.agent.namespace})"]
+    assert await labels(page, ".node-dataset") == tables
+    assert await labels(page, ".node-tool") == tools
+    assert await labels(page, ".node-agent") == [agent]
     assert await labels(page, ".node-recipient") == sorted(
         f"Destinataire {pseudonym}" for pseudonym in answer.recipients
     )

@@ -3,6 +3,8 @@
 //   #/                                              les réponses les plus récentes
 //   #/donnees?namespace=…&name=…                    les mêmes, un jeu de données choisi
 //   #/reponse/<identifiant>                         une réponse et sa chaîne
+//   #/remonter                                      les réponses récentes, à remonter
+//   #/remonter/<identifiant>                        le chemin d'une réponse jusqu'aux données
 //   #/propager?namespace=…&name=…&from=…&to=…       un incident et ce qu'il touche
 
 import { useEffect, useState } from "react";
@@ -15,6 +17,8 @@ export interface DatasetKey {
 export type Route =
   | { view: "overview"; dataset: DatasetKey | null }
   | { view: "answer"; id: string }
+  // ``malformed`` : l'adresse nomme une réponse sous une forme qui n'en est pas une.
+  | { view: "trace"; id: string | null; malformed?: boolean }
   | { view: "impact"; dataset: DatasetKey | null; from: string; to: string };
 
 const ANSWER_ID = /^[0-9a-f]{48}$/;
@@ -38,6 +42,16 @@ export function parseRoute(hash: string): Route {
   if (segments[0] === "reponse" && segments[1] !== undefined && ANSWER_ID.test(segments[1])) {
     return { view: "answer", id: segments[1] };
   }
+  if (segments[0] === "remonter") {
+    const named = segments[1];
+    if (named === undefined) {
+      return { view: "trace", id: null };
+    }
+    // Une valeur qui n'est pas un identifiant n'est ni gardée ni envoyée à l'API.
+    return ANSWER_ID.test(named)
+      ? { view: "trace", id: named }
+      : { view: "trace", id: null, malformed: true };
+  }
   if (segments[0] === "propager") {
     return {
       view: "impact",
@@ -56,6 +70,9 @@ function datasetQuery(dataset: DatasetKey): URLSearchParams {
 export function formatRoute(route: Route): string {
   if (route.view === "answer") {
     return `#/reponse/${route.id}`;
+  }
+  if (route.view === "trace") {
+    return route.id === null ? "#/remonter" : `#/remonter/${route.id}`;
   }
   if (route.view === "impact") {
     const query = route.dataset === null ? new URLSearchParams() : datasetQuery(route.dataset);

@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { GraphView } from "./api";
-import { chainOf, isLinkInChain, linksOf } from "./graph";
+import { chainOf, isLinkInChain, linksOf, upstreamOf } from "./graph";
 import { columnsOf } from "./nodes";
 
 interface Box {
@@ -64,10 +64,19 @@ interface GraphProps {
   anchor?: string | null;
   // Prévient du nœud dont la chaîne est mise en évidence, pour le décrire à côté du graphe.
   onFocus?: (id: string | null) => void;
+  // Remonter : seul ce dont le nœud dépend est mis en évidence, jusqu'aux données.
+  upstream?: boolean;
 }
 
 // Les cinq colonnes et leurs liens. La chaîne du nœud survolé, choisi ou ancré est mise en évidence.
-export function Graph({ view, selected, onSelect, anchor = null, onFocus }: GraphProps) {
+export function Graph({
+  view,
+  selected,
+  onSelect,
+  anchor = null,
+  onFocus,
+  upstream = false,
+}: GraphProps) {
   const [hovered, setHovered] = useState<string | null>(null);
   const [geometry, setGeometry] = useState<Geometry>(EMPTY);
   const container = useRef<HTMLDivElement>(null);
@@ -75,7 +84,10 @@ export function Graph({ view, selected, onSelect, anchor = null, onFocus }: Grap
   const columns = useMemo(() => columnsOf(view), [view]);
   const links = useMemo(() => linksOf(view), [view]);
   const focus = hovered ?? selected ?? anchor;
-  const chain = useMemo(() => (focus === null ? null : chainOf(view, focus)), [view, focus]);
+  const chain = useMemo(
+    () => (focus === null ? null : (upstream ? upstreamOf : chainOf)(view, focus)),
+    [view, focus, upstream],
+  );
 
   const hover = (id: string | null) => {
     setHovered(id);

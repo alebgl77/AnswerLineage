@@ -1,7 +1,7 @@
 // Du graphe reçu aux nœuds affichés : libellés courts, détail complet, décompte d'une chaîne.
 
 import type { GraphView } from "./api";
-import { chainOf } from "./graph";
+import { chainOf, upstreamOf } from "./graph";
 import { lastSegment, plural, shortDay, shortFingerprint, shortHour, shortTime } from "./labels";
 
 export type Kind = "dataset" | "tool" | "agent" | "answer" | "recipient";
@@ -97,6 +97,30 @@ export function describeChain(view: GraphView, id: string): string | null {
     )}, ${recipients}.`;
   }
   return `${node.detail} : ${plural(chain.answers.size, "réponse", "réponses")}, ${recipients}.`;
+}
+
+// Remonter : « Réponse 1a2b3c4d du 13/11 17:52 UTC : 1 agent, 2 outils, 3 jeux de données. »
+export function describePath(view: GraphView, id: string): string | null {
+  const node = columnsOf(view)
+    .flatMap((column) => column.nodes)
+    .find((candidate) => candidate.id === id);
+  if (node === undefined) {
+    return null;
+  }
+  const chain = upstreamOf(view, id);
+  const reached = (ids: { id: string }[]) =>
+    ids.filter((item) => item.id !== id && chain.nodes.has(item.id)).length;
+  const parts = [
+    [reached(view.agents), "agent", "agents"],
+    [reached(view.tools), "outil", "outils"],
+    [reached(view.datasets), "jeu de données", "jeux de données"],
+  ] as const;
+  const found = parts
+    .filter(([count]) => count > 0)
+    .map(([count, one, many]) => plural(count, one, many));
+  return found.length === 0
+    ? `${node.detail} : rien en amont dans le graphe.`
+    : `${node.detail} : ${found.join(", ")}.`;
 }
 
 export function describeView(view: GraphView): string {

@@ -25,6 +25,7 @@ Tous les services partagent une image, construite depuis les sources et les vers
 ## Ce que l'on peut y faire
 
 - Suivre une donnée jusqu'aux personnes dans la [vue d'ensemble](explorateur.md).
+- Remonter d'une réponse jusqu'aux données qu'elle a lues, en mode Remonter, avec la couverture de la période de son run.
 - Propager un incident : l'adresse ci-dessous ouvre le premier incident de l'entreprise, 16 réponses et 13 destinataires touchés.
 
 ```
@@ -63,7 +64,7 @@ Le pipeline rejoue la démonstration à chaque merge request :
 - depuis un clone neuf, le premier graphe est là en moins de cinq minutes, et la propagation du premier incident donne la vérité de l'entreprise ;
 - aucun port n'est publié hors de la boucle locale, et aucune connexion n'aboutit sur l'adresse du réseau, quelle que soit la réponse HTTP ;
 - une requête sous un autre nom d'hôte reçoit `403`, et le journal de l'API ne garde aucune adresse demandée ;
-- les parcours principaux de l'explorateur passent dans Chromium, comparés à l'entreprise générée : **Remonter**, de la vue d'ensemble à la page d'une réponse, avec ce qu'elle a lu, par quels outils, pour qui ; **Propager**, le premier incident saisi dans le formulaire, avec ses compteurs et ses nœuds allumés ;
+- les parcours principaux de l'explorateur passent dans Chromium, comparés à l'entreprise générée : **Remonter**, la réponse la plus récente choisie en mode Remonter, dont seul le chemin jusqu'aux données reste en évidence, couverte à 100 %, puis sa page, avec ce qu'elle a lu, par quels outils, pour qui ; **Propager**, le premier incident saisi dans le formulaire, avec ses compteurs et ses nœuds allumés ;
 - arrêtée puis relancée sans le service `seed`, la démonstration retrouve un graphe identique : les données viennent du volume ;
 - renvoyée une seconde fois, l'entreprise n'apporte aucun événement nouveau et ne change pas le graphe.
 

@@ -102,6 +102,18 @@ export interface ImpactResult {
   truncated: boolean;
 }
 
+// Les sources d'une réponse, et la couverture du lignage sur la période de son run.
+export interface Sources {
+  answer: { id: string; fingerprint: string; produced_at: string };
+  agents: { namespace: string; name: string }[];
+  tools: { server: string; name: string; calls: number }[];
+  datasets: { namespace: string; name: string; kind: string }[];
+  period: { from: string; to: string };
+  coverage: Coverage;
+  // L'arbre des runs ou ses lectures dépassent leur borne : les sources sont partielles.
+  truncated: boolean;
+}
+
 export const DEFAULT_LIMIT = 60;
 export const MAX_LIMIT = 200;
 
@@ -126,6 +138,10 @@ export function graphPath(limit: number): string {
 
 export function answerPath(id: string): string {
   return `/api/v1/graph?answer=${encodeURIComponent(id)}`;
+}
+
+export function sourcesPath(id: string): string {
+  return `/api/v1/answers/${encodeURIComponent(id)}/sources`;
 }
 
 export function datasetsPath(): string {

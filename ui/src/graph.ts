@@ -2,7 +2,8 @@
 //
 // Chaque réponse porte sa propre chaîne : les jeux de données lus, l'outil qui
 // les a lus, l'agent, les destinataires. Les liens entre colonnes en sont la
-// réunion ; la mise en évidence suit la chaîne des réponses concernées.
+// réunion ; la mise en évidence suit la chaîne des réponses concernées, ou, pour
+// remonter, la seule part de cette chaîne dont le nœud dépend.
 
 import type { AnswerNode, GraphView } from "./api";
 
@@ -103,6 +104,46 @@ export function chainOf(view: GraphView, selected: string): Chain {
       }
       for (const tool of answer.tools) {
         nodes.add(tool);
+      }
+    }
+  }
+  return { nodes, answers };
+}
+
+// Remonter : ce dont un nœud dépend, de lui jusqu'aux données. Rien de ce qui
+// dépend de lui ne s'allume : depuis une réponse, ni ses destinataires ni les
+// autres réponses de son agent.
+export function upstreamOf(view: GraphView, selected: string): Chain {
+  const nodes = new Set<string>([selected]);
+  const answers = new Set<string>();
+  for (const answer of view.answers) {
+    // Un destinataire dépend des réponses reçues, une réponse de son agent, de ses outils et
+    // de ses lectures, un agent des outils et des lectures de ses réponses.
+    const isAnswer = answer.id === selected || answer.recipients.includes(selected);
+    const isAgent = answer.agent === selected;
+    const readByTool = answer.reads.filter((read) => read.tool === selected);
+    if (isAnswer || isAgent) {
+      answers.add(answer.id);
+      if (isAnswer) {
+        nodes.add(answer.id);
+        if (answer.agent !== null) {
+          nodes.add(answer.agent);
+        }
+      }
+      for (const read of answer.reads) {
+        nodes.add(read.dataset);
+        if (read.tool !== null) {
+          nodes.add(read.tool);
+        }
+      }
+      for (const tool of answer.tools) {
+        nodes.add(tool);
+      }
+    } else if (readByTool.length > 0) {
+      // Depuis un outil : les seules données qu'il a lues. Une donnée ne dépend de rien.
+      answers.add(answer.id);
+      for (const read of readByTool) {
+        nodes.add(read.dataset);
       }
     }
   }

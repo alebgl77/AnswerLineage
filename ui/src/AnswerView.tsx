@@ -28,6 +28,9 @@ export function AnswerView({ id }: { id: string }) {
         <p className="summary" role="status" data-testid="summary">
           {describeChain(view, focus ?? selected ?? id)}
         </p>
+        <a className="action" href={formatRoute({ view: "trace", id })}>
+          Remonter jusqu'aux données
+        </a>
         <a className="action" href={formatRoute({ view: "overview", dataset: null })}>
           Toutes les réponses récentes
         </a>

@@ -35,3 +35,8 @@ export function shortFingerprint(fingerprint: string): string {
 export function plural(count: number, one: string, many: string): string {
   return `${count} ${count > 1 ? many : one}`;
 }
+
+// Un résultat tronqué ne donne que des minimums : il le dit à chaque décompte.
+export function counted(count: number, lowerBound: boolean): string {
+  return lowerBound ? `au moins ${count}` : String(count);
+}

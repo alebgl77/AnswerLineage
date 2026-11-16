@@ -5,6 +5,7 @@ import { MAX_LIMIT, datasetsPath, graphPath, impactPath } from "./api";
 import type { DatasetList, DatasetName, GraphView, ImpactResult } from "./api";
 import { CoverageNote, coverageValue } from "./CoverageNote";
 import { Graph } from "./Graph";
+import { counted } from "./labels";
 import { Failure, Loading } from "./Notice";
 import { Partial } from "./Overview";
 import { describeChain } from "./nodes";
@@ -103,11 +104,6 @@ function ImpactForm({ datasets, dataset, from, to }: FormProps) {
       </button>
     </form>
   );
-}
-
-// Un résultat tronqué ne donne que des minimums : il le dit à chaque décompte.
-function counted(count: number, lowerBound: boolean): string {
-  return lowerBound ? `au moins ${count}` : String(count);
 }
 
 function Result({ result }: { result: ImpactResult }) {
