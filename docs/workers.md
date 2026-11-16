@@ -6,7 +6,7 @@ Un worker lit la file de traitement et projette chaque événement reçu dans le
 ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run answerlineage-worker
 ```
 
-Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Un événement qu'il ne parvient pas à projeter va à la [file de rebut](#file-de-rebut), où il se consulte et se rejoue. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés, contrôle les [émetteurs muets](#émetteurs-muets) et entretient les [partitions mensuelles](#partitions-mensuelles).
+Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Un événement qu'il ne parvient pas à projeter va à la [file de rebut](#file-de-rebut), où il se consulte et se rejoue. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés, contrôle les [émetteurs muets](#émetteurs-muets) et entretient les [partitions mensuelles](#partitions-mensuelles). La même commande [reconstruit le graphe](#reconstruire-le-graphe) depuis les événements bruts, quand il est corrompu.
 
 ## Garanties
 
@@ -17,7 +17,7 @@ L'API d'ingestion écrit une ligne dans la file dans la transaction qui enregist
 - **un événement fautif ne bloque pas le lot** : il est remis à plus tard, avec un délai qui double à chaque essai (5 s, 10 s, 20 s, jusqu'à une heure). La file garde le nombre d'essais, l'heure du premier en échec et la classe de la dernière erreur, jamais son message ;
 - **un événement fautif ne tourne pas sans fin** : il va à la [file de rebut](#file-de-rebut), au premier échec ou au dernier essai selon son motif, dans la transaction qui le retire de la file.
 
-Les événements bruts restent dans `event_raw` : le graphe peut être reconstruit en les rejouant.
+Les événements bruts restent dans `event_raw` : le graphe peut être [reconstruit](#reconstruire-le-graphe) en les rejouant.
 
 ## Ce que la projection lit
 
@@ -105,6 +105,7 @@ La déclaration d'un [incident](incidents.md) écrit une demande d'analyse dans 
 
 Les garanties sont celles de la file d'ingestion :
 
+- **Sur un graphe entier.** Pendant une [reconstruction du graphe](#reconstruire-le-graphe), et tant que la file n'a pas rendu au graphe ce que la reconstruction y a remis, aucune analyse ne part : la demande attend, puis lit le graphe reconstruit.
 - **Une analyse, un worker.** La demande est réclamée, traitée et close dans une seule transaction ; les workers sautent une demande verrouillée par un autre (`FOR UPDATE SKIP LOCKED`).
 - **Aucune perte.** Un worker arrêté en cours d'analyse n'écrit rien : la demande redevient visible, telle quelle.
 - **Sans doublon.** Le résultat remplace celui d'une analyse précédente du même incident : rejouer une analyse ne duplique ni réponse ni destinataire.
@@ -183,10 +184,118 @@ Plusieurs workers entretiennent en même temps sans double travail : la maintena
 
 L'horloge de la maintenance est celle du worker, injectée dans les tests : les mois y passent sans attendre.
 
+## Reconstruire le graphe
+
+Le graphe se déduit tout entier des événements bruts. Quand il est corrompu, par un défaut de la projection corrigé depuis ou une écriture malheureuse à la main, on le vide et on rejoue les événements, sans restaurer toute la base :
+
+```bash
+# L'aperçu : ce que la reconstruction trouverait. Rien ne change.
+ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run answerlineage-worker rebuild
+# La reconstruction.
+ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run answerlineage-worker rebuild --yes
+```
+
+C'est un geste d'exploitation : aucune route de l'API ne le déclenche.
+
+| Option | Rôle | Défaut |
+| --- | --- | --- |
+| `--yes` | Confirme : vide le graphe et rejoue les événements. Sans elle, la commande donne l'aperçu et ne change rien | absente |
+| `--accept-loss` | Accepte de perdre les lignes du graphe que la reconstruction ne peut pas rendre, enregistrées avant le premier événement conservé ([ce qu'elle ne rend pas](#ce-que-la-reconstruction-ne-rend-pas)) | absente |
+| `--batch-size` | Événements projetés par lot | 100 (1 à 10 000) |
+
+La commande sort avec le code `0` quand le graphe est reconstruit, `1` quand elle n'a rien fait (aperçu, refus) ou qu'elle a été interrompue, `2` quand la configuration est invalide.
+
+### Pas à pas
+
+1. **L'aperçu.** Sans `--yes`, la commande compte et s'arrête :
+
+   ```text
+   INFO answerlineage_workers Le graphe compte 2359 lignes.
+   INFO answerlineage_workers 955 événements bruts conservés, reçus du 2026-11-16T12:13:07.400791+00:00 au 2026-11-16T12:13:09.102214+00:00. La reconstruction les remet en file, sauf 1 au rebut, laissés tels quels ; 0 y attendent déjà.
+   INFO answerlineage_workers Rien n'est fait sans --yes.
+   ```
+
+2. **Une à la fois.** La reconstruction prend un verrou consultatif de PostgreSQL sans l'attendre : une seconde reconstruction ne démarre pas (« Une autre reconstruction du graphe tourne : celle-ci ne démarre pas. Rien n'a changé. »).
+3. **Les workers s'écartent.** Elle prend la barrière du graphe, un second verrou consultatif : elle laisse finir les lots et les analyses en cours, puis les workers ne réclament plus ni lot ni analyse tant qu'elle la tient. Leur boucle continue : émetteurs muets, partitions. La reconstruction projette seule parce que deux projections concurrentes sur un graphe vide s'interbloquent sur les jeux de données, outils et destinataires qu'elles créent ensemble : chaque interblocage remet un événement à plus tard et lui compte un essai. Mesurées sur 12 000 événements, quatre projections concurrentes rendaient 69 événements par seconde, une seule 235.
+4. **Le départ, en une transaction.** Quand des lignes du graphe ne seraient pas rendues, elle s'arrête là sans `--accept-loss`, et rien ne change ([ce qu'elle ne rend pas](#ce-que-la-reconstruction-ne-rend-pas)). Sinon, elle remet en file tous les événements bruts conservés, dans l'ordre de leur réception, sauf ceux au rebut, qui y restent avec leur motif ; un événement qui attendait déjà dans la file y garde sa place et ses essais. Elle s'inscrit dans `graph_rebuild` ([la trace](#la-trace)), puis vide les tables du graphe, et elles seules. Une panne avant la fin de cette transaction ne change rien.
+5. **La projection, par lots.** Elle projette la file elle-même, lot par lot, avec la projection des workers et dans l'ordre de la file. Un événement que la projection refuse aujourd'hui va au [rebut](#file-de-rebut), comme avec un worker. Toutes les dix secondes, le journal dit où elle en est.
+6. **La fin.** Quand la file a rendu au graphe tout ce qui y était au départ, la reconstruction est close, la barrière rendue, et le journal donne le résultat.
+
+```text
+INFO answerlineage_workers Reconstruction du graphe commencée : 954 événement(s) à rejouer, 1 laissé(s) au rebut.
+INFO answerlineage_workers Reconstruction du graphe : 954 événement(s) projeté(s), 0 à projeter dans la file, 0 mis au rebut.
+INFO answerlineage_workers Graphe reconstruit en 4,5 s : 954 événements rejoués, 1 au rebut laissés tels quels, 0 mis au rebut pendant la reconstruction.
+INFO answerlineage_workers Événements bruts conservés reçus du 2026-11-16T12:13:07.400791+00:00 au 2026-11-16T12:13:09.102214+00:00 : ce que la conservation a purgé avant n'est pas rendu.
+```
+
+Les événements rejoués sont ceux que la reconstruction a remis en file et ceux qui y attendaient ; les événements mis au rebut pendant la reconstruction, ceux que la projection refuse depuis son départ, rejoués ou reçus entre-temps. La durée va du départ à la fin, interruptions comprises. Le journal ne dit que des nombres et des heures, et d'une erreur seulement sa classe.
+
+### Pendant la reconstruction
+
+- **L'ingestion continue.** L'API reçoit et enregistre comme d'habitude. Un événement reçu entre en file derrière ceux de la reconstruction et il est projeté à son tour, par elle ou, après elle, par les workers ; un renvoi est compté comme doublon. La file suivant l'ordre de réception, les événements arrivent au graphe dans l'ordre où AnswerLineage les a reçus.
+- **Les lectures voient un graphe partiel.** À tout instant, un événement est dans la file ou dans le graphe : la [couverture du lignage](lecture.md#couverture-du-lignage) compte comme trous `missing_from_graph` les appels d'outil encore en file. Elle ne compte pas les événements des agents : une réponse dont l'événement attend encore manque sans trou. Attendre la fin de la reconstruction avant de conclure.
+- **Les analyses d'incident attendent.** Une demande d'analyse attend que la file ait rendu au graphe tout ce que la reconstruction y a mis ; elle lit ensuite le graphe reconstruit.
+
+### Interruption et reprise
+
+Le point de reprise est dans la base : la file, que chaque lot projeté quitte dans sa transaction, et la ligne inachevée de `graph_rebuild`. Sur `SIGINT` ou `SIGTERM`, la reconstruction finit son lot et s'arrête ; arrêtée brutalement, processus tué ou base perdue, son lot en cours est annulé et reste dans la file. Dans les deux cas, la barrière tombe avec sa session : les workers projettent ce qui reste.
+
+```text
+INFO answerlineage_workers Reconstruction interrompue : 412 à projeter dans la file. Les workers les projettent ; « answerlineage-worker rebuild --yes » reprend la reconstruction.
+```
+
+Relancée, `answerlineage-worker rebuild --yes` reprend la reconstruction inachevée sans vider le graphe de nouveau, et la clôt quand la file a tout rendu. Les analyses attendent jusque-là.
+
+### Identique à l'original
+
+La reconstruction rend chaque ligne de chacune des onze tables du graphe (`agent`, `tool`, `dataset`, `dataset_version`, `run`, `read_edge`, `write_edge`, `answer`, `delivery`, `recipient`, `delivery_recipient`), avec toutes ses colonnes, heures d'événement et [d'enregistrement](schema.md#deux-heures) comprises : l'heure d'enregistrement est la réception de l'événement, qu'un rejeu ne change pas.
+
+Seuls changent les identifiants numériques que la base tire à l'écriture : la colonne `id` de neuf de ces tables, qui repart de un. Rien hors du graphe ne les cite, les incidents désignent une réponse par son run et son empreinte, un jeu de données par son nom, et l'API ne les rend jamais : l'[identifiant d'une réponse](lecture.md#identifiant-dune-réponse) se déduit de son run et de son empreinte, et une adresse de l'explorateur reste valable. La comparaison des tests remplace donc chaque clé étrangère par la clé naturelle de la ligne qu'elle vise.
+
+L'ordre n'y fait rien. Les workers avaient projeté les événements dans l'ordre de leur file, avec ses reprises, ses rejeux et ses workers concurrents ; la reconstruction les rejoue dans l'ordre de leur réception, puis de leur identifiant. L'[écriture du graphe](schema.md#écrire-dans-le-graphe) est idempotente et commutative : projeter deux fois un événement, ou deux événements dans un autre ordre, donne le même graphe. `tests/test_graph_rebuild.py` le vérifie ligne à ligne sur l'entreprise synthétique, reçue d'un seul envoi puis rejouée dans un autre ordre, sur chaque scénario du corpus de vérité, avec des événements reçus pendant la reconstruction, et avec deux workers qui finissent une reconstruction interrompue.
+
+### Ce que la reconstruction ne rend pas
+
+- **Ce que la conservation a purgé.** Les [partitions](#partitions-mensuelles) d'événements bruts plus anciennes que la conservation sont supprimées ; le graphe, lui, garde toutes ses lignes. Une ligne enregistrée avant le premier événement conservé revient autrement, ou pas du tout : son heure d'enregistrement devient celle d'un événement plus récent, ou plus rien ne la fait connaître. L'aperçu les compte, la reconstruction refuse de démarrer sans `--accept-loss` quand il y en a, et son résultat dit la période de réception des événements conservés. Une ligne enregistrée depuis le premier événement conservé revient à l'identique : tous les événements qui l'ont fait connaître sont conservés.
+- **Les événements au rebut.** Ils n'étaient pas dans le graphe d'origine et n'entrent pas dans le graphe reconstruit : ils restent au rebut avec leur motif, leurs essais et leurs heures. Le correctif déployé, [ils se rejouent](#consulter-et-rejouer).
+- **Ce qu'aucun événement ne dit.** Une ligne écrite dans le graphe à la main, sans événement, ne revient pas.
+
+### Ce qu'elle ne touche pas
+
+Seules les tables du graphe sont vidées. Les événements bruts, la file, où elle remet les événements, le rebut, le compteur de doublons, les relevés de couverture et les émetteurs connus, les alertes de partition, les incidents et leurs analyses restent tels quels.
+
+De tout cela, seul le résultat d'une analyse d'incident dérive du graphe : ses réponses touchées, leurs destinataires, ses décomptes et sa couverture, lus tels que le graphe était connu à l'heure de l'analyse (`known_at`). La reconstruction ne les recalcule pas. Elle rend chaque ligne avec son heure d'enregistrement : le graphe tel que connu à `known_at` est celui d'avant la corruption, et une analyse faite avant elle reste juste. Une analyse faite sur le graphe corrompu se rejoue en gardant son `known_at` ([rejouer une analyse](incidents.md#rejouer-une-analyse)) : elle lit alors ce qu'elle aurait dû lire. La couverture du lignage se calcule à la lecture, des événements bruts et de la file : rien n'est à recalculer.
+
+### Durée
+
+Mesurée sur la machine de test : 4 processeurs virtuels Intel Xeon à 2,10 GHz, 15 Gio de mémoire, PostgreSQL 18 dans Docker sur la même machine, réglages par défaut, lots de 100 événements. La machine faisait tourner d'autres charges en même temps : ce sont des ordres de grandeur.
+
+| Événements conservés | Lignes du graphe | Départ | Reconstruction entière | Débit |
+| --- | --- | --- | --- | --- |
+| 954, l'entreprise synthétique de la démonstration | 2 359 | négligeable | 4,5 s | 214 événements par seconde |
+| 99 954, la même entreprise avec 25 000 demandes | 232 389 | moins d'une seconde | 7 min 39 s | 218 événements par seconde |
+| 1 000 000, estimés | environ 2,3 millions | 17 s mesurées | environ 77 min | |
+
+La durée est celle de la projection, un événement après l'autre, environ 4,6 ms chacun : le départ, la remise en file d'un million d'événements comprise, prend 17 secondes, pendant lesquelles le graphe reste lisible ; le vidage, quelques millisecondes. Une reconstruction croît donc avec les événements conservés, de l'ordre de 77 minutes par million sur cette machine.
+
+Pour un délai de reprise d'une heure au plus, la reconstruction suffit tant que la base conserve moins de 750 000 événements environ, sur une machine comparable. Au-delà, elle ne tient pas l'objectif à elle seule : la restauration d'une sauvegarde de la base, ou une machine plus rapide, doit le tenir. Le journal de progression, toutes les dix secondes, permet d'en estimer la fin.
+
+### La trace
+
+`graph_rebuild` garde une ligne par reconstruction : son départ et sa fin, la dernière ligne de la file qu'elle attend, les événements rejoués et laissés au rebut, la période de réception des événements conservés et les lignes qu'elle n'a pas pu rendre ([schéma](schema.md#reconstructions-du-graphe)).
+
+```sql
+SELECT started_at, finished_at, replayed, dead_letters, first_received, last_received, unrecoverable
+FROM graph_rebuild ORDER BY started_at DESC;
+```
+
 ## Limites connues
 
 - Une analyse est un instantané : elle ne voit que les événements déjà projetés. Un événement reçu avant elle mais encore dans la file lui échappe, et la couverture le signale par un trou `missing_from_graph` ; aucune route ne relance encore une analyse ([rejouer une analyse](incidents.md#rejouer-une-analyse)).
 
 - Le motif suit la classe de l'erreur : un défaut de la projection qui lève `KeyError`, `TypeError` ou `ValueError` met l'événement au rebut dès le premier échec, comme un événement mal formé. Le correctif déployé, il se rejoue.
 - Les essais d'un événement remis à plus tard avant la migration `0011` n'avaient pas d'heure : sa mise en file tient lieu de premier échec.
+- La reconstruction projette seule, un événement après l'autre : sa durée croît avec les événements conservés ([durée](#durée)), et des workers de plus ne l'accélèrent pas.
+- Pendant une reconstruction, l'API lit un graphe partiel ; la couverture ne signale que les appels d'outil encore en file ([pendant la reconstruction](#pendant-la-reconstruction)). Une analyse faite sur un graphe corrompu n'est pas rejouée d'elle-même.
+- Un run garde l'agent, l'outil, le run parent et le contexte de trace du premier événement projeté qui les donne, et un jeu de données la nature du premier qui le nomme. Tant que les événements d'un run s'accordent, comme ceux des émetteurs d'AnswerLineage, l'ordre n'y fait rien ; deux événements qui se contredisent peuvent donner l'autre valeur, quand ils ont été reçus dans le même envoi ou que leur première projection n'a pas suivi leur réception (un événement remis à plus tard, puis rejoué du rebut).
 - Un émetteur retiré pour de bon est signalé muet une fois, puis le reste : rien ne permet encore de le déclarer retiré, ni de l'oublier. Sa dernière couverture reste lisible, et son silence rend partielle la couverture des périodes qui suivent.

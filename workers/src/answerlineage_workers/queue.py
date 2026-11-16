@@ -22,6 +22,10 @@ reçu : c'est son heure d'enregistrement, que le passage du worker ne change pas
 
 Entre deux lots, la boucle du worker analyse aussi un incident déclaré, quand
 une demande attend (``incidents.py``).
+
+Pendant une reconstruction du graphe (``rebuild.py``), le worker ne réclame ni
+lot ni analyse : la reconstruction tient la barrière du graphe et projette la
+file seule (``gate.py``). Il les reprend dès qu'elle la rend.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ from answerlineage_api.identifiers import InvalidIdentifierError
 from answerlineage_api.ingest.dead_letters import bury
 from answerlineage_api.store.graph import record_run
 from answerlineage_api.store.schema import DeadLetterReason
+from answerlineage_workers import gate
 from answerlineage_workers.incidents import DEFAULT_ANALYSIS_TIMEOUT, process_analysis
 from answerlineage_workers.partitions import (
     DEFAULT_MAINTENANCE_EVERY,
@@ -144,8 +149,29 @@ async def process_batch(
 
     Un événement en échec est remis à plus tard, ou mis au rebut quand son motif
     ne se corrigera pas en réessayant ou qu'il atteint ``max_attempts`` essais.
+    Pendant une reconstruction du graphe, rien n'est réclamé (``gate.py``).
     """
-    async with engine.begin() as conn:
+    async with engine.connect() as conn:
+        return await project_batch(
+            conn, batch_size=batch_size, handler=handler, max_attempts=max_attempts
+        )
+
+
+async def project_batch(
+    conn: AsyncConnection,
+    *,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    handler: Handler = record_event,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+) -> BatchResult:
+    """``process_batch`` sur cette connexion, dans une transaction qu'elle ouvre.
+
+    Le lot n'est réclamé que si la barrière du graphe est libre, ou tenue par
+    cette session : celle de la reconstruction projette, les autres attendent.
+    """
+    async with conn.begin():
+        if not await gate.share(conn):
+            return BatchResult()
         rows = (await conn.execute(_CLAIM, {"limit": batch_size})).all()
         done: list[int] = []
         postponed = buried = 0

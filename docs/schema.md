@@ -12,6 +12,8 @@ read_edge ── run ── answer ── delivery ── delivery_recipient ─
 write_edge   agent, tool
 ```
 
+Les onze tables d'`agent` à `delivery_recipient` forment le graphe (`schema.GRAPH`) : la projection des événements les écrit, elles seules, et tout ce qu'elles tiennent se déduit des événements bruts. La [reconstruction](workers.md#reconstruire-le-graphe) les vide et les remplit de nouveau en rejouant les événements. Hors d'elles, seul le résultat d'une analyse d'incident dérive du graphe : un instantané, lu tel que le graphe était connu à l'heure de l'analyse ([ce que la reconstruction ne touche pas](workers.md#ce-quelle-ne-touche-pas)).
+
 | Table | Clé naturelle | Contenu |
 | --- | --- | --- |
 | `agent`, `tool` | espace de noms et nom, serveur et nom | Qui a exécuté le run |
@@ -35,6 +37,7 @@ write_edge   agent, tool
 | `incident_analysis` | incident | Demande d'analyse d'un incident, son état, et les décomptes, la couverture et les jeux inconnus de son résultat |
 | `incident_answer` | incident, run et empreinte | Réponse touchée par un incident |
 | `incident_recipient` | incident, réponse et pseudonyme | Destinataire d'une réponse touchée |
+| `graph_rebuild` | identifiant tiré par la base | Reconstruction du graphe depuis les événements bruts : départ, fin, événements rejoués, période des événements conservés |
 
 ## Deux heures
 
@@ -106,7 +109,7 @@ Une partition couvre un mois UTC, du premier jour inclus au premier jour du mois
 
 Les tables du graphe gardent toutes leurs lignes : elles sont hors de la conservation. Leurs écritures fusionnent les événements d'un run sur des clés naturelles (run, jeu de données, version ; run et empreinte ; diffusion et destinataire) qui ne contiennent aucune heure de réception. Partitionner par heure d'enregistrement obligerait à l'ajouter à ces clés : deux événements d'une même lecture, reçus deux mois différents, donneraient deux arêtes au lieu d'une, et la fusion cesserait d'être idempotente et commutative. Partitionner par heure d'événement est exclu : elle vient de l'émetteur.
 
-Une purge ligne à ligne du graphe demanderait de dire quand une réponse est trop ancienne pour être rappelée, alors que ses lectures, ses diffusions et ses jeux de données sont partagés avec d'autres : c'est une décision du produit, pas de l'exploitation. Le graphe ne garde que des noms, des empreintes et des heures, bien moins volumineux que les événements bruts. Son heure d'enregistrement, la réception de l'événement qui a fait connaître chaque ligne, permettra de le purger le jour où cette règle sera fixée. En attendant, il se reconstruit à partir des événements conservés.
+Une purge ligne à ligne du graphe demanderait de dire quand une réponse est trop ancienne pour être rappelée, alors que ses lectures, ses diffusions et ses jeux de données sont partagés avec d'autres : c'est une décision du produit, pas de l'exploitation. Le graphe ne garde que des noms, des empreintes et des heures, bien moins volumineux que les événements bruts. Son heure d'enregistrement, la réception de l'événement qui a fait connaître chaque ligne, permettra de le purger le jour où cette règle sera fixée. En attendant, il se [reconstruit](workers.md#reconstruire-le-graphe) à partir des événements conservés ; ce que la conservation a purgé n'y revient pas.
 
 ### L'état du contrôle
 
@@ -166,6 +169,23 @@ Un index partiel range les demandes en attente par heure de reprise : c'est ce q
 `incident_analysis.coverage` garde la couverture du lignage de la fenêtre à l'heure de l'analyse, sous la forme que rend l'API (état, taux, compteurs, trous) ; `unknown_datasets`, les jeux du périmètre que le graphe ne connaissait pas. Ce sont des colonnes `jsonb` : un instantané, qu'aucune requête ne parcourt.
 
 Les incidents ne sont ni partitionnés ni purgés : ils sont rares, et un rappel s'appuie sur eux. La migration `0010` crée ces tables ; sa descente les retire, incidents compris.
+
+## Reconstructions du graphe
+
+`graph_rebuild` garde une ligne par [reconstruction du graphe](workers.md#reconstruire-le-graphe) : tant qu'elle tourne, puis pour mémoire. Des heures et des décomptes, aucun contenu.
+
+| Colonne | Contenu |
+| --- | --- |
+| `started_at`, `finished_at` | Le départ, et la fin ; nulle tant que la reconstruction n'est pas close |
+| `queue_boundary` | La dernière ligne de la file au départ : la reconstruction est finie quand la file n'a plus aucune ligne jusqu'à elle |
+| `replayed` | Événements remis à la projection : remis en file par la reconstruction, ou qui y attendaient |
+| `dead_letters` | Événements au rebut au départ, laissés tels quels |
+| `first_received`, `last_received` | Réceptions du premier et du dernier événement brut conservé ; nulles quand il n'y en avait aucun |
+| `unrecoverable` | Lignes du graphe enregistrées avant le premier événement conservé, que la reconstruction ne rend pas telles quelles |
+
+Les décomptes sont positifs (`ck_graph_rebuild_counts`), la fin suit le départ (`ck_graph_rebuild_finished`), les deux réceptions sont données ensemble et dans l'ordre (`ck_graph_rebuild_received`). Une reconstruction inachevée a une ligne sans fin : la suivante la reprend. Tant que la file garde des lignes jusqu'à sa `queue_boundary`, les workers n'analysent aucun incident.
+
+La migration `0012` crée la table ; sa descente la retire, sans toucher au graphe ni à la file.
 
 ## Migrations
 

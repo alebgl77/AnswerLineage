@@ -11,6 +11,9 @@ seulement, jamais de contenu.
 - **Le graphe tel qu'il était connu.** La propagation lit le graphe tel qu'il
   était connu à l'heure de l'analyse (``known_at``) : l'heure de la base au
   premier essai, gardée pour les suivants. Un rejeu lit donc le même graphe.
+- **Sur un graphe entier.** Aucune analyse ne part pendant une reconstruction du
+  graphe, ni tant que la file n'a pas rendu au graphe ce qu'elle y a remis
+  (``gate.py``) : la demande attend, et lit ensuite le graphe reconstruit.
 - **Une analyse, un worker.** La demande est réclamée et traitée dans une seule
   transaction, verrouillée : les autres workers la sautent
   (``FOR UPDATE SKIP LOCKED``). Un worker arrêté en cours d'analyse n'écrit
@@ -43,6 +46,7 @@ from answerlineage_api.lineage import coverage, impact
 from answerlineage_api.lineage.paging import ANSWER_ORDER
 from answerlineage_api.lineage.reading import Reader, ReadTimedOut, known
 from answerlineage_api.store import schema
+from answerlineage_workers import gate
 
 logger = logging.getLogger("answerlineage_workers")
 
@@ -63,15 +67,17 @@ Outcome = Literal["done", "postponed", "failed"]
 # Analyse un incident : sa connexion, son identifiant, l'heure du graphe lu, l'échéance.
 Analyzer = Callable[[AsyncConnection, UUID, datetime, float], Awaitable[None]]
 
+# Aucune analyse tant qu'une reconstruction n'a pas rendu au graphe ce qu'elle a
+# remis en file : sur un graphe partiel, l'analyse manquerait des réponses.
 _CLAIM = text(
-    """
+    f"""
     SELECT incident_id, coalesce(known_at, now()) AS known_at, attempts
     FROM incident_analysis
-    WHERE state = 'pending' AND available_at <= now()
+    WHERE state = 'pending' AND available_at <= now() AND NOT {gate.REBUILD_PENDING}
     ORDER BY available_at, incident_id
     LIMIT 1
     FOR UPDATE SKIP LOCKED
-    """
+    """  # noqa: S608 — seul un fragment constant est interpolé.
 )
 _POSTPONE = text(
     """
@@ -231,9 +237,13 @@ async def process_analysis(
 ) -> Processed | None:
     """Réclame une demande d'analyse, la traite et l'enregistre, dans une transaction.
 
-    Rend ``None`` quand aucune demande n'attend.
+    Rend ``None`` quand aucune demande n'attend, ou qu'une reconstruction du
+    graphe tourne ou n'a pas encore rendu au graphe ce qu'elle a remis en file :
+    la demande attend qu'il soit entier.
     """
     async with engine.begin() as conn:
+        if not await gate.share(conn):
+            return None
         claimed = (await conn.execute(_CLAIM)).first()
         if claimed is None:
             return None

@@ -19,6 +19,10 @@ identifiants, des heures et des décomptes, jamais de texte libre.
 Les événements que la projection n'a pas pu intégrer au graphe attendent dans
 la file de rebut (``dead_letter``), qui les désigne sans les recopier.
 
+Les tables du graphe (``GRAPH``) se déduisent toutes des événements bruts : la
+reconstruction les vide et les rejoue, et garde la trace de chaque
+reconstruction (``graph_rebuild``).
+
 Les migrations d'Alembic font foi pour la base ; un test vérifie qu'elles
 produisent exactement ce schéma, partitions du mois courant et des deux
 suivants comprises.
@@ -290,6 +294,25 @@ delivery_recipient = Table(
     Index(None, "recipient_id"),
 )
 
+# Les tables du graphe : celles qu'écrit la projection des événements, et
+# seulement elles. Tout ce qu'elles tiennent se déduit des événements bruts : la
+# reconstruction les vide et les remplit de nouveau en rejouant les événements.
+# Leurs identifiants numériques sont tirés à l'écriture : rien hors du graphe ne
+# les cite, et l'API ne les rend jamais.
+GRAPH: Final[tuple[Table, ...]] = (
+    agent,
+    tool,
+    dataset,
+    dataset_version,
+    run,
+    read_edge,
+    write_edge,
+    answer,
+    delivery,
+    recipient,
+    delivery_recipient,
+)
+
 # Événement reçu tel quel, rejouable. Son identifiant est l'empreinte de sa
 # forme canonique : un événement rejoué ne s'enregistre qu'une fois. La table
 # est partitionnée par mois de réception ; la clé primaire contient donc ce
@@ -545,6 +568,41 @@ incident_recipient = Table(
     ForeignKeyConstraint(
         ["incident_id", "run_id", "fingerprint"],
         [incident_answer.c.incident_id, incident_answer.c.run_id, incident_answer.c.fingerprint],
+    ),
+)
+
+# Reconstructions du graphe depuis les événements bruts, une ligne chacune : tant
+# qu'elle tourne, puis pour mémoire. La reconstruction remet en file les
+# événements conservés ; ``queue_boundary`` est la dernière ligne de la file
+# qu'elle doit voir projetée : celles qu'elle y a mises, et celles qui y
+# attendaient. Des heures et des décomptes, aucun contenu.
+graph_rebuild = Table(
+    "graph_rebuild",
+    metadata,
+    Column("id", BigInteger, Identity(always=True), primary_key=True),
+    Column("started_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("finished_at", DateTime(timezone=True)),
+    Column("queue_boundary", BigInteger, nullable=False),
+    # Événements remis à la projection : remis en file, ou qui y attendaient.
+    Column("replayed", BigInteger, nullable=False),
+    # Événements au rebut, laissés tels quels : ils n'étaient pas dans le graphe.
+    Column("dead_letters", BigInteger, nullable=False),
+    # Réceptions du premier et du dernier événement brut conservé : ce que la
+    # conservation a purgé avant le premier ne peut pas être rejoué.
+    Column("first_received", DateTime(timezone=True)),
+    Column("last_received", DateTime(timezone=True)),
+    # Lignes du graphe enregistrées avant le premier événement conservé : la
+    # reconstruction ne les rend pas telles qu'elles étaient.
+    Column("unrecoverable", BigInteger, nullable=False),
+    CheckConstraint(
+        "queue_boundary >= 0 AND replayed >= 0 AND dead_letters >= 0 AND unrecoverable >= 0",
+        name="counts",
+    ),
+    CheckConstraint("finished_at IS NULL OR started_at <= finished_at", name="finished"),
+    CheckConstraint(
+        "(first_received IS NULL) = (last_received IS NULL)"
+        " AND (first_received IS NULL OR first_received <= last_received)",
+        name="received",
     ),
 )
 

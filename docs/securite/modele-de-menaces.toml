@@ -750,6 +750,61 @@ description = "Un émetteur silencieux plus de dix minutes est signalé."
 code = "workers/src/answerlineage_workers/silence.py"
 test = "workers/tests/test_silence.py::test_an_emitter_silent_for_more_than_ten_minutes_is_signalled_once"
 
+[[threat]]
+id = "workers/reconstruction-destructrice"
+name = "Une reconstruction du graphe détruit du lignage qu'elle ne peut pas rendre"
+category = "tampering"
+boundary = "donnees-au-repos"
+assets = ["lignage"]
+description = "La reconstruction vide le graphe avant de le rejouer. Lancée par erreur, deux fois à la fois, interrompue, ou alors que la conservation a purgé les événements qui ont fait connaître ses lignes les plus anciennes, elle perdrait du lignage, ou toucherait à ce qui n'est pas du graphe."
+
+[[threat.mitigation]]
+description = "Sans confirmation explicite (--yes), la commande ne donne qu'un aperçu : rien ne change."
+code = "workers/src/answerlineage_workers/cli.py::rebuild"
+test = "workers/tests/test_rebuild.py::test_without_yes_the_command_only_shows_what_it_would_do"
+
+[[threat.mitigation]]
+description = "Des lignes du graphe plus anciennes que le premier événement conservé arrêtent la reconstruction, sauf si leur perte est acceptée (--accept-loss) ; refusée, elle ne change rien."
+code = "workers/src/answerlineage_workers/rebuild.py::_start"
+test = "workers/tests/test_rebuild.py::test_rows_older_than_the_conserved_events_stop_the_rebuild_unless_lost_knowingly"
+
+[[threat.mitigation]]
+description = "Une seule reconstruction à la fois : un verrou consultatif fait refuser la seconde."
+code = "workers/src/answerlineage_workers/rebuild.py::rebuild_graph"
+test = "workers/tests/test_rebuild.py::test_a_second_rebuild_is_refused_while_one_runs"
+
+[[threat.mitigation]]
+description = "Seules les tables du graphe sont vidées, et le graphe rejoué est l'original, ligne à ligne, heures comprises ; le rebut garde ses événements et leur motif."
+code = "workers/src/answerlineage_workers/rebuild.py::_start"
+test = "tests/test_graph_rebuild.py::test_the_synthetic_enterprise_is_rebuilt_identical_from_its_raw_events"
+
+[[threat.mitigation]]
+description = "Interrompue, la reconstruction laisse son point de reprise dans la base : la suivante la reprend sans vider le graphe de nouveau, et les workers projettent ce qui reste."
+code = "workers/src/answerlineage_workers/rebuild.py::rebuild_graph"
+test = "workers/tests/test_rebuild.py::test_an_interrupted_rebuild_resumes_without_emptying_the_graph_again"
+
+[[threat]]
+id = "workers/graphe-partiel"
+name = "Une analyse ou une lecture conclut sur un graphe en cours de reconstruction"
+category = "tampering"
+boundary = "lecteur-lecture"
+assets = ["lignage"]
+description = "Pendant une reconstruction, le graphe ne tient qu'une partie des événements : une analyse d'incident faite à ce moment manquerait des réponses touchées, et rien ne la relancerait ; une lecture de l'API ferait de même."
+
+[[threat.mitigation]]
+description = "Les workers ne projettent ni n'analysent tant que la reconstruction tient la barrière du graphe."
+code = "workers/src/answerlineage_workers/gate.py::share"
+test = "workers/tests/test_rebuild.py::test_workers_stand_aside_while_the_rebuild_projects"
+
+[[threat.mitigation]]
+description = "Une analyse attend que la file ait rendu au graphe tout ce qu'une reconstruction inachevée y a mis."
+code = "workers/src/answerlineage_workers/incidents.py::process_analysis"
+test = "workers/tests/test_rebuild.py::test_an_analysis_waits_until_the_rebuild_has_given_the_graph_back"
+
+[threat.acceptance]
+reason = "La reconstruction ne bloque pas les lectures de l'API, pour qu'elle reste disponible : un événement est à tout instant dans la file ou dans le graphe, et la couverture du lignage compte comme trous les appels d'outil encore en file."
+consequence = "Pendant une reconstruction, une lecture voit un graphe partiel : une réponse dont l'événement d'agent attend encore dans la file manque sans que la couverture le dise."
+
 # Ligne de commande
 
 [[threat]]
