@@ -154,9 +154,14 @@ def main() -> int:
         sys.stderr.write("pret\n")
         sys.stderr.flush()
     server = Server(sys.stdout.buffer, args.record)
-    for line in sys.stdin.buffer:
-        server.received(line)
-        server.handle(line)
+    try:
+        for line in sys.stdin.buffer:
+            server.received(line)
+            server.handle(line)
+    except BrokenPipeError:
+        # Le client ne lit plus : le serveur s'arrête comme à la fin de son entrée. Sa
+        # sortie est détournée, pour que la vidange de l'interpréteur n'échoue pas à son tour.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     return int(args.exit_code)
 
 

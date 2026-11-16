@@ -526,13 +526,18 @@ async def test_a_cancelled_call_is_abandoned_when_the_client_cancels_it(tmp_path
 
 
 async def test_a_client_that_stops_reading_ends_the_relay() -> None:
-    """Personne ne lit plus la sortie du proxy : l'enfant le voit à son tour, comme s'il
-    écrivait directement au client."""
+    """Personne ne lit plus la sortie du proxy : le relais s'achève, l'appel est dit
+    abandonné par le client, et le proxy rend le code de l'enfant.
+
+    Selon le moment où le proxy voit le client partir, l'enfant reçoit la requête et
+    voit le tube rompu à sa prochaine écriture, ou ne la reçoit pas et voit la fin de
+    son entrée : le serveur de test s'arrête de la même façon dans les deux cas.
+    """
     client_input, to_proxy = os.pipe()
     from_proxy, client_output = os.pipe()
     os.close(from_proxy)
     sink = MemorySink()
-    settings = Settings.create(stdio_server(), "meteo", fingerprint_key=STDIO_KEY)
+    settings = Settings.create(stdio_server("--exit-code", "7"), "meteo", fingerprint_key=STDIO_KEY)
     proxy = StdioProxy(
         settings, sink, input_fd=client_input, output_fd=client_output, forwarded_signals=()
     )
@@ -544,8 +549,7 @@ async def test_a_client_that_stops_reading_ends_the_relay() -> None:
     finally:
         for fd in (client_input, client_output):
             os.close(fd)
-    # Le serveur de test, en Python, ignore SIGPIPE : il s'arrête à la fin de son entrée.
-    assert code == 0
+    assert code == 7
     (event,) = sink.events
     assert event["eventType"] == "ABORT"
     assert facet(event, "answerlineage_qos")["outcome"] == "client_abort"
