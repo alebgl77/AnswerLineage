@@ -139,6 +139,16 @@ up() {
 # se lance, dans l'ordre, et une commande qui échoue se nomme. Le budget du
 # premier lignage est celui de up, depuis le départ du guide (scripts/play_guide.py).
 guide() {
+  local image
+  # Les images de base se tirent d'abord, avec reprise : un registre public limite
+  # parfois le débit des tirages anonymes, et une commande du guide n'a pas de
+  # reprise à elle. Le temps mesuré du guide compte alors la construction et le
+  # démarrage, pas le téléchargement des images de base.
+  for image in $(sed -n 's/^FROM \([^ ]*\).*/\1/p' deploy/Dockerfile | sort -u); do
+    retry docker pull --quiet "$image" >/dev/null || fail "une image de base ne se tire pas"
+  done
+  # shellcheck disable=SC2086
+  retry $COMPOSE pull --quiet postgres || fail "l'image de PostgreSQL ne se tire pas"
   uv run python -m scripts.play_guide docs/demarrage.md --budget "$BUDGET_SECONDS" \
     || fail "une commande du guide de démarrage échoue, ou son premier lignage dépasse ${BUDGET_SECONDS} s"
 }
