@@ -1,0 +1,37 @@
+name: bench
+
+# Banc de latence du proxy MCP, chaque nuit et à la demande : 100 000 appels
+# d'outil, directement et à travers le proxy. Il échoue quand le p99 de la
+# latence ajoutée dépasse 5 ms, mesuré par comparaison ou par le proxy lui-même.
+on:
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+
+# Jeton en lecture seule : le banc ne fait que lire le dépôt.
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.11.32"
+
+jobs:
+  latency:
+    name: Latence ajoutée par le proxy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Installe l'environnement verrouillé
+        run: uv sync --all-packages --locked
+      - name: 100 000 appels, p99 de la latence ajoutée au plus 5 ms
+        run: make bench

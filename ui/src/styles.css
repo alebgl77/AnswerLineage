@@ -1,0 +1,384 @@
+:root {
+  --ink: #0f172a;
+  --muted: #475569;
+  --line: #cbd5e1;
+  --paper: #f8fafc;
+  --card: #ffffff;
+  --dataset: #1d4ed8;
+  --tool: #6d28d9;
+  --agent: #0f766e;
+  --answer: #b45309;
+  --recipient: #be123c;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.explorer {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 8px;
+}
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.05rem;
+  letter-spacing: 0.01em;
+}
+
+.tagline {
+  flex: 1 1 12rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+nav {
+  display: flex;
+  gap: 4px;
+}
+
+nav a {
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-decoration: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+nav a[aria-current="page"] {
+  color: var(--ink);
+  background: var(--card);
+  border-color: var(--line);
+}
+
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-height: 2.6rem;
+  padding: 6px 0;
+}
+
+.summary {
+  flex: 1 1 12rem;
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.action {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  color: var(--ink);
+  text-decoration: none;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.action-main {
+  color: var(--card);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.incident {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 12px;
+  padding: 10px 0;
+}
+
+.incident label {
+  display: grid;
+  flex: 1 1 11rem;
+  gap: 2px;
+  min-width: 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.incident select,
+.incident input {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.counters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.counters div {
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.counters dt {
+  font-size: 0.7rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.counters dd {
+  margin: 2px 0 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.hint {
+  margin: 4px 0 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.holes {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.hole {
+  overflow-wrap: anywhere;
+}
+
+.hole-emitter {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.notice {
+  margin: 16px 0;
+  padding: 12px;
+  font-size: 0.9rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.notice-error {
+  border-color: var(--recipient);
+}
+
+.graph {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  column-gap: clamp(10px, 5vw, 72px);
+  align-items: start;
+}
+
+.links {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.link {
+  fill: none;
+  stroke: #94a3b8;
+  stroke-width: 1;
+  opacity: 0.45;
+}
+
+.has-focus .link {
+  opacity: 0.07;
+}
+
+.has-focus .link.is-on {
+  stroke: var(--ink);
+  stroke-width: 1.5;
+  opacity: 0.85;
+}
+
+.column {
+  position: relative;
+  min-width: 0;
+}
+
+h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin: 0 0 6px;
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.column-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Sur un écran étroit, le titre de la colonne passe avant son décompte. */
+.count {
+  display: none;
+  font-weight: 400;
+}
+
+ul {
+  display: grid;
+  /* Une colonne qui ne s'élargit pas à son contenu : un libellé long est abrégé. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.node {
+  display: block;
+  width: 100%;
+  padding: 3px 5px;
+  overflow: hidden;
+  font: inherit;
+  font-size: 0.68rem;
+  line-height: 1.25;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.node-prefix {
+  display: none;
+}
+
+.node:focus-visible,
+.action:focus-visible,
+nav a:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+
+.node[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.node.is-on {
+  background: color-mix(in srgb, var(--accent) 12%, var(--card));
+}
+
+.node.is-off {
+  opacity: 0.3;
+}
+
+/* Le jeu de données d'où part l'incident. */
+.node.is-source {
+  font-weight: 600;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.node-dataset {
+  --accent: var(--dataset);
+}
+
+.node-tool {
+  --accent: var(--tool);
+}
+
+.node-agent {
+  --accent: var(--agent);
+}
+
+.node-answer {
+  --accent: var(--answer);
+  font-variant-numeric: tabular-nums;
+}
+
+.node-recipient {
+  --accent: var(--recipient);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (min-width: 720px) {
+  .explorer {
+    padding: 16px 24px;
+  }
+
+  h1 {
+    font-size: 1.25rem;
+  }
+
+  .tagline,
+  .summary,
+  .action,
+  nav a {
+    font-size: 0.9rem;
+  }
+
+  .counters dd {
+    font-size: 1.5rem;
+  }
+
+  h2 {
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .count,
+  .node-prefix {
+    display: inline;
+  }
+
+  ul {
+    gap: 4px;
+  }
+
+  .node {
+    padding: 5px 9px;
+    font-size: 0.82rem;
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/QosRunFacet.json",
+  "type": "object",
+  "$defs": {
+    "QosRunFacet": {
+      "description": "Qualité de service d'un run : modèle, volumes, latence, coût, erreurs. Facette de run. Aucun champ n'est obligatoire.",
+      "allOf": [
+        {
+          "$ref": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunFacet"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Modèle utilisé."
+            },
+            "route": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Route empruntée jusqu'au modèle."
+            },
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Jetons en entrée."
+            },
+            "outputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Jetons en sortie."
+            },
+            "latencyMs": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Latence du run, en millisecondes."
+            },
+            "estimatedCost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Coût estimé du run, dans l'unité monétaire de l'émetteur : cette version ne porte pas la devise."
+            },
+            "errorCount": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Nombre d'erreurs rencontrées."
+            },
+            "retryCount": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Nombre de reprises."
+            },
+            "skill": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Skill utilisé."
+            }
+          }
+        }
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "answerlineage_qos": {
+      "$ref": "#/$defs/QosRunFacet"
+    }
+  }
+}

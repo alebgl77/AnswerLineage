@@ -2,86 +2,90 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## État du dépôt
+## Dépôt public
 
-Le socle du monorepo existe (US-0101) et le sprint 1 est en cours : `make sprint` n'existant pas encore, l'avancement se lit dans `git log` (une story finie = son identifiant dans un commit de `main`). L'architecture décrite plus bas reste une **cible de conception** issue du PRD pour tout ce qui n'est pas encore codé : la corriger dès que le code la contredit.
+Ce dépôt est public et s'adresse à des professionnels. Rien d'interne n'y figure, ni dans les fichiers, ni dans les messages de commit, ni dans les merge requests :
 
-Ce dépôt fait foi pour le code et l'outillage. Le kit de démarrage du PRD (`answerlineage-kit.zip`) n'y a pas été versé. S'il l'est un jour, il apporte ce qui manque ici (`.claude/`, `backlog/`, `scripts/`, `tests/kit/`, modèles de `.github/`, `docs/`) ; en cas de conflit, `pyproject.toml`, `uv.lock`, `Makefile` et le code de ce dépôt l'emportent, et les deux `CLAUDE.md` se fusionnent à la main.
+- aucun identifiant de suivi interne (story, exigence, sprint, risque) et aucune référence au cahier des charges ou au backlog, qui sont privés : le code et la documentation disent le pourquoi en clair ;
+- pas de commit de correction : un défaut trouvé avant fusion se corrige dans le commit qui l'a introduit, en réécrivant la branche de travail, jamais `main` ;
+- pas de test qui recopie une configuration, pas de dossier vide ni de composant annoncé : un fichier entre dans le dépôt quand il sert.
 
-## Sources de vérité
-
-- PRD « AnswerLineage : lignage et rappel des réponses d'agents » (onglets PRD, Audit, Développement) : document privé, hors dépôt tant qu'il n'est pas versé dans `docs/`.
-- Backlog v3 (161 stories, 138 exigences, 24 risques) : classeur privé, hors dépôt tant qu'il n'est pas généré dans `backlog/`. Les demander à l'utilisateur plutôt que de deviner une fiche.
-- Identifiants : `E01`–`E20` epics, `US-EESS` stories, `EF-XXX-NN` exigences fonctionnelles, `ENF-XXX-NN` non fonctionnelles, `ADR-001`–`ADR-012`, `R01`–`R24` risques. Citer l'identifiant de story dans la branche, la merge request et le commit.
-- PRD, backlog et code sont en français pour le métier (rappel, piste, écart, criticité, quarantaine), en anglais pour les identifiants techniques. « Rappel » désigne à la fois la notification des destinataires et la métrique *recall* du moteur.
+Le périmètre et l'ordre des travaux sont fixés par le cahier des charges et le backlog. Les demander au mainteneur plutôt que de les deviner.
 
 ## Commandes
 
 ```bash
 make setup    # uv sync --all-packages --locked, puis installation des hooks pre-commit
-make check    # porte de toute story : format, lint (ruff), typage strict (mypy), tests avec couverture de branches
+make check    # porte de toute contribution : politique du dépôt, format, lint, typage strict, tests, couverture
 make format   # reformate et applique les corrections automatiques de ruff
-make test     # tests seuls
-uv run pytest tests/test_workspace.py::test_mypy_checks_every_component   # un test isolé
+make test     # tests seuls, avec le rapport de couverture
+make policy   # politique du dépôt : workflows, scripts, Dockerfiles, conteneur de développement, propriétaires du code
+make openapi  # met à jour le contrat OpenAPI publié (spec/openapi/), à relancer dès qu'une route change
+make contract # compare le contrat à celui de la branche cible : un changement incompatible échoue
+make ui       # construit l'explorateur dans ui/dist (Node 22) : paquets verrouillés, types, construction
+make e2e      # pilote l'explorateur construit dans Chromium (uv run playwright install chromium)
+make demo     # lance la démonstration (docker compose) ; scripts/check_demo.sh la vérifie comme le pipeline
+uv run pytest proxy/tests/test_sql.py::test_select_star_reads_the_whole_table   # un test isolé
+uv run pytest -m "not integration"                                              # sans PostgreSQL
 ```
 
-Les dépendances s'ajoutent dans le `pyproject.toml` du composant, puis `uv lock` (délai de carence de 7 jours réglé dans le `pyproject.toml` racine).
+Les tests marqués `integration` démarrent un PostgreSQL réel avec Testcontainers : Docker doit tourner. Les tests marqués `e2e` demandent en plus l'explorateur construit et Chromium ; ils sont sautés sur le poste quand l'un manque, et échouent en CI. `docs/ci.md` montre comment rejouer une case de la matrice (Python 3.13 et 3.14, PostgreSQL 17 et 18).
 
-Prévu par le PRD, pas encore dans le dépôt : `make sprint`, `make next`, `scripts/story US-XXXX` (kit) et la démonstration `docker compose up` (US-1902).
+Une dépendance s'ajoute dans le `pyproject.toml` du composant, puis `uv lock`. Le `pyproject.toml` racine impose un délai de carence de 7 jours (`exclude-newer`).
 
 ## Ce que fait le produit
 
-AnswerLineage retrouve, pour une donnée reconnue fausse, les réponses d'agents qui en dépendent et leurs destinataires, puis organise leur rappel après validation humaine. Il fait aussi le chemin inverse (d'une réponse vers ses sources) et tire du même graphe une mémoire de pistes qui recommande des routages. Versions : v0.1 Tracer, v0.2 Rappeler, v0.3 Prévenir, v0.4 Optimiser, v1.0 Durcir.
+AnswerLineage retrouve, pour une donnée reconnue fausse, les réponses d'agents qui en dépendent et leurs destinataires, puis organise leur rappel après validation humaine. Il fait aussi le chemin inverse, d'une réponse vers ses sources.
 
-## Architecture cible
+## Architecture
 
-Sept services sans état autour d'un seul PostgreSQL. Flux : capture → événements OpenLineage → ingestion → workers → graphe → API de lecture → usages.
+Des services sans état autour d'un seul PostgreSQL. Le flux : capture → événements OpenLineage → ingestion → graphe → lecture.
 
-| Dossier | Rôle | Technologie |
+| Composant | Rôle | Technologie |
 | --- | --- | --- |
-| `proxy/` | Proxy MCP transparent (HTTP et stdio) : relaie à l'identique, émet un événement par appel d'outil, analyse le SQL hors du chemin de l'appel, applique la quarantaine | Python, ASGI, sqlglot |
-| `adapters/` | Captent réponse, diffusion, skills, sous-agents dans le processus de l'agent (Claude Agent SDK, LangGraph, puis Pydantic AI, Google ADK) ; extension A2A | Bibliothèques Python |
-| `collector/` | Pont OTLP (spans GenAI) et journaux d'audit d'entrepôt → événements | Python |
-| `api/` | Ingestion (valide, déduplique, écrit `event_raw`) et lecture (impact, incidents, rappel, écart, criticité, recommandations) | FastAPI, Pydantic |
-| `workers/` | Alimentent le graphe, réconcilient avec l'entrepôt, déposent les traces de pistes, calculent écart et criticité | Python, file sur PostgreSQL |
-| `mcp-server/` | Outils `tracer_reponse`, `impact_donnee`, `recommander` | FastMCP |
-| `ui/` | Explorateur : graphe en cinq colonnes (données, outils, agents, réponses, destinataires), modes Remonter, Propager, Pistes, Écart, Criticité | TypeScript, React, SVG |
-| `deploy/`, `corpus/`, `spec/facets/`, `docs/` | docker compose et chart Helm ; corpus de vérité et corpus d'abus ; schémas JSON des facettes ; PRD, ADR, runbooks | |
+| `proxy/` | Proxy MCP transparent : relaie à l'identique, émet un événement par appel d'outil, analyse le SQL à côté de l'appel | ASGI, httpx, sqlglot |
+| `api/` | Schéma du graphe, migrations, écriture du graphe, API d'ingestion OpenLineage, API de lecture du lignage | FastAPI, SQLAlchemy Core, Alembic, psycopg |
+| `workers/` | File de traitement dans PostgreSQL, projection des événements reçus dans le graphe | SQLAlchemy Core, psycopg |
+| `corpus/` | Entreprise synthétique à vérité connue : événements OpenLineage et vérité des incidents, déterminés par une graine | Bibliothèque standard seule |
+| `ui/` | Explorateur : le graphe en cinq colonnes, le mode Propager, les adresses partageables. Fichiers statiques servis par l'API | TypeScript, React, SVG, Vite |
 
-Points qui demandent plusieurs fichiers pour être compris :
+Chaque composant est un membre de l'espace de travail uv : sources dans `<composant>/src/answerlineage_<composant>/`, tests dans `<composant>/tests/` (importés sous `<composant>.tests`). Les tests qui croisent plusieurs composants sont dans `tests/`. Un nouveau composant s'ajoute au `pyproject.toml` racine à six endroits : membres de l'espace de travail, `src` de ruff, `mypy_path` et `files` de mypy, `testpaths` de pytest, `source` de coverage, chemins de la porte de couverture.
 
-- **Contrat d'événements** : RunEvent OpenLineage 1.55. Requête d'agent = run ; appel d'outil et délégation A2A = runs enfants (facette `parent`) ; données lues = `inputs` ; écritures, mémoire et réponse = `outputs` versionnés. Facettes standard partout où elles existent, cinq facettes propres seulement : `answerlineage_agent`, `answerlineage_toolCall`, `answerlineage_qos`, `answerlineage_delivery`, `answerlineage_keys`.
-- **Corrélation** : l'identifiant de run est dérivé du contexte de trace W3C (`traceparent` dans `_meta` MCP ou en-tête HTTP), jamais d'un en-tête propre. Un même appel vu par le proxy et par l'adaptateur fusionne en un seul run.
-- **Découplage** : boîte d'envoi locale bornée côté capture, émission asynchrone, ingestion idempotente et indifférente à l'ordre. Une perte produit un marqueur de trou de lignage ; chaque résultat d'impact affiche sa couverture.
-- **Tables** : `event_raw` (partition mensuelle, rejouable), `run`, `dataset`/`dataset_version`, `read_edge` (niveau de précision : table, colonnes, sous-ensemble, clés ; heure d'événement et heure d'enregistrement), `write_edge` (porte la transitivité), `answer`/`delivery`, `declaration`, `incident`/`incident_scope`, `impact`, `trail`, `recommendation_log`, `coverage`, `audit_log`.
-- **Moteur d'impact** : lectures candidates dans la fenêtre de validité → classe de confiance (certaine, probable, possible, écartée) par intersection avec le périmètre → remontée jusqu'aux destinataires → transitivité par `write_edge`, uniquement vers l'avant dans le temps, une dépendance indirecte étant au plus « probable ».
-- **Seul retour vers le chemin de l'appel** : les périmètres en quarantaine, transmis au proxy (modes observer, avertir, bloquer). C'est le seul cas où le proxy modifie un résultat d'outil.
-- **Pistes** : trace par transition (contexte, étape précédente, ressource), oubli exponentiel calculé à la lecture, pénalité ciblée sur la seule ressource fautive, choix par tirage de Thompson à graine fixée.
+Ce qui demande de lire plusieurs fichiers :
+
+- **Contrat d'événements.** Le RunEvent d'OpenLineage 1.55 (schéma 2-0-2, copié dans `spec/openlineage/`). Une requête d'agent est un run ; un appel d'outil est un run enfant ; les données lues sont les `inputs`. Le proxy construit ses événements dans `proxy/.../events.py`, l'API les valide dans `api/.../ingest/models.py`, et `tests/test_contract_proxy_ingestion.py` vérifie que les deux s'accordent avec le schéma officiel.
+- **Le proxy décide sur le corps de la requête**, jamais sur les en-têtes MCP (`inspection.py`). Les en-têtes ne servent qu'à être comparés au corps.
+- **Host et Origin sont contrôlés avant tout** (`guard.py`, dans `proxy/` et dans `api/`). Le contrôle est écrit deux fois pour qu'aucun service ne dépende de l'autre ; `tests/test_contract_guard.py` les tient d'accord : toute règle changée d'un côté se change de l'autre.
+- **Rien ne retarde un appel.** Le relais (`app.py`) rend la réponse au fil de l'eau ; l'événement est construit après l'échange, et l'analyse du SQL (`sql.py`) tourne ensuite dans un fil à part.
+- **L'analyse du SQL échoue du côté sûr.** Elle ne liste les colonnes d'une table que si la liste est sûre d'être complète ; sinon la table est rendue en entier, ou la lecture est « non résolue ». Une colonne manquante ferait écarter à tort une réponse touchée.
+- **L'API publiée est un contrat.** `spec/openapi/answerlineage-v1.json` est la spécification servie par l'application ; un test échoue s'ils diffèrent, des tests générés (Schemathesis) vérifient que chaque route s'y conforme, et `scripts/check_openapi_compat.py` refuse un changement incompatible avec la branche cible.
+- **Lecture du lignage** (`api/.../lineage/`). Les sources d'une réponse sont les lectures de son run et de ses runs enfants (`trace.py`). La vue en cinq colonnes part des réponses les plus récentes et donne à chacune sa chaîne (`overview.py`). La propagation part des lectures d'un jeu de données dans une fenêtre et remonte aux runs parents (`impact.py`) ; `tests/test_truth_corpus_impact.py` la mesure sur le corpus de vérité. Toute lecture du graphe est bornée, et une route ne renvoie jamais la valeur reçue dans une erreur (`responses.py`).
+- **L'explorateur ne lit que l'API de lecture** (`ui/src/`). `graph.ts` déduit les liens et la chaîne d'un nœud de la vue reçue, `route.ts` fait de l'adresse l'état de la page. L'API le sert sous une politique de sécurité du contenu stricte (`api/.../explorer.py`) : ni script ni style en ligne, donc aucun attribut `style` dans les composants. `tests/test_explorer.py` compare ce que la page affiche à l'entreprise générée.
+- **La démonstration** (`compose.yaml`, `deploy/Dockerfile`) installe les composants depuis le verrou, en paquets construits. Les fichiers de données d'un composant doivent donc être dans son paquet, et un port ne se publie que sur la boucle locale (`make policy` le vérifie).
+- **Écritures du graphe idempotentes et commutatives** (`api/.../store/graph.py`) : rejouer un événement, ou recevoir deux événements d'un run dans le désordre, donne le même graphe.
+- **De l'événement au graphe.** L'ingestion écrit l'événement brut et une ligne de file dans la même transaction (`api/.../ingest/store.py`). Un worker réclame un lot avec `FOR UPDATE SKIP LOCKED`, projette chaque événement (`workers/.../projection.py`) et retire le lot de la file dans une seule transaction (`workers/.../queue.py`) : ni double traitement, ni perte. `workers` dépend de `api` pour le schéma et l'écriture du graphe.
+- **La vérité du corpus ne passe pas par le produit.** `corpus/.../enterprise.py` établit lui-même les réponses touchées par un incident, à partir de ce qu'il a généré : elle sert à mesurer le moteur, elle ne se calcule donc jamais avec lui. Ses tirages sont nommés (`_Dice`) : en ajouter un ne décale pas les autres. Le corpus de vérité (`scenarios.py`, `scenario_data/`) tient des scénarios à la vérité écrite à la main ; son contrôle la recoupe avec la description du scénario, et son empreinte est liée à son numéro de version.
+- **Schéma et migrations.** `store/schema.py` déclare le schéma, les migrations Alembic le créent, et un test compare la base migrée au schéma déclaré. Une migration nomme ses contraintes et fournit sa descente.
+- **Fixtures PostgreSQL.** `conftest.py` à la racine fournit `database` (base migrée, clonée d'un modèle) et `empty_database`, une base par test.
 
 ## Invariants du produit
 
-Une story qui en viole un est fausse, même si ses tests passent.
+Un changement qui en viole un est faux, même si ses tests passent.
 
-1. Aucun contenu de prompt, de résultat d'outil ou de réponse n'est stocké, journalisé ni mis en métrique : empreintes HMAC seulement (ADR-004, ENF-CONF-01, test canari).
-2. Aucun modèle dans AnswerLineage : tout résultat est déterministe (ADR-012).
-3. La capture ne bloque jamais un agent ; elle reste ouverte en cas de panne (ADR-005, ENF-DISP-03). Latence ajoutée par le proxy : p99 ≤ 5 ms (ENF-PERF-01).
-4. Le proxy ne termine pas OAuth, ne stocke ni ne journalise aucun jeton, et décide sur le corps de la requête, jamais sur les seuls en-têtes (ADR-011, ENF-SEC-05, EF-SEC-11).
-5. PostgreSQL est la seule dépendance obligatoire : graphe, file et pistes (ADR-001). Pas de service cloud propriétaire, installation hors ligne possible.
-6. Toute entrée est hostile : identifiants validés (jeu de caractères, longueur, normalisation Unicode), limites sur toute entrée (EF-SEC-01, ENF-SEC-06).
-7. Toute sortie de texte suit un gabarit fixe à champs structurés ; aucun texte libre d'un émetteur n'atteint un modèle ou un destinataire (EF-SEC-02).
-8. Aucun rappel ne part sans validation humaine tracée (EF-INC-04). Destinataires pseudonymisés par HMAC par locataire, sans table de correspondance (ENF-CONF-02).
-9. Les recommandations sont consultatives et s'appliquent par merge request ; la liste d'outils vue par un modèle n'est jamais réordonnée en session (ADR-009).
+1. Aucun contenu de prompt, de résultat d'outil ou de réponse n'est stocké, journalisé ni mis en métrique : des empreintes seulement. Les bibliothèques journalisent parfois ce contenu à notre place (URL complète, requête SQL) : chaque composant a un test canari qui le vérifie.
+2. Aucun modèle dans AnswerLineage : tout résultat est déterministe.
+3. La capture ne bloque ni ne retarde jamais un agent ; elle reste ouverte en cas de panne.
+4. Le proxy ne termine pas OAuth et ne conserve aucun jeton.
+5. PostgreSQL est la seule dépendance obligatoire.
+6. Toute entrée est hostile : un identifiant reçu n'est recopié que s'il a une forme admise, et toute entrée est bornée.
+7. Tout texte produit suit un gabarit fixe : aucun texte libre d'un émetteur n'atteint un modèle ou un destinataire.
+8. Aucun rappel ne part sans validation humaine. Les destinataires sont pseudonymisés, sans table de correspondance.
 
 ## Façon de travailler
 
-- Une story, une session, une branche, une merge request. Tests écrits avant le code. Développement sur tronc, branches de moins de deux jours, historique linéaire, commits conventionnels, fusion en un seul commit dont le message est le titre de la merge request.
-- Une piste est un composant (`ci`, `api`, `workers`, `proxy`, `adaptateurs`, `collecteur`, `mcp`, `ui`, `deploy`, `corpus`, `docs`) : jamais deux stories de la même piste en parallèle. Les stories d'une même vague de sprint sont indépendantes.
-- Fini = critères d'acceptation Gherkin verts en CI, tests au bon niveau (unitaire, intégration, contrat, corpus, e2e, performance, sécurité), couverture de branches ≥ 85 % sur le moteur et le proxy, typage strict sans erreur, documentation et notes de version à jour.
-- Portes bloquantes propres au projet, au-delà du lint et des tests : précision et rappel du moteur sur le corpus de vérité (rappel ≥ 0,99 au niveau table, précision ≥ 0,90 aux niveaux colonne et sous-ensemble), corpus d'abus bloqué à 100 %, canaris de contenu et de jeton absents partout.
-- Tests d'intégration sur PostgreSQL réel (Testcontainers), migrations Alembic réversibles en trois temps : étendre, migrer, contracter.
-- Dépendances : délai de carence de 7 jours, actions GitHub épinglées par empreinte de commit, toute nouvelle dépendance demande un accord.
-- Réservé à l'humain : fusionner, publier, poser un label, lire un secret, modifier `.claude/`, `.mcp.json`, `CLAUDE.md`, le backlog, le PRD ou les tests du kit. Une fiche de story dont un critère est faux se signale, elle ne se réécrit pas.
-
-## Versions visées
-
-Python 3.13 (compatibilité 3.14), PostgreSQL 17 et 18, OpenLineage 1.55, MCP 2026-07-28 et 2025-11-25, A2A 1.0. Licence proposée : Apache 2.0 (non tranchée).
+- Tests écrits avant le code. Un changement cohérent par commit, message au format des commits conventionnels, en français.
+- La porte est `make check`. La couverture tient 85 % par composant, en branches comme en lignes et branches.
+- Le métier se dit en français (rappel, piste, écart, criticité, quarantaine), les identifiants techniques en anglais. « Rappel » désigne à la fois la notification des destinataires et la métrique *recall*.
+- Les actions GitHub s'épinglent par empreinte de commit et les images par empreinte `@sha256:` ; `make policy` le vérifie.
+- Une merge request qui touche un chemin protégé (`scripts/check_agent_config.py` en tient la liste : configuration d'agents, workflows, `scripts/`, `.devcontainer/`…) échoue au job `agent-config` tant que le mainteneur n'a pas posé le label `agent-config-approved`. Le signaler dans la merge request plutôt que de contourner le contrôle.
+- Reviennent au mainteneur : fusionner, publier, poser un label, lire un secret, ajouter une dépendance, modifier la configuration d'agents (`.claude/`, `.mcp.json`), ce fichier ou les garde-fous du pipeline.

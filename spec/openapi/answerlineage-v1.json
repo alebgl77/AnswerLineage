@@ -1,0 +1,3854 @@
+{
+  "components": {
+    "schemas": {
+      "AgentName": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ],
+        "title": "AgentName",
+        "type": "object"
+      },
+      "AgentNode": {
+        "properties": {
+          "id": {
+            "description": "Identifiant du nœud, valable dans cette réponse seulement.",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "namespace",
+          "name"
+        ],
+        "title": "AgentNode",
+        "type": "object"
+      },
+      "Analysis": {
+        "description": "L'état de l'analyse d'impact de l'incident.",
+        "properties": {
+          "attempts": {
+            "description": "Essais en échec.",
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImpactCounts"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Réponses touchées et destinataires distincts. Nuls avant l'analyse faite."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "enum": [
+                  "query_timeout",
+                  "analysis_error"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Code du dernier échec : « query_timeout », une lecture a dépassé le délai de l'analyse ; « analysis_error », toute autre erreur. Nul pour une analyse faite.",
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fin de l'analyse, faite ou en échec. Nulle tant qu'elle est en attente.",
+            "title": "Finished At"
+          },
+          "known_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Le graphe est lu tel qu'il était connu à cette heure, fixée au premier essai. Nulle avant lui.",
+            "title": "Known At"
+          },
+          "requested_at": {
+            "description": "Demande, à la déclaration de l'incident.",
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "state": {
+            "description": "« pending » : en attente d'un worker, ou remise à plus tard après un échec. « done » : faite, son résultat se lit. « failed » : en échec après plusieurs essais, « error » dit pourquoi.",
+            "enum": [
+              "pending",
+              "done",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Vrai quand la propagation dépasse une de ses bornes : le résultat est partiel. Nul avant l'analyse faite.",
+            "title": "Truncated"
+          }
+        },
+        "required": [
+          "state",
+          "requested_at",
+          "attempts",
+          "error",
+          "known_at",
+          "finished_at",
+          "counts",
+          "truncated"
+        ],
+        "title": "Analysis",
+        "type": "object"
+      },
+      "AnalysisResult": {
+        "description": "Ce que l'analyse a trouvé : une page des réponses touchées, et ce qu'elle n'a pas pu voir.",
+        "properties": {
+          "answers": {
+            "description": "Les plus récentes d'abord.",
+            "items": {
+              "$ref": "#/components/schemas/TouchedAnswer"
+            },
+            "title": "Answers",
+            "type": "array"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/Coverage",
+            "description": "Couverture du lignage sur la fenêtre de l'incident, tous émetteurs confondus, à l'heure de l'analyse : une réponse dont l'appel n'a pas été capté manque."
+          },
+          "more": {
+            "description": "Vrai quand des réponses plus anciennes suivent.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor ». Nul quand il n'y a plus de réponse.",
+            "title": "Next Cursor"
+          },
+          "unknown_datasets": {
+            "description": "Jeux du périmètre que le graphe ne connaissait pas à l'heure de l'analyse : aucune lecture n'en est connue, ou leur nom est mal écrit.",
+            "items": {
+              "$ref": "#/components/schemas/IncidentDataset"
+            },
+            "title": "Unknown Datasets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "unknown_datasets",
+          "coverage",
+          "answers",
+          "more",
+          "next_cursor"
+        ],
+        "title": "AnalysisResult",
+        "type": "object"
+      },
+      "AnswerList": {
+        "properties": {
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/AnswerSummary"
+            },
+            "title": "Answers",
+            "type": "array"
+          },
+          "known_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Date à laquelle le graphe est lu, telle que demandée : ce qui a été enregistré après en est exclu. Absente quand la lecture porte sur le graphe tel qu'il est.",
+            "title": "Known At"
+          }
+        },
+        "required": [
+          "answers"
+        ],
+        "title": "AnswerList",
+        "type": "object"
+      },
+      "AnswerNode": {
+        "description": "Une réponse et sa chaîne, d'une colonne à l'autre.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Nœud de l'agent qui a répondu, quand il est connu.",
+            "title": "Agent"
+          },
+          "channels": {
+            "description": "Canaux par lesquels la réponse a été diffusée.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifiant stable de la réponse.",
+            "title": "Id",
+            "type": "string"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "title": "Produced At",
+            "type": "string"
+          },
+          "reads": {
+            "items": {
+              "$ref": "#/components/schemas/AnswerRead"
+            },
+            "title": "Reads",
+            "type": "array"
+          },
+          "recipients": {
+            "description": "Nœuds des destinataires.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Recipients",
+            "type": "array"
+          },
+          "tools": {
+            "description": "Nœuds des outils appelés.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "fingerprint",
+          "produced_at",
+          "agent",
+          "channels",
+          "recipients",
+          "tools",
+          "reads"
+        ],
+        "title": "AnswerNode",
+        "type": "object"
+      },
+      "AnswerRead": {
+        "description": "Une lecture faite pour produire la réponse.",
+        "properties": {
+          "dataset": {
+            "description": "Nœud du jeu de données lu.",
+            "title": "Dataset",
+            "type": "string"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Nœud de l'outil qui a lu, quand un outil a lu.",
+            "title": "Tool"
+          }
+        },
+        "required": [
+          "dataset",
+          "tool"
+        ],
+        "title": "AnswerRead",
+        "type": "object"
+      },
+      "AnswerSummary": {
+        "description": "Une réponse d'agent, désignée par son empreinte.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentName"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Agent du run, quand il est connu."
+          },
+          "fingerprint": {
+            "description": "Empreinte de la réponse : son contenu n'est pas conservé.",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifiant stable de la réponse.",
+            "title": "Id",
+            "type": "string"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "title": "Produced At",
+            "type": "string"
+          },
+          "run_id": {
+            "description": "Run de l'agent qui a produit la réponse.",
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "fingerprint",
+          "produced_at",
+          "run_id",
+          "agent"
+        ],
+        "title": "AnswerSummary",
+        "type": "object"
+      },
+      "BatchResult": {
+        "description": "Bilan de l'ingestion d'un lot.",
+        "properties": {
+          "accepted": {
+            "description": "Événements valides, enregistrés ou déjà connus.",
+            "title": "Accepted",
+            "type": "integer"
+          },
+          "duplicates": {
+            "description": "Événements valides déjà connus, sans effet.",
+            "title": "Duplicates",
+            "type": "integer"
+          },
+          "rejected": {
+            "items": {
+              "$ref": "#/components/schemas/Rejection"
+            },
+            "title": "Rejected",
+            "type": "array"
+          }
+        },
+        "required": [
+          "accepted",
+          "duplicates",
+          "rejected"
+        ],
+        "title": "BatchResult",
+        "type": "object"
+      },
+      "Coverage": {
+        "description": "Part des appels relayés présents dans le graphe, et trous connus, sur une période.",
+        "properties": {
+          "calls_seen": {
+            "description": "Appels vus par les émetteurs, sur leurs relevés.",
+            "title": "Calls Seen",
+            "type": "integer"
+          },
+          "events_in_graph": {
+            "description": "Événements de ces appels présents dans le graphe.",
+            "title": "Events In Graph",
+            "type": "integer"
+          },
+          "events_lost": {
+            "description": "Événements déclarés perdus par les émetteurs.",
+            "title": "Events Lost",
+            "type": "integer"
+          },
+          "holes": {
+            "description": "Trous connus, par heure de début.",
+            "items": {
+              "$ref": "#/components/schemas/CoverageHole"
+            },
+            "title": "Holes",
+            "type": "array"
+          },
+          "instances": {
+            "description": "Instances des émetteurs qui ont publié un relevé recoupant la période, des proxys placés devant un même serveur ; un relevé sans instance compte pour une instance à part.",
+            "title": "Instances",
+            "type": "integer"
+          },
+          "rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Part des appels vus présents dans le graphe, de 0 à 1 : dans chaque fenêtre, les événements comptés ne dépassent pas les appels vus. Nulle quand aucun appel n'a été vu.",
+            "title": "Rate"
+          },
+          "status": {
+            "description": "« measured » : toute la période est couverte par des relevés. « partial » : une partie seulement, les trous disent laquelle manque. « unknown » : aucun relevé, la couverture n'est pas mesurée.",
+            "enum": [
+              "measured",
+              "partial",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "Vrai quand les relevés ou les trous dépassent leur borne : la mesure est partielle, et elle n'est jamais donnée pour complète.",
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "uninspected": {
+            "description": "Requêtes relayées sans pouvoir être inspectées.",
+            "title": "Uninspected",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "rate",
+          "calls_seen",
+          "events_in_graph",
+          "events_lost",
+          "uninspected",
+          "instances",
+          "holes",
+          "truncated"
+        ],
+        "title": "Coverage",
+        "type": "object"
+      },
+      "CoverageHole": {
+        "description": "Un trou connu du lignage : une fenêtre où des appels ont pu échapper au graphe.",
+        "properties": {
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Événements perdus ou manquants, requêtes non inspectées ; nul pour un silence, où rien n'est compté.",
+            "title": "Count"
+          },
+          "emitter": {
+            "description": "Émetteur concerné, l'espace de noms de ses jobs.",
+            "title": "Emitter",
+            "type": "string"
+          },
+          "kind": {
+            "description": "« events_lost » : l'émetteur déclare des événements perdus. « uninspected » : il a relayé des requêtes sans pouvoir les inspecter, qui cachent peut-être des appels, en nombre inconnu. « missing_from_graph » : le graphe contient moins d'événements que d'appels vus. « silence » : aucun relevé, entre deux relevés ou après le dernier. « before_first_report » : la période commence avant le premier relevé de l'émetteur.",
+            "enum": [
+              "events_lost",
+              "uninspected",
+              "missing_from_graph",
+              "silence",
+              "before_first_report"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/Window"
+          }
+        },
+        "required": [
+          "emitter",
+          "kind",
+          "window",
+          "count"
+        ],
+        "title": "CoverageHole",
+        "type": "object"
+      },
+      "CoverageList": {
+        "description": "La couverture du lignage par émetteur, sur une période.",
+        "properties": {
+          "emitters": {
+            "description": "Par identifiant d'émetteur.",
+            "items": {
+              "$ref": "#/components/schemas/EmitterCoverage"
+            },
+            "title": "Emitters",
+            "type": "array"
+          },
+          "more": {
+            "description": "Vrai quand d'autres émetteurs suivent la borne demandée.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "window": {
+            "$ref": "#/components/schemas/Window"
+          }
+        },
+        "required": [
+          "window",
+          "emitters",
+          "more"
+        ],
+        "title": "CoverageList",
+        "type": "object"
+      },
+      "CoverageReport": {
+        "description": "Ce qu'un émetteur a vu pendant une fenêtre.",
+        "properties": {
+          "calls_seen": {
+            "description": "Appels d'outils vus pendant la fenêtre.",
+            "maximum": 1000000000.0,
+            "minimum": 0.0,
+            "title": "Calls Seen",
+            "type": "integer"
+          },
+          "emitter": {
+            "description": "Identifiant de l'émetteur : l'espace de noms de ses jobs, « mcp://entrepot » pour le proxy placé devant ce serveur.",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Emitter",
+            "type": "string"
+          },
+          "events_emitted": {
+            "description": "Événements remis à leur destination.",
+            "maximum": 1000000000.0,
+            "minimum": 0.0,
+            "title": "Events Emitted",
+            "type": "integer"
+          },
+          "events_lost": {
+            "description": "Événements que l'émetteur n'a pas pu remettre.",
+            "maximum": 1000000000.0,
+            "minimum": 0.0,
+            "title": "Events Lost",
+            "type": "integer"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Instance de l'émetteur, facultative : plusieurs proxys placés devant un même serveur partagent l'émetteur, chacun publie sous son instance, et leurs relevés s'additionnent. Un relevé sans instance compte pour une instance à part.",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Instance"
+          },
+          "uninspected": {
+            "default": 0,
+            "description": "Requêtes relayées sans pouvoir être inspectées : elles cachent peut-être des appels.",
+            "maximum": 1000000000.0,
+            "minimum": 0.0,
+            "title": "Uninspected",
+            "type": "integer"
+          },
+          "window": {
+            "$ref": "#/components/schemas/ReportWindow"
+          }
+        },
+        "required": [
+          "emitter",
+          "window",
+          "calls_seen",
+          "events_emitted",
+          "events_lost"
+        ],
+        "title": "CoverageReport",
+        "type": "object"
+      },
+      "DatasetList": {
+        "description": "Les jeux de données connus du graphe, par espace de noms puis par nom.",
+        "properties": {
+          "datasets": {
+            "items": {
+              "$ref": "#/components/schemas/DatasetName"
+            },
+            "title": "Datasets",
+            "type": "array"
+          },
+          "known_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Date à laquelle le graphe est lu, telle que demandée : ce qui a été enregistré après en est exclu. Absente quand la lecture porte sur le graphe tel qu'il est.",
+            "title": "Known At"
+          },
+          "more": {
+            "description": "Vrai quand la liste dépasse la borne demandée.",
+            "title": "More",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "datasets",
+          "more"
+        ],
+        "title": "DatasetList",
+        "type": "object"
+      },
+      "DatasetName": {
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name",
+          "kind"
+        ],
+        "title": "DatasetName",
+        "type": "object"
+      },
+      "DatasetNode": {
+        "properties": {
+          "id": {
+            "description": "Identifiant du nœud, valable dans cette réponse seulement.",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "namespace",
+          "name",
+          "kind"
+        ],
+        "title": "DatasetNode",
+        "type": "object"
+      },
+      "DatasetSource": {
+        "description": "Un jeu de données lu pour produire la réponse.",
+        "properties": {
+          "columns": {
+            "description": "Colonnes lues, quand toutes les lectures les donnent.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "first_read_at": {
+            "description": "Heure d'événement de la première lecture.",
+            "format": "date-time",
+            "title": "First Read At",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_read_at": {
+            "description": "Heure d'événement de la dernière lecture.",
+            "format": "date-time",
+            "title": "Last Read At",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          },
+          "precision": {
+            "description": "Ce que l'on sait de la lecture. « table » : le jeu entier est une source.",
+            "enum": [
+              "table",
+              "columns",
+              "subset",
+              "keys"
+            ],
+            "title": "Precision",
+            "type": "string"
+          },
+          "versions": {
+            "description": "Versions lues, quand l'émetteur les a déclarées.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "namespace",
+          "name",
+          "kind",
+          "versions",
+          "precision",
+          "columns",
+          "first_read_at",
+          "last_read_at"
+        ],
+        "title": "DatasetSource",
+        "type": "object"
+      },
+      "DeadLetter": {
+        "description": "Un événement au rebut, désigné par son identifiant : son contenu n'est pas recopié.",
+        "properties": {
+          "attempts": {
+            "description": "Essais de projection en échec depuis la mise en file.",
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "emitter": {
+            "description": "Émetteur : l'espace de noms du job de l'événement, sous sa forme normalisée.",
+            "title": "Emitter",
+            "type": "string"
+          },
+          "event_id": {
+            "description": "Identifiant de l'événement : l'empreinte de sa forme canonique, celle que rend l'ingestion.",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "first_failed_at": {
+            "description": "Premier essai en échec.",
+            "format": "date-time",
+            "title": "First Failed At",
+            "type": "string"
+          },
+          "last_failed_at": {
+            "description": "Dernier essai en échec : la mise au rebut.",
+            "format": "date-time",
+            "title": "Last Failed At",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Motif du dernier échec. « invalid_identifier » : un identifiant obligatoire (espace de noms ou nom du job, d'un jeu de données) n'a pas la forme d'un nom. « invalid_event » : l'événement n'a pas la forme que la projection lit. « constraint_violation » : l'écriture du graphe viole une contrainte de la base. « invalid_value » : la base refuse une valeur. Ces quatre motifs mettent l'événement au rebut au premier échec. « database_error » : la base a échoué (connexion, interblocage, schéma) ; « projection_error » : toute autre erreur. Ces deux motifs ne mettent l'événement au rebut qu'après le nombre d'essais réglé sur le worker.",
+            "enum": [
+              "invalid_identifier",
+              "invalid_event",
+              "constraint_violation",
+              "invalid_value",
+              "database_error",
+              "projection_error"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "received_at": {
+            "description": "Réception de l'événement par l'API.",
+            "format": "date-time",
+            "title": "Received At",
+            "type": "string"
+          },
+          "run_id": {
+            "description": "Run que l'événement décrit.",
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "emitter",
+          "reason",
+          "attempts",
+          "received_at",
+          "first_failed_at",
+          "last_failed_at"
+        ],
+        "title": "DeadLetter",
+        "type": "object"
+      },
+      "DeadLetterHealth": {
+        "description": "La file de rebut : les événements que la projection n'a pas pu intégrer au graphe.",
+        "properties": {
+          "events": {
+            "description": "Événements au rebut, qui attendent d'être rejoués.",
+            "title": "Events",
+            "type": "integer"
+          },
+          "lower_bound": {
+            "description": "Vrai au-delà de 10000 événements : « events » est un minimum.",
+            "title": "Lower Bound",
+            "type": "boolean"
+          },
+          "oldest_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Depuis combien de secondes le plus ancien est au rebut, à l'horloge de la base ; nul quand le rebut est vide.",
+            "title": "Oldest Age Seconds"
+          }
+        },
+        "required": [
+          "events",
+          "lower_bound",
+          "oldest_age_seconds"
+        ],
+        "title": "DeadLetterHealth",
+        "type": "object"
+      },
+      "DeadLetterList": {
+        "description": "Une page du rebut, et les décomptes par motif.",
+        "properties": {
+          "counts": {
+            "description": "Événements au rebut par motif, chaque motif de la liste fermée dans son ordre, zéro compris. Ils suivent le filtre d'émetteur, pas celui de motif : ils disent la répartition des motifs.",
+            "items": {
+              "$ref": "#/components/schemas/ReasonCount"
+            },
+            "title": "Counts",
+            "type": "array"
+          },
+          "dead_letters": {
+            "description": "Les plus récemment mis au rebut d'abord, sous les filtres demandés.",
+            "items": {
+              "$ref": "#/components/schemas/DeadLetter"
+            },
+            "title": "Dead Letters",
+            "type": "array"
+          },
+          "more": {
+            "description": "Vrai quand d'autres événements suivent cette page.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor ». Nul quand il n'y en a plus.",
+            "title": "Next Cursor"
+          },
+          "truncated": {
+            "description": "Vrai quand le rebut compte plus de 100000 événements sous le filtre d'émetteur : les décomptes sont alors des minimums.",
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dead_letters",
+          "counts",
+          "truncated",
+          "more",
+          "next_cursor"
+        ],
+        "title": "DeadLetterList",
+        "type": "object"
+      },
+      "DeadLetterReplay": {
+        "additionalProperties": false,
+        "description": "Les événements du rebut à remettre en file : tous, ou ceux que les filtres désignent.\n\nLes filtres donnés se cumulent. Sans filtre, tout le rebut est rejoué, ``limit``\névénements à la fois.",
+        "properties": {
+          "emitter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Seulement les événements de cet émetteur : l'espace de noms de leur job.",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Emitter"
+          },
+          "event_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Seulement ces événements, par leur identifiant.",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Event Ids"
+          },
+          "limit": {
+            "default": 1000,
+            "description": "Nombre maximal d'événements remis en file par ce rejeu, les plus anciens d'abord.",
+            "maximum": 10000,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "invalid_identifier",
+                  "invalid_event",
+                  "constraint_violation",
+                  "invalid_value",
+                  "database_error",
+                  "projection_error"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Seulement les événements mis au rebut pour ce motif.",
+            "title": "Reason"
+          }
+        },
+        "title": "DeadLetterReplay",
+        "type": "object"
+      },
+      "DeclaredDataset": {
+        "additionalProperties": false,
+        "description": "Un jeu de données faux, tel que le déclarant le nomme.",
+        "properties": {
+          "name": {
+            "description": "Nom du jeu de données, tel que le graphe le connaît.",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Espace de noms du jeu de données, par exemple « bigquery ».",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ],
+        "title": "DeclaredDataset",
+        "type": "object"
+      },
+      "DeclaredScope": {
+        "additionalProperties": false,
+        "description": "Le périmètre de l'incident.",
+        "properties": {
+          "datasets": {
+            "description": "Les jeux de données faux, sans doublon.",
+            "items": {
+              "$ref": "#/components/schemas/DeclaredDataset"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Datasets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "datasets"
+        ],
+        "title": "DeclaredScope",
+        "type": "object"
+      },
+      "DeclaredWindow": {
+        "additionalProperties": false,
+        "description": "La fenêtre de validité : début inclus, fin exclue, avec fuseau.",
+        "properties": {
+          "from": {
+            "description": "Début, inclus (RFC 3339, avec fuseau).",
+            "format": "date-time",
+            "title": "From",
+            "type": "string"
+          },
+          "to": {
+            "description": "Fin, exclue (RFC 3339, avec fuseau).",
+            "format": "date-time",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "DeclaredWindow",
+        "type": "object"
+      },
+      "DuplicateCount": {
+        "description": "Doublons reçus d'un émetteur, un jour.",
+        "properties": {
+          "count": {
+            "description": "Événements reçus alors qu'ils étaient déjà connus.",
+            "title": "Count",
+            "type": "integer"
+          },
+          "day": {
+            "description": "Jour UTC de réception.",
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "emitter": {
+            "description": "Espace de noms du job des événements.",
+            "title": "Emitter",
+            "type": "string"
+          }
+        },
+        "required": [
+          "emitter",
+          "day",
+          "count"
+        ],
+        "title": "DuplicateCount",
+        "type": "object"
+      },
+      "DuplicateList": {
+        "properties": {
+          "duplicates": {
+            "items": {
+              "$ref": "#/components/schemas/DuplicateCount"
+            },
+            "title": "Duplicates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "duplicates"
+        ],
+        "title": "DuplicateList",
+        "type": "object"
+      },
+      "EmitterCoverage": {
+        "description": "Un émetteur connu et sa couverture sur la période.",
+        "properties": {
+          "coverage": {
+            "$ref": "#/components/schemas/Coverage"
+          },
+          "emitter": {
+            "description": "Identifiant de l'émetteur, l'espace de noms de ses jobs.",
+            "title": "Emitter",
+            "type": "string"
+          },
+          "last_report_at": {
+            "description": "Réception du dernier relevé qui a changé quelque chose.",
+            "format": "date-time",
+            "title": "Last Report At",
+            "type": "string"
+          },
+          "muted_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Signalé muet par le contrôle des émetteurs : aucun relevé depuis cette heure. Nul quand l'émetteur publie.",
+            "title": "Muted Since"
+          }
+        },
+        "required": [
+          "emitter",
+          "last_report_at",
+          "muted_since",
+          "coverage"
+        ],
+        "title": "EmitterCoverage",
+        "type": "object"
+      },
+      "EmitterHealth": {
+        "description": "Les émetteurs qui publient des relevés de couverture.",
+        "properties": {
+          "known": {
+            "description": "Émetteurs qui ont publié au moins un relevé.",
+            "title": "Known",
+            "type": "integer"
+          },
+          "lower_bound": {
+            "description": "Vrai au-delà de 10000 émetteurs : les décomptes sont des minimums.",
+            "title": "Lower Bound",
+            "type": "boolean"
+          },
+          "muted": {
+            "description": "Émetteurs signalés muets par le contrôle des workers, sans relevé reçu depuis.",
+            "title": "Muted",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "known",
+          "muted",
+          "lower_bound"
+        ],
+        "title": "EmitterHealth",
+        "type": "object"
+      },
+      "EventRejected": {
+        "properties": {
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/FieldError"
+            },
+            "title": "Errors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "errors"
+        ],
+        "title": "EventRejected",
+        "type": "object"
+      },
+      "EventResult": {
+        "description": "Bilan de l'ingestion d'un événement.",
+        "properties": {
+          "duplicate": {
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "event_id": {
+            "description": "Identifiant déterministe de l'événement.",
+            "title": "Event Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "duplicate"
+        ],
+        "title": "EventResult",
+        "type": "object"
+      },
+      "Facet": {
+        "additionalProperties": true,
+        "description": "Facette OpenLineage : tout champ est admis, producteur et schéma sont exigés.",
+        "properties": {
+          "_producer": {
+            "format": "uri",
+            "minLength": 1,
+            "title": "Producer",
+            "type": "string"
+          },
+          "_schemaURL": {
+            "format": "uri",
+            "minLength": 1,
+            "title": "Schemaurl",
+            "type": "string"
+          }
+        },
+        "required": [
+          "_producer",
+          "_schemaURL"
+        ],
+        "title": "Facet",
+        "type": "object"
+      },
+      "FieldError": {
+        "description": "Champ fautif d'un événement rejeté.",
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "path": {
+            "description": "Pointeur JSON (RFC 6901) vers le champ fautif.",
+            "title": "Path",
+            "type": "string"
+          },
+          "type": {
+            "description": "Code stable du motif de rejet.",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "type",
+          "message"
+        ],
+        "title": "FieldError",
+        "type": "object"
+      },
+      "GraphView": {
+        "description": "Le graphe en cinq colonnes : données, outils, agents, réponses, destinataires.",
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNode"
+            },
+            "title": "Agents",
+            "type": "array"
+          },
+          "answers": {
+            "description": "Les plus récentes d'abord.",
+            "items": {
+              "$ref": "#/components/schemas/AnswerNode"
+            },
+            "title": "Answers",
+            "type": "array"
+          },
+          "datasets": {
+            "items": {
+              "$ref": "#/components/schemas/DatasetNode"
+            },
+            "title": "Datasets",
+            "type": "array"
+          },
+          "known_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Date à laquelle le graphe est lu, telle que demandée : ce qui a été enregistré après en est exclu. Absente quand la lecture porte sur le graphe tel qu'il est.",
+            "title": "Known At"
+          },
+          "more": {
+            "description": "Vrai quand des réponses plus anciennes existent.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor ». Nul quand il n'y a plus de réponse.",
+            "title": "Next Cursor"
+          },
+          "recipients": {
+            "items": {
+              "$ref": "#/components/schemas/RecipientNode"
+            },
+            "title": "Recipients",
+            "type": "array"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolNode"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "truncated": {
+            "description": "Vrai quand les chaînes des réponses dépassent une borne (runs, lectures, destinataires) : la vue est partielle.",
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "datasets",
+          "tools",
+          "agents",
+          "answers",
+          "recipients",
+          "more",
+          "next_cursor",
+          "truncated"
+        ],
+        "title": "GraphView",
+        "type": "object"
+      },
+      "Health": {
+        "description": "L'état de l'installation : des états d'une liste fermée et des décomptes bornés.",
+        "properties": {
+          "api_version": {
+            "description": "Version de l'API.",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "database": {
+            "description": "« available » : l'API lit sa base. « unavailable » : elle ne la joint pas.",
+            "enum": [
+              "available",
+              "unavailable"
+            ],
+            "title": "Database",
+            "type": "string"
+          },
+          "dead_letters": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeadLetterHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "La file de rebut ; nulle tant que le schéma n'est pas à jour."
+          },
+          "emitters": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmitterHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Les émetteurs connus et muets ; nuls tant que le schéma n'est pas à jour."
+          },
+          "migrations": {
+            "anyOf": [
+              {
+                "enum": [
+                  "current",
+                  "behind",
+                  "unknown_revision",
+                  "not_migrated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "« current » : le schéma est à jour. « behind » : des migrations restent à appliquer. « unknown_revision » : la base porte une révision que l'API ne connaît pas. « not_migrated » : aucune migration n'est appliquée. Nul quand la base est indisponible.",
+            "title": "Migrations"
+          },
+          "partitions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PartitionHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Les partitions manquantes ; nulles tant que le schéma n'est pas à jour."
+          },
+          "queue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QueueHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "La file d'ingestion ; nulle tant que le schéma n'est pas à jour."
+          }
+        },
+        "required": [
+          "api_version",
+          "database",
+          "migrations",
+          "queue",
+          "dead_letters",
+          "emitters",
+          "partitions"
+        ],
+        "title": "Health",
+        "type": "object"
+      },
+      "ImpactCounts": {
+        "description": "Décomptes sur tout l'incident, quelle que soit la page demandée.",
+        "properties": {
+          "answers": {
+            "description": "Réponses touchées.",
+            "title": "Answers",
+            "type": "integer"
+          },
+          "lower_bound": {
+            "description": "Vrai quand le résultat est tronqué : les décomptes sont des minimums, et zéro ne veut pas dire que rien n'est touché.",
+            "title": "Lower Bound",
+            "type": "boolean"
+          },
+          "recipients": {
+            "description": "Destinataires distincts de ces réponses.",
+            "title": "Recipients",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "answers",
+          "recipients",
+          "lower_bound"
+        ],
+        "title": "ImpactCounts",
+        "type": "object"
+      },
+      "ImpactResult": {
+        "description": "Les réponses et les destinataires touchés par un jeu de données faux pendant une fenêtre.",
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/ImpactCounts"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/Coverage",
+            "description": "Couverture du lignage sur la fenêtre de l'incident, tous émetteurs confondus : une réponse dont l'appel n'a pas été capté ne peut pas être trouvée."
+          },
+          "dataset": {
+            "$ref": "#/components/schemas/DatasetName"
+          },
+          "graph": {
+            "$ref": "#/components/schemas/GraphView",
+            "description": "Les réponses touchées, les plus récentes d'abord, avec leur chaîne."
+          },
+          "known_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Date à laquelle le graphe est lu, telle que demandée : ce qui a été enregistré après en est exclu. Absente quand la lecture porte sur le graphe tel qu'il est.",
+            "title": "Known At"
+          },
+          "truncated": {
+            "description": "Vrai quand la propagation dépasse une borne : le résultat est partiel, d'autres réponses peuvent être touchées, et les décomptes sont des minimums.",
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "window": {
+            "$ref": "#/components/schemas/Window"
+          }
+        },
+        "required": [
+          "dataset",
+          "window",
+          "counts",
+          "coverage",
+          "graph",
+          "truncated"
+        ],
+        "title": "ImpactResult",
+        "type": "object"
+      },
+      "Incident": {
+        "description": "Un incident déclaré et l'état de son analyse.",
+        "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/Analysis"
+          },
+          "declared_at": {
+            "format": "date-time",
+            "title": "Declared At",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifiant de l'incident, tiré par l'API.",
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/IncidentScope"
+          },
+          "severity": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "state": {
+            "description": "« qualified » : déclaré, son périmètre et sa fenêtre sont établis. La liste est fermée ; elle s'allongera avec les étapes du rappel.",
+            "enum": [
+              "qualified"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/Window",
+            "description": "Fenêtre de validité : début inclus, fin exclue."
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "severity",
+          "scope",
+          "window",
+          "declared_at",
+          "analysis"
+        ],
+        "title": "Incident",
+        "type": "object"
+      },
+      "IncidentDataset": {
+        "description": "Un jeu de données du périmètre.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ],
+        "title": "IncidentDataset",
+        "type": "object"
+      },
+      "IncidentDeclaration": {
+        "additionalProperties": false,
+        "description": "Ce que le responsable de données déclare. Aucun texte libre.",
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/DeclaredScope"
+          },
+          "severity": {
+            "description": "Gravité de l'incident, de « low » à « critical » : elle ne change pas l'analyse, elle ordonnera les rappels.",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/DeclaredWindow"
+          }
+        },
+        "required": [
+          "scope",
+          "window",
+          "severity"
+        ],
+        "title": "IncidentDeclaration",
+        "type": "object"
+      },
+      "IncidentDetail": {
+        "description": "Un incident, l'état de son analyse et, quand elle est faite, son résultat.",
+        "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/Analysis"
+          },
+          "declared_at": {
+            "format": "date-time",
+            "title": "Declared At",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifiant de l'incident, tiré par l'API.",
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisResult"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Nul tant que l'analyse n'est pas faite."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/IncidentScope"
+          },
+          "severity": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "state": {
+            "description": "« qualified » : déclaré, son périmètre et sa fenêtre sont établis. La liste est fermée ; elle s'allongera avec les étapes du rappel.",
+            "enum": [
+              "qualified"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/Window",
+            "description": "Fenêtre de validité : début inclus, fin exclue."
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "severity",
+          "scope",
+          "window",
+          "declared_at",
+          "analysis",
+          "result"
+        ],
+        "title": "IncidentDetail",
+        "type": "object"
+      },
+      "IncidentList": {
+        "description": "Les incidents déclarés, les plus récents d'abord.",
+        "properties": {
+          "incidents": {
+            "items": {
+              "$ref": "#/components/schemas/Incident"
+            },
+            "title": "Incidents",
+            "type": "array"
+          },
+          "more": {
+            "description": "Vrai quand des incidents plus anciens suivent.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor ». Nul quand il n'y en a plus.",
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "incidents",
+          "more",
+          "next_cursor"
+        ],
+        "title": "IncidentList",
+        "type": "object"
+      },
+      "IncidentScope": {
+        "properties": {
+          "datasets": {
+            "description": "Par espace de noms, puis par nom.",
+            "items": {
+              "$ref": "#/components/schemas/IncidentDataset"
+            },
+            "title": "Datasets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "datasets"
+        ],
+        "title": "IncidentScope",
+        "type": "object"
+      },
+      "InputDataset": {
+        "properties": {
+          "facets": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Facet"
+            },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
+            },
+            "title": "Facets",
+            "type": "object"
+          },
+          "inputFacets": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Facet"
+            },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
+            },
+            "title": "Inputfacets",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ],
+        "title": "InputDataset",
+        "type": "object"
+      },
+      "Job": {
+        "properties": {
+          "facets": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Facet"
+            },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
+            },
+            "title": "Facets",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ],
+        "title": "Job",
+        "type": "object"
+      },
+      "OutputDataset": {
+        "properties": {
+          "facets": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Facet"
+            },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
+            },
+            "title": "Facets",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          },
+          "outputFacets": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Facet"
+            },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
+            },
+            "title": "Outputfacets",
+            "type": "object"
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ],
+        "title": "OutputDataset",
+        "type": "object"
+      },
+      "PartitionHealth": {
+        "description": "Les partitions mensuelles que le contrôle des workers signale manquantes.",
+        "properties": {
+          "lower_bound": {
+            "description": "Vrai au-delà de 10000 : « missing » est un minimum.",
+            "title": "Lower Bound",
+            "type": "boolean"
+          },
+          "missing": {
+            "description": "Partitions manquantes, par table et par mois.",
+            "title": "Missing",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "missing",
+          "lower_bound"
+        ],
+        "title": "PartitionHealth",
+        "type": "object"
+      },
+      "QueueHealth": {
+        "description": "La file d'ingestion : ce qui attend d'être projeté dans le graphe.",
+        "properties": {
+          "lower_bound": {
+            "description": "Vrai au-delà de 10000 événements : « pending » est un minimum.",
+            "title": "Lower Bound",
+            "type": "boolean"
+          },
+          "oldest_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Depuis combien de secondes le plus ancien attend, à l'horloge de la base ; nul quand la file est vide.",
+            "title": "Oldest Age Seconds"
+          },
+          "pending": {
+            "description": "Événements reçus en attente de projection.",
+            "title": "Pending",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending",
+          "lower_bound",
+          "oldest_age_seconds"
+        ],
+        "title": "QueueHealth",
+        "type": "object"
+      },
+      "ReasonCount": {
+        "description": "Événements au rebut pour un motif.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "reason": {
+            "enum": [
+              "invalid_identifier",
+              "invalid_event",
+              "constraint_violation",
+              "invalid_value",
+              "database_error",
+              "projection_error"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "count"
+        ],
+        "title": "ReasonCount",
+        "type": "object"
+      },
+      "RecipientNode": {
+        "properties": {
+          "id": {
+            "description": "Identifiant du nœud, valable dans cette réponse seulement.",
+            "title": "Id",
+            "type": "string"
+          },
+          "pseudonym": {
+            "description": "Pseudonyme du destinataire, jamais son identité.",
+            "title": "Pseudonym",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "pseudonym"
+        ],
+        "title": "RecipientNode",
+        "type": "object"
+      },
+      "Rejection": {
+        "description": "Événement rejeté d'un lot.",
+        "properties": {
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/FieldError"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "index": {
+            "description": "Rang de l'événement dans le lot, à partir de zéro.",
+            "title": "Index",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "index",
+          "errors"
+        ],
+        "title": "Rejection",
+        "type": "object"
+      },
+      "ReplayResult": {
+        "description": "Bilan d'un rejeu.",
+        "properties": {
+          "more": {
+            "description": "Vrai quand d'autres événements du rebut répondent aux filtres : la borne est atteinte, ou un autre rejeu les tenait. Relancer le rejeu.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "replayed": {
+            "description": "Événements retirés du rebut et remis en file : un worker les projettera.",
+            "title": "Replayed",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "replayed",
+          "more"
+        ],
+        "title": "ReplayResult",
+        "type": "object"
+      },
+      "ReportWindow": {
+        "description": "Fenêtre d'un relevé : début inclus, fin exclue.",
+        "properties": {
+          "from": {
+            "description": "Début, inclus (RFC 3339, avec fuseau).",
+            "format": "date-time",
+            "title": "From",
+            "type": "string"
+          },
+          "to": {
+            "description": "Fin, exclue (RFC 3339, avec fuseau).",
+            "format": "date-time",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "ReportWindow",
+        "type": "object"
+      },
+      "RequestRefused": {
+        "properties": {
+          "error": {
+            "description": "Code stable du motif de refus.",
+            "title": "Error",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "RequestRefused",
+        "type": "object"
+      },
+      "RequestRejected": {
+        "description": "Requête dont un paramètre est invalide.",
+        "properties": {
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/FieldError"
+            },
+            "title": "Errors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "errors"
+        ],
+        "title": "RequestRejected",
+        "type": "object"
+      },
+      "Run": {
+        "properties": {
+          "facets": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Facet"
+            },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
+            },
+            "title": "Facets",
+            "type": "object"
+          },
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "title": "Run",
+        "type": "object"
+      },
+      "RunEvent": {
+        "description": "Événement d'exécution OpenLineage.",
+        "properties": {
+          "eventTime": {
+            "format": "date-time",
+            "title": "Eventtime",
+            "type": "string"
+          },
+          "eventType": {
+            "default": "OTHER",
+            "enum": [
+              "START",
+              "RUNNING",
+              "COMPLETE",
+              "ABORT",
+              "FAIL",
+              "OTHER"
+            ],
+            "title": "Eventtype",
+            "type": "string"
+          },
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/InputDataset"
+            },
+            "maxItems": 1000,
+            "title": "Inputs",
+            "type": "array"
+          },
+          "job": {
+            "$ref": "#/components/schemas/Job"
+          },
+          "outputs": {
+            "items": {
+              "$ref": "#/components/schemas/OutputDataset"
+            },
+            "maxItems": 1000,
+            "title": "Outputs",
+            "type": "array"
+          },
+          "producer": {
+            "format": "uri",
+            "minLength": 1,
+            "title": "Producer",
+            "type": "string"
+          },
+          "run": {
+            "$ref": "#/components/schemas/Run"
+          },
+          "schemaURL": {
+            "format": "uri",
+            "minLength": 1,
+            "title": "Schemaurl",
+            "type": "string"
+          }
+        },
+        "required": [
+          "eventTime",
+          "producer",
+          "schemaURL",
+          "run",
+          "job"
+        ],
+        "title": "RunEvent",
+        "type": "object"
+      },
+      "Sources": {
+        "description": "Les sources d'une réponse : ce que son run et ses runs enfants ont lu.",
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/AgentName"
+            },
+            "title": "Agents",
+            "type": "array"
+          },
+          "answer": {
+            "$ref": "#/components/schemas/AnswerSummary"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/Coverage",
+            "description": "Couverture du lignage sur cette période, par les émetteurs qui ont vu le run de la réponse ou l'un de ses runs enfants : une lecture dont l'appel n'a pas été capté manque aux sources."
+          },
+          "datasets": {
+            "items": {
+              "$ref": "#/components/schemas/DatasetSource"
+            },
+            "title": "Datasets",
+            "type": "array"
+          },
+          "known_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Date à laquelle le graphe est lu, telle que demandée : ce qui a été enregistré après en est exclu. Absente quand la lecture porte sur le graphe tel qu'il est.",
+            "title": "Known At"
+          },
+          "period": {
+            "$ref": "#/components/schemas/Window",
+            "description": "Période du run de la réponse : de son premier instant connu à son dernier, à la seconde, réponse comprise. C'est sur elle que se mesure la couverture."
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolUse"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "truncated": {
+            "description": "Vrai quand l'arbre des runs ou ses lectures dépassent leur borne : les sources sont partielles.",
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "answer",
+          "agents",
+          "tools",
+          "datasets",
+          "period",
+          "coverage",
+          "truncated"
+        ],
+        "title": "Sources",
+        "type": "object"
+      },
+      "ToolNode": {
+        "properties": {
+          "id": {
+            "description": "Identifiant du nœud, valable dans cette réponse seulement.",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "server": {
+            "title": "Server",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "server",
+          "name"
+        ],
+        "title": "ToolNode",
+        "type": "object"
+      },
+      "ToolUse": {
+        "properties": {
+          "calls": {
+            "description": "Appels de cet outil faits pour produire la réponse.",
+            "title": "Calls",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "server": {
+            "title": "Server",
+            "type": "string"
+          }
+        },
+        "required": [
+          "server",
+          "name",
+          "calls"
+        ],
+        "title": "ToolUse",
+        "type": "object"
+      },
+      "TouchedAnswer": {
+        "description": "Une réponse touchée, désignée par son identifiant stable et son empreinte.",
+        "properties": {
+          "fingerprint": {
+            "description": "Empreinte de la réponse : son contenu n'est pas conservé.",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifiant stable de la réponse.",
+            "title": "Id",
+            "type": "string"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "title": "Produced At",
+            "type": "string"
+          },
+          "recipients": {
+            "description": "Pseudonymes de ses destinataires.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Recipients",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "fingerprint",
+          "produced_at",
+          "recipients"
+        ],
+        "title": "TouchedAnswer",
+        "type": "object"
+      },
+      "UndescribedTool": {
+        "description": "Un outil appelé sans règle de lecture, vu par un émetteur.",
+        "properties": {
+          "calls": {
+            "description": "Événements reçus pendant la période qui le marquent.",
+            "title": "Calls",
+            "type": "integer"
+          },
+          "emitter": {
+            "description": "Émetteur : l'espace de noms des jobs, « mcp://<serveur> ».",
+            "title": "Emitter",
+            "type": "string"
+          },
+          "last_seen": {
+            "description": "Réception du plus récent de ces événements.",
+            "format": "date-time",
+            "title": "Last Seen",
+            "type": "string"
+          },
+          "tool": {
+            "description": "Nom de l'outil, le nom du job de ses appels.",
+            "title": "Tool",
+            "type": "string"
+          }
+        },
+        "required": [
+          "emitter",
+          "tool",
+          "calls",
+          "last_seen"
+        ],
+        "title": "UndescribedTool",
+        "type": "object"
+      },
+      "UndescribedToolList": {
+        "properties": {
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/UndescribedTool"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tools"
+        ],
+        "title": "UndescribedToolList",
+        "type": "object"
+      },
+      "Window": {
+        "description": "Fenêtre de temps : début inclus, fin exclue.",
+        "properties": {
+          "from": {
+            "format": "date-time",
+            "title": "From",
+            "type": "string"
+          },
+          "to": {
+            "format": "date-time",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "Window",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "summary": "Lignage et rappel des réponses d'agents",
+    "title": "AnswerLineage",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/answers": {
+      "get": {
+        "description": "Le destinataire d'un message retrouve la réponse d'agent qu'il porte.",
+        "operationId": "find_answers_api_v1_answers_get",
+        "parameters": [
+          {
+            "description": "Canal de diffusion du message, tel que l'émetteur le nomme.",
+            "in": "query",
+            "name": "channel",
+            "required": true,
+            "schema": {
+              "description": "Canal de diffusion du message, tel que l'émetteur le nomme.",
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Channel",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Référence du message dans ce canal.",
+            "in": "query",
+            "name": "message_ref",
+            "required": true,
+            "schema": {
+              "description": "Référence du message dans ce canal.",
+              "maxLength": 500,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Message Ref",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Nombre maximal de réponses renvoyées.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "description": "Nombre maximal de réponses renvoyées.",
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+            "in": "query",
+            "name": "known_at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+              "title": "Known At"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnswerList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Retrouve les réponses diffusées par un message",
+        "tags": [
+          "lignage"
+        ]
+      }
+    },
+    "/api/v1/answers/{answer_id}/sources": {
+      "get": {
+        "description": "Jeux de données et versions lus, outils appelés et agents intervenus, sans contenu.\n\nAvec la couverture du lignage sur la période du run, et ses trous connus.",
+        "operationId": "answer_sources_api_v1_answers__answer_id__sources_get",
+        "parameters": [
+          {
+            "description": "Identifiant de la réponse, tel que l'API le donne.",
+            "in": "path",
+            "name": "answer_id",
+            "required": true,
+            "schema": {
+              "description": "Identifiant de la réponse, tel que l'API le donne.",
+              "pattern": "^[0-9a-f]{48}$",
+              "title": "Answer Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+            "in": "query",
+            "name": "known_at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+              "title": "Known At"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sources"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Aucune réponse ne porte cet identifiant."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Remonte d'une réponse à ses sources",
+        "tags": [
+          "lignage"
+        ]
+      }
+    },
+    "/api/v1/coverage": {
+      "get": {
+        "description": "Part des appels vus présents dans le graphe, trous connus, émetteurs muets.",
+        "operationId": "coverage_by_emitter_api_v1_coverage_get",
+        "parameters": [
+          {
+            "description": "Début de la période, inclus (RFC 3339, avec fuseau).",
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "description": "Début de la période, inclus (RFC 3339, avec fuseau).",
+              "format": "date-time",
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Fin de la période, exclue (RFC 3339, avec fuseau).",
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "description": "Fin de la période, exclue (RFC 3339, avec fuseau).",
+              "format": "date-time",
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Nombre maximal d'émetteurs renvoyés.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "description": "Nombre maximal d'émetteurs renvoyés.",
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverageList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Donne la couverture du lignage de chaque émetteur sur une période",
+        "tags": [
+          "lignage"
+        ]
+      },
+      "post": {
+        "description": "Rend l'état de la fenêtre de cette instance après fusion : un relevé rejoué ne\nchange rien.\n\nLe corps est lu comme celui des événements : borné, et compressé ou non (``gzip``).",
+        "operationId": "publish_report_api_v1_coverage_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoverageReport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverageReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`)."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Le relevé est invalide."
+          }
+        },
+        "summary": "Publie le relevé de couverture d'un émetteur pour une fenêtre",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
+    "/api/v1/datasets": {
+      "get": {
+        "description": "Les jeux de données lus ou écrits par un run, par espace de noms puis par nom.",
+        "operationId": "datasets_api_v1_datasets_get",
+        "parameters": [
+          {
+            "description": "Nombre maximal de jeux de données renvoyés.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "description": "Nombre maximal de jeux de données renvoyés.",
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+            "in": "query",
+            "name": "known_at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+              "title": "Known At"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Liste les jeux de données connus du graphe",
+        "tags": [
+          "lignage"
+        ]
+      }
+    },
+    "/api/v1/graph": {
+      "get": {
+        "description": "Données, outils, agents, réponses et destinataires, avec la chaîne de chaque réponse.",
+        "operationId": "graph_api_v1_graph_get",
+        "parameters": [
+          {
+            "description": "Nombre maximal de réponses dans la vue.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 60,
+              "description": "Nombre maximal de réponses dans la vue.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{1,18}\\.[0-9a-f]{48}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+              "title": "Cursor"
+            }
+          },
+          {
+            "description": "Identifiant d'une réponse : la vue se réduit alors à sa chaîne.",
+            "in": "query",
+            "name": "answer",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{48}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Identifiant d'une réponse : la vue se réduit alors à sa chaîne.",
+              "title": "Answer"
+            }
+          },
+          {
+            "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+            "in": "query",
+            "name": "known_at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+              "title": "Known At"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Aucune réponse ne porte cet identifiant."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Donne le graphe en cinq colonnes des réponses les plus récentes, ou d'une réponse",
+        "tags": [
+          "lignage"
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "description": "Base, migrations, file d'ingestion, rebut, émetteurs muets, partitions manquantes.\n\nUne base injoignable n'est pas une erreur de la route : elle répond\n« unavailable », sans dire pourquoi.",
+        "operationId": "installation_health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Donne l'état de l'installation",
+        "tags": [
+          "installation"
+        ]
+      }
+    },
+    "/api/v1/impact": {
+      "get": {
+        "description": "Réponses dont un run a lu le jeu de données pendant la fenêtre, et leurs destinataires.",
+        "operationId": "propagate_api_v1_impact_get",
+        "parameters": [
+          {
+            "description": "Espace de noms du jeu de données, par exemple « bigquery ».",
+            "in": "query",
+            "name": "namespace",
+            "required": true,
+            "schema": {
+              "description": "Espace de noms du jeu de données, par exemple « bigquery ».",
+              "maxLength": 500,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Namespace",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Nom du jeu de données.",
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "Nom du jeu de données.",
+              "maxLength": 500,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Début de la fenêtre, inclus (RFC 3339, avec fuseau).",
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "description": "Début de la fenêtre, inclus (RFC 3339, avec fuseau).",
+              "format": "date-time",
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Fin de la fenêtre, exclue (RFC 3339, avec fuseau).",
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "description": "Fin de la fenêtre, exclue (RFC 3339, avec fuseau).",
+              "format": "date-time",
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Nombre maximal de réponses dans la vue.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "description": "Nombre maximal de réponses dans la vue.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{1,18}\\.[0-9a-f]{48}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+              "title": "Cursor"
+            }
+          },
+          {
+            "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+            "in": "query",
+            "name": "known_at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+              "title": "Known At"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImpactResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Ce jeu de données n'est pas connu."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Propage un incident de données jusqu'aux réponses et aux destinataires",
+        "tags": [
+          "lignage"
+        ]
+      }
+    },
+    "/api/v1/incidents": {
+      "get": {
+        "description": "Chaque incident avec son périmètre, sa fenêtre, sa gravité et l'état de son analyse.",
+        "operationId": "incidents_api_v1_incidents_get",
+        "parameters": [
+          {
+            "description": "Nombre maximal d'incidents renvoyés.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "description": "Nombre maximal d'incidents renvoyés.",
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{1,18}\\.[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Liste les incidents déclarés, les plus récents d'abord",
+        "tags": [
+          "incidents"
+        ]
+      },
+      "post": {
+        "description": "L'incident est créé à l'état « qualified », avec une demande d'analyse que les workers\nréclament. Le corps est lu borné, compressé ou non (``gzip``).",
+        "operationId": "declare_api_v1_incidents_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentDeclaration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Incident"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`)."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "La déclaration est invalide."
+          }
+        },
+        "summary": "Déclare un incident de données et lance son analyse d'impact",
+        "tags": [
+          "incidents"
+        ]
+      }
+    },
+    "/api/v1/incidents/{incident_id}": {
+      "get": {
+        "description": "Le périmètre, la fenêtre, la gravité, l'état de l'analyse et, quand elle est faite, une\npage des réponses touchées avec leurs destinataires, la couverture et ses trous.",
+        "operationId": "incident_api_v1_incidents__incident_id__get",
+        "parameters": [
+          {
+            "description": "Identifiant de l'incident, tel que l'API le donne.",
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "description": "Identifiant de l'incident, tel que l'API le donne.",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Nombre maximal de réponses touchées renvoyées.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "description": "Nombre maximal de réponses touchées renvoyées.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque de la page suivante des réponses touchées, tel que l'API le donne dans « result.next_cursor ».",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{1,18}\\.[0-9a-f]{48}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque de la page suivante des réponses touchées, tel que l'API le donne dans « result.next_cursor ».",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Aucun incident ne porte cet identifiant."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Donne un incident, l'état de son analyse et les réponses touchées",
+        "tags": [
+          "incidents"
+        ]
+      }
+    },
+    "/api/v1/ingestion/dead-letters": {
+      "get": {
+        "description": "Les plus récemment mis au rebut d'abord, chacun avec son émetteur, son motif, ses essais\net ses heures d'échec ; et les décomptes par motif. Aucun contenu d'événement.\n\nComme toute lecture, elle s'exécute sous le délai maximal des lectures.",
+        "operationId": "list_dead_letters_api_v1_ingestion_dead_letters_get",
+        "parameters": [
+          {
+            "description": "Seulement les événements de cet émetteur : l'espace de noms de leur job, par exemple « mcp://entrepot ».",
+            "in": "query",
+            "name": "emitter",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Seulement les événements de cet émetteur : l'espace de noms de leur job, par exemple « mcp://entrepot ».",
+              "title": "Emitter"
+            }
+          },
+          {
+            "description": "Seulement les événements mis au rebut pour ce motif.",
+            "in": "query",
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "invalid_identifier",
+                    "invalid_event",
+                    "constraint_violation",
+                    "invalid_value",
+                    "database_error",
+                    "projection_error"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Seulement les événements mis au rebut pour ce motif.",
+              "title": "Reason"
+            }
+          },
+          {
+            "description": "Nombre maximal d'événements renvoyés.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "description": "Nombre maximal d'événements renvoyés.",
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{1,18}\\.[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeadLetterList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Liste les événements au rebut, que la projection n'a pas pu intégrer au graphe",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
+    "/api/v1/ingestion/dead-letters/replay": {
+      "post": {
+        "description": "Les événements retirés du rebut sont remis en file dans la même transaction ; un worker\nles projette de nouveau. Un événement qui échoue encore revient au rebut, avec son nouveau\nmotif. Le corps est lu borné, compressé ou non (``gzip``).\n\nLe rejeu s'exécute sous le délai maximal des lectures : au-delà, rien n'est remis en file.",
+        "operationId": "replay_dead_letters_api_v1_ingestion_dead_letters_replay_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeadLetterReplay"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`)."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "La demande de rejeu est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Remet en file les événements du rebut, tous ou filtrés, en nombre borné",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
+    "/api/v1/ingestion/duplicates": {
+      "get": {
+        "description": "Du jour le plus récent au plus ancien. Sans doublon, un émetteur n'a pas de ligne.\n\nComme toute lecture, elle s'exécute sous le délai maximal des lectures.",
+        "operationId": "duplicates_api_v1_ingestion_duplicates_get",
+        "parameters": [
+          {
+            "description": "Nombre maximal de lignes (émetteur et jour) renvoyées.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "description": "Nombre maximal de lignes (émetteur et jour) renvoyées.",
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicateList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Compte les événements reçus en double, par émetteur et par jour",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
+    "/api/v1/ingestion/undescribed-tools": {
+      "get": {
+        "description": "Du plus récemment vu au plus ancien, sur les événements reçus pendant ``days`` jours.\n\nUn outil décrit depuis disparaît de la liste quand ses derniers appels non\ndécrits sortent de la période. Comme toute lecture, elle s'exécute sous le\ndélai maximal des lectures.",
+        "operationId": "undescribed_tools_api_v1_ingestion_undescribed_tools_get",
+        "parameters": [
+          {
+            "description": "Période lue, en jours de réception jusqu'à maintenant.",
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 7,
+              "description": "Période lue, en jours de réception jusqu'à maintenant.",
+              "maximum": 31,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Nombre maximal d'outils (émetteur et outil) renvoyés.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "description": "Nombre maximal d'outils (émetteur et outil) renvoyés.",
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UndescribedToolList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Liste les outils appelés sans règle de lecture, par émetteur",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
+    "/api/v1/lineage": {
+      "post": {
+        "description": "Point d'entrée standard d'OpenLineage : un émetteur conforme s'y branche tel quel.\n\nLe corps peut être compressé (``Content-Encoding: gzip``).",
+        "operationId": "ingest_event_api_v1_lineage_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunEvent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`)."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventRejected"
+                }
+              }
+            },
+            "description": "L'événement est invalide."
+          }
+        },
+        "summary": "Envoie un RunEvent OpenLineage",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
+    "/api/v1/lineage/batch": {
+      "post": {
+        "description": "Chaque événement est validé séparément : un événement invalide est rejeté\navec le chemin de ses champs fautifs, le reste du lot est accepté.\n\nLe corps peut être compressé (``Content-Encoding: gzip``).",
+        "operationId": "ingest_batch_api_v1_lineage_batch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "items": {
+                  "$ref": "#/components/schemas/RunEvent"
+                },
+                "type": "array"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`). Ou bien ce n'est pas un tableau (`batch_must_be_an_array`)."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`). Ou bien le lot compte plus d'événements que le maximum (`batch_too_large`)."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchResult"
+                }
+              }
+            },
+            "description": "Aucun événement du lot n'est valide."
+          }
+        },
+        "summary": "Envoie un lot de RunEvents OpenLineage",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    }
+  }
+}

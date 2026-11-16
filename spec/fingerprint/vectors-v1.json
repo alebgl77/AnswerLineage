@@ -1,0 +1,115 @@
+{
+  "description": "Empreintes à clé d'AnswerLineage. empreinte = « hmac-sha256: » suivi de HMAC-SHA-256(clé, étiquette || 0x00 || octets) en hexadécimal minuscule, où étiquette est l'encodage ASCII de la valeur de « labels » propre à l'usage. Arguments : octets = forme canonique JSON (RFC 8785) de params.arguments en UTF-8, « {} » quand l'appel n'en porte pas (« received » vaut alors null). Résultat : octets = corps de la réponse tel que relayé, donné ici en base64.",
+  "algorithm": "HMAC-SHA-256",
+  "labels": {
+    "arguments": "answerlineage/fingerprint/arguments/v1",
+    "result": "answerlineage/fingerprint/result/v1"
+  },
+  "keys": {
+    "locataireA": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "locataireB": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+  },
+  "arguments": [
+    {
+      "name": "appel simple",
+      "received": "{\"location\": \"Séville, ES\"}",
+      "canonical": "{\"location\":\"Séville, ES\"}",
+      "fingerprints": {
+        "locataireA": "hmac-sha256:83f3dfdcadbf4a499ebe55371ac24002c2915995cdc9476f07e53fbe3bea683e",
+        "locataireB": "hmac-sha256:705ded7df580b5c8c0c5c932c4fdbafa180931e26ec8fa694841245cb5700a67"
+      }
+    },
+    {
+      "name": "mêmes arguments, autre écriture",
+      "received": "{\n  \"location\" :\t\"S\\u00e9ville, ES\"\n}",
+      "canonical": "{\"location\":\"Séville, ES\"}",
+      "fingerprints": {
+        "locataireA": "hmac-sha256:83f3dfdcadbf4a499ebe55371ac24002c2915995cdc9476f07e53fbe3bea683e",
+        "locataireB": "hmac-sha256:705ded7df580b5c8c0c5c932c4fdbafa180931e26ec8fa694841245cb5700a67"
+      }
+    },
+    {
+      "name": "sans arguments",
+      "received": null,
+      "canonical": "{}",
+      "fingerprints": {
+        "locataireA": "hmac-sha256:786711ff63cec22ace90964b6aa04e2b9f02d68610f3767fe996496edc9eda2a",
+        "locataireB": "hmac-sha256:f46c675423f250c2121c0f546c4483984dcd53760fcf62bc6f6a6d513a7ffeda"
+      }
+    },
+    {
+      "name": "nombres",
+      "received": "{\"b\": [1, 2.50, -0.0, 1e21, 1E-7, 0.000001, 123456789012345678901, 12345678901234567890], \"a\": 100}",
+      "canonical": "{\"a\":100,\"b\":[1,2.5,0,1e+21,1e-7,0.000001,123456789012345680000,12345678901234567000]}",
+      "fingerprints": {
+        "locataireA": "hmac-sha256:6d6a7cb28d297eec9878d8197fd0340cd42e196a1cff3c8c094b417ccf545c1a",
+        "locataireB": "hmac-sha256:82924c5e8cca381c01b2aff64d2d3a9b28e7c87fecbf78234a2662d011f2cf73"
+      }
+    },
+    {
+      "name": "clés hors du plan multilingue de base",
+      "received": "{\"\\ufb33\": 3, \"\\ud83d\\ude00\": 2, \"\\u20ac\": 1, \"a\": 0}",
+      "canonical": "{\"a\":0,\"€\":1,\"😀\":2,\"דּ\":3}",
+      "fingerprints": {
+        "locataireA": "hmac-sha256:1baa6319ddce47733326ac76b643ee254025e3f18231b4583b32d855b2a06b14",
+        "locataireB": "hmac-sha256:5a1ac9c92c093260885a0195e5bb4ed091e2a004416cbcb732185e2a391957ba"
+      }
+    },
+    {
+      "name": "échappements",
+      "received": "{\"t\": \"ligne\\nsuivante\\t\\\"cité\\\" \\\\ \\u0001 \\u007f \\u2028\"}",
+      "canonical": "{\"t\":\"ligne\\nsuivante\\t\\\"cité\\\" \\\\ \\u0001   \"}",
+      "fingerprints": {
+        "locataireA": "hmac-sha256:24fd17ffdf80e33c517981ea0bb2e883894c7393d56034450f90a690367ad853",
+        "locataireB": "hmac-sha256:e0cf25a05cb0360b2e1451b872fb24ee25d2c3a1ded189fea3f0a598f87badab"
+      }
+    },
+    {
+      "name": "imbrication",
+      "received": "{\"z\": {\"y\": [true, false, null, {\"b\": 1, \"a\": 2}]}, \"a\": []}",
+      "canonical": "{\"a\":[],\"z\":{\"y\":[true,false,null,{\"a\":2,\"b\":1}]}}",
+      "fingerprints": {
+        "locataireA": "hmac-sha256:c656541b13194d768d3df821043d3ed518fbc954cdf5e71949f831c904e91f60",
+        "locataireB": "hmac-sha256:8cff87832289ab1b24c4eeed9738ab95ad585992d8a3c6ec3fbff2b810c21da7"
+      }
+    },
+    {
+      "name": "arguments qui ne sont pas un objet",
+      "received": "\"Dupont\"",
+      "canonical": "\"Dupont\"",
+      "fingerprints": {
+        "locataireA": "hmac-sha256:e72b8c152377d9d7dc3d2ff5bbf5533a1bda598996bf9087a74a01431bdc284a",
+        "locataireB": "hmac-sha256:f10a9383a38a12457ee27a6adaef1f20feffd55a4b69bdd9f7736b361ff68b2b"
+      }
+    }
+  ],
+  "results": [
+    {
+      "name": "réponse JSON",
+      "base64": "eyJqc29ucnBjIjoiMi4wIiwiaWQiOjEsInJlc3VsdCI6eyJjb250ZW50IjpbeyJ0eXBlIjoidGV4dCIsInRleHQiOiJJbCBmYWl0IGJlYXUgw6AgU8OpdmlsbGUifV0sImlzRXJyb3IiOmZhbHNlfX0K",
+      "size": 114,
+      "fingerprints": {
+        "locataireA": "hmac-sha256:be68c48f78c04a33a7eeaece7662254be84cf849aaaa4700651b0c6fb9201837",
+        "locataireB": "hmac-sha256:7bfd0dbd8be894d440e64e11cb9003df3cdf4c04197ebf0007045e04012a55f3"
+      }
+    },
+    {
+      "name": "réponse vide",
+      "base64": "",
+      "size": 0,
+      "fingerprints": {
+        "locataireA": "hmac-sha256:e32f7aa5d56caa67e634bcfe72490912a50a77f0a35cbe42fe24df8e41803098",
+        "locataireB": "hmac-sha256:845ec85e755d872c6b5568c8bb207d5da381d674a1aa52cbf90c9e8a36c80263"
+      }
+    },
+    {
+      "name": "mêmes octets que les arguments « Dupont »",
+      "base64": "IkR1cG9udCI=",
+      "size": 8,
+      "fingerprints": {
+        "locataireA": "hmac-sha256:fb35b6965e0b6c471cad7874d6f2ac6f9b7d0a5151ad61a0a7474e831f9090bb",
+        "locataireB": "hmac-sha256:2e4fd6523376ec6ed70a15dc3c8fc77910f0d3560ec704c807dbc31b0423a6a1"
+      }
+    }
+  ]
+}

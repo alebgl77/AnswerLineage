@@ -1,0 +1,138 @@
+{
+  "title": "La table est rechargée avant la fin déclarée de l'incident",
+  "level": "table",
+  "agents": {
+    "tresorerie": {
+      "namespace": "agent://finance",
+      "name": "analyste-tresorerie"
+    },
+    "commercial": {
+      "namespace": "agent://ventes",
+      "name": "assistant-commercial"
+    }
+  },
+  "tools": {
+    "sql": {
+      "server": "entrepot",
+      "name": "execute_sql"
+    }
+  },
+  "datasets": {
+    "taux": {
+      "namespace": "bigquery",
+      "name": "finance.ref.taux_change"
+    }
+  },
+  "runs": [
+    {
+      "id": "version-fausse",
+      "agent": "tresorerie",
+      "start": "2026-11-03T10:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T10:00:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "taux"
+              ],
+              "version": "2026-11-03"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "version-fausse",
+        "at": "2026-11-03T10:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "version-saine",
+      "agent": "commercial",
+      "start": "2026-11-04T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-04T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "taux"
+              ],
+              "version": "2026-11-04"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "version-saine",
+        "at": "2026-11-04T09:00:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d2"
+        ]
+      }
+    },
+    {
+      "id": "version-inconnue",
+      "agent": "commercial",
+      "start": "2026-11-04T10:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-04T10:00:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "taux"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "version-inconnue",
+        "at": "2026-11-04T10:00:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d3"
+        ]
+      }
+    }
+  ],
+  "incident": {
+    "dataset": "taux",
+    "from": "2026-11-03T06:00:00Z",
+    "to": "2026-11-04T12:00:00Z",
+    "versions": [
+      "2026-11-03"
+    ]
+  },
+  "truth": {
+    "touched": [
+      {
+        "answer": "version-fausse",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "version-inconnue",
+        "confidence": "possible"
+      }
+    ],
+    "discarded": [
+      {
+        "answer": "version-saine",
+        "reason": "version saine"
+      }
+    ],
+    "untouched": []
+  }
+}

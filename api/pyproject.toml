@@ -3,7 +3,33 @@ name = "answerlineage-api"
 version = "0.0.0"
 description = "API d'AnswerLineage : ingestion des événements OpenLineage et lecture du graphe."
 requires-python = ">=3.13"
-dependencies = []
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Natural Language :: French",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "alembic>=1.16",
+    "fastapi>=0.121",
+    "psycopg[binary]>=3.2",
+    "sqlalchemy[asyncio]>=2.0.40",
+    "uvicorn>=0.38",
+]
+
+[project.urls]
+Source = "https://github.com/alebgl77/AnswerLineage"
+Documentation = "https://github.com/alebgl77/AnswerLineage/tree/main/docs"
+Issues = "https://github.com/alebgl77/AnswerLineage/issues"
 
 [build-system]
 requires = ["hatchling>=1.27"]

@@ -1,0 +1,171 @@
+{
+  "title": "Une réponse s'appuie sur une note écrite à partir de la table fausse",
+  "level": "table",
+  "agents": {
+    "tresorerie": {
+      "namespace": "agent://finance",
+      "name": "analyste-tresorerie"
+    },
+    "commercial": {
+      "namespace": "agent://ventes",
+      "name": "assistant-commercial"
+    },
+    "direction": {
+      "namespace": "agent://direction",
+      "name": "synthese-hebdomadaire"
+    }
+  },
+  "tools": {
+    "sql": {
+      "server": "entrepot",
+      "name": "execute_sql"
+    },
+    "memoire": {
+      "server": "memoire",
+      "name": "lire_notes"
+    }
+  },
+  "datasets": {
+    "taux": {
+      "namespace": "bigquery",
+      "name": "finance.ref.taux_change"
+    },
+    "notes": {
+      "namespace": "memory://finance",
+      "name": "notes-tresorerie",
+      "kind": "memory"
+    },
+    "notes-direction": {
+      "namespace": "memory://direction",
+      "name": "notes-direction",
+      "kind": "memory"
+    }
+  },
+  "runs": [
+    {
+      "id": "note-lue-avant-son-ecriture",
+      "agent": "commercial",
+      "start": "2026-11-03T08:00:00Z",
+      "calls": [
+        {
+          "tool": "memoire",
+          "at": "2026-11-03T08:00:05Z",
+          "reads": [
+            {
+              "dataset": "notes"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "note-lue-avant-son-ecriture",
+        "at": "2026-11-03T08:00:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d3"
+        ]
+      }
+    },
+    {
+      "id": "ecrit-la-note",
+      "agent": "tresorerie",
+      "start": "2026-11-03T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-11-03T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "taux"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "ecrit-la-note",
+        "at": "2026-11-03T09:01:00Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      },
+      "writes": [
+        "notes"
+      ]
+    },
+    {
+      "id": "lit-la-note",
+      "agent": "commercial",
+      "start": "2026-11-03T17:00:00Z",
+      "calls": [
+        {
+          "tool": "memoire",
+          "at": "2026-11-03T17:00:05Z",
+          "reads": [
+            {
+              "dataset": "notes"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "lit-la-note",
+        "at": "2026-11-03T17:00:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d2"
+        ]
+      }
+    },
+    {
+      "id": "lit-une-autre-note",
+      "agent": "direction",
+      "start": "2026-11-03T17:30:00Z",
+      "calls": [
+        {
+          "tool": "memoire",
+          "at": "2026-11-03T17:30:05Z",
+          "reads": [
+            {
+              "dataset": "notes-direction"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "lit-une-autre-note",
+        "at": "2026-11-03T17:30:30Z",
+        "channel": "email",
+        "recipients": [
+          "d4"
+        ]
+      }
+    }
+  ],
+  "incident": {
+    "dataset": "taux",
+    "from": "2026-11-03T06:00:00Z",
+    "to": "2026-11-03T12:00:00Z"
+  },
+  "truth": {
+    "touched": [
+      {
+        "answer": "ecrit-la-note",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "lit-la-note",
+        "confidence": "probable",
+        "path": "indirect"
+      }
+    ],
+    "discarded": [],
+    "untouched": [
+      "note-lue-avant-son-ecriture",
+      "lit-une-autre-note"
+    ]
+  }
+}

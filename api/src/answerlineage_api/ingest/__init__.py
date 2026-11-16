@@ -1,0 +1,1 @@
+"""Ingestion des événements OpenLineage."""

@@ -1,0 +1,45 @@
+{
+  "title": "Écart entre en-têtes et corps : le corps décide, l'écart est signalé par le nom de l'en-tête",
+  "cases": [
+    {
+      "name": "nom-contredit",
+      "title": "Mcp-Name annonce un autre outil que le corps",
+      "surface": "proxy",
+      "base": "proxy/appel-outil",
+      "alter": {"header": "mcp-name", "value": "canari7c1d"},
+      "expect": {"verdict": "neutralise", "code": "headerMismatch", "headers": ["mcp-name"]}
+    },
+    {
+      "name": "nom-contredit-en-base64",
+      "title": "Mcp-Name annonce un autre outil que le corps, sous sa forme encodée en base64",
+      "surface": "proxy",
+      "base": "proxy/appel-outil",
+      "alter": {"recipe": "encoder-base64", "header": "mcp-name", "value": "canari7c1d"},
+      "expect": {"verdict": "neutralise", "code": "headerMismatch", "headers": ["mcp-name"]}
+    },
+    {
+      "name": "nom-en-base64-illisible",
+      "title": "Mcp-Name se dit encodé en base64 et ne l'est pas",
+      "surface": "proxy",
+      "base": "proxy/appel-outil",
+      "alter": {"header": "mcp-name", "value": "=?base64?canari7c1d!?="},
+      "expect": {"verdict": "neutralise", "code": "headerMismatch", "headers": ["mcp-name"]}
+    },
+    {
+      "name": "methode-contredite",
+      "title": "Mcp-Method annonce une notification, le corps appelle un outil SQL : l'appel et sa lecture sont décrits",
+      "surface": "proxy",
+      "base": "proxy/appel-sql",
+      "alter": {"header": "mcp-method", "value": "notifications/canari7c1d"},
+      "expect": {"verdict": "neutralise", "code": "headerMismatch", "headers": ["mcp-method"]}
+    },
+    {
+      "name": "version-contredite",
+      "title": "MCP-Protocol-Version annonce une autre révision que le corps",
+      "surface": "proxy",
+      "base": "proxy/appel-outil",
+      "alter": {"header": "mcp-protocol-version", "value": "canari7c1d"},
+      "expect": {"verdict": "neutralise", "code": "headerMismatch", "headers": ["mcp-protocol-version"]}
+    }
+  ]
+}

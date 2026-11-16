@@ -1,3 +1,3 @@
-"""Workers d'AnswerLineage : alimentation du graphe, réconciliation, pistes."""
+"""Workers d'AnswerLineage : projection des événements reçus dans le graphe de lignage."""
 
 __version__ = "0.0.0"

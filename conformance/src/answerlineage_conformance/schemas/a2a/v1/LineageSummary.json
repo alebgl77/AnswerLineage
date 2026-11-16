@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/a2a/v1/LineageSummary.json",
+  "$ref": "#/$defs/LineageSummary",
+  "$defs": {
+    "LineageSummary": {
+      "description": "Résumé de lignage que l'agent appelé renvoie, sous la clé de l'URI de l'extension dans le metadata de la tâche ou du message qu'il rend. Il ne porte aucun contenu : des identifiants, des codes fixes et des nombres. L'objet est fermé, ses listes et ses textes sont bornés.",
+      "type": "object",
+      "properties": {
+        "runId": {
+          "$ref": "#/$defs/RunId",
+          "description": "Run de l'agent appelé."
+        },
+        "attachment": {
+          "enum": [
+            "attached",
+            "missing",
+            "rejected"
+          ],
+          "description": "Ce que l'appelé a fait du contexte reçu : rattaché son run au run de l'appel, pas reçu de contexte, ou refusé un contexte invalide."
+        },
+        "parentRunId": {
+          "$ref": "#/$defs/RunId",
+          "description": "Run auquel l'appelé a rattaché le sien : le runId reçu. Présent si et seulement si attachment vaut attached."
+        },
+        "rejection": {
+          "enum": [
+            "context_malformed",
+            "run_id_not_derived"
+          ],
+          "description": "Motif du refus du contexte, jamais la valeur reçue. Présent si et seulement si attachment vaut rejected."
+        },
+        "datasets": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/Dataset"
+          },
+          "description": "Jeux de données lus par le run de l'appelé et par ses runs enfants, un par nom et par version."
+        },
+        "datasetCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000,
+          "description": "Nombre de jeux de données lus, listés ou non : au moins la longueur de datasets."
+        },
+        "unresolvedReads": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000,
+          "description": "Lectures dont l'appelé ne connaît pas le jeu de données : elles manquent à datasets comme à datasetCount."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "Vrai si et seulement si datasets ne liste pas tous les jeux de données comptés par datasetCount."
+        }
+      },
+      "required": [
+        "runId",
+        "attachment",
+        "datasets",
+        "datasetCount",
+        "unresolvedReads",
+        "truncated"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "attachment": {
+                "const": "attached"
+              }
+            },
+            "required": [
+              "attachment"
+            ]
+          },
+          "then": {
+            "required": [
+              "parentRunId"
+            ],
+            "not": {
+              "required": [
+                "rejection"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "attachment": {
+                "const": "rejected"
+              }
+            },
+            "required": [
+              "attachment"
+            ]
+          },
+          "then": {
+            "required": [
+              "rejection"
+            ],
+            "not": {
+              "required": [
+                "parentRunId"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "attachment": {
+                "const": "missing"
+              }
+            },
+            "required": [
+              "attachment"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "parentRunId"
+                  ]
+                },
+                {
+                  "required": [
+                    "rejection"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "RunId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "UUID sous sa forme canonique, en minuscules."
+    },
+    "Dataset": {
+      "description": "Un jeu de données lu. namespace, name et version ont la forme d'un nom, au sens de l'ingestion d'AnswerLineage, et ses bornes.",
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Version lue, quand elle est connue (facette standard version, datasetVersion)."
+        },
+        "precision": {
+          "enum": [
+            "table",
+            "columns",
+            "subset",
+            "keys"
+          ],
+          "description": "Ce que l'on sait de la lecture, la moins précise de ses lectures : table (le jeu entier, ou rien de plus précis), columns (certaines colonnes), subset (certaines lignes), keys (les lignes de clés désignées)."
+        }
+      },
+      "required": [
+        "namespace",
+        "name",
+        "precision"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

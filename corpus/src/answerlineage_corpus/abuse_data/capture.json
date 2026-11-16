@@ -1,0 +1,45 @@
+{
+  "title": "Sorties du lignage : une requête que le proxy ne peut pas lire sans ambiguïté passe, sans événement, et se compte",
+  "cases": [
+    {
+      "name": "lot-json-rpc",
+      "title": "L'appel d'outil glissé dans un lot JSON-RPC, qu'un serveur ancien exécuterait",
+      "surface": "proxy",
+      "base": "proxy/appel-outil",
+      "alter": {"recipe": "imbriquer", "field": "/body", "open": "[", "close": "]", "depth": 1},
+      "expect": {"verdict": "compte", "code": "uninspected"}
+    },
+    {
+      "name": "cle-method-repetee",
+      "title": "La clé method écrite deux fois : un appel d'outil, puis une notification",
+      "surface": "proxy",
+      "base": "proxy/appel-outil",
+      "alter": {"recipe": "dupliquer-cle", "field": "/body/method", "value": "notifications/canari7c1d"},
+      "expect": {"verdict": "compte", "code": "uninspected"}
+    },
+    {
+      "name": "cle-name-repetee",
+      "title": "La clé name écrite deux fois : deux analyseurs ne liraient pas le même outil",
+      "surface": "proxy",
+      "base": "proxy/appel-outil",
+      "alter": {"recipe": "dupliquer-cle", "field": "/body/params/name", "value": "canari7c1d"},
+      "expect": {"verdict": "compte", "code": "uninspected"}
+    },
+    {
+      "name": "corps-compresse",
+      "title": "Un corps compressé en gzip, que le proxy ne déploie pas",
+      "surface": "proxy",
+      "base": "proxy/appel-outil",
+      "alter": {"recipe": "compresser"},
+      "expect": {"verdict": "compte", "code": "uninspected"}
+    },
+    {
+      "name": "corps-trop-grand-sans-nom",
+      "title": "Un corps au-delà de la taille lue, dont le début ne nomme ni la méthode ni l'outil",
+      "surface": "proxy",
+      "base": "proxy/appel-outil",
+      "alter": {"recipe": "gonfler", "bytes": 1100000, "at": "debut"},
+      "expect": {"verdict": "compte", "code": "uninspected"}
+    }
+  ]
+}
