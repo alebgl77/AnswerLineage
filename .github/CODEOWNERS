@@ -28,3 +28,7 @@
 
 # Exceptions du corpus d'abus : les cas d'attaque que le produit ne bloque pas encore
 /corpus/src/answerlineage_corpus/abuse_open.json  @alebgl77
+
+# Modèle de menaces : ses parades, ses risques acceptés et leurs signatures. Seul
+# un propriétaire de ce fichier signe une acceptation (scripts/check_threat_model.py).
+/docs/securite/modele-de-menaces.toml  @alebgl77

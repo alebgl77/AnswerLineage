@@ -51,6 +51,8 @@ PROTECTED: tuple[str, ...] = (
     "vulnerability-exceptions.toml",
     # Exceptions du corpus d'abus : les cas d'attaque que le produit ne bloque pas encore.
     "corpus/src/answerlineage_corpus/abuse_open.json",
+    # Modèle de menaces : ses parades, ses risques acceptés et leurs signatures.
+    "docs/securite/modele-de-menaces.toml",
 )
 
 _PRINTABLE = re.compile(r"[\w./ @+=,-]{1,300}")

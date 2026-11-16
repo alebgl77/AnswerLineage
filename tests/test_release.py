@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts import check_release
+from scripts import check_release, check_threat_model
 from scripts.check_release import (
     Component,
     Expectations,
@@ -31,6 +31,8 @@ from scripts.check_release import (
     requirement,
     tag_problems,
 )
+from scripts.check_threat_model import MODEL
+from tests.test_threat_model import OWNER, write_threat_model
 
 ROOT = Path(__file__).resolve().parent.parent
 LICENSE = b"Texte de la licence.\n"
@@ -67,8 +69,14 @@ def project(
     api: str = "1.2.3",
     workers: str = "1.2.3",
     pin: str = "==1.2.3",
+    reviewed: str = "1.2.3",
+    accepted_by: str | None = OWNER,
 ) -> Path:
-    """Un dépôt à deux composants publiables, l'un dépendant de l'autre, et un outil interne."""
+    """Un dépôt à deux composants publiables, l'un dépendant de l'autre, et un outil interne.
+
+    Son modèle de menaces couvre ses composants, a été revu pour ``reviewed``,
+    et son acceptation est signée par ``accepted_by``, ou reste à signer.
+    """
     root = tmp_path / "depot"
     write(
         root / "pyproject.toml",
@@ -84,6 +92,12 @@ def project(
     write(root / "outil" / "pyproject.toml", member("exemple-outil", "0.1.0", [], built=False))
     (root / "LICENSE").write_bytes(LICENSE)
     write(root / "ui" / "package.json", '{"name": "exemple-ui", "private": true}')
+    write_threat_model(
+        root,
+        {"api": "api", "workers": "workers", "outil": "outil", "ui": "ui"},
+        version=reviewed,
+        accepted_by=accepted_by,
+    )
     return root
 
 
@@ -553,6 +567,48 @@ def test_the_rehearsal_checks_the_built_packages(tmp_path: Path) -> None:
     assert rehearse(directory, root) == (VERSION, ["exemple_api-1.2.3.tar.gz : absent"])
 
 
+def test_the_rehearsal_fails_when_the_threat_model_was_not_reviewed_for_the_declared_version(
+    tmp_path: Path,
+) -> None:
+    root = project(tmp_path, reviewed="1.2.2")
+    directory = dist(tmp_path / "dist", publishable_components(root), VERSION)
+    assert rehearse(directory, root) == (
+        VERSION,
+        ["modèle de menaces : le modèle a été revu pour la version 1.2.2, pas pour 1.2.3"],
+    )
+
+
+def test_the_rehearsal_fails_when_the_review_would_accept_any_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = project(tmp_path)
+    directory = dist(tmp_path / "dist", publishable_components(root), VERSION)
+    monkeypatch.setattr(check_threat_model, "review_problems", lambda model, version: [])
+    assert rehearse(directory, root) == (
+        VERSION,
+        [
+            "le modèle de menaces serait tenu pour revu pour l'étiquette v1.2.4 : "
+            "sa revue ne contrôle rien"
+        ],
+    )
+
+
+def test_the_rehearsal_fails_without_a_readable_threat_model(tmp_path: Path) -> None:
+    root = project(tmp_path)
+    directory = dist(tmp_path / "dist", publishable_components(root), VERSION)
+    (root / MODEL).write_text("[review\n", encoding="utf-8")
+    assert rehearse(directory, root) == (
+        VERSION,
+        [f"modèle de menaces : {MODEL} illisible (TOMLDecodeError)"],
+    )
+
+
+def test_an_acceptance_left_to_sign_does_not_fail_the_rehearsal(tmp_path: Path) -> None:
+    root = project(tmp_path, accepted_by=None)
+    directory = dist(tmp_path / "dist", publishable_components(root), VERSION)
+    assert rehearse(directory, root) == (VERSION, [])
+
+
 # Noms de distribution
 
 
@@ -629,18 +685,60 @@ def test_the_report_copies_neither_a_refused_tag_nor_a_malformed_image() -> None
 # Ligne de commande, sur le dépôt lui-même
 
 
+@pytest.mark.parametrize(
+    ("tag", "python", "prerelease"),
+    [("v1.2.3", "1.2.3", "false"), ("v1.2.3-rc.1", "1.2.3rc1", "true")],
+)
 def test_the_tag_command_accepts_the_declared_version_and_writes_the_outputs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], tag: str, python: str, prerelease: str
+) -> None:
+    root = project(tmp_path, api=python, workers=python, pin=f"=={python}", reviewed=python)
+    output = tmp_path / "github-output"
+    assert main(["tag", tag, "--github-output", str(output)], root=root) == 0
+    assert output.read_text(encoding="utf-8") == (
+        f"version={python}\nimage-version={tag[1:]}\nprerelease={prerelease}\n"
+    )
+    out = capsys.readouterr().out
+    assert f"Étiquette {tag}" in out
+    assert "modèle de menaces revu pour cette version, ses acceptations signées" in out
+
+
+def test_the_tag_command_refuses_a_threat_model_not_reviewed_for_the_tag(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    version = declared_version()
+    root = project(tmp_path, reviewed="1.2.2")
     output = tmp_path / "github-output"
-    assert main(["tag", version.tag, "--github-output", str(output)]) == 0
-    assert output.read_text(encoding="utf-8") == (
-        f"version={version.python}\nimage-version={version.image}\nprerelease=false\n"
-        if version.final
-        else f"version={version.python}\nimage-version={version.image}\nprerelease=true\n"
+    assert main(["tag", "v1.2.3", "--github-output", str(output)], root=root) == 1
+    assert not output.exists()
+    out = capsys.readouterr().out
+    assert "modèle de menaces : le modèle a été revu pour la version 1.2.2, pas pour 1.2.3" in out
+    assert "rien ne doit être publié" in out
+
+
+def test_the_tag_command_refuses_an_acceptance_left_to_sign(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = project(tmp_path, accepted_by=None)
+    output = tmp_path / "github-output"
+    assert main(["tag", "v1.2.3", "--github-output", str(output)], root=root) == 1
+    assert not output.exists()
+    out = capsys.readouterr().out
+    assert (
+        "modèle de menaces : menace api/risque-accepte : acceptation à signer par le mainteneur"
+        in out
     )
-    assert f"Étiquette {version.tag}" in capsys.readouterr().out
+    assert "1 écart(s) : rien ne doit être publié." in out
+
+
+def test_the_tag_command_refuses_a_threat_whose_proof_is_gone(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = project(tmp_path)
+    (root / "tests" / "test_parade.py").write_text("", encoding="utf-8")
+    assert main(["tag", "v1.2.3"], root=root) == 1
+    out = capsys.readouterr().out
+    assert "tests/test_parade.py ne définit pas test_la_parade_tient" in out
+    assert "4 écart(s)" in out
 
 
 def test_the_tag_command_refuses_another_version(
@@ -706,6 +804,33 @@ def test_the_rehearse_command_passes_on_conforming_packages(
         sdist(directory, component, version, files=files, headers=headers)
     assert main(["rehearse", str(directory)]) == 0
     assert "Publication éprouvée" in capsys.readouterr().out
+
+
+def test_the_rehearse_command_says_which_acceptances_remain_to_sign(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = project(tmp_path, accepted_by=None)
+    directory = dist(tmp_path / "dist", publishable_components(root), VERSION)
+    assert main(["rehearse", str(directory)], root=root) == 0
+    out = capsys.readouterr().out
+    assert "Publication éprouvée" in out
+    assert "le mainteneur signe 1 acceptation(s) du modèle de menaces" in out
+    assert out.endswith("  api/risque-accepte\n")
+
+
+def test_the_rehearse_command_with_everything_signed_has_nothing_to_sign(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = project(tmp_path)
+    directory = dist(tmp_path / "dist", publishable_components(root), VERSION)
+    assert main(["rehearse", str(directory)], root=root) == 0
+    assert "signe" not in capsys.readouterr().out
+
+
+def test_without_a_readable_threat_model_nothing_is_said_to_remain_to_sign(tmp_path: Path) -> None:
+    root = project(tmp_path)
+    (root / MODEL).unlink()
+    assert check_release.unsigned_acceptances(root) == []
 
 
 def test_the_report_command_writes_the_job_summary(

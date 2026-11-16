@@ -1,0 +1,1244 @@
+# Modèle de menaces d'AnswerLineage, présenté par docs/securite/modele-de-menaces.md.
+#
+# Chaque menace a des parades (le fichier du code qui la porte, le test qui la
+# prouve, « chemin » ou « chemin::fonction ») ou une acceptation : son motif, sa
+# conséquence, et la signature du mainteneur (accepted_by, accepted_on), seul
+# propriétaire de ce fichier dans .github/CODEOWNERS. Une acceptation sans
+# signature est « à signer ».
+#
+# scripts/check_threat_model.py le contrôle à chaque merge request (make policy) :
+# forme, fichiers et fonctions des parades, composants du dépôt. La publication
+# d'une version (scripts/check_release.py tag) exige en plus qu'il ait été revu
+# pour la version de l'étiquette, et qu'aucune acceptation ne reste à signer.
+#
+# Catégories (STRIDE) : spoofing, tampering, repudiation, information-disclosure,
+# denial-of-service, elevation-of-privilege.
+
+[review]
+# La version des paquets pour laquelle le modèle a été revu, et le jour de la revue.
+version = "0.0.0"
+date = 2026-11-16
+
+# Frontières de confiance
+
+[[boundary]]
+id = "agent-proxy-mcp"
+name = "Agent, proxy et serveur MCP"
+description = "Le client MCP d'un agent appelle des outils à travers le proxy, en HTTP ou en stdio, et le proxy relaie au serveur MCP. Le corps, les en-têtes et la réponse viennent de part et d'autre ; une page web ouverte sur le poste peut aussi viser un proxy qui écoute sur la boucle locale."
+
+[[boundary]]
+id = "emetteur-ingestion"
+name = "Émetteur et ingestion"
+description = "Le proxy, l'entreprise synthétique ou tout émetteur OpenLineage envoie événements et relevés de couverture à l'API d'ingestion. Les émetteurs ne sont pas authentifiés : tout ce qu'ils déclarent est une entrée hostile."
+
+[[boundary]]
+id = "lecteur-lecture"
+name = "Lecteur, API de lecture et explorateur"
+description = "Un navigateur, la ligne de commande ou un script lit le lignage, déclare un incident ou ouvre une adresse partagée de l'explorateur. L'appelant n'est pas authentifié ; l'adresse, les paramètres et les corps sont hostiles, et les noms affichés viennent des émetteurs."
+
+[[boundary]]
+id = "pipeline-publication"
+name = "Pipeline et publication"
+description = "Une merge request, écrite par un contributeur ou un agent de code, fait tourner le pipeline ; une étiquette de version publie l'image et les paquets. Le contenu de la merge request, les actions, les images et les dépendances tierces sont hors de confiance."
+
+[[boundary]]
+id = "donnees-au-repos"
+name = "Données au repos"
+description = "PostgreSQL tient le graphe, les événements bruts, la file, les relevés et les incidents ; le poste ou le serveur du proxy tient la clé des empreintes et les règles de lecture. Qui y accède lit ce qui y est écrit."
+
+# Actifs
+
+[[asset]]
+id = "contenus"
+name = "Contenus des agents"
+description = "Prompts, arguments et résultats d'outils, réponses : ils traversent le proxy et ne sont jamais conservés."
+
+[[asset]]
+id = "jetons"
+name = "Jetons d'accès"
+description = "Les jetons OAuth et en-têtes d'autorisation que l'agent présente au serveur MCP."
+
+[[asset]]
+id = "cle-des-empreintes"
+name = "Clé des empreintes"
+description = "La clé HMAC des empreintes du proxy : sans elle, une empreinte ne se retourne pas en valeur."
+
+[[asset]]
+id = "lignage"
+name = "Lignage"
+description = "Le graphe, les événements bruts et la file : leur justesse fait celle du rappel. Une lecture manquante écarte à tort une réponse touchée, une lecture inventée en rappelle une saine."
+
+[[asset]]
+id = "destinataires"
+name = "Destinataires"
+description = "Les pseudonymes des destinataires des réponses, sans table de correspondance."
+
+[[asset]]
+id = "continuite-des-agents"
+name = "Continuité des agents"
+description = "La disponibilité et la latence des appels d'outils, que la capture ne doit ni bloquer ni retarder."
+
+[[asset]]
+id = "disponibilite"
+name = "Disponibilité du service"
+description = "Le proxy, l'API, les workers et la base, qui doivent tenir devant une entrée démesurée."
+
+[[asset]]
+id = "hote"
+name = "Poste et serveurs"
+description = "Les machines qui font tourner AnswerLineage et ses outils : leurs fichiers, leur terminal, leurs identifiants."
+
+[[asset]]
+id = "artefacts-publies"
+name = "Artefacts publiés"
+description = "L'image, les paquets, leurs signatures et attestations, et le pipeline qui les produit."
+
+[[asset]]
+id = "mesures"
+name = "Mesures et jugements"
+description = "Le corpus de vérité, le corpus d'abus et le kit de conformité, qui disent si le moteur rappelle ce qu'il doit, si une attaque est bloquée, si un émetteur ne fuit rien."
+
+# Composants du dépôt : les membres de l'espace de travail uv, les paquets npm, le pipeline.
+
+[[component]]
+id = "proxy"
+path = "proxy"
+name = "Proxy MCP"
+
+[[component]]
+id = "api"
+path = "api"
+name = "API : ingestion, lecture, incidents, service de l'explorateur"
+
+[[component]]
+id = "workers"
+path = "workers"
+name = "Workers"
+
+[[component]]
+id = "cli"
+path = "cli"
+name = "Ligne de commande"
+
+[[component]]
+id = "corpus"
+path = "corpus"
+name = "Entreprise synthétique, corpus de vérité et corpus d'abus"
+
+[[component]]
+id = "conformance"
+path = "conformance"
+name = "Kit de conformité"
+
+[[component]]
+id = "ui"
+path = "ui"
+name = "Explorateur"
+
+[[component]]
+id = "pipeline"
+path = ".github/workflows"
+name = "Pipeline et publication"
+
+# Proxy MCP
+
+[[threat]]
+id = "proxy/jeton-conserve"
+name = "Un jeton de l'agent est conservé, journalisé ou rejoué par le proxy"
+category = "information-disclosure"
+boundary = "agent-proxy-mcp"
+assets = ["jetons"]
+description = "Le proxy voit passer l'en-tête d'autorisation et les échanges OAuth entre l'agent et le serveur MCP. Le garder, l'écrire dans un journal ou le présenter à un autre appel en ferait un vol de jeton."
+
+[[threat.mitigation]]
+description = "Le proxy relaie en-têtes, défi 401 et métadonnées OAuth tels quels, sans lire Authorization ni terminer OAuth."
+code = "proxy/src/answerlineage_proxy/app.py"
+test = "proxy/tests/test_authorization.py::test_a_token_is_relayed_with_its_call_and_never_replayed_on_the_next"
+
+[[threat.mitigation]]
+description = "Un jeton qui traverse tout le parcours n'est retrouvé nulle part : événements, base, réponses, journaux, compteurs."
+code = "proxy/src/answerlineage_proxy/events.py"
+test = "tests/test_no_token_anywhere.py::test_a_token_crosses_the_whole_path_without_leaving_a_trace"
+
+[[threat]]
+id = "proxy/contenu-dans-l-evenement"
+name = "Un contenu d'appel sort du proxy dans un événement, un journal ou une métrique"
+category = "information-disclosure"
+boundary = "agent-proxy-mcp"
+assets = ["contenus"]
+description = "Les arguments, le résultat d'outil ou un littéral de requête SQL recopiés dans l'événement, ou écrits par une bibliothèque qui journalise l'URL ou la requête."
+
+[[threat.mitigation]]
+description = "Les arguments et le résultat ne sortent que sous forme d'empreinte à clé."
+code = "proxy/src/answerlineage_proxy/fingerprint.py"
+test = "proxy/tests/test_fingerprint_capture.py::test_fingerprints_are_those_of_the_canonical_arguments_and_the_relayed_bytes"
+
+[[threat.mitigation]]
+description = "La forme d'une requête SQL ne garde aucun littéral, ou n'est pas gardée."
+code = "proxy/src/answerlineage_proxy/sql.py"
+test = "proxy/tests/test_sql_shape.py::test_a_customer_name_in_a_literal_never_reaches_the_event"
+
+[[threat.mitigation]]
+description = "Les journaux des bibliothèques sont coupés : rien de sensible n'atteint les événements ni les journaux."
+code = "proxy/src/answerlineage_proxy/app.py"
+test = "proxy/tests/test_relay.py::test_nothing_sensitive_reaches_events_or_logs"
+
+[[threat.mitigation]]
+description = "L'événement ne porte que des noms, des empreintes et des compteurs : trois canaris (prompt, résultat, réponse) ne ressortent nulle part sur le parcours complet."
+code = "proxy/src/answerlineage_proxy/events.py"
+test = "tests/test_conformance_no_content.py::test_three_canaries_cross_the_whole_path_and_come_out_nowhere"
+
+[[threat]]
+id = "proxy/empreinte-retournee"
+name = "Une empreinte est retournée en valeur par dictionnaire"
+category = "information-disclosure"
+boundary = "agent-proxy-mcp"
+assets = ["contenus", "cle-des-empreintes"]
+description = "Une valeur pauvre (un numéro de client, un montant) se retrouve en calculant l'empreinte de chaque candidat, si l'empreinte est sans clé ou si la clé fuit."
+
+[[threat.mitigation]]
+description = "Empreinte HMAC à clé : la même valeur a deux empreintes chez deux locataires."
+code = "proxy/src/answerlineage_proxy/fingerprint.py"
+test = "proxy/tests/test_fingerprint.py::test_two_tenants_get_two_fingerprints_for_the_same_value"
+
+[[threat.mitigation]]
+description = "La clé vient de l'environnement ou d'un fichier, jamais de la ligne de commande, et n'apparaît nulle part."
+code = "proxy/src/answerlineage_proxy/config.py::fingerprint_key"
+test = "proxy/tests/test_fingerprint_capture.py::test_the_key_appears_nowhere"
+
+[[threat.mitigation]]
+description = "En stdio, le serveur MCP que lance le proxy reçoit l'environnement sans la clé."
+code = "proxy/src/answerlineage_proxy/stdio.py"
+test = "proxy/tests/test_stdio.py::test_the_server_gets_the_environment_except_the_fingerprint_key"
+
+[[threat]]
+id = "proxy/page-web-hostile"
+name = "Une page web ouverte sur le poste appelle des outils à travers le proxy local"
+category = "elevation-of-privilege"
+boundary = "agent-proxy-mcp"
+assets = ["contenus", "jetons"]
+description = "Par rebinding DNS ou par une requête d'une autre origine, une page atteint le proxy qui écoute sur la boucle locale et s'en sert pour appeler les outils de l'agent."
+abuse_cases = ["emetteur/hote-relaye-proxy", "emetteur/origine-etrangere-proxy", "emetteur/autre-page-proxy"]
+
+[[threat.mitigation]]
+description = "Host et Origin sont contrôlés avant tout : un hôte rebondi est refusé avant d'atteindre le serveur."
+code = "proxy/src/answerlineage_proxy/guard.py"
+test = "proxy/tests/test_guard.py::test_a_rebound_host_is_refused_before_anything_reaches_the_server"
+
+[[threat.mitigation]]
+description = "Une page d'une autre origine, ou d'un autre site sans Origin, est refusée."
+code = "proxy/src/answerlineage_proxy/guard.py"
+test = "proxy/tests/test_guard.py::test_a_page_from_another_origin_cannot_call_a_tool_through_the_proxy"
+
+[[threat]]
+id = "proxy/appel-cache-au-lignage"
+name = "Un appel d'outil échappe au lignage par des en-têtes ou un corps ambigus"
+category = "repudiation"
+boundary = "agent-proxy-mcp"
+assets = ["lignage"]
+description = "Un client fait dire aux en-têtes MCP autre chose que le corps, répète une clé, ou écrit un corps que deux analyseurs liraient différemment, pour qu'une lecture ne soit pas consignée, ou le soit sous un autre outil."
+abuse_cases = ["entetes/methode-contredite", "entetes/nom-contredit", "capture/cle-method-repetee"]
+
+[[threat.mitigation]]
+description = "Le proxy décide sur le corps : un en-tête qui le contredit est signalé, jamais suivi."
+code = "proxy/src/answerlineage_proxy/inspection.py"
+test = "proxy/tests/test_relay.py::test_method_header_cannot_hide_a_tool_call_from_the_lineage"
+
+[[threat.mitigation]]
+description = "Un corps que deux analyseurs liraient différemment n'est pas décrit."
+code = "proxy/src/answerlineage_proxy/inspection.py"
+test = "proxy/tests/test_inspection.py::test_a_body_that_two_parsers_could_read_differently_is_not_described"
+
+[[threat]]
+id = "proxy/agent-retarde"
+name = "La capture retarde ou bloque un appel d'agent"
+category = "denial-of-service"
+boundary = "agent-proxy-mcp"
+assets = ["continuite-des-agents"]
+description = "Une API d'ingestion lente ou en panne, une analyse SQL longue ou un puits défaillant feraient attendre l'agent, ou échouer son appel."
+
+[[threat.mitigation]]
+description = "La boîte d'envoi prend un événement par un ajout en mémoire, bornée, et n'attend rien."
+code = "proxy/src/answerlineage_proxy/outbox.py"
+test = "proxy/tests/test_outbox.py::test_emit_only_appends_the_event_and_waits_for_nothing"
+
+[[threat.mitigation]]
+description = "Un puits qui échoue n'atteint jamais l'appel."
+code = "proxy/src/answerlineage_proxy/app.py"
+test = "proxy/tests/test_relay.py::test_failing_sink_never_reaches_the_call"
+
+[[threat.mitigation]]
+description = "Dix mille appels passent pendant que l'API est coupée, puis atteignent le graphe une fois."
+code = "proxy/src/answerlineage_proxy/outbox.py"
+test = "tests/test_outbox_chaos.py::test_ten_thousand_calls_pass_while_the_api_is_down_then_reach_the_graph_once"
+
+[[threat.mitigation]]
+description = "En stdio, le relais n'attend jamais l'inspection."
+code = "proxy/src/answerlineage_proxy/stdio.py"
+test = "proxy/tests/test_stdio.py::test_the_relay_never_waits_for_the_inspection"
+
+[[threat]]
+id = "proxy/entree-demesuree"
+name = "Une entrée démesurée épuise la mémoire ou le temps du proxy"
+category = "denial-of-service"
+boundary = "agent-proxy-mcp"
+assets = ["disponibilite", "continuite-des-agents"]
+description = "Un corps géant, un message stdio sans fin, une requête SQL imbriquée sur des milliers de niveaux ou qui épuise l'analyseur."
+abuse_cases = ["sql/parentheses-imbriquees", "sql/budget-epuise", "sql/requete-trop-grande"]
+
+[[threat.mitigation]]
+description = "Seul le début d'un corps est lu ; le reste passe au fil de l'eau."
+code = "proxy/src/answerlineage_proxy/prefix.py"
+test = "proxy/tests/test_relay.py::test_body_larger_than_the_inspected_size_is_streamed_and_described_by_its_start"
+
+[[threat.mitigation]]
+description = "L'analyse SQL tourne dans un processus à part, sous budget, et s'abandonne au-delà."
+code = "proxy/src/answerlineage_proxy/analyzer.py"
+test = "proxy/tests/test_analyzer.py::test_analysis_over_budget_is_abandoned_and_its_process_stopped"
+
+[[threat.mitigation]]
+description = "Une requête trop imbriquée est non résolue, sans plantage."
+code = "proxy/src/answerlineage_proxy/sql.py"
+test = "proxy/tests/test_sql.py::test_deeply_nested_query_is_unresolved_not_a_crash"
+
+[[threat.mitigation]]
+description = "En stdio, la mémoire des requêtes en attente est bornée."
+code = "proxy/src/answerlineage_proxy/stdio.py"
+test = "proxy/tests/test_stdio.py::test_the_memory_of_pending_requests_is_bounded"
+
+[[threat]]
+id = "proxy/sortie-du-prefixe"
+name = "Une requête sort du préfixe du serveur MCP"
+category = "elevation-of-privilege"
+boundary = "agent-proxy-mcp"
+assets = ["contenus"]
+description = "Des segments « .. » dans le chemin feraient atteindre par le proxy une autre route du serveur amont que celle du serveur MCP."
+
+[[threat.mitigation]]
+description = "Un segment « .. » ne quitte pas le préfixe du serveur MCP."
+code = "proxy/src/answerlineage_proxy/app.py"
+test = "proxy/tests/test_relay.py::test_a_dot_segment_cannot_leave_the_prefix_of_the_mcp_server"
+
+[[threat]]
+id = "proxy/nom-piege"
+name = "Un nom piégé entre dans l'événement"
+category = "tampering"
+boundary = "agent-proxy-mcp"
+assets = ["lignage"]
+description = "Un nom d'outil, de table ou de colonne porte une instruction, une balise, un caractère invisible ou un retour à la ligne, que l'événement recopierait jusqu'à un lecteur ou un modèle."
+abuse_cases = ["identifiants/outil-instruction", "invisibles/outil-largeur-nulle", "sql/table-hostile"]
+
+[[threat.mitigation]]
+description = "Un nom hors de la forme admise est signalé et jamais recopié."
+code = "proxy/src/answerlineage_proxy/names.py"
+test = "proxy/tests/test_relay.py::test_invalid_tool_name_is_flagged_and_never_copied"
+
+[[threat.mitigation]]
+description = "Le proxy et l'ingestion jugent un nom de la même façon."
+code = "proxy/src/answerlineage_proxy/names.py"
+test = "tests/test_contract_identifiers.py::test_on_any_text_the_proxy_and_the_ingestion_agree"
+
+[[threat]]
+id = "proxy/lecture-omise"
+name = "L'analyse du SQL omet une colonne lue"
+category = "tampering"
+boundary = "agent-proxy-mcp"
+assets = ["lignage"]
+description = "Une colonne que l'analyse ne voit pas ferait écarter à tort une réponse touchée par une colonne fausse."
+
+[[threat.mitigation]]
+description = "Une table dont les colonnes ne sont pas sûres d'être complètes est lue en entier, ou la lecture est non résolue."
+code = "proxy/src/answerlineage_proxy/sql.py"
+test = "proxy/tests/test_sql.py::test_reads_whose_columns_cannot_be_listed_fall_back_to_the_whole_table"
+
+[[threat.mitigation]]
+description = "Une colonne sans préfixe, ambiguë dans une jointure, n'est pas devinée."
+code = "proxy/src/answerlineage_proxy/sql.py"
+test = "proxy/tests/test_sql.py::test_ambiguous_unprefixed_column_in_a_join_degrades_to_table_precision"
+
+[[threat]]
+id = "proxy/regle-de-lecture-trompee"
+name = "Un outil non SQL lit autre chose que ce que sa règle de lecture déclare"
+category = "tampering"
+boundary = "agent-proxy-mcp"
+assets = ["lignage"]
+description = "Le proxy ne voit pas ce qu'un outil non SQL lit : il croit la règle que l'exploitant a déclarée. Un serveur MCP qui lit davantage laisse une lecture hors du lignage."
+
+[[threat.mitigation]]
+description = "Le fichier de règles est lui-même hostile : borné, refusé sans être recopié s'il est invalide."
+code = "proxy/src/answerlineage_proxy/rules.py"
+test = "proxy/tests/test_rules.py::test_a_hostile_or_invalid_file_is_refused_without_echoing_its_content"
+
+[threat.acceptance]
+reason = "Une règle de lecture se fie à l'outil : le proxy relaie l'appel sans en lire le résultat, et ne peut savoir ce que l'outil a lu au-delà de ce que déclare son exploitant."
+consequence = "Une réponse fondée sur une lecture non déclarée n'est pas rappelée, et la couverture ne le montre pas, puisque l'appel est vu."
+
+# API
+
+[[threat]]
+id = "api/emetteur-usurpe"
+name = "Un émetteur envoie des événements au nom d'un autre"
+category = "spoofing"
+boundary = "emetteur-ingestion"
+assets = ["lignage"]
+description = "L'ingestion n'authentifie pas les émetteurs : quiconque la joint peut déclarer une lecture au nom du proxy, ou des rejeux au nom d'un autre émetteur, et la lecture inventée entre dans le graphe."
+abuse_cases = ["emetteur/evenement-au-nom-du-proxy", "emetteur/doublons-au-nom-d-un-autre"]
+
+[threat.acceptance]
+reason = "Les émetteurs ne sont pas encore authentifiés : l'API est faite pour la boucle locale ou un réseau de confiance, comme le dit la politique de sécurité."
+consequence = "Un tiers qui joint l'ingestion peut inventer des lectures, donc faire rappeler des réponses saines, et fausser le décompte des doublons d'un émetteur."
+
+[[threat]]
+id = "api/releve-usurpe"
+name = "Un relevé de couverture est publié au nom d'un autre émetteur"
+category = "spoofing"
+boundary = "emetteur-ingestion"
+assets = ["lignage"]
+description = "Un relevé non authentifié gonfle les appels vus d'une fenêtre, et la fusion au plus grand ne le défait pas."
+abuse_cases = ["emetteur/releve-au-nom-d-un-autre", "emetteur/releve-emetteur-hostile"]
+
+[[threat.mitigation]]
+description = "Un relevé incohérent ou dont l'émetteur n'a pas la forme d'un nom est refusé sans être cité."
+code = "api/src/answerlineage_api/ingest/coverage.py"
+test = "api/tests/test_coverage_report.py::test_a_trapped_emitter_is_refused_without_being_cited"
+
+[threat.acceptance]
+reason = "Un relevé n'est pas authentifié plus qu'un événement, et deux relevés d'une même fenêtre se fusionnent au plus grand."
+consequence = "Un tiers qui joint l'ingestion peut faire croire à des appels que le graphe n'a pas : la couverture d'une fenêtre se lit alors partielle à tort."
+
+[[threat]]
+id = "api/appelant-non-authentifie"
+name = "Un appelant qui joint l'API lit le lignage et déclare des incidents"
+category = "information-disclosure"
+boundary = "lecteur-lecture"
+assets = ["lignage", "destinataires"]
+description = "L'API de lecture, la déclaration d'incidents et l'explorateur n'authentifient pas leurs appelants : qui les joint lit les noms des jeux de données, des agents et des outils, les empreintes des réponses et les pseudonymes des destinataires."
+
+[[threat.mitigation]]
+description = "La démonstration ne publie son seul port que sur la boucle locale."
+code = "scripts/check_policy.py::check_compose"
+test = "tests/test_policy.py::test_a_port_published_beyond_the_loopback_fails"
+
+[threat.acceptance]
+reason = "L'API n'authentifie pas encore ses appelants : elle est faite pour la boucle locale ou derrière un contrôle d'accès."
+consequence = "Exposée sans contrôle d'accès, elle livre le lignage à qui la joint et le laisse déclarer des incidents, donc lancer des analyses."
+
+[[threat]]
+id = "api/page-web-hostile"
+name = "Une page web ouverte sur le poste se sert de l'API locale"
+category = "elevation-of-privilege"
+boundary = "lecteur-lecture"
+assets = ["lignage"]
+description = "Par rebinding DNS ou depuis une autre origine, une page atteint l'API qui écoute sur la boucle locale : elle lirait le lignage ou y enverrait des événements."
+abuse_cases = ["emetteur/hote-relaye-ingestion", "emetteur/origine-etrangere-ingestion", "emetteur/autre-page-lecture"]
+
+[[threat.mitigation]]
+description = "Un hôte rebondi ne lit ni n'écrit rien."
+code = "api/src/answerlineage_api/guard.py"
+test = "api/tests/test_guard.py::test_a_rebound_host_reads_nothing_and_writes_nothing"
+
+[[threat.mitigation]]
+description = "Une page d'une autre origine ne peut pas envoyer d'événements."
+code = "api/src/answerlineage_api/guard.py"
+test = "api/tests/test_guard.py::test_a_page_from_another_origin_cannot_send_events"
+
+[[threat.mitigation]]
+description = "Le contrôle de l'API et celui du proxy rendent le même verdict."
+code = "api/src/answerlineage_api/guard.py"
+test = "tests/test_contract_guard.py::test_both_services_give_the_same_verdict"
+
+[[threat]]
+id = "api/corps-demesure"
+name = "Un corps démesuré épuise l'ingestion"
+category = "denial-of-service"
+boundary = "emetteur-ingestion"
+assets = ["disponibilite"]
+description = "Bombe gzip, corps géant, document imbriqué sur mille niveaux, lot de plus de mille événements, champs démesurés."
+abuse_cases = ["lots/bombe-gzip", "lots/json-trop-profond", "lots/lot-1001", "lots/corps-trop-grand-en-flux"]
+
+[[threat.mitigation]]
+description = "Un corps annoncé au-delà du maximum est refusé sans être lu."
+code = "api/src/answerlineage_api/ingest/body.py"
+test = "api/tests/test_ingest_limits.py::test_a_body_announced_beyond_the_maximum_is_refused_without_being_read"
+
+[[threat.mitigation]]
+description = "Une bombe gzip est refusée sans être déployée."
+code = "api/src/answerlineage_api/ingest/body.py"
+test = "api/tests/test_ingest_limits.py::test_a_compressed_bomb_is_refused_without_being_inflated"
+
+[[threat.mitigation]]
+description = "La profondeur d'un document est contrôlée avant son analyse."
+code = "api/src/answerlineage_api/ingest/body.py"
+test = "api/tests/test_ingest_limits.py::test_a_document_nested_on_a_thousand_levels_is_refused"
+
+[[threat.mitigation]]
+description = "Un lot au-delà de la limite est refusé."
+code = "api/src/answerlineage_api/ingest/routes.py"
+test = "api/tests/test_ingest_api.py::test_batch_larger_than_the_limit_is_refused"
+
+[[threat]]
+id = "api/debit-non-borne"
+name = "Un émetteur inonde l'ingestion de requêtes valides"
+category = "denial-of-service"
+boundary = "emetteur-ingestion"
+assets = ["disponibilite"]
+description = "La taille d'une requête est bornée, pas leur nombre : un flot d'événements valides remplit la file, la base et le temps des workers."
+
+[threat.acceptance]
+reason = "L'ingestion n'a pas de limite de débit par émetteur ; sans authentification, une telle limite se contournerait en changeant de nom d'émetteur."
+consequence = "Un tiers qui joint l'ingestion peut retarder la projection des événements légitimes et faire grossir la base jusqu'à sa purge."
+
+[[threat]]
+id = "api/identifiant-piege"
+name = "Un identifiant piégé entre dans le graphe"
+category = "tampering"
+boundary = "emetteur-ingestion"
+assets = ["lignage", "destinataires"]
+description = "Un nom de jeu de données, d'outil, de canal ou de destinataire porte une instruction, une balise, un caractère invisible ou nul, ou une adresse avec son mot de passe."
+abuse_cases = ["identifiants/jeu-instruction", "invisibles/jeu-caractere-nul", "identifiants/adresse-mot-de-passe"]
+
+[[threat.mitigation]]
+description = "Un identifiant n'est admis que s'il a la forme d'un nom, borné, sous sa forme NFC."
+code = "api/src/answerlineage_api/identifiers.py"
+test = "api/tests/test_identifiers.py::test_any_text_is_either_a_clean_nfc_name_or_refused_without_being_echoed"
+
+[[threat.mitigation]]
+description = "Une adresse qui porte un mot de passe est refusée."
+code = "api/src/answerlineage_api/identifiers.py"
+test = "api/tests/test_identifiers.py::test_an_address_that_carries_a_password_is_refused"
+
+[[threat]]
+id = "api/valeur-renvoyee"
+name = "Une erreur renvoie la valeur reçue"
+category = "information-disclosure"
+boundary = "lecteur-lecture"
+assets = ["lignage", "hote"]
+description = "Un refus qui recopie le nom, la facette ou l'identifiant fautif porterait le texte d'un émetteur jusqu'au lecteur, à un modèle qui lit la réponse ou à un journal, et un secret qu'il contiendrait avec."
+abuse_cases = ["identifiants/facette-nom-instruction", "identifiants/curseur-balise"]
+
+[[threat.mitigation]]
+description = "Aucune clé reçue n'atteint la réponse d'un refus."
+code = "api/src/answerlineage_api/responses.py"
+test = "api/tests/test_ingest_limits.py::test_no_other_received_key_reaches_the_response"
+
+[[threat.mitigation]]
+description = "Un identifiant mal formé est refusé sans être recopié."
+code = "api/src/answerlineage_api/responses.py"
+test = "api/tests/test_trace.py::test_a_malformed_identifier_is_refused_without_being_echoed"
+
+[[threat]]
+id = "api/lecture-epuisante"
+name = "Une lecture du graphe épuise la base"
+category = "denial-of-service"
+boundary = "lecteur-lecture"
+assets = ["disponibilite"]
+description = "Une propagation sur un jeu lu par d'innombrables runs, des runs qui se désignent mutuellement comme parents, une lecture qui ne finit pas."
+abuse_cases = ["lots/parents-mutuels", "lots/lecture-hors-delai"]
+
+[[threat.mitigation]]
+description = "Toute lecture est bornée en durée, annulée au-delà, et le dit."
+code = "api/src/answerlineage_api/lineage/reading.py"
+test = "api/tests/test_read_timeout.py::test_a_read_beyond_the_time_limit_is_cancelled_and_says_why"
+
+[[threat.mitigation]]
+description = "Des runs parents l'un de l'autre n'arrêtent pas la propagation."
+code = "api/src/answerlineage_api/lineage/impact.py"
+test = "api/tests/test_impact.py::test_runs_that_name_each_other_as_parent_do_not_hang_the_propagation"
+
+[[threat.mitigation]]
+description = "Au-delà de la borne des lectures, le résultat est partiel et le dit."
+code = "api/src/answerlineage_api/lineage/impact.py"
+test = "api/tests/test_impact.py::test_reads_beyond_the_bound_give_a_partial_result_that_says_so"
+
+[[threat]]
+id = "api/injection-sql"
+name = "Une valeur reçue est exécutée comme du SQL"
+category = "tampering"
+boundary = "emetteur-ingestion"
+assets = ["lignage"]
+description = "Un nom de jeu de données ou un curseur écrit comme une requête atteindrait la base sous forme d'instruction."
+abuse_cases = ["identifiants/jeu-sql"]
+
+[[threat.mitigation]]
+description = "Les requêtes passent par SQLAlchemy Core, valeurs liées en paramètres ; un nom écrit comme du SQL est refusé à l'ingestion."
+code = "api/src/answerlineage_api/store/graph.py"
+test = "tests/test_abuse_corpus.py::test_every_case_of_the_abuse_corpus_is_blocked"
+
+[[threat]]
+id = "api/rejeu"
+name = "Un rejeu ou un désordre des événements change le graphe"
+category = "tampering"
+boundary = "emetteur-ingestion"
+assets = ["lignage"]
+description = "Renvoyer un ancien événement, ou ceux d'un run dans un autre ordre, déplacerait une lecture hors de la fenêtre d'un incident ou dégraderait sa précision."
+abuse_cases = ["emetteur/lecture-antidatee"]
+
+[[threat.mitigation]]
+description = "L'écriture du graphe est idempotente et commutative."
+code = "api/src/answerlineage_api/store/graph.py"
+test = "tests/test_idempotent_ingestion.py::test_arrival_order_and_replays_do_not_change_the_graph"
+
+[[threat.mitigation]]
+description = "Un événement antidaté élargit l'intervalle de la lecture au lieu de la déplacer."
+code = "api/src/answerlineage_api/store/graph.py"
+test = "api/tests/test_graph_store.py::test_a_backdated_event_widens_the_read_instead_of_moving_it"
+
+[[threat]]
+id = "api/fichier-hors-explorateur"
+name = "L'API sert un fichier hors de l'explorateur construit"
+category = "information-disclosure"
+boundary = "lecteur-lecture"
+assets = ["hote"]
+description = "Un chemin piégé (« .. », encodage, lien) ferait servir par l'API un fichier du serveur qui n'appartient pas à l'explorateur."
+
+[[threat.mitigation]]
+description = "Rien n'est servi hors des fichiers construits."
+code = "api/src/answerlineage_api/explorer.py"
+test = "api/tests/test_explorer_files.py::test_nothing_outside_the_built_files_is_served"
+
+[[threat]]
+id = "api/donnees-au-repos"
+name = "Un accès à la base livre ce qu'elle tient"
+category = "information-disclosure"
+boundary = "donnees-au-repos"
+assets = ["lignage", "destinataires"]
+description = "Qui lit la base, ses sauvegardes ou son volume lit le graphe, les événements bruts et les relevés."
+
+[[threat.mitigation]]
+description = "Aucune colonne ne porte de contenu : des noms, des empreintes, des pseudonymes et des heures ; trois canaris ne se retrouvent pas dans la base entière."
+code = "api/src/answerlineage_api/store/schema.py"
+test = "tests/test_conformance_no_content.py::test_three_canaries_cross_the_whole_path_and_come_out_nowhere"
+
+[threat.acceptance]
+reason = "AnswerLineage ne chiffre pas la base : son accès, le chiffrement du disque et des sauvegardes reviennent à l'exploitant. Le mot de passe de la démonstration est écrit dans compose.yaml, pour une base que la démonstration ne publie pas."
+consequence = "Qui obtient un accès à la base lit les noms des jeux de données, des agents et des outils, les empreintes et les pseudonymes, sans aucun contenu ; avec la clé des empreintes en plus, il peut éprouver des valeurs candidates."
+
+# Workers
+
+[[threat]]
+id = "workers/evenement-empoisonne"
+name = "Un événement qui fait échouer la projection bloque la file"
+category = "denial-of-service"
+boundary = "emetteur-ingestion"
+assets = ["disponibilite", "lignage"]
+description = "Un événement admis à l'ingestion mais que la projection ne sait pas écrire reviendrait en tête de file et empêcherait les autres d'entrer au graphe."
+
+[[threat.mitigation]]
+description = "Un événement fautif est remis à plus tard sans bloquer son lot."
+code = "workers/src/answerlineage_workers/queue.py"
+test = "workers/tests/test_queue.py::test_faulty_event_is_postponed_without_blocking_the_batch"
+
+[[threat.mitigation]]
+description = "Un lot qui échoue n'arrête pas le worker."
+code = "workers/src/answerlineage_workers/queue.py::run_worker"
+test = "workers/tests/test_queue.py::test_worker_survives_a_failed_batch"
+
+[[threat]]
+id = "workers/double-traitement"
+name = "Deux workers traitent un événement deux fois, ou un arrêt en perd un"
+category = "tampering"
+boundary = "donnees-au-repos"
+assets = ["lignage"]
+description = "Plusieurs workers réclament la file en même temps ; l'un s'arrête au milieu d'un lot."
+
+[[threat.mitigation]]
+description = "Un lot se réclame avec FOR UPDATE SKIP LOCKED : jamais deux fois le même événement."
+code = "workers/src/answerlineage_workers/queue.py"
+test = "workers/tests/test_queue.py::test_two_concurrent_workers_never_process_an_event_twice"
+
+[[threat.mitigation]]
+description = "Projection et retrait de la file sont dans une transaction : un lot interrompu est repris sans perte."
+code = "workers/src/answerlineage_workers/queue.py"
+test = "workers/tests/test_queue.py::test_batch_of_a_worker_stopped_midway_is_taken_up_again_without_loss"
+
+[[threat]]
+id = "workers/identifiant-non-revalide"
+name = "Un événement brut enregistré avant un contrôle plus strict projette un identifiant piégé"
+category = "tampering"
+boundary = "donnees-au-repos"
+assets = ["lignage"]
+description = "Les événements bruts se rejouent : un événement reçu sous une règle plus lâche porterait, à sa projection, un nom que l'ingestion refuse aujourd'hui."
+
+[[threat.mitigation]]
+description = "La projection contrôle à nouveau chaque identifiant."
+code = "workers/src/answerlineage_workers/projection.py"
+test = "workers/tests/test_projection.py::test_identifiers_of_an_event_stored_before_validation_never_reach_the_graph"
+
+[[threat]]
+id = "workers/analyse-epuisante"
+name = "L'analyse d'un incident déclaré épuise les workers"
+category = "denial-of-service"
+boundary = "lecteur-lecture"
+assets = ["disponibilite"]
+description = "Un incident sur un jeu lu partout, ou des déclarations en rafale, occuperaient les workers sans fin."
+
+[[threat.mitigation]]
+description = "Une analyse au-delà de son délai est remise à plus tard, puis abandonnée."
+code = "workers/src/answerlineage_workers/incidents.py"
+test = "workers/tests/test_incidents.py::test_an_analysis_beyond_its_deadline_is_postponed_as_a_timeout"
+
+[[threat.mitigation]]
+description = "Un résultat au-delà de ses bornes dit qu'il est tronqué."
+code = "workers/src/answerlineage_workers/incidents.py"
+test = "workers/tests/test_incidents.py::test_a_result_beyond_its_bounds_says_it_is_truncated"
+
+[[threat]]
+id = "workers/partition-manquante"
+name = "Une partition manquante fait refuser l'ingestion"
+category = "denial-of-service"
+boundary = "donnees-au-repos"
+assets = ["disponibilite"]
+description = "Sans partition pour le mois qui commence, l'écriture des événements bruts échouerait ; une maintenance bloquée derrière une lecture longue la retarderait."
+
+[[threat.mitigation]]
+description = "Une partition future qui manque sept jours avant son mois lève une alerte."
+code = "workers/src/answerlineage_workers/partitions.py"
+test = "workers/tests/test_partitions.py::test_a_future_partition_missing_seven_days_ahead_raises_one_alert"
+
+[[threat.mitigation]]
+description = "La maintenance n'attend jamais une lecture longue."
+code = "workers/src/answerlineage_workers/partitions.py"
+test = "workers/tests/test_partitions.py::test_a_table_held_by_a_long_reading_is_skipped_without_waiting"
+
+[[threat]]
+id = "workers/emetteur-muet"
+name = "Un émetteur se tait et le trou de lignage passe inaperçu"
+category = "repudiation"
+boundary = "emetteur-ingestion"
+assets = ["lignage"]
+description = "Un proxy arrêté, mal réglé ou coupé de l'API ne publie plus rien : ses appels manqueraient au graphe sans que personne ne le sache."
+
+[[threat.mitigation]]
+description = "Un émetteur silencieux plus de dix minutes est signalé."
+code = "workers/src/answerlineage_workers/silence.py"
+test = "workers/tests/test_silence.py::test_an_emitter_silent_for_more_than_ten_minutes_is_signalled_once"
+
+# Ligne de commande
+
+[[threat]]
+id = "cli/reponse-piegee"
+name = "Une API piégée injecte du texte dans le terminal"
+category = "tampering"
+boundary = "lecteur-lecture"
+assets = ["hote"]
+description = "Une API compromise, ou un nom venu d'un émetteur, porte des séquences d'échappement du terminal ou une instruction que la commande afficherait."
+
+[[threat.mitigation]]
+description = "Un nom piégé fait échouer la commande sans être affiché."
+code = "cli/src/answerlineage_cli/names.py"
+test = "cli/tests/test_hostile.py::test_a_trapped_name_fails_the_command_without_being_shown"
+
+[[threat.mitigation]]
+description = "Une réponse d'une autre forme que celle attendue fait échouer la commande."
+code = "cli/src/answerlineage_cli/shape.py"
+test = "cli/tests/test_hostile.py::test_a_response_of_the_wrong_shape_fails_the_command"
+
+[[threat]]
+id = "cli/corps-demesure"
+name = "Une réponse démesurée épuise la commande"
+category = "denial-of-service"
+boundary = "lecteur-lecture"
+assets = ["hote"]
+description = "Une API piégée renvoie un corps sans fin, ou une bombe compressée."
+
+[[threat.mitigation]]
+description = "Un corps reçu en flux au-delà de sa borne est coupé."
+code = "cli/src/answerlineage_cli/client.py"
+test = "cli/tests/test_hostile.py::test_a_streamed_body_beyond_its_bound_is_cut"
+
+[[threat.mitigation]]
+description = "Un corps compressé est refusé avant d'être déployé."
+code = "cli/src/answerlineage_cli/client.py"
+test = "cli/tests/test_hostile.py::test_a_compressed_body_is_refused_before_being_inflated"
+
+[[threat]]
+id = "cli/redirection"
+name = "Une redirection emmène la commande vers une autre adresse"
+category = "information-disclosure"
+boundary = "lecteur-lecture"
+assets = ["hote", "lignage"]
+description = "Une API piégée renvoie la commande vers une adresse de son choix, qui recevrait la requête et ses paramètres."
+
+[[threat.mitigation]]
+description = "Une redirection n'est jamais suivie."
+code = "cli/src/answerlineage_cli/client.py"
+test = "cli/tests/test_hostile.py::test_a_redirect_is_not_followed"
+
+[[threat]]
+id = "cli/journal"
+name = "La bibliothèque HTTP journalise les requêtes et les réponses de la commande"
+category = "information-disclosure"
+boundary = "lecteur-lecture"
+assets = ["lignage"]
+description = "httpx écrit l'adresse complète des requêtes dans son journal : les noms de jeux de données et les identifiants de réponses y passeraient."
+
+[[threat.mitigation]]
+description = "Les journaux du transport sont coupés : ni requête ni réponse n'atteint un journal."
+code = "cli/src/answerlineage_cli/client.py::quiet_transport_logs"
+test = "cli/tests/test_logs.py::test_neither_the_request_nor_the_response_reaches_a_log"
+
+[[threat]]
+id = "cli/adresse-avec-secret"
+name = "Une adresse d'API porteuse d'un secret est recopiée ou suivie"
+category = "information-disclosure"
+boundary = "lecteur-lecture"
+assets = ["hote"]
+description = "Une adresse donnée en option ou dans l'environnement porte un mot de passe, un jeton en paramètre ou un autre schéma que HTTP ; un message d'erreur la recopierait."
+
+[[threat.mitigation]]
+description = "Une adresse refusée est une erreur d'usage qui ne la cite pas, et rien n'est envoyé."
+code = "cli/src/answerlineage_cli/client.py::api_base"
+test = "cli/tests/test_address.py::test_a_refused_address_is_a_usage_error_that_does_not_cite_it"
+
+# Entreprise synthétique, corpus de vérité et corpus d'abus
+
+[[threat]]
+id = "corpus/corpus-d-abus-affaibli"
+name = "Le corpus d'abus est affaibli pour laisser passer une régression"
+category = "tampering"
+boundary = "pipeline-publication"
+assets = ["mesures"]
+description = "Une merge request retire un cas, change son verdict attendu ou le déclare ouvert : la régression qu'il aurait vue passe la porte."
+
+[[threat.mitigation]]
+description = "Chaque famille exigée garde au moins trois cas bloqués."
+code = "corpus/src/answerlineage_corpus/abuse.py"
+test = "corpus/tests/test_abuse.py::test_a_family_with_fewer_than_three_blocked_cases_fails_the_check"
+
+[[threat.mitigation]]
+description = "L'empreinte du corpus est liée à sa version : un contenu changé sans nouvelle version échoue."
+code = "corpus/src/answerlineage_corpus/abuse.py"
+test = "corpus/tests/test_abuse.py::test_a_content_that_changes_without_a_new_version_fails_the_check"
+
+[[threat.mitigation]]
+description = "Ouvrir un cas modifie un chemin protégé, qui demande la revue du mainteneur."
+code = "scripts/check_agent_config.py"
+test = "tests/test_agent_config.py::test_agent_configuration_and_guardrails_are_protected"
+
+[[threat]]
+id = "corpus/verite-faussee"
+name = "La vérité qui mesure le moteur est faussée"
+category = "tampering"
+boundary = "pipeline-publication"
+assets = ["mesures"]
+description = "Calculée avec le moteur qu'elle mesure, ou réécrite à la main pour suivre un moteur affaibli, la vérité ne verrait plus une réponse manquée."
+
+[[threat.mitigation]]
+description = "La vérité de l'entreprise synthétique s'établit à partir de ce qu'elle a généré, sans le moteur."
+code = "corpus/src/answerlineage_corpus/enterprise.py"
+test = "corpus/tests/test_enterprise.py::test_truth_of_an_incident_is_the_exact_list_of_touched_answers"
+
+[[threat.mitigation]]
+description = "Un moteur affaibli échoue à la porte de qualité, qui nomme les réponses manquées."
+code = "corpus/src/answerlineage_corpus/measure.py"
+test = "tests/test_truth_corpus_impact.py::test_a_weakened_engine_fails_the_gate_which_names_the_missed_answers"
+
+[[threat.mitigation]]
+description = "La vérité d'un scénario est recoupée avec sa description."
+code = "corpus/src/answerlineage_corpus/scenarios.py"
+test = "corpus/tests/test_scenarios.py::test_a_truth_the_scenario_contradicts_fails_the_check"
+
+[[threat]]
+id = "corpus/donnees-reelles"
+name = "Le corpus porte des noms de personnes ou des contenus"
+category = "information-disclosure"
+boundary = "pipeline-publication"
+assets = ["destinataires", "contenus"]
+description = "L'entreprise synthétique et les scénarios sont publiés avec le dépôt et chargés dans la démonstration : un nom de personne ou un contenu y serait divulgué."
+
+[[threat.mitigation]]
+description = "Les destinataires de l'entreprise synthétique sont des pseudonymes."
+code = "corpus/src/answerlineage_corpus/enterprise.py"
+test = "corpus/tests/test_enterprise.py::test_recipients_are_pseudonyms_never_names"
+
+[[threat.mitigation]]
+description = "La vérité est publiée sans aucun contenu."
+code = "corpus/src/answerlineage_corpus/truth.py"
+test = "corpus/tests/test_enterprise.py::test_truth_is_published_without_any_content"
+
+[[threat.mitigation]]
+description = "Les scénarios portent des pseudonymes et des empreintes, jamais des noms."
+code = "corpus/src/answerlineage_corpus/scenarios.py"
+test = "corpus/tests/test_scenarios.py::test_scenarios_carry_pseudonyms_and_fingerprints_never_names"
+
+# Kit de conformité
+
+[[threat]]
+id = "conformance/fuite-non-vue"
+name = "Un émetteur qui fuit du contenu passe le kit"
+category = "information-disclosure"
+boundary = "emetteur-ingestion"
+assets = ["contenus", "mesures"]
+description = "Un contenu encodé (base64, hexadécimal, UTF-16), tronqué ou changé de casse échapperait à une recherche littérale ; un parcours sans canari serait vert sans avoir rien jugé."
+
+[[threat.mitigation]]
+description = "Un résultat d'outil en base64 dans un journal est trouvé."
+code = "conformance/src/answerlineage_conformance/content.py"
+test = "conformance/tests/test_content.py::test_a_tool_result_in_base64_in_a_log_is_caught"
+
+[[threat.mitigation]]
+description = "Un canari tronqué est trouvé par son seul tirage."
+code = "conformance/src/answerlineage_conformance/canaries.py"
+test = "conformance/tests/test_content.py::test_a_truncated_canary_is_caught_by_its_draw_alone"
+
+[[threat.mitigation]]
+description = "Un témoin sans canari fait échouer le jugement : un parcours vide serait vert."
+code = "conformance/src/answerlineage_conformance/content.py"
+test = "conformance/tests/test_content.py::test_a_witness_without_a_canary_fails_because_an_empty_run_would_be_green"
+
+[[threat]]
+id = "conformance/rapport-qui-fuit"
+name = "Le rapport du kit recopie le contenu qu'il a trouvé"
+category = "information-disclosure"
+boundary = "emetteur-ingestion"
+assets = ["contenus"]
+description = "Un rapport qui cite la fuite la publierait une seconde fois, dans la sortie du pipeline de l'intégrateur."
+
+[[threat.mitigation]]
+description = "Le rapport, en texte comme en JSON, situe une fuite sans jamais citer le canari."
+code = "conformance/src/answerlineage_conformance/report.py"
+test = "conformance/tests/test_content.py::test_the_report_of_a_leak_never_quotes_the_canary"
+
+[[threat]]
+id = "conformance/fichier-hostile"
+name = "Un fichier jugé épuise le kit ou piège son terminal"
+category = "denial-of-service"
+boundary = "emetteur-ingestion"
+assets = ["hote"]
+description = "Les fichiers qu'on donne au kit viennent de l'émetteur jugé : démesurés, imbriqués sans fin, ou nommés pour piéger le terminal."
+
+[[threat.mitigation]]
+description = "Un fichier au-delà de sa taille limite est refusé."
+code = "conformance/src/answerlineage_conformance/cli.py"
+test = "conformance/tests/test_cli.py::test_a_file_beyond_the_size_limit_exits_with_two"
+
+[[threat.mitigation]]
+description = "Des événements trop imbriqués pour être jugés sont refusés."
+code = "conformance/src/answerlineage_conformance/cli.py"
+test = "conformance/tests/test_cli.py::test_events_too_deeply_nested_to_be_judged_exit_with_two"
+
+[[threat.mitigation]]
+description = "Un nom de fichier qui n'est pas anodin n'est jamais affiché."
+code = "conformance/src/answerlineage_conformance/cli.py"
+test = "conformance/tests/test_cli.py::test_a_file_name_that_is_not_plain_is_never_printed"
+
+[[threat]]
+id = "conformance/schema-substitue"
+name = "Le kit juge contre un schéma substitué"
+category = "tampering"
+boundary = "pipeline-publication"
+assets = ["mesures"]
+description = "Un schéma résolu par le réseau pourrait être remplacé en chemin, et le kit jugerait conforme un événement qui ne l'est pas."
+
+[[threat.mitigation]]
+description = "Chaque référence au schéma d'OpenLineage se résout sans le réseau."
+code = "conformance/src/answerlineage_conformance/schemas.py"
+test = "conformance/tests/test_schemas.py::test_every_reference_to_openlineage_is_resolved_without_the_network"
+
+[[threat.mitigation]]
+description = "Les schémas embarqués sont, à l'octet près, ceux que publie le dépôt."
+code = "conformance/src/answerlineage_conformance/schemas.py"
+test = "conformance/tests/test_schemas.py::test_the_embedded_schemas_are_the_published_ones_to_the_byte"
+
+[[threat]]
+id = "conformance/resume-a2a-mensonger"
+name = "Un agent appelé en A2A déclare des lectures fausses dans son résumé"
+category = "spoofing"
+boundary = "emetteur-ingestion"
+assets = ["lignage"]
+description = "Le résumé de lignage qu'un agent appelé rend à son appelant n'est pas signé : l'appelé peut taire une lecture, en inventer, ou y glisser du contenu."
+
+[[threat.mitigation]]
+description = "Le kit nomme un contenu glissé dans un champ du résumé."
+code = "conformance/src/answerlineage_conformance/a2a.py"
+test = "conformance/tests/test_a2a.py::test_content_in_a_field_of_the_summary_is_named"
+
+[[threat.mitigation]]
+description = "Le kit nomme un résumé aux jeux de données trop nombreux."
+code = "conformance/src/answerlineage_conformance/a2a.py"
+test = "conformance/tests/test_a2a.py::test_a_summary_with_too_many_datasets_is_named"
+
+[threat.acceptance]
+reason = "Le résumé A2A n'est pas signé dans la version 1 de l'extension, et aucun adaptateur A2A n'est encore fourni : le lignage d'un agent appelé se prend sur sa parole."
+consequence = "Une lecture tue par un agent appelé manque au lignage de son appelant : une réponse qui en dépend n'est pas rappelée."
+
+# Explorateur
+
+[[threat]]
+id = "ui/script-injecte"
+name = "Un nom venu d'un émetteur exécute un script dans l'explorateur"
+category = "elevation-of-privilege"
+boundary = "lecteur-lecture"
+assets = ["lignage"]
+description = "Un nom de jeu de données ou d'outil écrit comme une balise, affiché dans le graphe, exécuterait un script dans la page du lecteur, qui pourrait alors lire le lignage ou déclarer des incidents."
+abuse_cases = ["identifiants/jeu-balise", "identifiants/jeu-balise-pleine-chasse"]
+
+[[threat.mitigation]]
+description = "Politique de sécurité du contenu stricte : ni script ni style en ligne, aucune ressource d'ailleurs."
+code = "api/src/answerlineage_api/headers.py"
+test = "api/tests/test_explorer_files.py::test_the_content_policy_allows_nothing_inline_and_nothing_from_elsewhere"
+
+[[threat.mitigation]]
+description = "Un nom qui porte une balise est refusé à l'ingestion : il n'atteint pas le graphe."
+code = "api/src/answerlineage_api/identifiers.py"
+test = "api/tests/test_identifiers.py::test_one_faulty_character_anywhere_is_enough_to_refuse"
+
+[[threat]]
+id = "ui/adresse-piegee"
+name = "Une adresse partagée piégée fait agir l'explorateur"
+category = "tampering"
+boundary = "lecteur-lecture"
+assets = ["lignage"]
+description = "L'adresse est l'état de la page : un lien reçu peut porter une balise, un caractère nul ou un identifiant forgé, pour faire afficher un texte ou appeler une autre route."
+abuse_cases = ["identifiants/adresse-balise-propager", "identifiants/adresse-balise-donnees", "invisibles/adresse-caractere-nul"]
+
+[[threat.mitigation]]
+description = "Une adresse hostile laisse l'explorateur inerte : aucun nœud, aucun élément né d'elle, un message fixe."
+code = "ui/src/route.ts::parseRoute"
+test = "tests/test_abuse_explorer.py::test_every_hostile_address_of_the_abuse_corpus_leaves_the_explorer_inert"
+
+[[threat.mitigation]]
+description = "Une adresse de remontée hostile ou inconnue donne un message fixe."
+code = "ui/src/route.ts::parseRoute"
+test = "tests/test_explorer.py::test_a_hostile_or_unknown_trace_address_gives_a_fixed_message"
+
+[[threat]]
+id = "ui/cadre-detourne"
+name = "Une page tierce encadre l'explorateur pour détourner ses clics"
+category = "tampering"
+boundary = "lecteur-lecture"
+assets = ["lignage"]
+description = "Dans un cadre invisible, l'explorateur recevrait des clics que le lecteur croit donner à une autre page."
+
+[[threat.mitigation]]
+description = "Toute réponse porte les en-têtes de sécurité, dont frame-ancestors 'none'."
+code = "api/src/answerlineage_api/headers.py"
+test = "api/tests/test_explorer_files.py::test_every_response_carries_the_security_headers"
+
+# Pipeline et publication
+
+[[threat]]
+id = "pipeline/action-deplacee"
+name = "Une action ou une image tierce change sous la même étiquette"
+category = "tampering"
+boundary = "pipeline-publication"
+assets = ["artefacts-publies"]
+description = "Une étiquette d'action ou d'image se déplace : le pipeline exécuterait un code que personne n'a relu."
+
+[[threat.mitigation]]
+description = "Une action se référence par empreinte de commit."
+code = "scripts/check_policy.py"
+test = "tests/test_policy.py::test_action_referenced_by_tag_or_branch_fails"
+
+[[threat.mitigation]]
+description = "Une image se référence par empreinte sha256, dans un workflow, un script, un Dockerfile ou un fichier compose."
+code = "scripts/check_policy.py"
+test = "tests/test_policy.py::test_container_images_must_be_pinned_by_digest"
+
+[[threat]]
+id = "pipeline/merge-request-privilegiee"
+name = "Le code d'une merge request obtient un droit d'écriture ou un secret"
+category = "elevation-of-privilege"
+boundary = "pipeline-publication"
+assets = ["artefacts-publies"]
+description = "pull_request_target, un jeton gardé par actions/checkout ou une écriture accordée à tout le workflow donneraient au code proposé de quoi écrire dans le dépôt ou publier."
+
+[[threat.mitigation]]
+description = "pull_request_target est interdit."
+code = "scripts/check_policy.py"
+test = "tests/test_policy.py::test_pull_request_target_is_forbidden"
+
+[[threat.mitigation]]
+description = "actions/checkout ne garde pas le jeton du pipeline."
+code = "scripts/check_policy.py"
+test = "tests/test_policy.py::test_checkout_must_not_keep_the_pipeline_token"
+
+[[threat.mitigation]]
+description = "Aucune écriture n'est accordée à tout un workflow."
+code = "scripts/check_policy.py"
+test = "tests/test_policy.py::test_write_permission_for_the_whole_workflow_fails"
+
+[[threat]]
+id = "pipeline/agent-de-code-piege"
+name = "Un agent de code suit une instruction piégée avec un secret ou un droit d'écriture"
+category = "elevation-of-privilege"
+boundary = "pipeline-publication"
+assets = ["artefacts-publies"]
+description = "Une issue, un commentaire ou une merge request portent une instruction qu'un agent de code lancé par le pipeline exécuterait."
+
+[[threat.mitigation]]
+description = "Un agent de code lancé sur une entrée non fiable n'a pas de droit d'écriture."
+code = "scripts/check_policy.py"
+test = "tests/test_policy.py::test_code_agent_on_untrusted_input_must_not_write"
+
+[[threat.mitigation]]
+description = "Un agent de code lancé sur une entrée non fiable ne reçoit pas de secret."
+code = "scripts/check_policy.py"
+test = "tests/test_policy.py::test_code_agent_on_untrusted_input_must_not_receive_a_secret"
+
+[[threat]]
+id = "pipeline/garde-fou-modifie"
+name = "Une merge request affaiblit un garde-fou sans revue du mainteneur"
+category = "elevation-of-privilege"
+boundary = "pipeline-publication"
+assets = ["artefacts-publies", "mesures"]
+description = "Workflows, scripts de contrôle, propriétaires du code, configuration d'agents, exceptions des analyses et du corpus d'abus, ce modèle : les modifier changerait ce que la porte vérifie."
+
+[[threat.mitigation]]
+description = "Une merge request qui modifie un chemin protégé échoue tant que le mainteneur ne l'a pas approuvée."
+code = "scripts/check_agent_config.py"
+test = "tests/test_agent_config.py::test_merge_request_touching_a_hook_fails_until_a_maintainer_approves"
+
+[[threat.mitigation]]
+description = "Chaque chemin protégé a un propriétaire dans CODEOWNERS."
+code = "scripts/check_policy.py::check_codeowners"
+test = "tests/test_policy.py::test_every_protected_path_needs_a_code_owner"
+
+[[threat]]
+id = "pipeline/reglages-du-depot"
+name = "Une protection du dépôt manque : une étiquette, une fusion ou un label viennent d'un autre que le mainteneur"
+category = "elevation-of-privilege"
+boundary = "pipeline-publication"
+assets = ["artefacts-publies"]
+description = "La protection de main, la revue exigée des propriétaires du code, le label agent-config-approved et la protection des étiquettes v* sont des réglages du dépôt : sans eux, quiconque pousse une étiquette publie une version valablement signée, et un garde-fou se modifie sans revue."
+
+[threat.acceptance]
+reason = "Ces réglages ne se versionnent pas : aucun contrôle du dépôt ne peut les vérifier. Ils sont listés pour le mainteneur dans la documentation du pipeline et de la publication."
+consequence = "Si l'un d'eux manque, les artefacts restent signés et attestés, mais par une identité qu'un tiers a pu mettre en mouvement."
+
+[[threat]]
+id = "pipeline/secret-dans-l-historique"
+name = "Un secret entre dans l'historique public"
+category = "information-disclosure"
+boundary = "pipeline-publication"
+assets = ["hote", "artefacts-publies"]
+description = "Un jeton, une clé ou un mot de passe commité, même retiré ensuite, reste lisible dans l'historique d'un dépôt public."
+
+[[threat.mitigation]]
+description = "Gitleaks analyse tout l'historique à chaque merge request, après un canari qui prouve qu'il bloque."
+code = "scripts/gitleaks.sh::scan"
+test = "scripts/gitleaks.sh::selftest"
+
+[[threat]]
+id = "pipeline/image-vulnerable"
+name = "Une image est publiée avec une vulnérabilité haute ou critique connue"
+category = "tampering"
+boundary = "pipeline-publication"
+assets = ["artefacts-publies"]
+description = "Une dépendance ou un paquet de l'image de base porte une vulnérabilité connue au jour de la publication."
+
+[[threat.mitigation]]
+description = "Une vulnérabilité haute ou critique sans exception valable bloque."
+code = "scripts/check_vulnerabilities.py"
+test = "tests/test_vulnerabilities.py::test_high_and_critical_findings_without_exception_block"
+
+[[threat.mitigation]]
+description = "Une exception sans motif, ou dont la revue est passée, ne s'applique plus."
+code = "scripts/check_vulnerabilities.py"
+test = "tests/test_vulnerabilities.py::test_an_exception_without_reason_or_with_a_lapsed_review_is_refused"
+
+[[threat]]
+id = "pipeline/artefact-contrefait"
+name = "Un artefact contrefait passe pour une version du projet"
+category = "spoofing"
+boundary = "pipeline-publication"
+assets = ["artefacts-publies"]
+description = "Une image ou un paquet poussé par un tiers, ou avec un jeton de publication volé, sous le nom du projet."
+
+[[threat.mitigation]]
+description = "Un job qui publie ne reçoit aucun secret : il publie par l'identité OIDC du workflow."
+code = "scripts/check_policy.py"
+test = "tests/test_policy.py::test_a_job_that_publishes_receives_no_secret"
+
+[[threat.mitigation]]
+description = "Les paquets partent sur PyPI par publication de confiance, sans jeton."
+code = "scripts/check_policy.py"
+test = "tests/test_policy.py::test_a_pypi_upload_uses_trusted_publishing_rather_than_a_token"
+
+[[threat.mitigation]]
+description = "L'image est signée sans clé par son empreinte ; la signature est éprouvée à chaque merge request, et une image modifiée ne passe pas."
+code = "scripts/image.sh::sign"
+test = "scripts/image.sh::signtest"
+
+[[threat]]
+id = "pipeline/version-incoherente"
+name = "Une version publiée installe des composants d'une autre version"
+category = "tampering"
+boundary = "pipeline-publication"
+assets = ["artefacts-publies"]
+description = "Une étiquette qui n'est pas la version déclarée, ou un composant qui n'épingle pas ses frères, ferait installer ensemble des paquets qui n'ont pas été éprouvés ensemble."
+
+[[threat.mitigation]]
+description = "Une étiquette d'une autre version que celle des paquets est refusée."
+code = "scripts/check_release.py"
+test = "tests/test_release.py::test_a_tag_of_another_version_is_refused"
+
+[[threat.mitigation]]
+description = "Un composant épingle ses frères à sa version exacte."
+code = "scripts/check_release.py"
+test = "tests/test_release.py::test_a_sibling_must_be_pinned_to_the_same_version"
+
+[[threat]]
+id = "pipeline/nom-usurpe"
+name = "Un tiers publie sous un nom du projet sur PyPI ou npm"
+category = "spoofing"
+boundary = "pipeline-publication"
+assets = ["artefacts-publies", "hote"]
+description = "Un nom que la documentation cite sans qu'il soit réservé, ou réservé trop tard, ferait installer le paquet d'un tiers."
+
+[[threat.mitigation]]
+description = "La documentation ne cite que les noms que le projet publie ou se réserve."
+code = "scripts/check_release.py::distribution_names"
+test = "tests/test_documentation.py::test_the_documentation_cites_only_the_published_distribution_names"
+
+[threat.acceptance]
+reason = "PyPI et npm ne réservent un nom qu'à sa première publication : le mainteneur réserve ceux du projet avant la première étiquette, comme le dit le guide de publication."
+consequence = "Tant qu'un nom n'est pas réservé, un tiers peut le prendre, et qui installe le projet sous ce nom installe son paquet."
+
+[[threat]]
+id = "pipeline/dependance-compromise"
+name = "Une dépendance compromise entre au verrou, dans l'image ou dans l'explorateur"
+category = "tampering"
+boundary = "pipeline-publication"
+assets = ["artefacts-publies", "hote"]
+description = "Une version malveillante d'une dépendance Python ou npm s'exécute à l'installation sur le poste ou dans le pipeline, puis entre dans l'image et les paquets publiés."
+
+[threat.acceptance]
+reason = "Les dépendances sont verrouillées, attendent sept jours avant d'être adoptées (exclude-newer, minimumReleaseAge), et l'explorateur s'installe sans exécuter de script ; aucun test ne prouve ces parades, et une version malveillante plus ancienne que le délai passe."
+consequence = "Une dépendance compromise depuis plus de sept jours entre au verrou à la mise à jour suivante, puis dans l'image et les paquets ; l'analyse des vulnérabilités ne voit que ce qui est déjà connu."
+
+[[threat]]
+id = "pipeline/conteneur-de-developpement"
+name = "Le conteneur de développement expose les identifiants de l'hôte"
+category = "information-disclosure"
+boundary = "pipeline-publication"
+assets = ["hote"]
+description = "Un montage du dossier SSH, des identifiants d'un nuage ou du socket Docker, ou un jeton transmis, livrerait les identifiants du poste au code du dépôt et à ses dépendances."
+
+[[threat.mitigation]]
+description = "Le conteneur ne monte aucun emplacement d'identifiants."
+code = "scripts/check_policy.py::check_devcontainer"
+test = "tests/test_policy.py::test_development_container_must_not_mount_host_credentials"
+
+[[threat.mitigation]]
+description = "Le conteneur ne reçoit aucun jeton de l'hôte."
+code = "scripts/check_policy.py::check_devcontainer"
+test = "tests/test_policy.py::test_development_container_must_not_receive_host_tokens"
+
+[[threat]]
+id = "pipeline/modele-perime"
+name = "Un composant ou une version sort sans que ses menaces aient été revues"
+category = "repudiation"
+boundary = "pipeline-publication"
+assets = ["artefacts-publies", "mesures"]
+description = "Un composant fusionné hors du modèle, ou une version publiée sans revue, laisserait des menaces sans parade ni acceptation, sans que personne en réponde."
+
+[[threat.mitigation]]
+description = "Une merge request qui ajoute un composant sans l'ajouter au modèle échoue et le nomme."
+code = "scripts/check_threat_model.py::repository_problems"
+test = "tests/test_threat_model.py::test_a_component_merged_without_updating_the_model_fails_and_is_named"
+
+[[threat.mitigation]]
+description = "La publication s'arrête, avant de rien publier, si le modèle n'a pas été revu pour sa version ou si une acceptation reste à signer."
+code = "scripts/check_threat_model.py::release_problems"
+test = "tests/test_release.py::test_the_tag_command_refuses_an_acceptance_left_to_sign"

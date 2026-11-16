@@ -49,3 +49,5 @@ Tout ce qui fait mentir une garantie du produit, en plus des failles habituelles
 - une faille de la chaîne de construction : workflow, dépendance, image.
 
 Deux limites sont connues et documentées, et ne sont donc pas des découvertes : l'API n'authentifie pas encore ses appelants, et les émetteurs d'événements ne sont pas authentifiés. Dans cet état, l'API est faite pour la boucle locale ou un réseau de confiance.
+
+Le [modèle de menaces](docs/securite/modele-de-menaces.md) tient les menaces connues de chaque composant, leurs parades et les risques acceptés, dont ces deux limites ; il est revu à chaque version, et une version ne sort pas tant qu'une acceptation y reste à signer.

@@ -8,14 +8,19 @@ workflow ``release`` ne publie rien tant que ces contrôles ne sont pas verts :
 - chaque composant publiable, membre de l'espace de travail qui se construit,
   déclare la version de l'étiquette et dépend de ses frères à cette version
   exactement : un paquet publié n'installe jamais un frère d'une autre version ;
+- le modèle de menaces (``scripts/check_threat_model.py``) est bien formé et
+  suit le dépôt, il a été revu pour la version de l'étiquette, et aucune
+  acceptation n'y reste à signer ;
 - la roue et les sources de chaque composant portent les bonnes métadonnées :
   nom, version, licence et son texte, description, classifieurs cohérents,
   adresse des sources, dépendances entre frères ; elles ne contiennent que le
   module du composant.
 
 À chaque merge request, ``rehearse`` éprouve les mêmes contrôles avec une
-étiquette fictive, celle de la version déclarée. À la fin d'une publication,
-``report`` dit ce qui est publié et ce qui ne l'est pas.
+étiquette fictive, celle de la version déclarée ; les acceptations qui restent à
+signer y sont dites sans faire échouer la répétition, puisqu'elles se signent en
+préparant la version. À la fin d'une publication, ``report`` dit ce qui est
+publié et ce qui ne l'est pas.
 
 Usage :
   ``python3 -m scripts.check_release tag ÉTIQUETTE [--github-output FICHIER]``
@@ -46,6 +51,8 @@ from email.parser import BytesHeaderParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from scripts import check_threat_model
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -503,6 +510,37 @@ def dist_problems(
     return problems
 
 
+def threat_model_problems(version: Version, root: Path = ROOT) -> list[str]:
+    """Ce que le modèle de menaces oppose à la publication de cette version."""
+    return [
+        f"modèle de menaces : {problem}"
+        for problem in check_threat_model.release_problems(version.python, root)
+    ]
+
+
+def _review_rehearsal(version: Version, other: Version, root: Path) -> list[str]:
+    """La revue du modèle de menaces, éprouvée comme la publication la contrôlera.
+
+    Le modèle doit avoir été revu pour la version déclarée, et sa revue doit
+    refuser une autre version. Ses formes et ses parades sont contrôlées à
+    chaque merge request par ``make policy`` ; ses acceptations à signer, à la
+    publication seulement.
+    """
+    model, found = check_threat_model.read(root)
+    if model is None:
+        return [f"modèle de menaces : {problem}" for problem in found]
+    problems = [
+        f"modèle de menaces : {problem}"
+        for problem in check_threat_model.review_problems(model, version.python)
+    ]
+    if not check_threat_model.review_problems(model, other.python):
+        problems.append(
+            f"le modèle de menaces serait tenu pour revu pour l'étiquette {other.tag} : "
+            "sa revue ne contrôle rien"
+        )
+    return problems
+
+
 def rehearse(directory: Path, root: Path = ROOT) -> tuple[Version | None, list[str]]:
     """Les contrôles de la publication, avec l'étiquette fictive de la version déclarée.
 
@@ -521,13 +559,20 @@ def rehearse(directory: Path, root: Path = ROOT) -> tuple[Version | None, list[s
             f"l'étiquette {other.tag} serait acceptée pour la version {version.python} : "
             "la concordance ne contrôle rien"
         )
+    problems.extend(_review_rehearsal(version, other, root))
     problems.extend(dist_problems(directory, version, components, expectations(root)))
     return version, problems
 
 
+def unsigned_acceptances(root: Path = ROOT) -> list[str]:
+    """Les menaces dont l'acceptation attend la signature du mainteneur avant de publier."""
+    model, _ = check_threat_model.read(root)
+    return [] if model is None else check_threat_model.unsigned(model)
+
+
 # Les jobs du workflow de publication, dans l'ordre, et ce que chacun publie.
 STAGES = (
-    ("PREPARE", "Préparation", "rien : étiquette, paquets et notes contrôlés"),
+    ("PREPARE", "Préparation", "rien : étiquette, modèle de menaces, paquets et notes contrôlés"),
     ("IMAGE", "Image", "l'image, sa signature, son SBOM et sa provenance"),
     ("PYPI", "PyPI", "les paquets et leurs attestations"),
     ("RELEASE", "Version GitHub", "les notes, le SBOM, les paquets et leurs empreintes"),
@@ -600,7 +645,8 @@ def publication_report(results: Mapping[str, str], tag: str, image: str) -> tupl
                 f"## {title} : rien n'est publié",
                 "",
                 *table,
-                "L'étiquette, les paquets ou les notes ont été refusés avant toute publication.",
+                "L'étiquette, le modèle de menaces, les paquets ou les notes ont été refusés "
+                "avant toute publication.",
             ]
         )
     return 1, "\n".join(
@@ -627,7 +673,11 @@ def _print(problems: Sequence[str], success: str) -> int:
     return 0
 
 
-def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    environment: Mapping[str, str] | None = None,
+    root: Path = ROOT,
+) -> int:
     env = os.environ if environment is None else environment
     parser = argparse.ArgumentParser(prog="python3 -m scripts.check_release")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -654,14 +704,24 @@ def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] | Non
                 handle.write(summary + "\n")
         return code
     if arguments.command == "rehearse":
-        found, problems = rehearse(arguments.directory)
+        found, problems = rehearse(arguments.directory, root)
         tag = found.tag if found is not None else "(aucune)"
         print(f"Étiquette fictive {tag}, paquets de {arguments.directory} :")
-        return _print(
+        code = _print(
             problems,
             f"Publication éprouvée : l'étiquette {tag} concorde avec la version déclarée, une "
-            "autre étiquette est refusée, et les paquets sont conformes.",
+            "autre étiquette est refusée, le modèle de menaces a été revu pour cette version, "
+            "et les paquets sont conformes.",
         )
+        pending = unsigned_acceptances(root)
+        if pending:
+            print(
+                f"Avant de publier, le mainteneur signe {len(pending)} acceptation(s) du modèle "
+                "de menaces ; la publication les refuse tant qu'elles ne le sont pas :"
+            )
+            for threat in pending:
+                print(f"  {threat}")
+        return code
 
     version = parse_tag(arguments.tag)
     if version is None:
@@ -670,12 +730,13 @@ def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] | Non
             "v1.2.3-beta.1, v1.2.3-rc.1 pour une préversion."
         )
         return 2
-    components = publishable_components()
+    components = publishable_components(root)
     if arguments.command == "tag":
         code = _print(
-            tag_problems(version, components),
+            [*tag_problems(version, components), *threat_model_problems(version, root)],
             f"Étiquette {version.tag} : version {version.python} de "
-            f"{len(components)} composant(s), image {version.image}.",
+            f"{len(components)} composant(s), image {version.image} ; modèle de menaces revu "
+            "pour cette version, ses acceptations signées.",
         )
         if code == 0 and arguments.github_output is not None:
             with arguments.github_output.open("a", encoding="utf-8") as handle:
@@ -684,7 +745,7 @@ def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] | Non
                 handle.write(f"prerelease={'false' if version.final else 'true'}\n")
         return code
     return _print(
-        dist_problems(arguments.directory, version, components, expectations()),
+        dist_problems(arguments.directory, version, components, expectations(root)),
         f"Paquets conformes : {len(components)} composant(s), version {version.python}.",
     )
 

@@ -96,7 +96,7 @@ Une vérification ne vaut que par l'identité exigée : une expression réguliè
 
 ## Comment sort une version
 
-**Préparer.** Une merge request change la version des composants publiables, dans le `pyproject.toml` de chacun : leur `version`, et la contrainte qui épingle un composant frère (`answerlineage-api==…` dans `workers/`, `answerlineage-workers==…` dans `conformance/`). Les paquets publiés s'installent ainsi toujours ensemble, à la même version. `make packages` vérifie l'accord sur le poste, et le pipeline à chaque merge request.
+**Préparer.** Une merge request change la version des composants publiables, dans le `pyproject.toml` de chacun : leur `version`, et la contrainte qui épingle un composant frère (`answerlineage-api==…` dans `workers/`, `answerlineage-workers==…` dans `conformance/`). Les paquets publiés s'installent ainsi toujours ensemble, à la même version. La même merge request porte la [revue du modèle de menaces](securite/modele-de-menaces.md#la-revue-dune-version) pour cette version, et le mainteneur y signe les acceptations qu'il retient. `make packages` vérifie l'accord sur le poste, et le pipeline à chaque merge request ; il refuse une version pour laquelle le modèle n'a pas été revu, et liste les acceptations qui restent à signer.
 
 **Étiqueter.** Après la fusion, le mainteneur pose l'étiquette sur le commit de `main` et la pousse. Une version s'écrit `v1.2.3`, ou `v1.2.3-alpha.1`, `v1.2.3-beta.1`, `v1.2.3-rc.1` pour une préversion ; toute autre forme est refusée.
 
@@ -109,7 +109,7 @@ Une vérification ne vaut que par l'identité exigée : une expression réguliè
 
 | Job | Ce qu'il fait | Ce qu'il publie |
 | --- | --- | --- |
-| `prepare` | Vérifie que l'étiquette est la version déclarée par chaque composant, sinon s'arrête ; construit les paquets (`uv build`) et contrôle leurs métadonnées ; rédige les notes de version | Rien |
+| `prepare` | Vérifie que l'étiquette est la version déclarée par chaque composant, et que le modèle de menaces a été revu pour elle sans acceptation à signer, sinon s'arrête ; construit les paquets (`uv build`) et contrôle leurs métadonnées ; rédige les notes de version | Rien |
 | `image` | Construit l'image, produit son SBOM, l'analyse ; la pousse, la signe sans clé, vérifie la signature, attache le SBOM et la provenance | L'image et ses preuves |
 | `pypi` | Atteste la provenance des paquets ; les publie sur PyPI par publication de confiance, dans l'environnement `pypi`, avec leurs attestations de publication | Les paquets |
 | `github-release` | Crée la version en brouillon, y joint les paquets, le SBOM et `SHA256SUMS`, puis la publie | La version GitHub |
@@ -128,7 +128,7 @@ L'ordre est voulu. Tout ce qui peut échouer sans rien publier passe d'abord : l
 | `pypi` | L'image, et peut-être une partie des paquets | Si aucun fichier n'est parti, relancer. Sinon, PyPI refuse un fichier déjà reçu : une version incomplète se remplace par la suivante |
 | `github-release` | L'image et les paquets | Relancer : un brouillon laissé par l'échec est remplacé, une version publiée ne l'est jamais |
 
-**Ce qui est éprouvé à chaque merge request**, sans rien publier : `make packages` (job `static`) construit les paquets de chaque composant, contrôle leurs métadonnées (nom, version, licence et son texte, description, classifieurs, adresse des sources, épinglage des frères), vérifie qu'une étiquette fictive, celle de la version déclarée, est acceptée et qu'une autre est refusée, et rédige les notes qu'aurait cette étiquette. `scripts/image.sh signtest` (job `image`) éprouve la signature, comme le dit la section suivante. Ce qui ne s'éprouve qu'à la publication : la poussée de l'image, sa signature sans clé, les attestations, l'envoi sur PyPI et la version GitHub.
+**Ce qui est éprouvé à chaque merge request**, sans rien publier : `make packages` (job `static`) construit les paquets de chaque composant, contrôle leurs métadonnées (nom, version, licence et son texte, description, classifieurs, adresse des sources, épinglage des frères), vérifie qu'une étiquette fictive, celle de la version déclarée, est acceptée et qu'une autre est refusée, que le modèle de menaces a été revu pour elle, en listant les acceptations qui restent à signer, et rédige les notes qu'aurait cette étiquette. `scripts/image.sh signtest` (job `image`) éprouve la signature, comme le dit la section suivante. Ce qui ne s'éprouve qu'à la publication : la poussée de l'image, sa signature sans clé, les attestations, l'envoi sur PyPI et la version GitHub.
 
 ## La signature éprouvée à chaque merge request
 

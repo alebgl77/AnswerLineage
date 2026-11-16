@@ -30,6 +30,7 @@ DOCUMENTS = sorted(
         *ROOT.glob("*.md"),
         *ROOT.glob("docs/*.md"),
         *ROOT.glob("docs/decisions/*.md"),
+        *ROOT.glob("docs/securite/*.md"),
         *ROOT.glob("spec/**/*.md"),
     ]
 )

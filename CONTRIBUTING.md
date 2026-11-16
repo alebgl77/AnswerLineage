@@ -49,6 +49,7 @@ Toute contribution passe `make check` : politique du dépôt, compatibilité de 
 - **Un changement cohérent par commit**, avec un message au format des [commits conventionnels](https://www.conventionalcommits.org/fr/), en français : `feat(proxy): …`, `fix(api): …`, `docs: …`.
 - **Pas de commit de correction dans une merge request.** Un défaut trouvé pendant la revue se corrige dans le commit qui l'a introduit, en réécrivant votre branche.
 - **La documentation suit le code.** Un comportement visible se décrit dans `docs/`, et ses limites dans la section « Limites connues » du document concerné.
+- **Le modèle de menaces suit le produit.** Un composant, une frontière ou une entrée nouveaux ajoutent leurs menaces au [modèle de menaces](docs/securite/modele-de-menaces.md), chacune avec sa parade ou une acceptation que seul le mainteneur signe ; `make policy` refuse un composant qui n'y figure pas.
 - **Le métier se dit en français** (rappel, piste, écart, criticité, quarantaine), les identifiants techniques en anglais.
 
 ## Les garanties à ne pas rompre
@@ -67,7 +68,7 @@ Un changement qui rompt l'une d'elles est refusé, même si ses tests passent :
 ## Ce qui demande l'accord du mainteneur
 
 - **Une nouvelle dépendance.** Elle se discute dans une issue. Une fois acceptée, elle s'ajoute au `pyproject.toml` du composant, puis `uv lock` ; pour l'explorateur, à `ui/package.json` en version exacte, puis `npm install --package-lock-only`. Une version publiée depuis moins de 7 jours n'est pas adoptée.
-- **Les chemins protégés** : workflows, `scripts/`, `.devcontainer/`, configuration d'agents de code. Une merge request qui en modifie un échoue au contrôle `agent-config` tant que le mainteneur n'a pas posé le label `agent-config-approved`. Signalez-le dans la description plutôt que de contourner le contrôle.
+- **Les chemins protégés** : workflows, `scripts/`, `.devcontainer/`, configuration d'agents de code, modèle de menaces. Une merge request qui en modifie un échoue au contrôle `agent-config` tant que le mainteneur n'a pas posé le label `agent-config-approved`. Signalez-le dans la description plutôt que de contourner le contrôle.
 - **Un changement incompatible de l'API.** Le pipeline le refuse : une rupture demande une nouvelle version de l'API.
 
 Les actions GitHub s'épinglent par empreinte de commit et les images par empreinte `@sha256:`.

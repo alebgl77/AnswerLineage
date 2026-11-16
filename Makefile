@@ -10,8 +10,9 @@ setup: ## Installe l'environnement (uv) et les hooks pre-commit
 
 check: policy contract format-check lint typecheck packages test coverage-gate ## Porte de toute contribution : politique, contrat de l'API, format, lint, typage strict, paquets, tests, couverture
 
-policy: ## Politique du dépôt (actions et images épinglées, permissions minimales, agents de code)
+policy: ## Politique du dépôt (actions et images épinglées, permissions minimales, agents de code, modèle de menaces)
 	uv run python -m scripts.check_policy
+	uv run python -m scripts.check_threat_model
 
 contract: ## Compatibilité de l'API, des schémas de facettes et de l'extension A2A avec ceux publiés sur la branche cible
 	uv run python -m scripts.check_openapi_compat

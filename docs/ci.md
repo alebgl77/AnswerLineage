@@ -4,7 +4,7 @@ Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque me
 
 | Job | Ce qu'il vérifie | Commande locale |
 | --- | --- | --- |
-| `static` | Politique du dépôt, compatibilité de l'API et des schémas de facettes avec ceux publiés, format, lint (ruff), typage strict (mypy) ; publication d'une version éprouvée sans rien publier : paquets de chaque composant et leurs métadonnées, étiquette fictive de la version déclarée, notes de version | `make policy contract format-check lint typecheck packages` |
+| `static` | Politique du dépôt, [modèle de menaces](securite/modele-de-menaces.md) bien formé et à jour des composants, compatibilité de l'API et des schémas de facettes avec ceux publiés, format, lint (ruff), typage strict (mypy) ; publication d'une version éprouvée sans rien publier : paquets de chaque composant et leurs métadonnées, étiquette fictive de la version déclarée, modèle de menaces revu pour elle, notes de version | `make policy contract format-check lint typecheck packages` |
 | `tests` | Tests et couverture de branches, sur la matrice Python 3.13 et 3.14, PostgreSQL 17 et 18 | `make test` |
 | `tests` | Porte de couverture : 85 % par composant, en branches et en lignes et branches | `make coverage-gate` |
 | `tests` | Porte de qualité du moteur d'impact : sur le [corpus de vérité](corpus.md#mesure-du-moteur-dimpact), un rappel au niveau table d'au moins 0,99 et aucune réponse hors d'atteinte ; un échec nomme les réponses manquées | `make measure` |
@@ -111,7 +111,7 @@ python3 -m scripts.check_vulnerabilities exceptions   # vérifie les exceptions 
 
 Le mainteneur publie une version en posant une étiquette `v1.2.3` (ou `v1.2.3-rc.1`). Le workflow `release` :
 
-1. vérifie que l'étiquette est la version déclarée par chaque composant publiable, construit leurs paquets, contrôle leurs métadonnées et rédige les notes de version, avant de rien publier ;
+1. vérifie que l'étiquette est la version déclarée par chaque composant publiable, et que le [modèle de menaces](securite/modele-de-menaces.md) a été revu pour elle sans acceptation à signer, construit leurs paquets, contrôle leurs métadonnées et rédige les notes de version, avant de rien publier ;
 2. construit l'image, produit son SBOM, joue le canari et l'analyse, comme le job `image` : une vulnérabilité haute ou critique sans exception valable arrête la publication avant que l'image soit poussée ;
 3. pousse l'image analysée dans le registre de conteneurs de GitHub, `ghcr.io/alebgl77/answerlineage:1.2.3`, la signe sans clé par son empreinte (cosign, identité OIDC du workflow, journal de transparence public), vérifie la signature publiée, et lui attache son SBOM et sa provenance (SLSA) ;
 4. atteste la provenance des paquets et les publie sur PyPI par publication de confiance, avec leurs attestations de publication ;
@@ -155,7 +155,7 @@ Une issue, un commentaire ou une merge request peuvent porter des instructions p
 
 **Aucun agent de code sur une entrée non fiable avec un secret ou un droit d'écriture.** `make policy` refuse un workflow déclenché par une issue, un commentaire, une discussion ou une merge request qui lance un agent de code (action ou ligne de commande) en lui donnant un secret ou une permission d'écriture.
 
-**Revue obligatoire de la configuration d'agents et des garde-fous.** Les fichiers qui pilotent ce qu'un agent a le droit de faire sont protégés : `.claude/`, `.mcp.json`, `CLAUDE.md` et leurs équivalents pour d'autres agents, ainsi que `.github/workflows/`, `.github/CODEOWNERS`, `.devcontainer/`, `.pre-commit-config.yaml`, `renovate.json`, `scripts/`, les exceptions des analyses (`.gitleaksignore`, `vulnerability-exceptions.toml`) et celles du corpus d'abus (`corpus/src/answerlineage_corpus/abuse_open.json`). Deux mécanismes se complètent :
+**Revue obligatoire de la configuration d'agents et des garde-fous.** Les fichiers qui pilotent ce qu'un agent a le droit de faire sont protégés : `.claude/`, `.mcp.json`, `CLAUDE.md` et leurs équivalents pour d'autres agents, ainsi que `.github/workflows/`, `.github/CODEOWNERS`, `.devcontainer/`, `.pre-commit-config.yaml`, `renovate.json`, `scripts/`, les exceptions des analyses (`.gitleaksignore`, `vulnerability-exceptions.toml`), celles du corpus d'abus (`corpus/src/answerlineage_corpus/abuse_open.json`) et le modèle de menaces (`docs/securite/modele-de-menaces.toml`). Deux mécanismes se complètent :
 
 - `.github/CODEOWNERS` leur donne un propriétaire, dont la revue peut être exigée ; `make policy` vérifie que chaque chemin protégé y figure ;
 - le job `agent-config` échoue quand une merge request modifie l'un d'eux, jusqu'à ce qu'un mainteneur lui pose le label `agent-config-approved`.

@@ -34,6 +34,7 @@ from scripts.check_agent_config import (
         "renovate.json",
         "vulnerability-exceptions.toml",
         "corpus/src/answerlineage_corpus/abuse_open.json",
+        "docs/securite/modele-de-menaces.toml",
     ],
 )
 def test_agent_configuration_and_guardrails_are_protected(path: str) -> None:
@@ -49,6 +50,8 @@ def test_agent_configuration_and_guardrails_are_protected(path: str) -> None:
         "api/.mcp.json.bak",
         # Ajouter un cas d'attaque est libre ; seule une exception demande la revue.
         "corpus/src/answerlineage_corpus/abuse_data/lots.json",
+        # La page qui présente le modèle de menaces se relit comme toute documentation.
+        "docs/securite/modele-de-menaces.md",
     ],
 )
 def test_ordinary_files_are_not_protected(path: str) -> None:
