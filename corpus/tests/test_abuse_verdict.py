@@ -396,7 +396,8 @@ def test_a_case_that_is_not_blocked_fails_and_its_message_starts_with_its_name()
 
 
 def test_an_open_case_is_an_expected_failure_until_it_is_found_blocked() -> None:
-    backdated = case("emetteur/lecture-antidatee")
+    # Un cas bloqué aujourd'hui, rouvert pour l'exemple : son exception lui donne un motif.
+    backdated = replace(case("emetteur/lecture-antidatee"), open_reason="motif de l'exception")
     assert backdated.is_open
     missed = {**IMPACT, "counts": {"answers": 0, "recipients": 0, "lower_bound": False}}
     still_open = conclude(backdated, judge(backdated, Observation(status=200, body=missed)))

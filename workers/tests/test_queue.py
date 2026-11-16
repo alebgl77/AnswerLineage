@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections import Counter
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -83,12 +84,14 @@ async def test_two_concurrent_workers_never_process_an_event_twice(engine: Async
     overlapping = 0
     active = 0
 
-    async def counting(conn: AsyncConnection, payload: Mapping[str, Any]) -> None:
+    async def counting(
+        conn: AsyncConnection, payload: Mapping[str, Any], received_at: datetime
+    ) -> None:
         nonlocal active, overlapping
         active += 1
         overlapping = max(overlapping, active)
         seen[payload["run"]["runId"]] += 1
-        await record_event(conn, payload)
+        await record_event(conn, payload, received_at)
         # Laisse l'autre worker réclamer son lot pendant que celui-ci est ouvert.
         await asyncio.sleep(0.002)
         active -= 1
@@ -118,9 +121,11 @@ async def test_batch_of_a_worker_stopped_midway_is_taken_up_again_without_loss(
     await ingest(engine, [tool_call(index) for index in range(10)])
     handled = 0
 
-    async def stopped_after_four(conn: AsyncConnection, payload: Mapping[str, Any]) -> None:
+    async def stopped_after_four(
+        conn: AsyncConnection, payload: Mapping[str, Any], received_at: datetime
+    ) -> None:
         nonlocal handled
-        await record_event(conn, payload)
+        await record_event(conn, payload, received_at)
         handled += 1
         if handled == 4:
             raise asyncio.CancelledError
@@ -143,8 +148,10 @@ async def test_faulty_event_is_postponed_without_blocking_the_batch(
     await ingest(engine, [tool_call(index) for index in range(5)])
     faulty = tool_call(2)["run"]["runId"]
 
-    async def failing_on_one(conn: AsyncConnection, payload: Mapping[str, Any]) -> None:
-        await record_event(conn, payload)
+    async def failing_on_one(
+        conn: AsyncConnection, payload: Mapping[str, Any], received_at: datetime
+    ) -> None:
+        await record_event(conn, payload, received_at)
         if payload["run"]["runId"] == faulty:
             raise ValueError("canari : le message d'erreur peut citer l'événement")
 
@@ -175,7 +182,9 @@ async def test_faulty_event_is_postponed_without_blocking_the_batch(
 async def test_retry_delay_doubles_with_each_attempt(engine: AsyncEngine) -> None:
     await ingest(engine, [tool_call(0)])
 
-    async def always_failing(conn: AsyncConnection, payload: Mapping[str, Any]) -> None:
+    async def always_failing(
+        conn: AsyncConnection, payload: Mapping[str, Any], received_at: datetime
+    ) -> None:
         raise RuntimeError
 
     delays = []
@@ -189,6 +198,35 @@ async def test_retry_delay_doubles_with_each_attempt(engine: AsyncEngine) -> Non
             )
         )
     assert 4 < delays[0] <= 5 < delays[1] <= 10 < delays[2] <= 20
+
+
+async def test_the_graph_records_the_reception_of_each_event_not_its_projection(
+    engine: AsyncEngine,
+) -> None:
+    """Reçus l'un après l'autre, projetés ensemble : chacun garde sa réception."""
+    await ingest(engine, [tool_call(0)])
+    await ingest(engine, [tool_call(1, table="ref.devises")])
+    assert await process_batch(engine) == BatchResult(processed=2)
+
+    received = """
+        SELECT e.run_id, e.recorded_at, r.recorded_at, x.recorded_at, d.recorded_at
+        FROM event_raw e JOIN run r ON r.run_id = e.run_id
+        JOIN read_edge x ON x.run_id = e.run_id JOIN dataset d ON d.id = x.dataset_id
+        ORDER BY e.recorded_at
+    """
+    async with engine.connect() as conn:
+        before = (await conn.execute(text(received))).all()
+    assert [len(set(row[1:])) for row in before] == [1, 1]
+    assert before[0].recorded_at < before[1].recorded_at
+
+    # Projeté de nouveau plus tard, l'événement garde la réception d'origine.
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("INSERT INTO ingest_queue (event_id) SELECT event_id FROM event_raw")
+        )
+    assert await process_batch(engine) == BatchResult(processed=2)
+    async with engine.connect() as conn:
+        assert (await conn.execute(text(received))).all() == before
 
 
 async def test_replayed_event_changes_nothing_in_the_graph(engine: AsyncEngine) -> None:

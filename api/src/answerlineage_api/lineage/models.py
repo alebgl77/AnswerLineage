@@ -6,12 +6,30 @@ réponse.
 
 from __future__ import annotations
 
-from typing import Literal
+from datetime import datetime
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, Field
 
 Precision = Literal["table", "columns", "subset", "keys"]
+
+
+def _absent(value: datetime | None) -> bool:
+    return value is None
+
+
+# Rappelle la date demandée ; absent quand la lecture porte sur le graphe tel qu'il est.
+KnownAt = Annotated[
+    AwareDatetime | None,
+    Field(
+        exclude_if=_absent,
+        description=(
+            "Date à laquelle le graphe est lu, telle que demandée : ce qui a été enregistré"
+            " après en est exclu. Absente quand la lecture porte sur le graphe tel qu'il est."
+        ),
+    ),
+]
 
 
 class AgentName(BaseModel):
@@ -33,6 +51,7 @@ class AnswerSummary(BaseModel):
 
 class AnswerList(BaseModel):
     answers: list[AnswerSummary]
+    known_at: KnownAt = None
 
 
 class ToolUse(BaseModel):
@@ -52,8 +71,8 @@ class DatasetSource(BaseModel):
         description="Ce que l'on sait de la lecture. « table » : le jeu entier est une source."
     )
     columns: list[str] = Field(description="Colonnes lues, quand toutes les lectures les donnent.")
-    first_read_at: AwareDatetime
-    last_read_at: AwareDatetime
+    first_read_at: AwareDatetime = Field(description="Heure d'événement de la première lecture.")
+    last_read_at: AwareDatetime = Field(description="Heure d'événement de la dernière lecture.")
 
 
 class Sources(BaseModel):
@@ -69,6 +88,7 @@ class Sources(BaseModel):
             " les sources sont partielles."
         )
     )
+    known_at: KnownAt = None
 
 
 class DatasetNode(BaseModel):
@@ -136,6 +156,7 @@ class GraphView(BaseModel):
             " destinataires) : la vue est partielle."
         )
     )
+    known_at: KnownAt = None
 
 
 class DatasetName(BaseModel):
@@ -244,6 +265,7 @@ class ImpactResult(BaseModel):
             " réponses peuvent être touchées, et les décomptes sont des minimums."
         )
     )
+    known_at: KnownAt = None
 
 
 class EmitterCoverage(BaseModel):
@@ -275,3 +297,4 @@ class DatasetList(BaseModel):
 
     datasets: list[DatasetName]
     more: bool = Field(description="Vrai quand la liste dépasse la borne demandée.")
+    known_at: KnownAt = None

@@ -35,6 +35,8 @@ Chaque identifiant recopié dans le graphe (agent, outil, jeu de données, versi
 
 L'ordre d'arrivée ne compte pas : deux événements d'un même run reçus dans le désordre donnent le même graphe.
 
+Chaque ligne que l'événement fait connaître prend pour heure d'enregistrement sa réception par l'API (`event_raw.recorded_at`), pas l'heure du passage du worker : un événement projeté plus tard, après une panne des workers ou parce qu'il a été remis dans la file, garde sa réception d'origine ([deux heures](schema.md#deux-heures)).
+
 ## Émetteurs muets
 
 Un émetteur publie ses [relevés de couverture](ingestion.md#relevés-de-couverture) fenêtre par fenêtre, y compris une fenêtre sans appel : c'est le battement qui prouve qu'il n'est pas muet. Un émetteur qui se tait ne capte plus rien, et rien d'autre ne le dirait.

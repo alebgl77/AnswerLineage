@@ -8,6 +8,9 @@ tourne encore ; la route répond alors ``503`` et ``query_timeout``.
 
 Chaque requête porte aussi une borne sur les lignes qu'elle rend : une ligne de
 plus que la borne est demandée, pour savoir si elle est dépassée et le dire.
+
+Une lecture peut porter sur le graphe tel qu'il était connu à une date
+(``known_at``) : les lignes enregistrées après en sont exclues (``known``).
 """
 
 from __future__ import annotations
@@ -49,6 +52,15 @@ TIMED_OUT: dict[int | str, dict[str, Any]] = {
 }
 
 _STATEMENT_TIMEOUT = text("SELECT set_config('statement_timeout', :timeout, true)")
+
+
+def known(alias: str) -> str:
+    """Condition SQL : la ligne ``alias`` était enregistrée à ``:known_at``.
+
+    Sans date (``:known_at`` nul), toute ligne l'est : la lecture porte sur le
+    graphe tel qu'il est.
+    """
+    return f"(CAST(:known_at AS timestamptz) IS NULL OR {alias}.recorded_at <= :known_at)"
 
 
 class ReadTimedOut(Exception):  # noqa: N818 — le nom dit le motif, comme les erreurs de la base.

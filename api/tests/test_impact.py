@@ -173,6 +173,37 @@ async def test_the_window_includes_its_start_and_excludes_its_end(
     assert touched(await propagate(client)) == [fingerprint(1), fingerprint(2)]
 
 
+@pytest.mark.parametrize("backdated_first", [False, True], ids=["rejeu après", "rejeu avant"])
+async def test_a_read_backdated_by_a_replay_still_reaches_the_answer(
+    client: httpx.AsyncClient, engine: AsyncEngine, backdated_first: bool
+) -> None:
+    """Rejouer l'appel d'un autre avec une heure antérieure ne sort pas sa lecture de la fenêtre."""
+    run_id, call = uuid4(), uuid4()
+    honest = reading(run_id, 3, RATES, run_id=call)
+    backdated = reading(run_id, -30, RATES, run_id=call)
+    calls = [backdated, honest] if backdated_first else [honest, backdated]
+    await record(engine, answering(run_id, 1, 4), *calls)
+    assert touched(await propagate(client)) == [fingerprint(1)]
+
+
+async def test_a_read_spread_over_the_whole_window_is_touched(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    """La lecture commence avant la fenêtre et finit après : son intervalle la recoupe."""
+    spread, before, after = uuid4(), uuid4(), uuid4()
+    await record(
+        engine,
+        answering(spread, 1, 20),
+        *(reading(spread, at, RATES, run_id=UUID(int=1)) for at in (-5, 20)),
+        # Ses deux heures sont avant la fenêtre, ou après : rien n'est touché.
+        answering(before, 2, 0),
+        *(reading(before, at, RATES, run_id=UUID(int=2)) for at in (-5, -0.5)),
+        answering(after, 3, 30),
+        *(reading(after, at, RATES, run_id=UUID(int=3)) for at in (10, 20)),
+    )
+    assert touched(await propagate(client)) == [fingerprint(1)]
+
+
 async def test_a_read_made_by_a_delegated_run_reaches_every_answer_above_it(
     client: httpx.AsyncClient, engine: AsyncEngine
 ) -> None:

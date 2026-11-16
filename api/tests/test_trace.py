@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -202,6 +203,23 @@ async def test_sources_of_an_answer_are_its_datasets_versions_tools_and_agents(
         ],
         "truncated": False,
     }
+
+
+async def test_a_read_spread_over_several_events_gives_its_first_and_last_time(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    run_id, call = uuid4(), uuid4()
+    first = RunRecord(
+        call, "tool", "START", seconds(5), tool=SQL, parent_run_id=run_id, reads=(Read(ORDERS),)
+    )
+    last = replace(first, state="COMPLETE", event_time=seconds(25))
+    await record(engine, answering(run_id), last, first)
+
+    (dataset,) = (await sources(client, run_id))["datasets"]
+    assert (dataset["first_read_at"], dataset["last_read_at"]) == (
+        "2026-11-02T09:00:05Z",
+        "2026-11-02T09:00:25Z",
+    )
 
 
 async def test_a_table_read_whole_even_once_is_a_source_as_a_whole(

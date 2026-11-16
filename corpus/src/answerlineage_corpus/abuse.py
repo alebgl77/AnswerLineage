@@ -53,8 +53,12 @@ from answerlineage_corpus.scenarios import CorpusError
 
 # Change dès qu'un cas, une base ou une exception change : affaiblir le corpus
 # sans le dire échoue au contrôle.
-ABUSE_VERSION = "1"
-_DIGESTS = {"1": "a6e3bdbb6724874d86cde209f8549640b68bce9d76e097da185ea54284a05619"}
+ABUSE_VERSION = "2"
+_DIGESTS = {
+    "1": "a6e3bdbb6724874d86cde209f8549640b68bce9d76e097da185ea54284a05619",
+    # La lecture antidatée est bloquée : son exception est retirée.
+    "2": "36e95e6e85984cee01b5119f779dab4892af6f1e69f9b6423da8efb46ecc1a95",
+}
 
 # Marque que porte toute valeur hostile, cherchée ensuite partout : réponses,
 # base, événements, journaux. Ni mot réel, ni suite hexadécimale.

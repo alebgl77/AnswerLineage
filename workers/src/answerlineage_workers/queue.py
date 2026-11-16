@@ -8,6 +8,9 @@ Un lot est réclamé, traité et retiré de la file dans une seule transaction :
   lignes redeviennent visibles et les écritures partielles disparaissent ;
 - un événement fautif ne bloque pas le lot : il est remis à plus tard, avec un
   délai qui double à chaque essai.
+
+Le graphe reçoit, avec chaque événement, l'heure à laquelle AnswerLineage l'a
+reçu : c'est son heure d'enregistrement, que le passage du worker ne change pas.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -28,7 +31,8 @@ from answerlineage_workers.silence import DEFAULT_SILENCE, check_silent_emitters
 
 logger = logging.getLogger("answerlineage_workers")
 
-Handler = Callable[[AsyncConnection, Mapping[str, Any]], Awaitable[None]]
+# Traite un événement : sa forme reçue, et l'heure de sa réception.
+Handler = Callable[[AsyncConnection, Mapping[str, Any], datetime], Awaitable[None]]
 
 DEFAULT_BATCH_SIZE = 100
 # Le contrôle des émetteurs muets revient chaque minute : un silence est
@@ -39,7 +43,7 @@ RETRY_CAP_SECONDS = 3600.0
 
 _CLAIM = text(
     """
-    SELECT q.id, e.payload
+    SELECT q.id, e.payload, e.recorded_at
     FROM ingest_queue AS q
     JOIN event_raw AS e ON e.event_id = q.event_id
     WHERE q.available_at <= now()
@@ -70,9 +74,11 @@ class BatchResult:
         return self.processed == 0 and self.postponed == 0
 
 
-async def record_event(conn: AsyncConnection, payload: Mapping[str, Any]) -> None:
-    """Projette un événement dans le graphe."""
-    await record_run(conn, project(payload))
+async def record_event(
+    conn: AsyncConnection, payload: Mapping[str, Any], received_at: datetime
+) -> None:
+    """Projette un événement dans le graphe, daté de sa réception."""
+    await record_run(conn, replace(project(payload), recorded_at=received_at))
 
 
 async def process_batch(
@@ -90,7 +96,7 @@ async def process_batch(
             try:
                 # Point de reprise : l'échec d'un événement n'annule pas le lot.
                 async with conn.begin_nested():
-                    await handler(conn, row.payload)
+                    await handler(conn, row.payload, row.recorded_at)
             except Exception as error:
                 postponed += 1
                 # Seule la classe de l'erreur est gardée : son message peut citer l'événement.

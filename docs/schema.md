@@ -17,10 +17,11 @@ write_edge   agent, tool
 | `agent`, `tool` | espace de noms et nom, serveur et nom | Qui a exécuté le run |
 | `dataset`, `dataset_version` | espace de noms et nom, puis version | Table, document, API, mémoire ou réponse |
 | `run` | `run_id` | Requête d'un agent ou appel d'outil, run parent, trace, état |
-| `read_edge` | run, jeu de données, version | Niveau de précision, colonnes lues, origine (analyse ou réconciliation) |
+| `read_edge` | run, jeu de données, version | Niveau de précision, colonnes lues, origine (analyse ou réconciliation), première et dernière heure de lecture |
 | `write_edge` | run, jeu de données, version | Sortie produite par le run |
 | `answer` | run et empreinte | Empreinte de la réponse, jamais son contenu |
 | `delivery` | réponse, canal, référence du message | Diffusion de la réponse |
+| `delivery_recipient` | diffusion et destinataire | Destinataire d'une diffusion |
 | `recipient` | pseudonyme | Destinataire pseudonymisé, sans table de correspondance |
 | `event_raw` | empreinte de l'événement | Événement OpenLineage reçu tel quel, rejouable |
 | `ingest_queue` | événement | File de traitement : événements à projeter dans le graphe |
@@ -28,11 +29,37 @@ write_edge   agent, tool
 | `coverage_report` | émetteur, début et fin de fenêtre | Relevé de couverture : appels vus, événements émis et perdus, requêtes non inspectées |
 | `coverage_emitter` | émetteur | Émetteur connu : réception de son dernier relevé, silence signalé |
 
-Chaque arête porte `event_time`, l'heure déclarée par l'émetteur, et `recorded_at`, l'heure posée par la base.
+## Deux heures
+
+Chaque arête et chaque nœud daté du graphe porte deux heures : ce qui s'est passé selon l'émetteur, et ce qu'AnswerLineage en savait.
+
+| Table | Heure de l'événement | Heure d'enregistrement |
+| --- | --- | --- |
+| `run` | `started_at`, `ended_at`, `state_time` | `recorded_at` |
+| `read_edge` | `event_time` (première), `last_event_time` (dernière) | `recorded_at` |
+| `write_edge`, `answer`, `delivery`, `delivery_recipient` | `event_time` | `recorded_at` |
+| `agent`, `tool`, `dataset`, `dataset_version`, `recipient` | aucune | `recorded_at` |
+
+- **L'heure de l'événement** est déclarée par l'émetteur (`eventTime`). Plusieurs événements d'une même ligne se fusionnent : la plus ancienne l'emporte, et une lecture garde aussi la plus récente.
+- **L'heure d'enregistrement** est la réception, par AnswerLineage, du premier événement qui a fait connaître la ligne : l'heure que `event_raw.recorded_at` garde pour cet événement. Ce n'est pas l'heure de passage du worker : rejouer un événement, ou le projeter plus tard, ne la change pas. Quand deux événements font connaître la même ligne, elle garde la plus ancienne des deux réceptions.
+
+Elle permet de lire le graphe tel qu'il était connu à une date ([API de lecture](lecture.md#le-graphe-tel-que-connu-à-une-date)) : une ligne enregistrée après cette date n'existait pas encore pour AnswerLineage. Un run porte ses liens vers son parent, son agent et son outil : ils sont connus dès que le run l'est.
+
+### Intervalle d'une lecture
+
+Une lecture garde la première (`event_time`) et la dernière (`last_event_time`) heure d'événement reçues. Un événement rejoué avec une heure antérieure, par un émetteur mal réglé ou malveillant, élargit l'intervalle sans le déplacer : la propagation, qui retient une lecture dont l'intervalle recoupe la fenêtre d'un incident, ne la perd pas. Une contrainte nommée (`ck_read_edge_event_times`) garde la première heure avant la dernière, et un index partiel range les seules lectures étalées sur plusieurs heures.
+
+Les écritures, les réponses et les diffusions gardent une seule heure d'événement, la plus ancienne : aucune lecture ne les retient par une fenêtre.
+
+### Reprise des lignes existantes
+
+La migration `0007` donne leur heure de réception aux lignes enregistrées avant elle. Chaque ligne est rattachée aux événements reçus qui la font connaître, comme le fait la projection : le run, les événements qui portent son identifiant ; une lecture ou une écriture, ceux de son run qui nomment son jeu de données et sa version (sous leur forme NFC) ; une réponse, une diffusion ou un destinataire, ceux de son run dont la facette de diffusion les nomme. Elle prend la plus ancienne de leurs réceptions, et une lecture la dernière de leurs heures d'événement. Un jeu de données, une version ou un destinataire prend la plus ancienne réception de ses arêtes, un agent ou un outil celle des runs qui le nomment.
+
+Une ligne qu'aucun événement reçu ne rattache garde l'heure qu'elle portait, celle du passage du worker : elle suit toujours la réception, et ne fait donc jamais paraître une ligne connue plus tôt qu'elle ne l'a été. Le lien d'une diffusion à un destinataire, sans événement qui le nomme, prend l'heure de sa diffusion. La descente retire les colonnes ajoutées et garde les heures reprises.
 
 ## Écrire dans le graphe
 
-`answerlineage_api.store.graph.record_run` enregistre un run et ses arêtes dans la transaction en cours. L'écriture est idempotente et commutative : rejouer un enregistrement, ou recevoir deux événements d'un même run dans le désordre, donne le même graphe. Deux lectures d'un jeu de données par un même run se fusionnent en une arête ; la précision la plus fine l'emporte et les colonnes s'additionnent.
+`answerlineage_api.store.graph.record_run` enregistre un run et ses arêtes dans la transaction en cours, avec la réception de l'événement qui les fait connaître (`RunRecord.recorded_at` ; sans elle, l'heure de la transaction). L'écriture est idempotente et commutative : rejouer un enregistrement, ou recevoir deux événements d'un même run dans le désordre, donne le même graphe, heures comprises. Deux lectures d'un jeu de données par un même run se fusionnent en une arête ; la précision la plus fine l'emporte, les colonnes s'additionnent et l'intervalle des heures s'étend.
 
 ## Compteur de doublons
 

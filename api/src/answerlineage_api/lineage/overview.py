@@ -9,6 +9,7 @@ chaîne, pour que l'on puisse la suivre d'une colonne à l'autre.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -32,7 +33,7 @@ from answerlineage_api.lineage.paging import (
     ANSWER_ORDER,
     Cursor,
 )
-from answerlineage_api.lineage.reading import Reader
+from answerlineage_api.lineage.reading import Reader, known
 from answerlineage_api.lineage.trace import answer_key
 
 # Borne des runs parcourus pour toutes les réponses d'une vue.
@@ -47,9 +48,10 @@ ANSWER_COLUMNS = f"""a.id, a.run_id, a.fingerprint, a.event_time, {ANSWER_DIGEST
            g.namespace AS agent_namespace, g.name AS agent_name"""
 
 _DATASETS = text(
-    """
-    SELECT namespace, name, kind FROM dataset ORDER BY namespace, name LIMIT :limit
-    """
+    f"""
+    SELECT namespace, name, kind FROM dataset d WHERE {known("d")}
+    ORDER BY namespace, name LIMIT :limit
+    """  # noqa: S608 — seul un fragment constant est interpolé.
 )
 
 _ONE_ANSWER = text(
@@ -65,13 +67,14 @@ _ONE_ANSWER = text(
 
 
 def _recent_answers(cursor: Cursor | None) -> TextClause:
-    after = "" if cursor is None else f"WHERE {AFTER_CURSOR}"
+    after = "" if cursor is None else f"AND {AFTER_CURSOR}"
     return text(
         f"""
         SELECT {ANSWER_COLUMNS}
         FROM answer a
         JOIN run r ON r.run_id = a.run_id
         LEFT JOIN agent g ON g.id = r.agent_id
+        WHERE {known("a")}
         {after}
         ORDER BY {ANSWER_ORDER}
         LIMIT :limit
@@ -82,14 +85,15 @@ def _recent_answers(cursor: Cursor | None) -> TextClause:
 # UNION, et non UNION ALL : des runs qui se désignent l'un l'autre comme parent
 # ne font pas tourner la recherche sans fin.
 _RUN_TREES = text(
-    """
+    f"""
     WITH RECURSIVE tree(root, run_id) AS (
         SELECT root, root FROM unnest(CAST(:roots AS uuid[])) AS root
         UNION
         SELECT tree.root, child.run_id FROM run child JOIN tree ON child.parent_run_id = tree.run_id
+        WHERE {known("child")}
     )
     SELECT root, run_id FROM tree LIMIT :limit
-    """
+    """  # noqa: S608 — seul un fragment constant est interpolé.
 )
 
 # Une ligne par run demandé au plus : la borne est celle des arbres.
@@ -104,25 +108,25 @@ _TOOLS = text(
 )
 
 _READS = text(
-    """
+    f"""
     SELECT DISTINCT e.run_id, d.namespace, d.name, d.kind
     FROM read_edge e JOIN dataset d ON d.id = e.dataset_id
-    WHERE e.run_id = ANY(:run_ids)
+    WHERE e.run_id = ANY(:run_ids) AND {known("e")}
     ORDER BY e.run_id, d.namespace, d.name
     LIMIT :limit
-    """
+    """  # noqa: S608 — seul un fragment constant est interpolé.
 )
 
 _DELIVERIES = text(
-    """
+    f"""
     SELECT d.answer_id, d.channel, c.pseudonym
     FROM delivery d
-    LEFT JOIN delivery_recipient l ON l.delivery_id = d.id
+    LEFT JOIN delivery_recipient l ON l.delivery_id = d.id AND {known("l")}
     LEFT JOIN recipient c ON c.id = l.recipient_id
-    WHERE d.answer_id = ANY(:answer_ids)
+    WHERE d.answer_id = ANY(:answer_ids) AND {known("d")}
     ORDER BY d.answer_id, d.channel, c.pseudonym
     LIMIT :limit
-    """
+    """  # noqa: S608 — seuls des fragments constants sont interpolés.
 )
 
 type _Key = tuple[str, str]
@@ -132,41 +136,52 @@ def _ranks[T](items: set[T]) -> dict[T, int]:
     return {item: rank for rank, item in enumerate(sorted(items))}  # type: ignore[type-var]
 
 
-async def overview(reader: Reader, *, limit: int, cursor: Cursor | None) -> GraphView:
-    """Les ``limit`` réponses les plus récentes, après ``cursor``, et ce qu'elles touchent."""
-    params = {} if cursor is None else cursor.parameters()
+async def overview(
+    reader: Reader, *, limit: int, cursor: Cursor | None, known_at: datetime | None = None
+) -> GraphView:
+    """Les ``limit`` réponses les plus récentes, après ``cursor``, et ce qu'elles touchent.
+
+    Avec ``known_at``, le graphe tel qu'il était connu à cette date.
+    """
+    params = {"known_at": known_at} | ({} if cursor is None else cursor.parameters())
     picked = await reader.fetch(_recent_answers(cursor), params, limit=limit)
-    return await view_of(reader, picked.rows, more=picked.truncated)
+    return await view_of(reader, picked.rows, more=picked.truncated, known_at=known_at)
 
 
-async def datasets(reader: Reader, *, limit: int) -> DatasetList:
-    """Les jeux de données connus, par espace de noms puis par nom."""
-    found = await reader.fetch(_DATASETS, {}, limit=limit)
+async def datasets(reader: Reader, *, limit: int, known_at: datetime | None = None) -> DatasetList:
+    """Les jeux de données connus, à ``known_at`` s'il est donné, par espace de noms puis nom."""
+    found = await reader.fetch(_DATASETS, {"known_at": known_at}, limit=limit)
     return DatasetList(
         datasets=[
             DatasetName(namespace=row.namespace, name=row.name, kind=row.kind) for row in found.rows
         ],
         more=found.truncated,
+        known_at=known_at,
     )
 
 
-async def view_of_answer(reader: Reader, answer: AnswerSummary) -> GraphView:
+async def view_of_answer(
+    reader: Reader, answer: AnswerSummary, known_at: datetime | None = None
+) -> GraphView:
     """La vue en cinq colonnes d'une seule réponse : sa chaîne."""
     picked = await reader.fetch(
         _ONE_ANSWER, {"run_id": answer.run_id, "fingerprint": answer.fingerprint}, limit=1
     )
-    return await view_of(reader, picked.rows, more=False)
+    return await view_of(reader, picked.rows, more=False, known_at=known_at)
 
 
-async def view_of(reader: Reader, picked: Sequence[Row[Any]], *, more: bool) -> GraphView:
+async def view_of(
+    reader: Reader, picked: Sequence[Row[Any]], *, more: bool, known_at: datetime | None = None
+) -> GraphView:
     """La vue en cinq colonnes de ces réponses : leurs chaînes, et rien d'autre.
 
     Chaque ligne porte les colonnes de ``ANSWER_COLUMNS``. Quand ``more`` est
-    vrai, la vue donne le curseur qui suit la dernière réponse.
+    vrai, la vue donne le curseur qui suit la dernière réponse. Avec
+    ``known_at``, chaque chaîne est celle que le graphe connaissait à cette date.
     """
     roots: list[UUID] = sorted({row.run_id for row in picked}, key=lambda run_id: run_id.hex)
 
-    trees = await reader.fetch(_RUN_TREES, {"roots": roots}, limit=MAX_RUNS)
+    trees = await reader.fetch(_RUN_TREES, {"roots": roots, "known_at": known_at}, limit=MAX_RUNS)
     roots_of: dict[UUID, set[UUID]] = {}
     for row in trees.rows:
         roots_of.setdefault(row.run_id, set()).add(row.root)
@@ -182,7 +197,7 @@ async def view_of(reader: Reader, picked: Sequence[Row[Any]], *, more: bool) -> 
             tools_of_root.setdefault(root, set()).add((row.server, row.name))
     kinds: dict[_Key, str] = {}
     reads_of_root: dict[UUID, set[tuple[_Key, _Key | None]]] = {}
-    reads = await reader.fetch(_READS, {"run_ids": run_ids}, limit=MAX_READS)
+    reads = await reader.fetch(_READS, {"run_ids": run_ids, "known_at": known_at}, limit=MAX_READS)
     for row in reads.rows:
         dataset = (row.namespace, row.name)
         kinds[dataset] = row.kind
@@ -192,7 +207,9 @@ async def view_of(reader: Reader, picked: Sequence[Row[Any]], *, more: bool) -> 
     channels: dict[int, set[str]] = {}
     recipients_of: dict[int, set[str]] = {}
     answer_ids = [row.id for row in picked]
-    deliveries = await reader.fetch(_DELIVERIES, {"answer_ids": answer_ids}, limit=MAX_LINKS)
+    deliveries = await reader.fetch(
+        _DELIVERIES, {"answer_ids": answer_ids, "known_at": known_at}, limit=MAX_LINKS
+    )
     for row in deliveries.rows:
         channels.setdefault(row.answer_id, set()).add(row.channel)
         if row.pseudonym is not None:
@@ -260,4 +277,5 @@ async def view_of(reader: Reader, picked: Sequence[Row[Any]], *, more: bool) -> 
         more=more,
         next_cursor=Cursor.after(picked[-1]).encode() if more and picked else None,
         truncated=trees.truncated or tools.truncated or reads.truncated or deliveries.truncated,
+        known_at=known_at,
     )

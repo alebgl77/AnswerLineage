@@ -11,6 +11,8 @@ L'API de lecture interroge le graphe de lignage. Elle est versionnée sous `/api
 | `GET /api/v1/datasets` | Les jeux de données connus du graphe |
 | `GET /api/v1/coverage?from=…&to=…` | La couverture du lignage de chaque émetteur sur une période |
 
+Les cinq premières routes lisent aussi le graphe tel qu'il était connu à une date, avec `known_at` ([plus bas](#le-graphe-tel-que-connu-à-une-date)).
+
 ## Remonter d'une réponse à ses sources
 
 Le destinataire d'un message veut savoir sur quelles données la réponse s'appuie. Il part de ce qu'il a sous les yeux, le canal et la référence du message :
@@ -76,7 +78,8 @@ Un jeu de données lu plusieurs fois n'apparaît qu'une fois :
 
 - `versions` réunit les versions lues, quand l'émetteur les a déclarées ;
 - `precision` garde la lecture la moins précise. Un jeu lu en entier une seule fois est une source en entier : `precision` vaut `table` et `columns` est vide ;
-- `columns` réunit les colonnes lues quand toutes les lectures les donnent.
+- `columns` réunit les colonnes lues quand toutes les lectures les donnent ;
+- `first_read_at` et `last_read_at` sont la première et la dernière heure d'événement de ces lectures.
 
 ### Identifiant d'une réponse
 
@@ -132,6 +135,7 @@ Cet exemple est le premier incident de l'[entreprise synthétique](corpus.md) : 
 Une réponse est touchée quand un run de son arbre a lu le jeu de données pendant la fenêtre : le run de l'agent lui-même, un appel d'outil, un sous-agent à toute profondeur.
 
 - **C'est l'heure de la lecture qui compte.** Une réponse rendue après la correction, mais fondée sur une lecture faite avant, est touchée. Une lecture faite après la correction ne l'est pas.
+- **Une lecture a une première et une dernière heure.** Plusieurs événements d'un même run peuvent la déclarer, à des heures différentes : elle est touchée dès que cet intervalle recoupe la fenêtre. Un événement rejoué avec une heure antérieure élargit l'intervalle et ne fait sortir aucune lecture de la fenêtre ([schéma](schema.md#intervalle-dune-lecture)).
 - **La fenêtre inclut son début et exclut sa fin.**
 - **Un run qui a lu sans répondre n'a rien à rappeler.**
 
@@ -265,6 +269,35 @@ Les liens d'une colonne à l'autre se déduisent de la chaîne de chaque répons
 
 L'`id` d'une réponse est son identifiant stable. Celui des autres nœuds ne vaut que dans la réponse qui le donne : un jeu de données se désigne par son espace de noms et son nom.
 
+## Le graphe tel que connu à une date
+
+Un auditeur veut savoir ce que l'on savait au moment d'une décision : quelles réponses un rappel décidé mardi pouvait-il trouver ? Chaque ligne du graphe porte son heure d'enregistrement, la réception de l'événement qui l'a fait connaître ([schéma](schema.md#deux-heures)). Avec `known_at`, une route lit le graphe tel qu'il était à cette date : ce qui a été enregistré après en est exclu.
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/impact?namespace=bigquery&name=ventes.suivi.commandes&from=2026-11-11T06:00:00Z&to=2026-11-12T12:00:00Z&known_at=2026-11-12T08:00:00Z"
+```
+
+| Route | Avec `known_at` |
+| --- | --- |
+| `GET /api/v1/impact` | La propagation sur les lectures, les runs, les réponses et les diffusions enregistrés à cette date |
+| `GET /api/v1/answers/{id}/sources` | Les sources connues à cette date ; `404` (`unknown_answer`) pour une réponse enregistrée après |
+| `GET /api/v1/graph` | Les réponses connues à cette date et leurs chaînes ; avec `answer`, `404` pour une réponse enregistrée après |
+| `GET /api/v1/answers` | Les réponses que le message portait à cette date |
+| `GET /api/v1/datasets` | Les jeux de données connus à cette date |
+
+Le résultat rappelle la date retenue dans son champ `known_at`, tel qu'il a été demandé ; le graphe d'un résultat d'impact le rappelle aussi. Sans le paramètre, rien ne change : la lecture porte sur le graphe tel qu'il est, et le champ est absent. Pour parcourir les pages, `cursor` se rend avec la même date.
+
+| Paramètre | Rôle | Défaut |
+| --- | --- | --- |
+| `known_at` | Date et heure, avec fuseau (RFC 3339), du 1er janvier 1970 à l'an 9999 | aucun |
+
+Une date sans fuseau ou mal formée est refusée en `422` ; une date hors de ces bornes aussi, avec le code `known_at_out_of_range`. Le refus donne le chemin du paramètre (`/query/known_at`), jamais la valeur reçue.
+
+Ce que la date ne remonte pas :
+
+- **Les fusions.** Une ligne connue à la date porte ce qu'elle porte aujourd'hui : une lecture dont un événement reçu plus tard a élargi l'intervalle, ajouté des colonnes ou affiné la précision, apparaît avec ces valeurs-là. La date dit quelles lignes existaient, pas comment elles étaient remplies.
+- **La couverture.** Celle d'un résultat d'impact est la couverture d'aujourd'hui : les relevés d'un émetteur se fusionnent au plus grand, et leur état passé n'est pas gardé. `GET /api/v1/coverage` ne prend pas `known_at`.
+
 ## Bornes et délais
 
 Une lecture du graphe ne peut ni épuiser le service, ni rendre un résultat incomplet sans le dire.
@@ -303,7 +336,7 @@ Quand `truncated` vaut `true`, la propagation n'a pas tout parcouru :
 - `counts.lower_bound` vaut `true` : les décomptes sont des **minimums** ;
 - une liste vide ne veut **pas** dire qu'aucune réponse n'est touchée. Un rappel ne peut pas s'appuyer sur ce résultat pour conclure qu'il n'y a rien à rappeler : réduire la fenêtre de l'incident et relancer la propagation.
 
-L'ordre du parcours fait passer d'abord ce qui mène aux réponses : les lectures les plus récentes de la fenêtre d'abord, sans compter celles faites par un run sans parent ni réponse, qui ne touchent rien ; la remontée aux runs parents a sa propre borne, que les lecteurs ne peuvent pas épuiser, et va d'abord aux runs les plus proches des lectures.
+L'ordre du parcours fait passer d'abord ce qui mène aux réponses : les lectures les plus récentes de la fenêtre d'abord, par leur première heure, sans compter celles faites par un run sans parent ni réponse, qui ne touchent rien ; la remontée aux runs parents a sa propre borne, que les lecteurs ne peuvent pas épuiser, et va d'abord aux runs les plus proches des lectures.
 
 ### Pagination
 
@@ -317,3 +350,4 @@ Les réponses vont des plus récentes aux plus anciennes. Plusieurs réponses pe
 - Elle ne suit pas encore ce qu'un run touché a écrit : une réponse fondée sur une note ou une table dérivée de la donnée fausse n'est pas renvoyée.
 - La couverture du lignage ne voit que ce que voient les émetteurs qui publient des relevés : un appel qui ne passe par aucun d'eux n'est compté nulle part. Elle compte les appels d'outils, pas les runs d'agents.
 - Un émetteur retiré pour de bon reste connu : rien ne permet encore de le déclarer retiré, et son silence rend partielle la couverture de toute période qui suit son dernier relevé.
+- Sur un très grand graphe, une vue d'ensemble demandée à une date lointaine parcourt les réponses plus récentes pour les écarter : elle peut dépasser le délai maximal (`503`).

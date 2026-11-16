@@ -1,17 +1,19 @@
 """Routes de lecture du lignage.
 
 Chaque route lit le graphe sous un délai maximal (``reading``) : au-delà, elle
-répond ``503`` et ``query_timeout``.
+répond ``503`` et ``query_timeout``. Les routes du graphe acceptent ``known_at`` :
+elles le lisent alors tel qu'il était connu à cette date.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Path, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import AwareDatetime
+from pydantic import AfterValidator, AwareDatetime
+from pydantic_core import PydanticCustomError
 
 from answerlineage_api.ingest.models import FieldError
 from answerlineage_api.lineage import coverage, impact, overview, trace
@@ -62,6 +64,29 @@ MessageRef = Annotated[
     ),
 ]
 Limit = Annotated[int, Query(ge=1, le=100, description="Nombre maximal de réponses renvoyées.")]
+
+# Rien n'est enregistré avant 1970 ; au-delà de l'an 9999, une date ne se relit plus.
+KNOWN_AT_EARLIEST: Final = datetime(1970, 1, 1, tzinfo=UTC)
+KNOWN_AT_LATEST: Final = datetime(9999, 12, 30, tzinfo=UTC)
+
+
+def _within_range(value: datetime) -> datetime:
+    if not KNOWN_AT_EARLIEST <= value <= KNOWN_AT_LATEST:
+        raise PydanticCustomError(
+            "known_at_out_of_range", "La date tombe entre le 1er janvier 1970 et l'an 9999."
+        )
+    return value
+
+
+KnownAt = Annotated[
+    Annotated[AwareDatetime, AfterValidator(_within_range)] | None,
+    Query(
+        description=(
+            "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) :"
+            " ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est."
+        ),
+    ),
+]
 AnswerId = Annotated[
     str,
     Path(
@@ -77,11 +102,16 @@ AnswerId = Annotated[
     responses={**_INVALID, **TIMED_OUT},
 )
 async def find_answers(
-    request: Request, channel: Channel, message_ref: MessageRef, limit: Limit = 20
+    request: Request,
+    channel: Channel,
+    message_ref: MessageRef,
+    limit: Limit = 20,
+    known_at: KnownAt = None,
 ) -> AnswerList:
     """Le destinataire d'un message retrouve la réponse d'agent qu'il porte."""
     async with reading(request) as reader:
-        return AnswerList(answers=await trace.find_by_message(reader, channel, message_ref, limit))
+        found = await trace.find_by_message(reader, channel, message_ref, limit, known_at)
+    return AnswerList(answers=found, known_at=known_at)
 
 
 @router.get(
@@ -94,13 +124,15 @@ async def find_answers(
         **TIMED_OUT,
     },
 )
-async def answer_sources(request: Request, answer_id: AnswerId) -> Sources | JSONResponse:
+async def answer_sources(
+    request: Request, answer_id: AnswerId, known_at: KnownAt = None
+) -> Sources | JSONResponse:
     """Jeux de données et versions lus, outils appelés et agents intervenus, sans contenu."""
     async with reading(request) as reader:
-        answer = await trace.find_answer(reader, answer_id)
+        answer = await trace.find_answer(reader, answer_id, known_at)
         if answer is None:
             return refused(404, "unknown_answer")
-        return await trace.sources(reader, answer)
+        return await trace.sources(reader, answer, known_at)
 
 
 GraphLimit = Annotated[
@@ -151,6 +183,7 @@ async def graph(
     limit: GraphLimit = 60,
     cursor_value: CursorParam = None,
     answer: OneAnswer = None,
+    known_at: KnownAt = None,
 ) -> GraphView | JSONResponse:
     """Données, outils, agents, réponses et destinataires, avec la chaîne de chaque réponse."""
     cursor = _cursor(cursor_value)
@@ -158,11 +191,11 @@ async def graph(
         return cursor
     async with reading(request) as reader:
         if answer is None:
-            return await overview.overview(reader, limit=limit, cursor=cursor)
-        found = await trace.find_answer(reader, answer)
+            return await overview.overview(reader, limit=limit, cursor=cursor, known_at=known_at)
+        found = await trace.find_answer(reader, answer, known_at)
         if found is None:
             return refused(404, "unknown_answer")
-        return await overview.view_of_answer(reader, found)
+        return await overview.view_of_answer(reader, found, known_at)
 
 
 DatasetLimit = Annotated[
@@ -176,10 +209,12 @@ DatasetLimit = Annotated[
     summary="Liste les jeux de données connus du graphe",
     responses={**_INVALID, **TIMED_OUT},
 )
-async def datasets(request: Request, limit: DatasetLimit = 200) -> DatasetList:
+async def datasets(
+    request: Request, limit: DatasetLimit = 200, known_at: KnownAt = None
+) -> DatasetList:
     """Les jeux de données lus ou écrits par un run, par espace de noms puis par nom."""
     async with reading(request) as reader:
-        return await overview.datasets(reader, limit=limit)
+        return await overview.datasets(reader, limit=limit, known_at=known_at)
 
 
 Namespace = Annotated[
@@ -223,6 +258,7 @@ async def propagate(
     end: WindowEnd,
     limit: GraphLimit = 200,
     cursor_value: CursorParam = None,
+    known_at: KnownAt = None,
 ) -> ImpactResult | JSONResponse:
     """Réponses dont un run a lu le jeu de données pendant la fenêtre, et leurs destinataires."""
     if end <= start:
@@ -232,7 +268,14 @@ async def propagate(
         return cursor
     async with reading(request) as reader:
         result = await impact.propagate(
-            reader, namespace=namespace, name=name, start=start, end=end, limit=limit, cursor=cursor
+            reader,
+            namespace=namespace,
+            name=name,
+            start=start,
+            end=end,
+            limit=limit,
+            cursor=cursor,
+            known_at=known_at,
         )
     return result if result is not None else refused(404, "unknown_dataset")
 

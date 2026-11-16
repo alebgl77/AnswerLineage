@@ -2,8 +2,11 @@
 
 Le graphe va du jeu de données au destinataire :
 ``dataset`` → ``read_edge`` → ``run`` → ``answer`` → ``delivery`` → ``recipient``.
-Chaque arête porte l'heure de l'événement (``event_time``, déclarée par
-l'émetteur) et l'heure d'enregistrement (``recorded_at``, posée par la base).
+Chaque arête et chaque nœud daté porte l'heure de l'événement (``event_time``,
+déclarée par l'émetteur) et l'heure d'enregistrement (``recorded_at``). Dans le
+graphe, l'heure d'enregistrement d'une ligne est la réception, par AnswerLineage,
+du premier événement qui l'a fait connaître (``event_raw.recorded_at``) : ni
+l'heure de passage du worker, ni celle d'un rejeu.
 
 Les migrations d'Alembic font foi pour la base ; un test vérifie qu'elles
 produisent exactement ce schéma.
@@ -137,15 +140,27 @@ read_edge = Table(
     Column("precision", Text, nullable=False),
     Column("columns", ARRAY(Text), nullable=False, server_default="{}"),
     Column("origin", Text, nullable=False),
+    # Première et dernière heure d'événement reçues pour cette lecture : un
+    # événement antidaté élargit l'intervalle, il ne le déplace pas.
     Column("event_time", DateTime(timezone=True), nullable=False),
+    Column("last_event_time", DateTime(timezone=True), nullable=False),
     _recorded_at(),
     UniqueConstraint(
         "run_id", "dataset_id", "dataset_version_id", postgresql_nulls_not_distinct=True
     ),
     CheckConstraint(_in("precision", READ_PRECISIONS), name="precision"),
     CheckConstraint(_in("origin", READ_ORIGINS), name="origin"),
+    CheckConstraint("event_time <= last_event_time", name="event_times"),
     Index(None, "dataset_id", "event_time"),
     Index(None, "dataset_version_id"),
+)
+# Les lectures étalées sur plusieurs heures, seules : la propagation y cherche
+# celles qui commencent avant une fenêtre et la recoupent.
+Index(
+    "ix_read_edge_dataset_id_last_event_time",
+    read_edge.c.dataset_id,
+    read_edge.c.last_event_time,
+    postgresql_where=read_edge.c.last_event_time > read_edge.c.event_time,
 )
 
 write_edge = Table(
@@ -206,6 +221,7 @@ delivery_recipient = Table(
     metadata,
     Column("delivery_id", BigInteger, ForeignKey("delivery.id"), nullable=False),
     Column("recipient_id", BigInteger, ForeignKey("recipient.id"), nullable=False),
+    Column("event_time", DateTime(timezone=True), nullable=False),
     _recorded_at(),
     PrimaryKeyConstraint("delivery_id", "recipient_id"),
     Index(None, "recipient_id"),

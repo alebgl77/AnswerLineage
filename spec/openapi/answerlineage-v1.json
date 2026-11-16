@@ -51,6 +51,19 @@
             },
             "title": "Answers",
             "type": "array"
+          },
+          "known_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Date à laquelle le graphe est lu, telle que demandée : ce qui a été enregistré après en est exclu. Absente quand la lecture porte sur le graphe tel qu'il est.",
+            "title": "Known At"
           }
         },
         "required": [
@@ -444,6 +457,19 @@
             "title": "Datasets",
             "type": "array"
           },
+          "known_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Date à laquelle le graphe est lu, telle que demandée : ce qui a été enregistré après en est exclu. Absente quand la lecture porte sur le graphe tel qu'il est.",
+            "title": "Known At"
+          },
           "more": {
             "description": "Vrai quand la liste dépasse la borne demandée.",
             "title": "More",
@@ -521,6 +547,7 @@
             "type": "array"
           },
           "first_read_at": {
+            "description": "Heure d'événement de la première lecture.",
             "format": "date-time",
             "title": "First Read At",
             "type": "string"
@@ -530,6 +557,7 @@
             "type": "string"
           },
           "last_read_at": {
+            "description": "Heure d'événement de la dernière lecture.",
             "format": "date-time",
             "title": "Last Read At",
             "type": "string"
@@ -770,6 +798,19 @@
             "title": "Datasets",
             "type": "array"
           },
+          "known_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Date à laquelle le graphe est lu, telle que demandée : ce qui a été enregistré après en est exclu. Absente quand la lecture porte sur le graphe tel qu'il est.",
+            "title": "Known At"
+          },
           "more": {
             "description": "Vrai quand des réponses plus anciennes existent.",
             "title": "More",
@@ -863,6 +904,19 @@
           "graph": {
             "$ref": "#/components/schemas/GraphView",
             "description": "Les réponses touchées, les plus récentes d'abord, avec leur chaîne."
+          },
+          "known_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Date à laquelle le graphe est lu, telle que demandée : ce qui a été enregistré après en est exclu. Absente quand la lecture porte sur le graphe tel qu'il est.",
+            "title": "Known At"
           },
           "truncated": {
             "description": "Vrai quand la propagation dépasse une borne : le résultat est partiel, d'autres réponses peuvent être touchées, et les décomptes sont des minimums.",
@@ -1207,6 +1261,19 @@
             "title": "Datasets",
             "type": "array"
           },
+          "known_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Date à laquelle le graphe est lu, telle que demandée : ce qui a été enregistré après en est exclu. Absente quand la lecture porte sur le graphe tel qu'il est.",
+            "title": "Known At"
+          },
           "tools": {
             "items": {
               "$ref": "#/components/schemas/ToolUse"
@@ -1354,6 +1421,25 @@
               "title": "Limit",
               "type": "integer"
             }
+          },
+          {
+            "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+            "in": "query",
+            "name": "known_at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+              "title": "Known At"
+            }
           }
         ],
         "responses": {
@@ -1409,6 +1495,25 @@
               "pattern": "^[0-9a-f]{48}$",
               "title": "Answer Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+            "in": "query",
+            "name": "known_at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+              "title": "Known At"
             }
           }
         ],
@@ -1630,6 +1735,25 @@
               "title": "Limit",
               "type": "integer"
             }
+          },
+          {
+            "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+            "in": "query",
+            "name": "known_at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+              "title": "Known At"
+            }
           }
         ],
         "responses": {
@@ -1725,6 +1849,25 @@
               ],
               "description": "Identifiant d'une réponse : la vue se réduit alors à sa chaîne.",
               "title": "Answer"
+            }
+          },
+          {
+            "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+            "in": "query",
+            "name": "known_at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+              "title": "Known At"
             }
           }
         ],
@@ -1864,6 +2007,25 @@
               ],
               "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
               "title": "Cursor"
+            }
+          },
+          {
+            "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+            "in": "query",
+            "name": "known_at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+              "title": "Known At"
             }
           }
         ],

@@ -2,8 +2,14 @@
 
 Une réponse est touchée quand un run de son arbre a lu le jeu de données
 pendant la fenêtre : son propre run, un appel d'outil, un sous-agent. C'est
-l'heure de la lecture qui compte, pas celle de la réponse. La propagation
+l'heure de la lecture qui compte, pas celle de la réponse. Une lecture garde la
+première et la dernière heure d'événement reçues : elle est retenue quand cet
+intervalle recoupe la fenêtre. Un événement rejoué avec une heure antérieure
+élargit l'intervalle sans faire sortir la lecture de la fenêtre. La propagation
 s'arrête à la réponse : elle ne suit pas encore ce qu'un run touché a écrit.
+
+Avec ``known_at``, la propagation porte sur le graphe tel qu'il était connu à
+cette date : les lignes enregistrées après en sont exclues.
 
 Chaque étape a sa borne, et un résultat qui en dépasse une le dit
 (``truncated``) : ses décomptes sont alors des minimums. Pour un rappel, taire
@@ -34,7 +40,7 @@ from answerlineage_api.lineage.models import (
 )
 from answerlineage_api.lineage.overview import ANSWER_COLUMNS, view_of
 from answerlineage_api.lineage.paging import AFTER_CURSOR, ANSWER_ORDER, Cursor
-from answerlineage_api.lineage.reading import Reader
+from answerlineage_api.lineage.reading import Reader, known
 
 # Lectures du jeu de données pendant la fenêtre, les plus récentes d'abord.
 MAX_READS = 20_000
@@ -45,54 +51,72 @@ MAX_ANSWERS = 100_000
 MAX_LINKS = 200_000
 
 _DATASET = text(
-    "SELECT id, kind FROM dataset WHERE namespace = :namespace AND name = :name LIMIT :limit"
+    f"""
+    SELECT id, kind FROM dataset d
+    WHERE namespace = :namespace AND name = :name AND {known("d")}
+    LIMIT :limit
+    """  # noqa: S608 — seul un fragment constant est interpolé.
 )
 
-# Une lecture faite par un run sans parent ni réponse ne touche aucune réponse.
+# Les lectures dont l'intervalle [première, dernière heure] recoupe la fenêtre,
+# en deux parts disjointes qui suivent chacune un index : celles qui commencent
+# dans la fenêtre, puis celles, étalées, qui commencent avant et finissent dans
+# la fenêtre ou après. Une lecture faite par un run sans parent ni réponse ne
+# touche aucune réponse.
 _READERS = text(
-    """
+    f"""
     SELECT e.run_id
-    FROM read_edge e JOIN run r ON r.run_id = e.run_id
-    WHERE e.dataset_id = :dataset_id AND e.event_time >= :start AND e.event_time < :end
-      AND (r.parent_run_id IS NOT NULL
-           OR EXISTS (SELECT 1 FROM answer a WHERE a.run_id = e.run_id))
+    FROM (
+        SELECT e.id, e.run_id, e.event_time FROM read_edge e
+        WHERE e.dataset_id = :dataset_id AND e.event_time >= :start AND e.event_time < :end
+          AND {known("e")}
+        UNION ALL
+        SELECT e.id, e.run_id, e.event_time FROM read_edge e
+        WHERE e.dataset_id = :dataset_id AND e.last_event_time > e.event_time
+          AND e.last_event_time >= :start AND e.event_time < :start
+          AND {known("e")}
+    ) AS e
+    JOIN run r ON r.run_id = e.run_id
+    WHERE r.parent_run_id IS NOT NULL
+       OR EXISTS (SELECT 1 FROM answer a WHERE a.run_id = e.run_id AND {known("a")})
     ORDER BY e.event_time DESC, e.id DESC
     LIMIT :limit
-    """
+    """  # noqa: S608 — seuls des fragments constants sont interpolés.
 )
 
 # Des lecteurs vers leurs runs parents, niveau par niveau. UNION, et non
 # UNION ALL : des runs qui se désignent l'un l'autre comme parent ne font pas
 # tourner la recherche sans fin.
 _ANCESTORS = text(
-    """
+    f"""
     WITH RECURSIVE up(run_id) AS (
         SELECT r.parent_run_id FROM run r
         WHERE r.run_id = ANY(:readers) AND r.parent_run_id IS NOT NULL
         UNION
         SELECT r.parent_run_id FROM run r JOIN up ON r.run_id = up.run_id
-        WHERE r.parent_run_id IS NOT NULL
+        WHERE r.parent_run_id IS NOT NULL AND {known("r")}
     )
     SELECT run_id FROM up LIMIT :limit
-    """
+    """  # noqa: S608 — seul un fragment constant est interpolé.
 )
 
 # Chaque décompte lit au plus une ligne de plus que sa borne.
 _COUNTS = text(
-    """
+    f"""
     WITH touched AS (
-        SELECT a.id FROM answer a WHERE a.run_id = ANY(:run_ids) LIMIT :answers_limit
+        SELECT a.id FROM answer a WHERE a.run_id = ANY(:run_ids) AND {known("a")}
+        LIMIT :answers_limit
     ), links AS (
         SELECT l.recipient_id
         FROM touched t
-        JOIN delivery d ON d.answer_id = t.id
-        JOIN delivery_recipient l ON l.delivery_id = d.id
+        JOIN delivery d ON d.answer_id = t.id AND {known("d")}
+        JOIN delivery_recipient l ON l.delivery_id = d.id AND {known("l")}
         LIMIT :links_limit
     )
     SELECT (SELECT count(*) FROM touched) AS answers,
            (SELECT count(*) FROM links) AS links,
            (SELECT count(DISTINCT recipient_id) FROM links) AS recipients
-    """
+    """  # noqa: S608 — seuls des fragments constants sont interpolés.
 )
 
 
@@ -104,7 +128,7 @@ def _answers(cursor: Cursor | None) -> TextClause:
         FROM answer a
         JOIN run r ON r.run_id = a.run_id
         LEFT JOIN agent g ON g.id = r.agent_id
-        WHERE a.run_id = ANY(:run_ids)
+        WHERE a.run_id = ANY(:run_ids) AND {known("a")}
         {after}
         ORDER BY {ANSWER_ORDER}
         LIMIT :limit
@@ -122,23 +146,29 @@ async def propagate(
     limit: int,
     cursor: Cursor | None,
     now: datetime | None = None,
+    known_at: datetime | None = None,
 ) -> ImpactResult | None:
     """Réponses et destinataires touchés ; ``None`` quand le jeu de données est inconnu.
 
     Le résultat porte la couverture du lignage sur la fenêtre, et ses trous
     connus : ce que la propagation n'a pas pu voir. ``now`` borne la partie de
-    la fenêtre qui peut être mesurée ; par défaut, l'heure courante.
+    la fenêtre qui peut être mesurée ; par défaut, l'heure courante. Avec
+    ``known_at``, la propagation porte sur le graphe tel qu'il était connu à
+    cette date ; la couverture, elle, est celle d'aujourd'hui.
     """
-    found = await reader.fetch(_DATASET, {"namespace": namespace, "name": name}, limit=1)
+    as_of = {"known_at": known_at}
+    found = await reader.fetch(_DATASET, {"namespace": namespace, "name": name, **as_of}, limit=1)
     if not found.rows:
         return None
     dataset = found.rows[0]
 
     readers = await reader.fetch(
-        _READERS, {"dataset_id": dataset.id, "start": start, "end": end}, limit=MAX_READS
+        _READERS,
+        {"dataset_id": dataset.id, "start": start, "end": end, **as_of},
+        limit=MAX_READS,
     )
     reader_ids = list(dict.fromkeys(row.run_id for row in readers.rows))
-    ancestors = await reader.fetch(_ANCESTORS, {"readers": reader_ids}, limit=MAX_RUNS)
+    ancestors = await reader.fetch(_ANCESTORS, {"readers": reader_ids, **as_of}, limit=MAX_RUNS)
     run_ids = list(dict.fromkeys([*reader_ids, *(row.run_id for row in ancestors.rows)]))
 
     counts = (
@@ -148,6 +178,7 @@ async def propagate(
                 "run_ids": run_ids,
                 "answers_limit": MAX_ANSWERS + 1,
                 "links_limit": MAX_LINKS + 1,
+                **as_of,
             },
         )
     ).one()
@@ -158,7 +189,7 @@ async def propagate(
         or counts.links > MAX_LINKS
     )
 
-    params = {"run_ids": run_ids} | ({} if cursor is None else cursor.parameters())
+    params = {"run_ids": run_ids, **as_of} | ({} if cursor is None else cursor.parameters())
     picked = await reader.fetch(_answers(cursor), params, limit=limit)
     return ImpactResult(
         dataset=DatasetName(namespace=namespace, name=name, kind=dataset.kind),
@@ -169,6 +200,7 @@ async def propagate(
         coverage=await coverage.over_period(
             reader, start=start, end=end, now=now or datetime.now(UTC)
         ),
-        graph=await view_of(reader, picked.rows, more=picked.truncated),
+        graph=await view_of(reader, picked.rows, more=picked.truncated, known_at=known_at),
         truncated=truncated,
+        known_at=known_at,
     )

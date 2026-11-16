@@ -122,8 +122,9 @@ async def test_recording_the_same_run_twice_changes_nothing(engine: AsyncEngine)
 
 
 async def test_edges_carry_event_time_and_recorded_time(engine: AsyncEngine) -> None:
+    """Sans heure de réception connue, l'enregistrement date de la transaction."""
     await record(engine, run_with_two_reads_and_an_answer(uuid4()))
-    for table in ("read_edge", "answer", "delivery"):
+    for table in ("read_edge", "answer", "delivery", "delivery_recipient"):
         ((event_time, recorded_at),) = await rows(
             engine,
             f"SELECT DISTINCT event_time, recorded_at FROM {table}",  # noqa: S608
@@ -169,6 +170,176 @@ async def test_events_of_a_run_commute(engine: AsyncEngine) -> None:
     assert trace_id == "0af7651916cd43dd8448eb211c80319c"
     assert parent_run_id == UUID(int=7)
     assert tool_id is not None
+
+
+# Réceptions des événements par AnswerLineage : l'heure d'enregistrement du graphe.
+R1 = datetime(2026, 11, 2, 9, 5, tzinfo=UTC)
+R2 = R1 + timedelta(minutes=3)
+NOTES = DatasetRef("memory://analyste-ventes", "notes", kind="memory", version="7")
+TRUNCATE_GRAPH = text(
+    "TRUNCATE delivery_recipient, recipient, delivery, answer, write_edge, read_edge, run,"
+    " dataset_version, dataset, tool, agent RESTART IDENTITY CASCADE"
+)
+
+# Chaque ligne datée du graphe, désignée par ses clés naturelles, heures comprises.
+_DATED = {
+    "run": """
+        SELECT r.run_id, r.kind, r.state, r.started_at, r.ended_at, r.state_time,
+               r.parent_run_id, g.name, t.name, r.recorded_at
+        FROM run r LEFT JOIN agent g ON g.id = r.agent_id LEFT JOIN tool t ON t.id = r.tool_id
+        ORDER BY r.run_id""",
+    "read_edge": """
+        SELECT e.run_id, d.name, v.version, e.precision, e.columns, e.origin,
+               e.event_time, e.last_event_time, e.recorded_at
+        FROM read_edge e JOIN dataset d ON d.id = e.dataset_id
+        LEFT JOIN dataset_version v ON v.id = e.dataset_version_id
+        ORDER BY 1, 2, 3""",
+    "write_edge": """
+        SELECT e.run_id, d.name, v.version, e.event_time, e.recorded_at
+        FROM write_edge e JOIN dataset d ON d.id = e.dataset_id
+        LEFT JOIN dataset_version v ON v.id = e.dataset_version_id
+        ORDER BY 1, 2, 3""",
+    "answer": "SELECT run_id, fingerprint, event_time, recorded_at FROM answer ORDER BY 1, 2",
+    "delivery": """
+        SELECT a.fingerprint, d.channel, d.message_ref, d.event_time, d.recorded_at
+        FROM delivery d JOIN answer a ON a.id = d.answer_id ORDER BY 1, 2, 3""",
+    "delivery_recipient": """
+        SELECT a.fingerprint, d.channel, c.pseudonym, l.event_time, l.recorded_at
+        FROM delivery_recipient l JOIN delivery d ON d.id = l.delivery_id
+        JOIN answer a ON a.id = d.answer_id JOIN recipient c ON c.id = l.recipient_id
+        ORDER BY 1, 2, 3""",
+    "agent": "SELECT namespace, name, recorded_at FROM agent ORDER BY 1, 2",
+    "tool": "SELECT server, name, recorded_at FROM tool ORDER BY 1, 2",
+    "dataset": "SELECT namespace, name, kind, recorded_at FROM dataset ORDER BY 1, 2",
+    "dataset_version": """
+        SELECT d.name, v.version, v.recorded_at
+        FROM dataset_version v JOIN dataset d ON d.id = v.dataset_id ORDER BY 1, 2""",
+    "recipient": "SELECT pseudonym, recorded_at FROM recipient ORDER BY 1",
+}
+
+
+async def dated_rows(engine: AsyncEngine) -> dict[str, list[tuple[Any, ...]]]:
+    return {table: await rows(engine, sql) for table, sql in _DATED.items()}
+
+
+def two_events_of_one_run(run_id: UUID) -> list[RunRecord]:
+    """Le début et la fin d'un run d'agent, reçus à deux heures différentes."""
+    delivery = Delivery("slack", "C042/1731747600.000200", ("pseudo:a1",))
+    return [
+        RunRecord(
+            run_id,
+            "agent",
+            "START",
+            T0,
+            agent=AgentRef("agent://ventes", "analyste-ventes"),
+            recorded_at=R1,
+            reads=(Read(TAUX, precision="columns", columns=("devise",)),),
+            writes=(Write(NOTES),),
+            answers=(Answer("hmac:9f2c", deliveries=(delivery,)),),
+        ),
+        RunRecord(
+            run_id,
+            "agent",
+            "COMPLETE",
+            T0 + timedelta(seconds=5),
+            agent=AgentRef("agent://ventes", "analyste-ventes"),
+            recorded_at=R2,
+            reads=(Read(TAUX, precision="columns", columns=("taux",)), Read(VENTES)),
+            writes=(Write(NOTES),),
+            answers=(
+                Answer(
+                    "hmac:9f2c",
+                    deliveries=(
+                        Delivery("slack", "C042/1731747600.000200", ("pseudo:a1", "pseudo:b2")),
+                    ),
+                ),
+            ),
+        ),
+    ]
+
+
+async def test_two_events_of_a_run_received_out_of_order_give_the_same_dated_rows(
+    engine: AsyncEngine,
+) -> None:
+    """Toutes les lignes datées, comparées une à une, heures d'enregistrement comprises."""
+    run_id = uuid4()
+    await record(engine, *two_events_of_one_run(run_id))
+    in_order = await dated_rows(engine)
+    async with engine.begin() as conn:
+        await conn.execute(TRUNCATE_GRAPH)
+    await record(engine, *reversed(two_events_of_one_run(run_id)))
+    assert await dated_rows(engine) == in_order
+
+    later = T0 + timedelta(seconds=5)
+    assert in_order["read_edge"] == [
+        (run_id, "finance.ref.taux_change", None, "columns", ["devise", "taux"], "analysis",
+         T0, later, R1),
+        (run_id, "finance.ventes.commandes", None, "table", [], "analysis", later, later, R2),
+    ]  # fmt: skip
+    assert in_order["delivery_recipient"] == [
+        ("hmac:9f2c", "slack", "pseudo:a1", T0, R1),
+        ("hmac:9f2c", "slack", "pseudo:b2", later, R2),
+    ]
+    assert in_order["write_edge"] == [(run_id, "notes", "7", T0, R1)]
+    assert in_order["answer"] == [(run_id, "hmac:9f2c", T0, R1)]
+    assert in_order["delivery"][0][3:] == (T0, R1)
+    assert in_order["run"][0][3:] == (T0, later, later, None, "analyste-ventes", None, R1)
+    assert in_order["dataset"] == [
+        ("bigquery", "finance.ref.taux_change", "table", R1),
+        ("bigquery", "finance.ventes.commandes", "table", R2),
+        ("memory://analyste-ventes", "notes", "memory", R1),
+    ]
+    assert in_order["dataset_version"] == [("notes", "7", R1)]
+    assert in_order["recipient"] == [("pseudo:a1", R1), ("pseudo:b2", R2)]
+    assert in_order["agent"] == [("agent://ventes", "analyste-ventes", R1)]
+
+
+async def test_an_event_projected_again_later_changes_no_recorded_time(
+    engine: AsyncEngine,
+) -> None:
+    """Rejouer un événement, ou le projeter plus tard, garde la réception d'origine."""
+    first, second = two_events_of_one_run(uuid4())
+    await record(engine, first, second)
+    before = await dated_rows(engine)
+    await record(engine, second, first, second)
+    assert await dated_rows(engine) == before
+    assert {row[-1] for row in before["read_edge"]} == {R1, R2}
+
+
+async def test_the_reception_of_a_shared_node_is_the_earliest_known(engine: AsyncEngine) -> None:
+    """Un jeu de données, un outil ou un destinataire déjà connus : la plus ancienne réception."""
+    tool = ToolRef("entrepot", "execute_sql")
+    late = RunRecord(
+        uuid4(), "tool", "COMPLETE", T0, tool=tool, recorded_at=R2, reads=(Read(TAUX),)
+    )
+    early = RunRecord(
+        uuid4(), "tool", "COMPLETE", T0, tool=tool, recorded_at=R1, reads=(Read(TAUX),)
+    )
+    await record(engine, late, early)
+    assert await rows(engine, "SELECT recorded_at FROM dataset") == [(R1,)]
+    assert await rows(engine, "SELECT recorded_at FROM tool") == [(R1,)]
+    await record(engine, late)
+    assert await rows(engine, "SELECT recorded_at FROM dataset") == [(R1,)]
+
+
+async def test_a_backdated_event_widens_the_read_instead_of_moving_it(engine: AsyncEngine) -> None:
+    """Un rejeu antidaté, dans un ordre ou dans l'autre : la lecture garde ses deux bornes."""
+    honest, backdated = uuid4(), uuid4()
+
+    def reads(run_id: UUID) -> list[RunRecord]:
+        return [
+            RunRecord(run_id, "tool", "COMPLETE", T0, recorded_at=R1, reads=(Read(TAUX),)),
+            RunRecord(
+                run_id, "tool", "COMPLETE", T0 - timedelta(days=1), recorded_at=R2,
+                reads=(Read(TAUX),),
+            ),
+        ]  # fmt: skip
+
+    await record(engine, *reads(honest))
+    await record(engine, *reversed(reads(backdated)))
+    assert await rows(
+        engine, "SELECT DISTINCT event_time, last_event_time, recorded_at FROM read_edge"
+    ) == [(T0 - timedelta(days=1), T0, R1)]
 
 
 async def test_terminal_state_wins_when_two_events_share_a_timestamp(engine: AsyncEngine) -> None:
