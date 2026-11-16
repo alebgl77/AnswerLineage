@@ -190,7 +190,7 @@ def test_the_bench_holds_below_the_threshold_and_says_so() -> None:
         ({"failures": 3}, "3 appels sans succès"),
         ({"excess": 1}, "latence vue par le proxy supérieure à celle vue par le client"),
         (
-            {"internal_latency": Distribution(1.5, 3.0, 13.0)},
+            {"internal_latency": Distribution(3.0, 3.5, 10.0)},
             "latence vue par le proxy supérieure à celle vue par le client",
         ),
     ],
@@ -201,6 +201,13 @@ def test_the_bench_fails_on_a_threshold_or_an_incoherent_measure(
     failed = result(**changes)
     assert failed.problems() == [problem]
     assert f"Échec : {problem}." in failed.render()
+
+
+def test_a_tail_seen_later_by_the_proxy_than_by_the_client_is_not_incoherent() -> None:
+    """Le proxy prend son dernier horodatage après avoir rendu la fin de la réponse : sur
+    une machine chargée, un appel isolé peut finir plus tard pour lui que pour le client.
+    La queue de la distribution peut donc dépasser ; la médiane, non."""
+    assert result(internal_latency=Distribution(1.5, 4.5, 13.0)).problems() == []
 
 
 @pytest.mark.parametrize(

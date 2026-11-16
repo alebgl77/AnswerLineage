@@ -198,18 +198,19 @@ class BenchResult:
     def problems(self) -> list[str]:
         """Ce qui fait échouer le banc : mesure interne incohérente, ou seuil dépassé.
 
-        Le proxy voit chaque échange dans l'intervalle où le client le voit : sur
-        les mêmes appels, chaque percentile de la latence vue par le proxy est au
-        plus celui de la latence vue par le client.
+        Le proxy voit chaque échange à peu près dans l'intervalle où le client le
+        voit, mais il prend son dernier horodatage après avoir rendu la fin de la
+        réponse : sur une machine chargée, un appel isolé peut finir plus tard pour
+        lui que pour le client. La queue de la distribution peut donc dépasser ;
+        la médiane de la latence vue par le proxy, sur les mêmes appels, ne dépasse
+        pas celle du client sans incohérence réelle.
         """
         problems = []
         if self.measured != self.calls:
             problems.append(f"{self.measured} mesures internes pour {self.calls} appels")
         if self.failures:
             problems.append(f"{self.failures} appels sans succès")
-        seen = (self.internal_latency.p50, self.internal_latency.p99, self.internal_latency.max)
-        observed = (self.proxied.p50, self.proxied.p99, self.proxied.max)
-        if self.excess or any(inner > outer for inner, outer in zip(seen, observed, strict=True)):
+        if self.excess or self.internal_latency.p50 > self.proxied.p50:
             problems.append("latence vue par le proxy supérieure à celle vue par le client")
         if self.compared.p99 > self.threshold_ms:
             problems.append(f"p99 par comparaison au-delà de {self.threshold_ms:g} ms")
