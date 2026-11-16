@@ -74,6 +74,46 @@
       "expect": {"verdict": "refuse", "status": 403, "code": "cross_site_not_allowed"}
     },
     {
+      "name": "origine-etrangere-incident",
+      "title": "Une page d'une autre origine qui déclare un incident, pour faire rappeler des réponses saines",
+      "surface": "ingestion",
+      "base": "ingestion/declaration-d-incident",
+      "alter": {"header": "origin", "value": "https://canari7c1d.example"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "origin_not_allowed"}
+    },
+    {
+      "name": "origine-etrangere-rejeu",
+      "title": "Une page d'une autre origine qui rejoue la file de rebut",
+      "surface": "ingestion",
+      "base": "ingestion/rejeu-du-rebut",
+      "alter": {"header": "origin", "value": "https://canari7c1d.example"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "origin_not_allowed"}
+    },
+    {
+      "name": "autre-page-incidents",
+      "title": "Une balise d'une autre page qui sonde la liste des incidents",
+      "surface": "lecture",
+      "base": "lecture/incidents",
+      "alter": {"header": "sec-fetch-site", "value": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "cross_site_not_allowed"}
+    },
+    {
+      "name": "hote-relaye-incident",
+      "title": "Un hôte étranger dans Host, l'hôte attendu dans X-Forwarded-Host, devant la lecture d'un incident",
+      "surface": "lecture",
+      "base": "lecture/incident",
+      "alter": {"recipe": "deplacer-hote", "host": "canari7c1d.example", "to": "x-forwarded-host"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "host_not_allowed"}
+    },
+    {
+      "name": "autre-page-rebut",
+      "title": "Une balise d'une autre page qui sonde la file de rebut",
+      "surface": "lecture",
+      "base": "lecture/rebut",
+      "alter": {"header": "sec-fetch-site", "value": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "cross_site_not_allowed"}
+    },
+    {
       "name": "faux-proxy-outil-hostile",
       "title": "Un événement qui se donne pour celui du proxy et nomme son outil d'une instruction",
       "surface": "ingestion",

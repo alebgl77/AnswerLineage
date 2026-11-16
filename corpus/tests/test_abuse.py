@@ -36,7 +36,7 @@ from answerlineage_corpus.abuse import (
     play_of,
     recorded_abuse_digest,
 )
-from answerlineage_corpus.abuse_requests import RECIPES, AlterationError, build
+from answerlineage_corpus.abuse_requests import INCIDENT, RECIPES, AlterationError, build
 from answerlineage_corpus.scenarios import CorpusError
 
 Raw = dict[str, Any]
@@ -90,7 +90,8 @@ def test_the_abuse_corpus_is_coherent() -> None:
 
 def test_it_covers_the_required_families_with_three_blocked_cases_each() -> None:
     """Injections dans les identifiants, SQL pathologique, lots surdimensionnés, caractères
-    invisibles, usurpation d'émetteur, écart entre en-têtes et corps, sorties du lignage."""
+    invisibles, usurpation d'émetteur, écart entre en-têtes et corps, sorties du lignage,
+    champs hors contrat."""
     assert FAMILIES == (
         "identifiants",
         "sql",
@@ -99,6 +100,7 @@ def test_it_covers_the_required_families_with_three_blocked_cases_each() -> None
         "emetteur",
         "entetes",
         "capture",
+        "champs",
     )
     for family in FAMILIES:
         blocked = [case for case in CORPUS if case.family == family and not case.is_open]
@@ -436,7 +438,7 @@ def test_an_invisible_character_written_as_such_fails_the_check(directory: Path)
     """La revue voit ce qui s'exécute : un caractère invisible s'écrit en échappement JSON."""
     path = directory / CASES_DIRECTORY / "invisibles.json"
     escaped = path.read_text(encoding="utf-8")
-    assert escaped.count("\\u200b") == 3
+    assert escaped.count("\\u200b") == 5
     assert ZERO_WIDTH not in escaped
     path.write_text(escaped.replace("\\u200b", ZERO_WIDTH, 1), encoding="utf-8")
     # Le contenu n'a pas changé : seule son écriture est refusée.
@@ -565,6 +567,18 @@ def give_a_base_an_unknown_field(content: Any) -> None:
     content["bases"]["proxy/appel-outil"]["severity"] = "haute"
 
 
+def describe_the_incidents_as_an_object(content: Any) -> None:
+    content["bases"]["lecture/incident"]["incidents"] = {"severity": "low"}
+
+
+def describe_an_incident_as_text(content: Any) -> None:
+    content["bases"]["lecture/incident"]["incidents"] = ["incident sur la table des taux"]
+
+
+def read_an_incident_the_base_does_not_declare(content: Any) -> None:
+    del content["bases"]["lecture/incident"]["incidents"]
+
+
 @pytest.mark.parametrize(
     ("mutate", "problem"),
     [
@@ -576,6 +590,13 @@ def give_a_base_an_unknown_field(content: Any) -> None:
         (name_an_unknown_seed, "base « lecture/graphe » invalide (KeyError"),
         (describe_the_settings_as_a_list, "base « proxy/appel-outil » invalide (TypeError"),
         (give_a_base_an_unknown_field, "base « proxy/appel-outil » invalide (ValueError"),
+        (describe_the_incidents_as_an_object, "base « lecture/incident » invalide (TypeError"),
+        (describe_an_incident_as_text, "base « lecture/incident » invalide (TypeError"),
+        (
+            read_an_incident_the_base_does_not_declare,
+            "base « lecture/incident » invalide (ValueError : le chemin désigne un incident que "
+            "la base ne déclare pas)",
+        ),
         (lambda content: [], f"{BASES_FILE} : un objet JSON qui porte « bases » est attendu"),
     ],
 )
@@ -613,6 +634,31 @@ def test_a_healthy_request_goes_out_as_it_is_described() -> None:
     assert build(read).path == "/api/v1/impact?name=a+b&from=2026-11-03T06%3A00%3A00Z"
     assert (build(read).method, build(read).body) == ("GET", b"")
     assert build(read, fragment=True).path.startswith("#/api/v1/impact?name=a+b")
+
+
+DECLARATION: Raw = {
+    "scope": {"datasets": [{"namespace": "bigquery", "name": "finance.ref.taux_change"}]},
+    "window": {"from": "2026-11-03T06:00:00Z", "to": "2026-11-03T16:00:00Z"},
+    "severity": "low",
+}
+
+
+def test_a_read_follows_the_incidents_its_base_declares() -> None:
+    """L'API tire l'identifiant d'un incident à sa déclaration : le chemin d'une lecture le
+    désigne par une marque, que remplace l'identifiant du premier incident déclaré."""
+    read = {"path": f"/api/v1/incidents/{INCIDENT}", "query": {"limit": "5"}}
+    play = build(read, incidents=(DECLARATION,))
+    assert play.incidents == (DECLARATION,)
+    assert play.path == "/api/v1/incidents/{incident}?limit=5"
+    assert (build(read).incidents, altered({"recipe": "compresser"}).incidents) == ((), ())
+    # Un incident déclaré s'altère comme un événement envoyé avant la lecture.
+    severe = build(
+        read,
+        alter={"field": "/incidents/0/severity", "value": "critical"},
+        incidents=(DECLARATION,),
+    )
+    assert severe.incidents[0]["severity"] == "critical"
+    assert DECLARATION["severity"] == "low"
 
 
 def test_altering_a_field_or_a_header_changes_nothing_else() -> None:

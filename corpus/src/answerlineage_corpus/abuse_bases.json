@@ -481,6 +481,126 @@
         }
       }
     },
+    "ingestion/declaration-d-incident": {
+      "title": "La déclaration d'un incident sur une table, pour une fenêtre de dix heures",
+      "surface": "ingestion",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/incidents",
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "scope": {"datasets": [{"namespace": "postgres://crm:5432", "name": "référentiel.sociétés"}]},
+          "window": {"from": "2026-11-03T06:00:00Z", "to": "2026-11-03T16:00:00Z"},
+          "severity": "high"
+        }
+      },
+      "healthy": {
+        "status": 201,
+        "body": {
+          "state": "qualified",
+          "severity": "high",
+          "scope": {"datasets": [{"namespace": "postgres://crm:5432", "name": "référentiel.sociétés"}]},
+          "window": {"from": "2026-11-03T06:00:00Z", "to": "2026-11-03T16:00:00Z"},
+          "analysis": {"state": "pending", "attempts": 0, "error": null, "counts": null}
+        },
+        "events": 0,
+        "graph": {"incident": 1, "incident_dataset": 1, "incident_analysis": 1}
+      }
+    },
+    "ingestion/rejeu-du-rebut": {
+      "title": "Le rejeu de la file de rebut, filtré par émetteur, par motif et par événement",
+      "surface": "ingestion",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/ingestion/dead-letters/replay",
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "emitter": "mcp://entrepot",
+          "reason": "constraint_violation",
+          "event_ids": ["2a8b9477e2742f3eaeb18f4910603feb800eff1bc80f577f9d0e9cc4851eab10"],
+          "limit": 100
+        }
+      },
+      "healthy": {"status": 202, "body": {"replayed": 0, "more": false}, "events": 0, "graph": {}}
+    },
+    "lecture/incidents": {
+      "title": "La liste des incidents déclarés, les plus récents d'abord",
+      "surface": "lecture",
+      "incidents": [
+        {
+          "scope": {"datasets": [{"namespace": "bigquery", "name": "finance.ref.taux_change"}]},
+          "window": {"from": "2026-11-03T06:00:00Z", "to": "2026-11-03T16:00:00Z"},
+          "severity": "critical"
+        }
+      ],
+      "request": {"method": "GET", "path": "/api/v1/incidents", "query": {"limit": "20"}},
+      "healthy": {
+        "status": 200,
+        "body": {
+          "incidents": [
+            {
+              "state": "qualified",
+              "severity": "critical",
+              "scope": {"datasets": [{"namespace": "bigquery", "name": "finance.ref.taux_change"}]},
+              "window": {"from": "2026-11-03T06:00:00Z", "to": "2026-11-03T16:00:00Z"},
+              "analysis": {"state": "pending"}
+            }
+          ],
+          "more": false,
+          "next_cursor": null
+        }
+      }
+    },
+    "lecture/incident": {
+      "title": "Un incident déclaré, lu par son identifiant",
+      "surface": "lecture",
+      "incidents": [
+        {
+          "scope": {"datasets": [{"namespace": "bigquery", "name": "finance.ref.taux_change"}]},
+          "window": {"from": "2026-11-03T06:00:00Z", "to": "2026-11-03T16:00:00Z"},
+          "severity": "critical"
+        }
+      ],
+      "request": {"method": "GET", "path": "/api/v1/incidents/{incident}"},
+      "healthy": {
+        "status": 200,
+        "body": {
+          "state": "qualified",
+          "severity": "critical",
+          "scope": {"datasets": [{"namespace": "bigquery", "name": "finance.ref.taux_change"}]},
+          "window": {"from": "2026-11-03T06:00:00Z", "to": "2026-11-03T16:00:00Z"},
+          "analysis": {"state": "pending", "counts": null},
+          "result": null
+        }
+      }
+    },
+    "lecture/rebut": {
+      "title": "La file de rebut d'un émetteur, après le passage d'un worker",
+      "surface": "lecture",
+      "seed": "une-reponse",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/ingestion/dead-letters",
+        "query": {"emitter": "mcp://entrepot", "limit": "50"}
+      },
+      "healthy": {
+        "status": 200,
+        "body": {
+          "dead_letters": [],
+          "counts": [
+            {"reason": "invalid_identifier", "count": 0},
+            {"reason": "invalid_event", "count": 0},
+            {"reason": "constraint_violation", "count": 0},
+            {"reason": "invalid_value", "count": 0},
+            {"reason": "database_error", "count": 0},
+            {"reason": "projection_error", "count": 0}
+          ],
+          "truncated": false,
+          "more": false,
+          "next_cursor": null
+        }
+      }
+    },
     "explorateur/propager": {
       "title": "L'adresse d'un incident, ouverte dans l'explorateur",
       "surface": "explorateur",

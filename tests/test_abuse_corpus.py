@@ -27,7 +27,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from answerlineage_api.app import create_app
 from answerlineage_api.store.engine import create_engine
 from answerlineage_corpus.abuse import Base, Case, healthy_play, load_abuse_corpus, play_of
-from answerlineage_corpus.abuse_requests import Play
+from answerlineage_corpus.abuse_requests import INCIDENT, Play
 from answerlineage_corpus.abuse_verdict import (
     RAW_EVENTS,
     Conclusion,
@@ -270,7 +270,8 @@ async def observe_api(
     play: Play, engine: AsyncEngine, caplog: pytest.LogCaptureFixture, **weakened: Any
 ) -> Observation:
     """Joue la requête devant l'API : ingestion, puis un worker ; ou lecture d'un graphe
-    que les événements et les relevés préalables ont rempli par le même chemin."""
+    que les événements, les relevés et les incidents préalables ont rempli par le même
+    chemin."""
     app = Counted(create_app(engine, **{**play.settings, **weakened}))
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     quiet_client(caplog)
@@ -282,10 +283,15 @@ async def observe_api(
                 await drain(engine)
             for report in play.reports:
                 await client.post("/api/v1/coverage", json=report)
+            declared = [
+                (await client.post("/api/v1/incidents", json=incident)).json().get("id")
+                for incident in play.incidents
+            ]
             app.consumed = 0
             request = client.build_request(
                 play.method,
-                play.path,
+                # L'API tire l'identifiant d'un incident : le chemin le reçoit à la déclaration.
+                play.path.replace(INCIDENT, str(declared[0])) if declared else play.path,
                 headers=list(play.headers),
                 content=play.body if play.announced else in_chunks(play.body),
             )
@@ -369,6 +375,20 @@ async def replay(case: Case, bench: Any, **weakened: Any) -> None:
             "emetteur/hote-relaye-ingestion : 403 host_not_allowed attendu, 202 obtenu",
             marks=pytest.mark.integration,
             id="tout hôte accepté par l'API",
+        ),
+        pytest.param(
+            "emetteur/origine-etrangere-incident",
+            {"allowed_hosts": ["*"]},
+            "emetteur/origine-etrangere-incident : 403 origin_not_allowed attendu, 201 obtenu",
+            marks=pytest.mark.integration,
+            id="toute origine acceptée à la déclaration d'un incident",
+        ),
+        pytest.param(
+            "emetteur/hote-relaye-incident",
+            {"allowed_hosts": ["*"]},
+            "emetteur/hote-relaye-incident : 403 host_not_allowed attendu, 200 obtenu",
+            marks=pytest.mark.integration,
+            id="tout hôte accepté à la lecture d'un incident déclaré",
         ),
         pytest.param(
             "emetteur/hote-relaye-proxy",

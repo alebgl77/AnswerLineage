@@ -115,6 +115,69 @@
       "expect": {"verdict": "refuse", "status": 422, "path": "/query/name", "code": "string_pattern_mismatch"}
     },
     {
+      "name": "incident-jeu-largeur-nulle",
+      "title": "Un espace de largeur nulle dans le nom d'un jeu de données faux",
+      "surface": "ingestion",
+      "base": "ingestion/declaration-d-incident",
+      "alter": {"field": "/body/scope/datasets/0/name", "value": "référentiel.sociétés\u200bcanari7c1d"},
+      "expect": {"verdict": "rejete", "path": "/scope/datasets/0/name", "code": "identifier_invisible"}
+    },
+    {
+      "name": "incident-jeu-caractere-nul",
+      "title": "Un caractère nul dans le nom d'un jeu de données faux, que PostgreSQL ne peut pas conserver",
+      "surface": "ingestion",
+      "base": "ingestion/declaration-d-incident",
+      "alter": {"field": "/body/scope/datasets/0/name", "value": "référentiel.sociétés\u0000canari7c1d"},
+      "expect": {"verdict": "rejete", "path": "/scope/datasets/0/name", "code": "identifier_control"}
+    },
+    {
+      "name": "incident-deux-ecritures",
+      "title": "Le jeu de données faux écrit en forme décomposée : l'incident le garde sous la forme composée",
+      "surface": "ingestion",
+      "base": "ingestion/declaration-d-incident",
+      "canary": "e\u0301",
+      "alter": {"field": "/body/scope/datasets/0/name", "value": "re\u0301fe\u0301rentiel.socie\u0301te\u0301s"},
+      "expect": {"verdict": "sans_effet"}
+    },
+    {
+      "name": "incident-deux-ecritures-en-double",
+      "title": "Le même jeu de données sous ses deux écritures Unicode : un doublon du périmètre",
+      "surface": "ingestion",
+      "base": "ingestion/declaration-d-incident",
+      "alter": {
+        "field": "/body/scope/datasets",
+        "value": [
+          {"namespace": "postgres://crm:5432", "name": "référentiel.sociétés_canari7c1d"},
+          {"namespace": "postgres://crm:5432", "name": "re\u0301fe\u0301rentiel.socie\u0301te\u0301s_canari7c1d"}
+        ]
+      },
+      "expect": {"verdict": "rejete", "path": "/scope/datasets/1", "code": "dataset_duplicate"}
+    },
+    {
+      "name": "incident-identifiant-largeur-nulle",
+      "title": "Un espace de largeur nulle à la suite de l'identifiant d'un incident déclaré",
+      "surface": "lecture",
+      "base": "lecture/incident",
+      "alter": {"field": "/path", "value": "/api/v1/incidents/{incident}\u200bcanari7c1d"},
+      "expect": {"verdict": "refuse", "status": 422, "path": "/path/incident_id", "code": "string_pattern_mismatch"}
+    },
+    {
+      "name": "rebut-emetteur-caractere-nul",
+      "title": "Un caractère nul dans l'émetteur dont on lit le rebut",
+      "surface": "lecture",
+      "base": "lecture/rebut",
+      "alter": {"field": "/query/emitter", "value": "mcp://entrepot\u0000canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 422, "path": "/query/emitter", "code": "identifier_control"}
+    },
+    {
+      "name": "rejeu-emetteur-sens-force",
+      "title": "Un forçage du sens d'écriture dans l'émetteur dont on rejoue le rebut",
+      "surface": "ingestion",
+      "base": "ingestion/rejeu-du-rebut",
+      "alter": {"field": "/body/emitter", "value": "mcp://\u202ecanari7c1d"},
+      "expect": {"verdict": "rejete", "path": "/emitter", "code": "identifier_invisible"}
+    },
+    {
       "name": "adresse-caractere-nul",
       "title": "Un caractère nul dans l'adresse d'un incident de l'explorateur",
       "surface": "explorateur",

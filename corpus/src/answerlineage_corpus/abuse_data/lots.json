@@ -112,6 +112,119 @@
       "base": "lecture/propagation",
       "alter": {"recipe": "ralentir", "timeout_ms": 50},
       "expect": {"verdict": "borne", "status": 503, "code": "query_timeout"}
+    },
+    {
+      "name": "incident-perimetre-demesure",
+      "title": "Un incident sur 21 jeux de données, un de plus que le maximum",
+      "surface": "ingestion",
+      "base": "ingestion/declaration-d-incident",
+      "alter": {"recipe": "repeter", "field": "/body/scope/datasets", "count": 21},
+      "expect": {"verdict": "rejete", "path": "/scope/datasets", "code": "too_many_items"}
+    },
+    {
+      "name": "incident-nom-demesure",
+      "title": "Un jeu de données faux au nom de 1 025 caractères, un de plus que le maximum",
+      "surface": "ingestion",
+      "base": "ingestion/declaration-d-incident",
+      "alter": {"recipe": "repeter", "field": "/body/scope/datasets/0/name", "motif": "x", "count": 1005},
+      "expect": {"verdict": "rejete", "path": "/scope/datasets/0/name", "code": "identifier_too_long"}
+    },
+    {
+      "name": "incident-fenetre-demesuree",
+      "title": "Un incident dont la fenêtre dure 32 jours, un de plus que le maximum",
+      "surface": "ingestion",
+      "base": "ingestion/declaration-d-incident",
+      "canary": "2026-12-05T06:00:00Z",
+      "alter": {"field": "/body/window/to", "value": "2026-12-05T06:00:00Z"},
+      "expect": {"verdict": "rejete", "path": "/window", "code": "window_too_long"}
+    },
+    {
+      "name": "incident-corps-trop-grand",
+      "title": "Une déclaration annoncée un octet au-delà de 256 Kio : refusée sans être lue",
+      "surface": "ingestion",
+      "base": "ingestion/declaration-d-incident",
+      "alter": {"recipe": "gonfler", "bytes": 262145},
+      "expect": {"verdict": "refuse", "status": 413, "code": "body_too_large", "read": "partial"}
+    },
+    {
+      "name": "incident-bombe-gzip",
+      "title": "Une déclaration gzip de quelques Ko qui se déploie en 1 Mio, sous la borne des lots mais au-delà de la sienne",
+      "surface": "ingestion",
+      "base": "ingestion/declaration-d-incident",
+      "alter": {"recipe": "bombe-gzip", "bytes": 1048576},
+      "expect": {"verdict": "refuse", "status": 413, "code": "body_too_large"}
+    },
+    {
+      "name": "rejeu-identifiants-demesures",
+      "title": "Un rejeu qui nomme 1 001 événements, un de plus que le maximum",
+      "surface": "ingestion",
+      "base": "ingestion/rejeu-du-rebut",
+      "alter": {"recipe": "repeter", "field": "/body/event_ids", "count": 1001},
+      "expect": {"verdict": "rejete", "path": "/event_ids", "code": "too_many_items"}
+    },
+    {
+      "name": "rejeu-borne-demesuree",
+      "title": "Un rejeu qui demande 10 001 événements à la fois, un de plus que le maximum",
+      "surface": "ingestion",
+      "base": "ingestion/rejeu-du-rebut",
+      "alter": {"field": "/body/limit", "value": 10001},
+      "expect": {"verdict": "rejete", "path": "/limit", "code": "less_than_equal"}
+    },
+    {
+      "name": "rejeu-json-trop-profond",
+      "title": "Une demande de rejeu enfouie sous cent mille tableaux imbriqués",
+      "surface": "ingestion",
+      "base": "ingestion/rejeu-du-rebut",
+      "alter": {"recipe": "imbriquer", "field": "/body", "open": "[", "close": "]", "depth": 100000},
+      "expect": {"verdict": "refuse", "status": 400, "code": "json_too_deep"}
+    },
+    {
+      "name": "incidents-page-demesuree",
+      "title": "Une page de 101 incidents, un de plus que le maximum",
+      "surface": "lecture",
+      "base": "lecture/incidents",
+      "alter": {"field": "/query/limit", "value": 101},
+      "expect": {"verdict": "refuse", "status": 422, "path": "/query/limit", "code": "less_than_equal"}
+    },
+    {
+      "name": "incidents-hors-delai",
+      "title": "La liste des incidents au-delà de son délai maximal : PostgreSQL l'interrompt, la route le dit",
+      "surface": "lecture",
+      "base": "lecture/incidents",
+      "alter": {"recipe": "ralentir", "timeout_ms": 50},
+      "expect": {"verdict": "borne", "status": 503, "code": "query_timeout"}
+    },
+    {
+      "name": "incident-reponses-demesurees",
+      "title": "Une page de 201 réponses touchées par un incident, une de plus que le maximum",
+      "surface": "lecture",
+      "base": "lecture/incident",
+      "alter": {"field": "/query/limit", "value": 201},
+      "expect": {"verdict": "refuse", "status": 422, "path": "/query/limit", "code": "less_than_equal"}
+    },
+    {
+      "name": "incident-hors-delai",
+      "title": "La lecture d'un incident au-delà de son délai maximal : PostgreSQL l'interrompt, la route le dit",
+      "surface": "lecture",
+      "base": "lecture/incident",
+      "alter": {"recipe": "ralentir", "timeout_ms": 50},
+      "expect": {"verdict": "borne", "status": 503, "code": "query_timeout"}
+    },
+    {
+      "name": "rebut-page-demesuree",
+      "title": "Une page de 501 événements au rebut, un de plus que le maximum",
+      "surface": "lecture",
+      "base": "lecture/rebut",
+      "alter": {"field": "/query/limit", "value": 501},
+      "expect": {"verdict": "refuse", "status": 422, "path": "/query/limit", "code": "less_than_equal"}
+    },
+    {
+      "name": "rebut-hors-delai",
+      "title": "La lecture du rebut au-delà de son délai maximal : PostgreSQL l'interrompt, la route le dit",
+      "surface": "lecture",
+      "base": "lecture/rebut",
+      "alter": {"recipe": "ralentir", "timeout_ms": 50},
+      "expect": {"verdict": "borne", "status": 503, "code": "query_timeout"}
     }
   ]
 }

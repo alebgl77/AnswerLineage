@@ -1,11 +1,12 @@
 """Requêtes du corpus d'abus : une requête saine, une seule altération, ce qui part sur le fil.
 
 Une base décrit une requête saine comme un document : méthode, chemin,
-en-têtes, paramètres, corps, et les événements à envoyer avant une lecture
-(``seed``). Une altération change la valeur d'un champ de ce document, désigné
-par un pointeur JSON (RFC 6901), celle d'un en-tête, ou applique une recette
-prise dans une liste fermée. ``build`` rend la requête à jouer, octet pour
-octet.
+en-têtes, paramètres, corps, et ce qui est envoyé avant une lecture : des
+événements (``seed``), des relevés de couverture (``reports``), des
+déclarations d'incidents (``incidents``). Une altération change la valeur
+d'un champ de ce document, désigné par un pointeur JSON (RFC 6901), celle d'un
+en-tête, ou applique une recette prise dans une liste fermée. ``build`` rend
+la requête à jouer, octet pour octet.
 
 Rien ici ne connaît le produit : ni ses validateurs, ni ses bornes. Une
 recette fabrique une requête, elle ne dit pas ce qu'il faut en attendre.
@@ -27,6 +28,9 @@ LOCAL_HOST: Final = "localhost"
 # En-têtes par lesquels un relais dit l'hôte que le client visait.
 RELAYED_HOST_HEADERS: Final = ("x-forwarded-host", "forwarded")
 PADDING: Final = b" "
+# Dans le chemin d'une lecture, l'identifiant du premier incident déclaré avant
+# elle : le service le tire à la déclaration, celui qui joue la requête le pose.
+INCIDENT: Final = "{incident}"
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,8 @@ class Play:
     seed: tuple[Mapping[str, Any], ...] = ()
     # Relevés de couverture publiés avant une lecture, un par un.
     reports: tuple[Mapping[str, Any], ...] = ()
+    # Incidents déclarés avant une lecture, un par un, après les relevés.
+    incidents: tuple[Mapping[str, Any], ...] = ()
     # Réglages du service : ceux de la base, qu'une recette peut abaisser.
     settings: Mapping[str, Any] = field(default_factory=dict)
     # Vrai : la lecture est retenue par un verrou, pour dépasser son délai sans charge énorme.
@@ -380,12 +386,14 @@ def _draft(
     settings: Mapping[str, Any],
     alter: Mapping[str, Any] | None,
     reports: tuple[Mapping[str, Any], ...],
+    incidents: tuple[Mapping[str, Any], ...],
 ) -> _Draft:
     document = copy.deepcopy(dict(request))
     document.setdefault("headers", {})
     document.setdefault("query", {})
     document["seed"] = [copy.deepcopy(dict(event)) for event in seed]
     document["reports"] = [copy.deepcopy(dict(report)) for report in reports]
+    document["incidents"] = [copy.deepcopy(dict(incident)) for incident in incidents]
     draft = _Draft(document=document, settings=copy.deepcopy(dict(settings)))
     if alter is not None:
         _alter(draft, alter)
@@ -399,9 +407,10 @@ def check_alteration(
     alter: Mapping[str, Any],
     *,
     reports: tuple[Mapping[str, Any], ...] = (),
+    incidents: tuple[Mapping[str, Any], ...] = (),
 ) -> None:
     """Lève ``AlterationError`` si l'altération ne s'applique pas ; ne fabrique aucun corps."""
-    _draft(request, seed, settings, alter, reports)
+    _draft(request, seed, settings, alter, reports, incidents)
 
 
 def build(
@@ -411,10 +420,11 @@ def build(
     alter: Mapping[str, Any] | None = None,
     *,
     reports: tuple[Mapping[str, Any], ...] = (),
+    incidents: tuple[Mapping[str, Any], ...] = (),
     fragment: bool = False,
 ) -> Play:
     """La requête à jouer. ``fragment`` : le chemin est celui d'une adresse de l'explorateur."""
-    draft = _draft(request, seed, settings or {}, alter, reports)
+    draft = _draft(request, seed, settings or {}, alter, reports, incidents)
     document = draft.document
     body = b""
     if "body" in document:
@@ -437,6 +447,7 @@ def build(
         announced=draft.announced,
         seed=tuple(document["seed"]),
         reports=tuple(document["reports"]),
+        incidents=tuple(document["incidents"]),
         settings=draft.settings,
         slow=draft.slow,
     )

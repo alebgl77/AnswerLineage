@@ -12,9 +12,10 @@ validateur d'AnswerLineage.
   passe, l'événement marque l'anomalie sans porter la valeur ; ``compte`` : la
   requête passe sans événement, comptée comme non inspectée ; ``refuse`` : pour
   Host, Origin et les requêtes d'une autre page seulement ;
-- ``ingestion`` : ``refuse`` pour le corps entier ; ``rejete`` pour un
-  événement, avec son chemin et son code ; ``sans_effet`` quand la requête
-  altérée vaut la requête saine ;
+- ``ingestion``, les routes de l'API qui écrivent (événements, relevés,
+  déclaration d'un incident, rejeu du rebut) : ``refuse`` pour le corps
+  entier ; ``rejete`` pour un événement ou une demande, avec son chemin et son
+  code ; ``sans_effet`` quand la requête altérée vaut la requête saine ;
 - ``lecture`` : ``refuse`` ; ``borne`` pour une réponse complète ou dite
   tronquée, ou pour le refus du délai ; ``sans_effet`` ;
 - ``explorateur`` : ``inerte``, quand aucun nœud ne porte la valeur, que la
@@ -42,6 +43,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from answerlineage_corpus.abuse_requests import (
+    INCIDENT,
     AlterationError,
     Play,
     build,
@@ -53,11 +55,13 @@ from answerlineage_corpus.scenarios import CorpusError
 
 # Change dès qu'un cas, une base ou une exception change : affaiblir le corpus
 # sans le dire échoue au contrôle.
-ABUSE_VERSION = "2"
+ABUSE_VERSION = "3"
 _DIGESTS = {
     "1": "a6e3bdbb6724874d86cde209f8549640b68bce9d76e097da185ea54284a05619",
     # La lecture antidatée est bloquée : son exception est retirée.
     "2": "36e95e6e85984cee01b5119f779dab4892af6f1e69f9b6423da8efb46ecc1a95",
+    # Les routes des incidents et de la file de rebut, et la famille des champs hors contrat.
+    "3": "feeb955f996d665683a30ecc02987288744a689548c0e1f42fd0be76f7b92864",
 }
 
 # Marque que porte toute valeur hostile, cherchée ensuite partout : réponses,
@@ -72,7 +76,16 @@ VERDICTS: Final[Mapping[str, tuple[str, ...]]] = {
     "explorateur": ("inerte",),
 }
 # Familles exigées, et le nombre de cas bloqués que chacune doit compter.
-FAMILIES: Final = ("identifiants", "sql", "lots", "invisibles", "emetteur", "entetes", "capture")
+FAMILIES: Final = (
+    "identifiants",
+    "sql",
+    "lots",
+    "invisibles",
+    "emetteur",
+    "entetes",
+    "capture",
+    "champs",
+)
 MIN_BLOCKED: Final = 3
 
 # Ce à quoi se reconnaît une requête neutralisée par le proxy, dans son événement.
@@ -105,9 +118,11 @@ class Base:
     surface: str
     request: Mapping[str, Any] = field(hash=False)
     healthy: Mapping[str, Any] = field(hash=False)
-    # Événements envoyés à l'ingestion avant une lecture, puis relevés de couverture.
+    # Événements envoyés à l'ingestion avant une lecture, puis relevés de couverture,
+    # puis incidents déclarés : le premier donne son identifiant au chemin (``INCIDENT``).
     seed: tuple[Mapping[str, Any], ...] = field(default=(), hash=False)
     reports: tuple[Mapping[str, Any], ...] = field(default=(), hash=False)
+    incidents: tuple[Mapping[str, Any], ...] = field(default=(), hash=False)
     settings: Mapping[str, Any] = field(default_factory=dict, hash=False)
 
 
@@ -158,6 +173,7 @@ def _play(base: Base, alter: Mapping[str, Any] | None) -> Play:
         base.settings,
         alter,
         reports=base.reports,
+        incidents=base.incidents,
         fragment=base.surface == "explorateur",
     )
 
@@ -365,11 +381,25 @@ def _base(name: str, raw: Any, seeds: Mapping[str, Any]) -> Base:
         raise TypeError("les en-têtes sont un objet JSON")
     seed = seeds[raw["seed"]] if "seed" in raw else []
     reports, settings = raw.get("reports", []), raw.get("settings", {})
+    incidents = raw.get("incidents", [])
     if not isinstance(seed, list) or not isinstance(reports, list):
         raise TypeError("les événements et les relevés préalables sont des tableaux")
+    if not isinstance(incidents, list) or not all(isinstance(item, dict) for item in incidents):
+        raise TypeError("les incidents préalables sont un tableau d'objets JSON")
+    if INCIDENT in str(request["path"]) and not incidents:
+        raise ValueError("le chemin désigne un incident que la base ne déclare pas")
     if not isinstance(settings, dict):
         raise TypeError("les réglages sont un objet JSON")
-    unknown = set(raw) - {"title", "surface", "request", "healthy", "seed", "reports", "settings"}
+    unknown = set(raw) - {
+        "title",
+        "surface",
+        "request",
+        "healthy",
+        "seed",
+        "reports",
+        "incidents",
+        "settings",
+    }
     if unknown:
         raise ValueError("champ inconnu")
     return Base(
@@ -380,6 +410,7 @@ def _base(name: str, raw: Any, seeds: Mapping[str, Any]) -> Base:
         healthy=healthy,
         seed=tuple(seed),
         reports=tuple(reports),
+        incidents=tuple(incidents),
         settings=settings,
     )
 
@@ -450,7 +481,12 @@ def check_case(family: str, raw: object, bases: Mapping[str, Base]) -> list[str]
             hostile = hostile_text(alter)
             if base is not None:
                 check_alteration(
-                    base.request, base.seed, base.settings, alter, reports=base.reports
+                    base.request,
+                    base.seed,
+                    base.settings,
+                    alter,
+                    reports=base.reports,
+                    incidents=base.incidents,
                 )
         except AlterationError as error:
             problems.append(f"altération inapplicable ({error})")

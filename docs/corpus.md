@@ -158,13 +158,14 @@ uv run pytest "tests/test_abuse_corpus.py::test_every_case_of_the_abuse_corpus_i
 
 | Famille | Ce qu'elle éprouve |
 | --- | --- |
-| `identifiants` | Une instruction, du SQL ou une balise là où un nom est attendu : nom d'outil, chaque champ que la projection recopie, nom de facette, mot de passe dans une adresse, adresse de l'explorateur |
+| `identifiants` | Une instruction, du SQL ou une balise là où un nom est attendu : nom d'outil, chaque champ que la projection recopie, nom de facette, mot de passe dans une adresse, jeu de données et gravité d'un incident, identifiant d'un incident ou d'un événement au rebut, curseur, adresse de l'explorateur |
 | `sql` | Une requête trop grande, trop imbriquée, trop longue à analyser, dynamique, ou qui nomme une table hostile : la lecture reste « non résolue », l'appel passe |
-| `lots` | Trop d'événements, d'octets, de niveaux ou d'éléments ; bombe gzip ; runs parents l'un de l'autre ; lecture qui dépasse son délai |
+| `lots` | Trop d'événements, d'octets, de niveaux ou d'éléments ; bombe gzip ; runs parents l'un de l'autre ; lecture qui dépasse son délai ; périmètre, nom ou fenêtre d'un incident au-delà de leur borne ; rejeu qui demande trop d'événements ; page trop grande |
 | `invisibles` | Largeur nulle, sens d'écriture forcé, sélecteur de variante, caractère nul, deux écritures Unicode d'un même nom |
 | `emetteur` | Un autre hôte, une autre page, un faux proxy, les en-têtes d'identité, l'événement ou le relevé d'un autre émetteur, un relevé de couverture aux compteurs incohérents |
 | `entetes` | Un en-tête MCP contredit par le corps : le corps décide, l'écart est signalé |
 | `capture` | Une requête que le proxy ne peut pas lire sans ambiguïté : elle passe, sans événement, et se compte |
+| `champs` | Un champ que le contrat ne prévoit pas : du texte libre dans un incident, qui n'en porte aucun ; des colonnes dans son périmètre ; un filtre de rejeu mal orthographié, qui ne doit pas rejouer tout le rebut ; un champ au nom piégé, que le refus ne nomme pas ; un paramètre inconnu d'une lecture, ignoré |
 
 ### Lire un cas
 
@@ -183,9 +184,9 @@ Un fichier JSON par famille, dans `corpus/src/answerlineage_corpus/abuse_data/`.
 
 | Champ | Sens |
 | --- | --- |
-| `surface` | Ce que le cas vise : `proxy`, `ingestion`, `lecture` ou `explorateur` |
+| `surface` | Ce que le cas vise : `proxy`, `ingestion`, `lecture` ou `explorateur`. `ingestion` désigne les routes de l'API qui écrivent : les événements et les lots, les relevés de couverture, la déclaration d'un incident, le rejeu du rebut |
 | `base` | La requête saine dont il part, nommée dans `abuse_bases.json` avec ce à quoi se voit qu'elle passe (`healthy`). Le test le vérifie pour chaque base : un cas n'est bloqué que pour la raison qu'il déclare |
-| `alter` | Une seule altération : la valeur d'un champ, désigné par un pointeur JSON dans la requête (`/body/…`, `/query/…`, `/seed/…` et `/reports/…` pour les événements et les relevés de couverture envoyés avant une lecture), celle d'un en-tête (`header`), ou une recette |
+| `alter` | Une seule altération : la valeur d'un champ, désigné par un pointeur JSON dans la requête (`/path`, `/body/…`, `/query/…`, `/seed/…`, `/reports/…` et `/incidents/…` pour les événements, les relevés de couverture et les incidents envoyés avant une lecture), celle d'un en-tête (`header`), ou une recette |
 | `expect` | L'attente, écrite à la main : un verdict et son code. Elle ne se calcule jamais avec les validateurs du produit, que le corpus mesure |
 | `canary` | La marque que porte la valeur hostile, `canari7c1d` par défaut. Elle est cherchée après coup dans les réponses, toute la base, les événements, les compteurs et les journaux : un cas dont la valeur a fui est un échec, qui dit où sans dire quoi |
 
@@ -211,8 +212,8 @@ Les recettes forment une liste fermée :
 | `proxy` | `neutralise` | L'appel est relayé octet pour octet, parce que la capture ne bloque jamais un agent ; un seul événement, émis après la réponse, marque l'anomalie (`invalidToolName`, `headerMismatch` et ses en-têtes, `unresolved` et son motif) sans porter la valeur |
 | `proxy` | `compte` | La requête est relayée, aucun événement ne la décrit, et elle est comptée comme non inspectée |
 | `proxy` | `refuse` | `403` et son code, rien n'atteint le serveur MCP. Seulement pour `Host`, `Origin` et les requêtes d'une autre page : le contrôle du corpus refuse tout autre refus du proxy |
-| `ingestion` | `refuse` | Le statut et le code ; aucun événement enregistré, la file reste vide, le graphe ne change pas après le passage d'un worker. `read: partial` : le corps n'a pas été lu en entier |
-| `ingestion` | `rejete` | Le rang de l'événement, le chemin du champ et le code ; rien n'entre de cet événement |
+| `ingestion` | `refuse` | Le statut et le code ; aucun événement enregistré, la file reste vide, aucune table ne change après le passage d'un worker, ni le graphe ni celles des incidents. `read: partial` : le corps n'a pas été lu en entier |
+| `ingestion` | `rejete` | Le rang de l'événement, le chemin du champ et le code ; rien n'entre de cet événement. Sans rang, pour un événement envoyé seul, un relevé, une déclaration d'incident ou une demande de rejeu : rien n'est enregistré |
 | `ingestion`, `lecture` | `sans_effet` | La requête altérée obtient exactement ce qu'obtient la requête saine : même réponse, même graphe. L'archive des événements reçus, qui garde un événement accepté tel qu'il est arrivé, n'est alors pas fouillée |
 | `lecture` | `refuse` | `404` et son code, ou `422` avec le chemin du paramètre ; jamais la valeur reçue |
 | `lecture` | `borne` | Une réponse `200` dans le délai, qui dit si elle est tronquée et, complète, rend ce que rend la requête saine ; ou le refus `503` du délai. Jamais de `500` |
@@ -220,10 +221,16 @@ Les recettes forment une liste fermée :
 
 ### Ajouter un cas
 
-1. Choisir sa famille et sa base ; une nouvelle base se déclare dans `abuse_bases.json`, avec son issue saine.
+1. Choisir sa famille et sa base ; une nouvelle base se déclare dans `abuse_bases.json`, avec son issue saine. Une lecture part d'une base remplie par le chemin réel : ses événements (`seed`), passés par un worker, ses relevés de couverture (`reports`) puis ses incidents (`incidents`), déclarés par l'API. L'API tire l'identifiant d'un incident à sa déclaration : `{incident}`, dans le chemin, est remplacé par celui du premier.
 2. Écrire le cas : une seule altération, dont la valeur porte le canari, et l'attente lue dans la documentation du produit, pas dans son code. Un caractère invisible ne s'écrit jamais tel quel : toujours en échappement JSON, pour que la revue voie ce qui s'exécute.
 3. Rejouer : `make abuse`. Le contrôle refuse un cas sans attente, hors des listes fermées (surface, verdict, base, recette), une famille exigée à moins de trois cas bloqués et un caractère invisible écrit tel quel.
 4. Changer la version : l'empreinte du corpus est liée à son numéro de version (`ABUSE_VERSION` dans `abuse.py`). Le contrôle donne la nouvelle empreinte ; affaiblir un cas sans changer de version échoue.
+
+| Version | Ce qui a changé |
+| --- | --- |
+| 1 | Le corpus : le proxy, l'ingestion, la lecture et l'explorateur |
+| 2 | La lecture antidatée est bloquée : son exception est retirée |
+| 3 | Les routes des incidents (déclarer, lister, lire) et de la file de rebut (lister, rejouer), et la famille `champs` |
 
 Un cas qui révèle une attaque que le produit laisse passer ne se retire pas et ne se corrige pas en passant : il devient un cas ouvert.
 
@@ -244,6 +251,8 @@ Un cas que le produit ne bloque pas encore reste au corpus, déclaré avec son m
 - Les bornes de taille sont éprouvées à leur valeur par défaut ; celles des lectures (nombre de runs, de lectures, de réponses) ne le sont pas ici : les atteindre demanderait des dizaines de milliers d'événements. Les tests de l'API de lecture les couvrent.
 - Dans l'explorateur, le navigateur consigne lui-même comme une erreur le refus `404` ou `422` de l'API : ce refus, qui amène le message fixe, n'est pas compté parmi les erreurs de la page.
 - Une valeur hostile qui est un nombre, comme un compteur incohérent, ne porte pas de canari : rien n'est cherché après coup pour ces cas.
+- Le rebut est vide quand ses routes sont rejouées : aucune requête du corpus ne fait refuser un événement par la projection. Les cas éprouvent la validation, les bornes, le délai et le contrôle des hôtes et des origines de la liste et du rejeu, pas un rejeu qui remet des événements en file ; les tests de l'API et des workers le couvrent.
+- L'analyse d'un incident déclaré ne tourne pas : la lecture d'un incident le rend en attente d'analyse, sans réponse touchée.
 
 ## Limites connues
 

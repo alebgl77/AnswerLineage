@@ -36,7 +36,7 @@ Un serveur PostgreSQL déjà disponible s'utilise à la place avec `ANSWERLINEAG
 
 ## Corpus d'abus
 
-Le [corpus d'abus](corpus.md#corpus-dabus) tient des cas d'attaque : injections dans les identifiants, SQL pathologique, lots surdimensionnés, caractères invisibles, usurpation d'émetteur, écart entre en-têtes et corps, requêtes qui sortiraient du lignage. Une régression de sécurité bloque ainsi la fusion.
+Le [corpus d'abus](corpus.md#corpus-dabus) tient des cas d'attaque : injections dans les identifiants, SQL pathologique, lots surdimensionnés, caractères invisibles, usurpation d'émetteur, écart entre en-têtes et corps, requêtes qui sortiraient du lignage, champs hors contrat. Une régression de sécurité bloque ainsi la fusion.
 
 Il n'a pas de job à lui. Ses cas sont des tests ordinaires, que `ci-ok` exige déjà :
 
