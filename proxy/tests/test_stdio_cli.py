@@ -21,6 +21,8 @@ from typing import IO, Any
 import pytest
 
 from answerlineage_proxy import cli, stdio
+from answerlineage_proxy.outbox import Outbox, OutboxSettings
+from answerlineage_proxy.sink import NullSink
 from proxy.tests.conftest import stdio_server
 from proxy.tests.stdio_server import RESULT_TEXT
 
@@ -155,7 +157,26 @@ def test_the_command_line_runs_the_stdio_proxy_with_its_settings(
     assert proxy.settings.server_name == "mcp-meteo"
     assert proxy.coverage.length.total_seconds() == 5
     assert "Aucune clé d'empreinte" in caplog.text
-    assert "Aucune destination d'événements" in caplog.text
+    assert "Aucune adresse d'API" in caplog.text
+    assert isinstance(proxy._sink, NullSink)
+
+
+def test_the_stdio_proxy_sends_through_the_outbox_when_an_api_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: list[stdio.StdioProxy] = []
+
+    async def run(proxy: stdio.StdioProxy) -> int:
+        started.append(proxy)
+        return 0
+
+    monkeypatch.setattr(stdio.StdioProxy, "run", run)
+    arguments = ["--api-url", "http://127.0.0.1:8000", "--outbox-flush-seconds", "2"]
+    assert cli.main([*arguments, "--", "/opt/mcp-meteo"]) == 0
+    (proxy,) = started
+    assert isinstance(proxy._sink, Outbox)
+    assert proxy._sink.settings == OutboxSettings.create("http://127.0.0.1:8000", flush_seconds=2)
+    assert cli.main(["--api-url", "ftp://127.0.0.1", "--", "/opt/mcp-meteo"]) == 2
 
 
 def test_the_stdio_proxy_says_which_read_rules_it_ignores(

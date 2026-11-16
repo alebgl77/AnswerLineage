@@ -13,6 +13,13 @@ la fenêtre ne se clôt qu'une fois tous ses appels réglés. Rien de tout cela
 ne retarde un appel : compter est une addition, et la remise se fait hors du
 chemin des appels.
 
+Une destination à remise différée (la boîte d'envoi) prend un événement en
+charge avant de l'avoir remis : l'appel compte aussitôt parmi les appels vus,
+et l'événement parmi les émis une fois remis, parmi les perdus s'il se perd.
+La fenêtre se clôt sans attendre ces issues ; une issue qui arrive après la
+clôture rend un relevé corrigé de la même fenêtre, dont les compteurs ne font
+que grandir : l'API garde le plus grand de chacun.
+
 Les fenêtres sont alignées sur des multiples de leur durée depuis l'origine
 des temps Unix : deux proxys découpent le temps de la même façon. La première
 commence au démarrage du proxy, la dernière s'achève à son arrêt : deux vies
@@ -23,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -53,6 +61,8 @@ class _Counts:
     uninspected: int = 0
     # Appels comptés dans la fenêtre dont l'événement n'est pas encore parti.
     pending: int = 0
+    # Événements pris en charge par une destination à remise différée, ni remis ni perdus.
+    in_flight: int = 0
 
 
 class CoverageWindows:
@@ -67,19 +77,26 @@ class CoverageWindows:
         self._open = started_at
         self._counts: dict[datetime, _Counts] = {}
         self._closed = False
+        # Fenêtres closes dont des événements sont encore en route : leur fin et leurs compteurs.
+        self._settling: dict[datetime, tuple[datetime, _Counts]] = {}
+        # Fenêtres réunies dans la dernière à l'arrêt : le début de celle-ci.
+        self._merged: dict[datetime, datetime] = {}
+        # Fenêtre de chaque événement en route, par reçu, dans l'ordre de prise en charge.
+        self._flight: dict[str, deque[datetime]] = {}
 
     def _end_of(self, start: datetime) -> datetime:
         """Fin de la fenêtre qui commence à ``start`` : la frontière alignée suivante."""
         return _EPOCH + ((start - _EPOCH) // self.length + 1) * self.length
 
-    def _window(self, moment: datetime) -> _Counts:
-        """La fenêtre de cet instant. Un instant antérieur aux fenêtres ouvertes, horloge
-        reculée, compte dans la plus ancienne : un appel n'est jamais perdu."""
+    def _start_of(self, moment: datetime) -> datetime:
+        """Le début de la fenêtre de cet instant. Un instant antérieur aux fenêtres ouvertes,
+        horloge reculée, compte dans la plus ancienne : un appel n'est jamais perdu."""
         if moment < self._end_of(self._open):
-            start = self._open
-        else:
-            start = _EPOCH + ((moment - _EPOCH) // self.length) * self.length
-        return self._counts.setdefault(start, _Counts())
+            return self._open
+        return _EPOCH + ((moment - _EPOCH) // self.length) * self.length
+
+    def _window(self, moment: datetime) -> _Counts:
+        return self._counts.setdefault(self._start_of(moment), _Counts())
 
     def begin(self, moment: datetime) -> None:
         """Un appel dont l'événement porte l'heure ``moment`` va partir."""
@@ -94,6 +111,44 @@ class CoverageWindows:
             counts.events_emitted += 1
         else:
             counts.events_lost += 1
+
+    def hand_off(self, moment: datetime, receipt: str) -> None:
+        """L'événement de cet appel est pris en charge par une destination à remise différée,
+        qui dira plus tard, par son reçu, s'il a été remis ou perdu."""
+        start = self._start_of(moment)
+        counts = self._counts.setdefault(start, _Counts())
+        counts.pending = max(0, counts.pending - 1)
+        counts.calls_seen += 1
+        counts.in_flight += 1
+        self._flight.setdefault(receipt, deque()).append(start)
+
+    def outcome(self, receipt: str, *, delivered: bool) -> Report | None:
+        """L'événement de ce reçu a été remis, ou perdu. Rend le relevé corrigé de sa
+        fenêtre quand elle est déjà close, sinon rien : son relevé le dira à la clôture."""
+        starts = self._flight.get(receipt)
+        if not starts:
+            return None
+        start = starts.popleft()
+        if not starts:
+            del self._flight[receipt]
+        start = self._merged.get(start, start)
+        counts = self._counts.get(start)
+        end: datetime | None = None
+        if counts is None:
+            settling = self._settling.get(start)
+            if settling is None:  # pragma: no cover — tout reçu en route a sa fenêtre.
+                return None
+            end, counts = settling
+        counts.in_flight = max(0, counts.in_flight - 1)
+        if delivered:
+            counts.events_emitted += 1
+        else:
+            counts.events_lost += 1
+        if end is None:
+            return None
+        if not counts.in_flight:
+            del self._settling[start]
+        return self._report(start, end, counts)
 
     def uninspected(self, moment: datetime) -> None:
         """Une requête relayée sans pouvoir être inspectée : elle cache peut-être un appel."""
@@ -124,6 +179,8 @@ class CoverageWindows:
                 break
             self._counts.pop(self._open, None)
             reports.append(self._report(self._open, end, counts))
+            if counts is not None and counts.in_flight:
+                self._settling[self._open] = (end, counts)
             self._open = end
         return reports
 
@@ -144,7 +201,12 @@ class CoverageWindows:
                 counts.events_emitted += found.events_emitted
                 counts.events_lost += found.events_lost + found.pending
                 counts.uninspected += found.uninspected
+                counts.in_flight += found.in_flight
+                if start != self._open:
+                    self._merged[start] = self._open
             reports.append(self._report(self._open, end, counts))
+            if counts.in_flight:
+                self._settling[self._open] = (end, counts)
         self._closed = True
         return reports
 

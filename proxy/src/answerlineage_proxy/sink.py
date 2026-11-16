@@ -1,15 +1,34 @@
 """Destination des événements du proxy, et de ses relevés de couverture.
 
 ``emit`` et ``report_coverage`` ne bloquent jamais : la capture ne doit ni
-retarder ni interrompre un appel d'agent. L'envoi asynchrone vers l'API
-d'ingestion n'est pas encore disponible.
+retarder ni interrompre un appel d'agent.
+
+Une destination à remise différée (``DeferredSink``), comme la boîte d'envoi
+vers l'API d'ingestion (``outbox.py``), prend un événement en charge sans
+l'avoir encore remis. Elle dit plus tard, une fois et une seule par événement,
+s'il a été remis ou perdu : le transport qui l'emploie le compte alors dans la
+fenêtre de couverture de son heure, même si cette fenêtre est déjà close.
 """
 
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping
-from typing import Any, Protocol
+from collections.abc import Callable, Mapping
+from typing import Any, Protocol, runtime_checkable
+
+# Ce que dit une destination à remise différée d'un événement pris en charge : son
+# reçu, puis vrai s'il a été remis, faux s'il a été perdu.
+Settled = Callable[[str, bool], None]
+
+
+def receipt(event: Mapping[str, Any]) -> str:
+    """Le reçu d'un événement : son heure, telle qu'il la porte.
+
+    Le transport et la destination le tirent de l'événement de la même façon :
+    il suffit au transport pour retrouver la fenêtre où il a compté l'appel.
+    """
+    moment = event.get("eventTime")
+    return moment if isinstance(moment, str) else ""
 
 
 class EventSink(Protocol):
@@ -18,6 +37,20 @@ class EventSink(Protocol):
 
     def report_coverage(self, report: Mapping[str, Any]) -> None:
         """Prend en charge le relevé de couverture d'une fenêtre close, sans bloquer."""
+
+
+@runtime_checkable
+class DeferredSink(EventSink, Protocol):
+    """Destination qui remet ses événements plus tard, et dit ce qu'il en est advenu."""
+
+    def watch(self, settled: Settled) -> None:
+        """Désigne qui apprend, pour chaque événement pris en charge, s'il a été remis ou perdu."""
+
+    async def start(self) -> None:
+        """Démarre la remise, dans la boucle qui sert le transport."""
+
+    async def aclose(self) -> None:
+        """Remet ce qui peut l'être dans le délai d'arrêt ; le reste est perdu, et dit."""
 
 
 class NullSink:

@@ -82,7 +82,7 @@ from answerlineage_proxy.signals import (
     bounded_code,
     reply_error,
 )
-from answerlineage_proxy.sink import EventSink, NullSink
+from answerlineage_proxy.sink import EventSink
 from answerlineage_proxy.tracecontext import CallTrace, resolve_trace
 
 logger = logging.getLogger("answerlineage_proxy")
@@ -477,7 +477,7 @@ class StdioProxy(CallCapture[StdioSettings]):
         inspection: asyncio.Future[None] | None = None
         try:
             logger.info("Serveur MCP « %s » lancé en stdio.", self.settings.server_name)
-            self._start_reporting()
+            await self._start_reporting()
             for number in self._forwarded:
                 loop.add_signal_handler(number, _forward, process, number)
                 installed.append(number)
@@ -915,14 +915,19 @@ _HTTP_ONLY: Final = {
 }
 
 
+def _split(arguments: Sequence[str]) -> tuple[list[str], list[str]]:
+    """Les réglages qui précèdent ``--``, et la commande qui le suit."""
+    split = list(arguments).index("--")
+    return list(arguments[:split]), list(arguments[split + 1 :])
+
+
 def settings_from_args(
     arguments: Sequence[str], environment: Mapping[str, str]
 ) -> tuple[StdioSettings, timedelta]:
     """Les réglages d'un proxy stdio : ceux qui précèdent ``--``, puis la commande."""
     from answerlineage_proxy.cli import build_parser, coverage_window_from_args
 
-    split = list(arguments).index("--")
-    options, command = list(arguments[:split]), list(arguments[split + 1 :])
+    options, command = _split(arguments)
     args = build_parser().parse_args(options)
     for name, option in _HTTP_ONLY.items():
         value = getattr(args, name)
@@ -948,9 +953,17 @@ def settings_from_args(
 
 
 def main(arguments: Sequence[str], environment: Mapping[str, str]) -> int:
-    """Lance le proxy stdio ; rend le code de sortie du serveur MCP."""
+    """Lance le proxy stdio ; rend le code de sortie du serveur MCP.
+
+    Avec une adresse d'API, ses événements partent par la boîte d'envoi, comme en HTTP.
+    L'arrêt suit la fin du serveur : la boîte s'y vide dans son délai, qui borne le temps
+    que la sortie du proxy peut suivre celle du serveur.
+    """
+    from answerlineage_proxy.cli import event_sink, outbox_settings_from_args
+
     try:
         settings, coverage_window = settings_from_args(arguments, environment)
+        outbox = outbox_settings_from_args(_split(arguments)[0], environment)
     except ProxyConfigurationError as error:
         print(f"Configuration invalide : {error}", file=sys.stderr)
         return 2
@@ -968,9 +981,5 @@ def main(arguments: Sequence[str], environment: Mapping[str, str]) -> int:
             "sa requête est analysée.",
             tool,
         )
-    logger.warning(
-        "Aucune destination d'événements : les appels d'outils et les relevés de couverture "
-        "sont comptés, l'envoi vers l'API d'ingestion n'est pas encore disponible."
-    )
-    proxy = StdioProxy(settings, NullSink(), coverage_window=coverage_window)
+    proxy = StdioProxy(settings, event_sink(outbox), coverage_window=coverage_window)
     return asyncio.run(proxy.run())

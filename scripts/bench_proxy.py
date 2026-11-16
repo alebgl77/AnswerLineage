@@ -1,7 +1,9 @@
 """Banc de latence du proxy MCP : ce qu'il ajoute à un appel d'outil.
 
 Le banc lance un serveur MCP de test et le vrai proxy devant lui, chacun dans
-son processus, servis comme la ligne de commande du proxy les sert. Il appelle
+son processus, servis comme la ligne de commande du proxy les sert. Le proxy
+remet ses événements à sa boîte d'envoi, vers une API d'ingestion injoignable :
+la boîte garde, abandonne et reprend, sans qu'aucun appel ne l'attende. Il appelle
 ensuite l'outil un nombre réglable de fois directement et autant de fois à
 travers le proxy, en alternance, et mesure la latence ajoutée de deux façons :
 
@@ -26,6 +28,7 @@ import asyncio
 import json
 import math
 import secrets
+import socket
 import sys
 import time
 from array import array
@@ -42,6 +45,7 @@ from answerlineage_proxy.cli import SERVER_OPTIONS
 from answerlineage_proxy.config import ProxySettings
 from answerlineage_proxy.events import QOS_FACET
 from answerlineage_proxy.fingerprint import FingerprintKey
+from answerlineage_proxy.outbox import Outbox, OutboxSettings
 
 ROOT: Final = Path(__file__).resolve().parents[1]
 DEFAULT_CALLS: Final = 100_000
@@ -274,12 +278,31 @@ async def serve_upstream() -> None:
     await serve(upstream_app, _announce, _input_closed())
 
 
+class MeasuredOutbox(Outbox):
+    """La boîte d'envoi du proxy, telle qu'en service ; le banc garde au passage la mesure
+    interne de chaque événement."""
+
+    def __init__(self, settings: OutboxSettings, measure: BenchSink) -> None:
+        super().__init__(settings)
+        self.measure = measure
+
+    def emit(self, event: Mapping[str, Any]) -> None:
+        self.measure.emit(event)
+        super().emit(event)
+
+
 async def serve_proxy(upstream: str) -> None:
-    """Le vrai proxy, avec une clé d'empreinte : il fait tout ce qu'il fait en service."""
+    """Le vrai proxy, avec une clé d'empreinte et sa boîte d'envoi : il fait tout ce qu'il
+    fait en service, l'API d'ingestion en panne."""
     sink = BenchSink(skip=WARMUP_CALLS)
     key = FingerprintKey(secrets.token_bytes(32))
     settings = ProxySettings.create(upstream, "banc", fingerprint_key=key)
-    await serve(McpProxy(settings, sink), _announce, _input_closed())
+    with socket.socket() as unreachable:
+        # Réservé sans écouter : chaque connexion de la boîte à l'API y est refusée.
+        unreachable.bind(("127.0.0.1", 0))
+        api = f"http://127.0.0.1:{unreachable.getsockname()[1]}"
+        box = MeasuredOutbox(OutboxSettings.create(api, flush_seconds=0), sink)
+        await serve(McpProxy(settings, box), _announce, _input_closed())
     print(json.dumps(sink.summary()), flush=True)
 
 

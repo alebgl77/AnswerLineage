@@ -1,13 +1,13 @@
 # Proxy MCP
 
-Le proxy se place devant un serveur MCP, en HTTP ou en stdio, sans toucher à l'agent ni au serveur. Il relaie chaque requête à l'identique et émet un événement OpenLineage par appel d'outil.
+Le proxy se place devant un serveur MCP, en HTTP ou en stdio, sans toucher à l'agent ni au serveur. Il relaie chaque requête à l'identique et émet un événement OpenLineage par appel d'outil, que sa [boîte d'envoi](#boîte-denvoi) remet à l'API d'ingestion hors du chemin des appels.
 
 ```bash
-uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrepot --sql-tool execute_sql=query:bigquery
-uv run answerlineage-proxy --server-name fichiers -- /opt/mcp/serveur-fichiers --racine /srv/partage
+uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrepot --sql-tool execute_sql=query:bigquery --api-url http://127.0.0.1:8000
+uv run answerlineage-proxy --server-name fichiers --api-url http://127.0.0.1:8000 -- /opt/mcp/serveur-fichiers --racine /srv/partage
 ```
 
-La première ligne écoute devant un serveur HTTP. La seconde lance un serveur local en stdio et se place entre lui et le client : voir [Mode stdio](#mode-stdio). Sauf mention contraire, ce qui suit décrit le mode HTTP ; le mode stdio en reprend l'inspection, l'analyse du SQL, les règles de lecture, les empreintes, la qualité de service et les relevés de couverture.
+La première ligne écoute devant un serveur HTTP. La seconde lance un serveur local en stdio et se place entre lui et le client : voir [Mode stdio](#mode-stdio). Sauf mention contraire, ce qui suit décrit le mode HTTP ; le mode stdio en reprend l'inspection, l'analyse du SQL, les règles de lecture, les empreintes, la qualité de service, les relevés de couverture et la boîte d'envoi.
 
 | Réglage | Option | Variable | Défaut |
 | --- | --- | --- | --- |
@@ -27,6 +27,10 @@ La première ligne écoute devant un serveur HTTP. La seconde lance un serveur l
 | Clé d'empreinte elle-même, en hexadécimal | | `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY` | aucune : pas d'empreinte |
 | Durée d'une fenêtre des relevés de couverture | `--coverage-window-seconds` | `ANSWERLINEAGE_PROXY_COVERAGE_WINDOW_SECONDS` | 60 s (1 à 86 400) |
 | Fichier des règles de lecture des outils non SQL | `--read-rules-file` | `ANSWERLINEAGE_PROXY_READ_RULES_FILE` | aucun : aucun outil non SQL n'est décrit |
+| Adresse de l'API d'AnswerLineage, où partent événements et relevés | `--api-url` | `ANSWERLINEAGE_PROXY_API_URL` | aucune : rien n'est envoyé |
+| Événements gardés au plus dans la boîte d'envoi | `--outbox-max-events` | `ANSWERLINEAGE_PROXY_OUTBOX_MAX_EVENTS` | 10 000 (1 à 1 000 000) |
+| Octets gardés au plus dans la boîte d'envoi | `--outbox-max-bytes` | `ANSWERLINEAGE_PROXY_OUTBOX_MAX_BYTES` | 32 Mio (1 Mio à 1 Gio) |
+| Délai de vidage de la boîte d'envoi à l'arrêt | `--outbox-flush-seconds` | `ANSWERLINEAGE_PROXY_OUTBOX_FLUSH_SECONDS` | 5 s (0 à 300) |
 
 L'adresse du serveur MCP ne porte ni identifiant ni paramètre : elle peut apparaître dans la configuration. Son hôte peut être une adresse IPv6, entre crochets (`http://[2001:db8::1]:9000`) ; une adresse IPv6 ne faisant pas un nom de serveur, `--server-name` est alors obligatoire. Un réglage invalide arrête le proxy avec le message « Configuration invalide : … » et le code de sortie 2.
 
@@ -266,7 +270,7 @@ Sans `key` dans la règle, `readKeys` est absent. La facette ne se réclame de l
 
 Un appel d'un outil qui n'a ni règle de lecture ni SQL déclaré est marqué : sa lecture est « non résolue », motif `undescribed_tool`, et il n'a pas d'entrée. Le proxy le compte (`ProxyStats.undescribed_calls`) et le journalise une fois par nom d'outil, un nom validé, jamais un argument ; au-delà de 1 000 noms, il ne journalise plus. Un nom d'outil refusé n'est pas marqué : il porte déjà `invalidToolName`.
 
-La liste des outils à décrire se lit par l'API, à partir des événements reçus : [`GET /api/v1/ingestion/undescribed-tools`](ingestion.md#outils-à-décrire) rend, par émetteur, chaque outil marqué, le nombre de ses appels et le dernier reçu. Ce choix ne touche pas au schéma du graphe, garde le proxy sans état, et rassemble en un lieu ce que voient tous les proxys, qu'une liste en mémoire de chacun perdrait à chaque redémarrage. Tant que les événements ne partent pas encore du proxy vers l'API, la liste est vide pour lui : son journal est alors la seule trace.
+La liste des outils à décrire se lit par l'API, à partir des événements reçus : [`GET /api/v1/ingestion/undescribed-tools`](ingestion.md#outils-à-décrire) rend, par émetteur, chaque outil marqué, le nombre de ses appels et le dernier reçu. Ce choix ne touche pas au schéma du graphe, garde le proxy sans état, et rassemble en un lieu ce que voient tous les proxys, qu'une liste en mémoire de chacun perdrait à chaque redémarrage. Un proxy lancé sans adresse d'API (`--api-url`) n'envoie rien : la liste est vide pour lui, et son journal est la seule trace.
 
 ## Relevés de couverture
 
@@ -287,18 +291,98 @@ Le proxy publie ce qu'il a vu, pour que l'on sache quelle part du trafic le lign
 | --- | --- |
 | `emitter` | Son identifiant d'émetteur : `mcp://<serveur>`, l'espace de noms des jobs de ses événements |
 | `calls_seen` | Appels d'outils décrits, y compris d'après le seul début d'un corps trop grand |
-| `events_emitted` | Événements que la destination a pris en charge |
-| `events_lost` | Événements que la destination a refusés, et, à l'arrêt, ceux d'appels dont l'analyse n'avait pas abouti ; en stdio, ceux d'appels dont la réponse n'a pas pu être rattachée |
+| `events_emitted` | Événements remis : acceptés par l'API quand la [boîte d'envoi](#boîte-denvoi) les envoie, pris en charge par la destination sinon |
+| `events_lost` | Événements perdus : refusés par la destination, abandonnés par la boîte d'envoi (pleine, rejet de l'API, arrêt), et, à l'arrêt, ceux d'appels dont l'analyse n'avait pas abouti ; en stdio, ceux d'appels dont la réponse n'a pas pu être rattachée |
 | `uninspected` | Requêtes relayées sans pouvoir être inspectées ([ci-dessus](#ce-que-le-proxy-ne-peut-pas-inspecter)) |
 
 - **Un appel compte dans la fenêtre où tombe l'heure de son événement.** L'événement d'un outil SQL part une fois la requête analysée, parfois après la fin de sa fenêtre : la fenêtre ne se clôt qu'une fois tous ses appels réglés, et les relevés partent dans l'ordre du temps.
 - **Une fenêtre sans appel est publiée aussi** : c'est le battement qui prouve que le proxy n'est pas muet. Un proxy arrêté, bloqué ou coupé de l'API ne publie plus, et le [contrôle des émetteurs muets](workers.md#émetteurs-muets) le signale.
 - **Les fenêtres sont alignées** sur des multiples de leur durée depuis l'origine des temps Unix. La première commence au démarrage du proxy ; à l'arrêt, la fenêtre en cours s'achève à l'heure de l'arrêt. Deux vies successives du proxy publient donc des fenêtres disjointes, et l'intervalle où il était arrêté se lit comme un silence.
 - **Rien ne retarde un appel.** Compter est une addition faite là où l'appel est déjà décrit ; la clôture des fenêtres tourne à part, réveillée à la fin de chaque fenêtre, et un échec de remise est journalisé par sa classe, sans atteindre un appel.
+- **Une fenêtre ne s'attarde pas sur ses événements en route.** Avec la boîte d'envoi, un appel compte parmi les vus dès que son événement est pris en charge, parmi les émis une fois l'événement accepté par l'API, parmi les perdus s'il se perd. La fenêtre se clôt sans attendre : son relevé dit ce qui est déjà su, et la différence, `calls_seen − events_emitted − events_lost`, est encore en route.
+- **Une issue après la clôture corrige la fenêtre.** Quand un événement d'une fenêtre déjà close est remis ou perdu, le proxy republie la même fenêtre avec ses compteurs à jour. Un relevé corrigé ne fait que grandir les compteurs du précédent : l'API, qui [fusionne](ingestion.md#fusion) au plus grand, garde le dernier, dans quelque ordre qu'ils arrivent. Dans la boîte, la correction remplace le relevé de la même fenêtre qui attendait encore.
 
 Les relevés ne portent que des nombres, des heures et l'identifiant de l'émetteur : rien d'une requête.
 
-**L'envoi réseau des relevés vers l'API d'ingestion ne fait pas encore partie du proxy.** Il viendra avec sa boîte d'envoi, comme celui des événements : d'ici là, la destination par défaut les compte sans les envoyer, et une destination fournie au proxy (`EventSink.report_coverage`) les reçoit.
+Sans adresse d'API, la destination par défaut compte les événements et les relevés sans les envoyer. Une destination fournie au proxy (`EventSink`) les reçoit ; une destination qui remet plus tard (`DeferredSink`, comme la boîte d'envoi) dit ensuite, événement par événement, s'il a été remis ou perdu.
+
+## Boîte d'envoi
+
+Avec `--api-url`, les événements et les relevés de couverture partent vers l'API d'AnswerLineage par une boîte d'envoi locale, bornée, hors du chemin des appels : une panne d'AnswerLineage ne ralentit ni ne bloque un agent.
+
+```bash
+uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --api-url https://answerlineage.interne
+```
+
+### Rien n'attend la boîte
+
+Prendre en charge un événement est un ajout en mémoire, en temps constant, sans entrée-sortie ni attente : aucun appel n'attend la boîte, et l'événement d'un appel n'est construit qu'une fois sa réponse rendue. Tout le reste se fait à côté, dans deux tâches de fond :
+
+- **la sérialisation**, dans un fil, qui rend l'interpréteur à la boucle des appels après chaque événement : la boucle n'attend jamais plus que la sérialisation d'un seul événement ;
+- **l'envoi**, par lots d'au plus 500 événements et 1 Mio avant compression, compressés en gzip (dans un fil aussi), à la route des lots, `POST /api/v1/lineage/batch`. Un événement plus lourd qu'un lot part seul. Les relevés partent avant les événements, chacun à `POST /api/v1/coverage`.
+
+Livraison au moins une fois : un lot dont l'issue n'est pas sûre est renvoyé, et l'ingestion, [idempotente](ingestion.md#idempotence), ne l'enregistre qu'une fois.
+
+### L'adresse de l'API
+
+L'adresse est réglée par l'exploitant au démarrage ; elle n'est jamais tirée d'un événement ni d'une réponse. Elle est en `http` ou `https`, sans identifiant (`utilisateur:motdepasse@`), paramètre ni fragment : elle peut apparaître dans la configuration. Un chemin est admis, pour une API servie sous un préfixe (`https://hote/answerlineage`). Une adresse invalide arrête le proxy avec « Configuration invalide : … », sans la citer.
+
+L'API n'accepte dans l'en-tête `Host` que les hôtes qu'elle attend ([réglages](ingestion.md#hôtes-et-origines-attendus)) : l'hôte de l'adresse réglée doit en être, sinon elle répond `403`, que la boîte prend pour une indisponibilité et reprend sans fin.
+
+Le client de la boîte vérifie le certificat TLS, ne suit aucune redirection et ne lit rien de l'environnement (ni mandataire, ni fichier d'identifiants) : seule l'adresse réglée est jointe. Il borne la connexion à 5 s, chaque lecture et écriture à 10 s, et chaque envoi à 30 s en tout, pour qu'une réponse servie goutte à goutte ne le retienne pas. Il n'envoie aucun en-tête au-delà du type et de l'encodage du corps. La réponse de l'API est lue au plus sur 1 Mio, et n'est jamais journalisée.
+
+### Réponses de l'API
+
+| Réponse | Ce que fait la boîte |
+| --- | --- |
+| `2xx` | Le lot est remis. Les événements que le bilan désigne par leur rang (`rejected[].index`) sont rejetés ; un bilan illisible ou trop long ne désigne rien |
+| `422` | Aucun événement du lot n'est valide : tous sont rejetés |
+| `400`, `413` | Le corps entier est refusé : le lot est coupé en deux, jusqu'à isoler l'événement fautif, qui est rejeté seul ; la taille trouvée sert aux lots suivants |
+| `429`, `5xx`, tout autre statut, une redirection, une erreur réseau, un délai dépassé | Le lot est remis en tête de file et repris plus tard |
+
+Un événement rejeté est abandonné et compté, jamais retenté. Un événement que la boîte ne sait pas sérialiser en JSON strict (un nombre non fini, par exemple) l'est aussi, sans être envoyé.
+
+Une reprise attend de plus en plus : 0,5 s, doublées à chaque échec, jusqu'à 30 s, chaque attente tirée au hasard entre sa moitié et son tout pour que des proxys ne reviennent pas ensemble. `Retry-After`, en secondes ou en date, est respecté jusqu'à 60 s ; une valeur illisible est ignorée. Un succès remet l'attente à zéro. Un relevé suit les mêmes règles, à ceci près qu'un relevé refusé (`400`, `413`, `422`) est abandonné.
+
+### Bornes, et ce qui se perd
+
+La boîte garde au plus 10 000 événements et 32 Mio d'événements sérialisés (`--outbox-max-events`, `--outbox-max-bytes`), plus le lot en cours d'envoi ; les événements qui attendent d'être sérialisés comptent dans la borne en nombre. Pleine, elle abandonne le plus ancien. Les relevés ont leur propre file, que les événements n'évincent jamais : 10 000 relevés, une semaine de fenêtres d'une minute, au-delà desquels le plus ancien se perd.
+
+La boîte est en mémoire : le proxy reste sans état. Un redémarrage perd ce qui n'était pas parti, et cette perte se voit comme un trou.
+
+| Perte | Compteur de la boîte | Comment elle est marquée |
+| --- | --- | --- |
+| Boîte pleine : le plus ancien est abandonné | `dropped_overflow` | `events_lost` de la fenêtre de l'événement, relevé corrigé si elle est close |
+| Rejet par l'API, ou événement impossible à sérialiser | `rejected` | Idem |
+| Arrêt : ce qui n'est pas parti dans le délai | `dropped_shutdown` | Idem, si le délai laisse le temps au dernier relevé |
+| Relevé perdu : file pleine, refusé, arrêt | `reports_dropped` | Sa période se lit comme un [silence](lecture.md#lire-un-trou), jamais comme une période couverte |
+| Arrêt brutal ou redémarrage, sans vidage | aucun | Les relevés de ses dernières fenêtres manquent : silence ; un relevé déjà remis compte ses événements en route comme manquants au graphe (`missing_from_graph`) |
+
+Chaque perte d'un événement est dite au transport, qui la compte dans la [fenêtre de couverture](#relevés-de-couverture) de l'heure de l'événement. Quoi qu'il arrive au relevé, le graphe fait foi : un événement qui manque se voit comme `missing_from_graph`.
+
+### À l'arrêt
+
+À l'arrêt du proxy, la boîte se vide pendant 5 s au plus (`--outbox-flush-seconds`). Ce qui n'est pas parti est alors compté perdu, et la dernière part du délai, un cinquième, une seconde au plus, sert à remettre les relevés corrigés qui le disent, chacun une fois. Un lot interrompu à l'arrêt est compté perdu, même si l'API l'avait reçu : le trou est alors surestimé, jamais caché. Avec un délai nul, rien n'est envoyé à l'arrêt.
+
+En HTTP, l'arrêt est celui du serveur HTTP (SIGINT, SIGTERM). En stdio, il suit la fin du serveur MCP : le délai de vidage borne alors le temps que la sortie du proxy, et son code, peuvent suivre celle du serveur.
+
+### Compteurs
+
+`Outbox.stats` compte, sans aucune valeur issue des événements ; `queued`, `queued_bytes` et `oldest_age` se lisent sur la boîte elle-même :
+
+| Compteur | Ce qu'il compte |
+| --- | --- |
+| `queued` | Événements en file, lot en cours d'envoi compris |
+| `queued_bytes` | Octets des événements sérialisés en file |
+| `oldest_age` | Âge du plus ancien événement en attente, en secondes |
+| `sent` | Événements remis : l'API les a acceptés |
+| `dropped_overflow` | Événements abandonnés, boîte pleine |
+| `dropped_shutdown` | Événements perdus à l'arrêt |
+| `rejected` | Événements rejetés par l'API, ou impossibles à sérialiser |
+| `retries` | Envois repris après un échec, ou un lot coupé en deux |
+| `reports_sent`, `reports_dropped` | Relevés de couverture remis, et perdus |
+
+Le journal ne cite ni l'adresse de l'API, ni une réponse, ni rien d'un événement : un épisode d'indisponibilité se dit une fois, par la classe de son premier échec ou son statut, puis son retour ; une boîte pleine, une fois par épisode ; des rejets, par leur nombre.
 
 ## Identifiant de run et contexte de trace
 
@@ -484,14 +568,16 @@ La latence ajoutée compte le travail du proxy entre deux attentes : contrôle d
 
 ### Le banc de latence
 
-`make bench` lance un serveur MCP de test et le vrai proxy devant lui, chacun dans son processus, servis comme la ligne de commande sert le proxy, avec une clé d'empreinte. Il appelle l'outil 100 000 fois directement et 100 000 fois à travers le proxy, en alternance, après 50 appels de mise en route, et rend les p50, p99 et maximum de deux mesures de la latence ajoutée :
+`make bench` lance un serveur MCP de test et le vrai proxy devant lui, chacun dans son processus, servis comme la ligne de commande sert le proxy, avec une clé d'empreinte et sa [boîte d'envoi](#boîte-denvoi), vers une API d'ingestion qui refuse la connexion : la boîte garde, abandonne le plus ancien et reprend pendant tout le banc. Il appelle l'outil 100 000 fois directement et 100 000 fois à travers le proxy, en alternance, après 50 appels de mise en route, et rend les p50, p99 et maximum de deux mesures de la latence ajoutée :
 
 - **par comparaison** : chaque percentile des appels à travers le proxy, moins le même percentile des appels directs, vus du client ;
 - **par la mesure interne** : `addedLatencyMs` de l'événement de chaque appel.
 
 Il échoue quand le p99 de l'une ou de l'autre dépasse 5 ms, et quand la mesure interne n'est pas cohérente : un événement réussi par appel mesuré, une latence ajoutée qui ne dépasse pas la latence de l'échange, une latence vue par le proxy qui ne dépasse jamais celle vue par le client. `BENCH_ARGS` règle le nombre d'appels, les appels menés à la fois et le seuil (`make bench BENCH_ARGS='--calls 20000 --concurrency 4'`).
 
-Le banc tourne chaque nuit dans son propre workflow (`.github/workflows/bench.yml`), sur une machine qui ne fait que lui. Dans `make check`, un test de 2 000 appels vérifie que le banc fonctionne et que la mesure interne est cohérente, sans seuil de temps : sur une machine partagée, la charge des autres tests le ferait échouer à tort.
+Le banc tourne chaque nuit dans son propre workflow (`.github/workflows/bench.yml`), sur une machine qui ne fait que lui : c'est là que le seuil de 5 ms au p99 est strict, la boîte d'envoi comprise. Dans `make check`, un test de 2 000 appels vérifie que le banc fonctionne et que la mesure interne est cohérente, sans seuil de temps : sur une machine partagée, la charge des autres tests le ferait échouer à tort.
+
+Dans `make check` aussi, un test de chaos (`tests/test_outbox_chaos.py`) fait passer 10 000 appels l'API d'ingestion coupée (connexion refusée), puis en trou noir (elle accepte et ne répond jamais), puis rétablie, sur la vraie API, dans son propre processus, un vrai PostgreSQL et le worker. Il vérifie que tous les appels passent, qu'aucun n'approche le délai de lecture de la boîte (8 s au plus, quand un appel qu'elle bloquerait en attendrait au moins 10), que la prise en charge d'un événement reste sous 1 ms au p99, et que chaque état de panne garde un p99 au plus double de celui d'un proxy sans boîte, plus 20 ms. Ce seuil est tolérant à dessein : le proxy, le faux serveur MCP et le client y partagent un processus, sur une machine partagée. Le test dure une à trois minutes. Un autre fait passer un appel en stdio, par la ligne de commande, jusqu'au graphe. Puis que chaque événement arrive dans le graphe, une fois. D'autres tests y injectent les pertes, boîte pleine, rejet par l'API, arrêt, et vérifient que la couverture lue par l'API les montre toutes, chacune dans sa fenêtre.
 
 Mesuré sur un poste à 4 cœurs, 100 000 appels un à la fois :
 
@@ -503,6 +589,8 @@ Mesuré sur un poste à 4 cœurs, 100 000 appels un à la fois :
 | Latence ajoutée, mesure interne | 0,24 ms | 0,49 ms | 14,13 ms |
 
 L'écart entre les deux mesures est le saut lui-même : un serveur HTTP qui lit la requête et une bibliothèque HTTP qui la réécrit vers le serveur MCP, que la mesure interne ne voit pas. Un maximum est une valeur isolée, une pause du ramasse-miettes ou de l'ordonnanceur ; par comparaison, la différence de deux maxima n'a pas de sens, et le banc ne la juge pas.
+
+Ce tableau précède la boîte d'envoi. Sur 20 000 appels un à la fois, mesurés coup sur coup sur une même machine partagée, la boîte, l'API injoignable et la file pleine, ne déplace pas ces percentiles au-delà du bruit : p99 de la latence ajoutée par comparaison 2,38 ms avec elle, 2,39 ms sans ; par la mesure interne 0,46 ms avec elle, 0,43 ms sans.
 
 ## Mode stdio
 
@@ -521,7 +609,7 @@ Dans la configuration d'un client MCP, la commande devient `answerlineage-proxy`
 - Sa sortie d'erreur est celle du proxy : le proxy ne la lit pas et ne la recopie pas, ce sont les journaux du serveur. Le journal du proxy y passe aussi. Sur sa sortie standard, le proxy n'écrit que ce que l'enfant écrit.
 - Une commande qui ne démarre pas arrête le proxy avec un message fixe, qui ne cite ni la commande ni ses arguments : « Serveur MCP non lancé : commande introuvable. » (code 127) ou « Serveur MCP non lancé : commande non exécutable. » (code 126), comme un shell POSIX.
 - Sans `--server-name` ni `ANSWERLINEAGE_PROXY_SERVER_NAME`, le nom du serveur dans le lignage est celui du programme lancé, sans son chemin (`serveur-fichiers` pour `/opt/mcp/serveur-fichiers`). Un lanceur (`npx`, `uvx`, `docker`, `python`) n'est pas un nom de serveur : il confondrait tous les serveurs qu'il lance, d'où `--server-name`.
-- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin` et `--no-preserve-host` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
+- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, l'adresse de l'API et les bornes de la [boîte d'envoi](#boîte-denvoi), et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin` et `--no-preserve-host` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
 
 ### Le relais
 
@@ -568,7 +656,7 @@ Le relais n'attend jamais l'inspection ni l'émission : il remet sa copie et con
 - **Code de sortie.** Celui de l'enfant, ou 128 + le numéro du signal qui l'a arrêté (143 pour SIGTERM).
 - **Fermetures.** Chaque fermeture passe de l'autre côté, comme si le client et le serveur se parlaient directement : le client ferme son entrée, l'enfant voit la fin de la sienne ; l'enfant ferme sa sortie, le client voit la fin de celle du proxy ; le client cesse de lire, l'enfant le voit à sa prochaine écriture ; l'enfant ferme son entrée, celle du proxy se ferme aussi. L'enfant arrêté, le proxy rend ce qu'il a écrit sans attendre ce qu'un descendant écrirait encore sur la même sortie.
 - **Pas d'orphelin.** Le proxy attend toujours son enfant ; interrompu par une erreur, il le tue avant de s'arrêter. L'enfant reste dans le groupe de processus du proxy : un client qui arrête ce groupe les arrête ensemble.
-- **Arrêt.** L'enfant arrêté, le proxy attend les analyses du SQL en cours, remet la dernière fenêtre de couverture, puis s'arrête.
+- **Arrêt.** L'enfant arrêté, le proxy attend les analyses du SQL en cours, remet la dernière fenêtre de couverture, vide sa boîte d'envoi dans son délai (`--outbox-flush-seconds`, 5 s par défaut), puis s'arrête : ce délai borne le temps que sa sortie suit celle de l'enfant.
 
 ### Différences avec le mode HTTP
 
@@ -598,7 +686,10 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 
 ## Limites connues
 
-- Les événements et les relevés de couverture sont comptés mais ne partent pas encore vers l'API d'ingestion.
+- La boîte d'envoi est en mémoire : un arrêt brutal ou un redémarrage perd ce qui n'était pas parti. La perte se voit (silence, événements manquants au graphe), sans être comptée parmi les perdus.
+- Un lot interrompu à l'arrêt est compté perdu même si l'API l'a reçu : le trou est surestimé.
+- La boîte ne s'authentifie pas auprès de l'API, comme tout émetteur aujourd'hui, et ne lit ni mandataire ni autorité de certification de l'environnement : une API derrière une autorité de certification privée n'est pas encore joignable.
+- Le seuil de 5 ms au p99 ne se vérifie qu'au banc de chaque nuit ; l'intégration continue, sur une machine partagée, n'en garde qu'un seuil tolérant.
 - Plusieurs proxys devant un même serveur publient sous le même identifiant d'émetteur : l'API fusionne leurs relevés d'une même fenêtre au plus grand au lieu de les additionner. Un seul proxy par serveur, en attendant un identifiant d'instance.
 - Un client qui réutilise le même span pour deux appels d'outil leur donne le même identifiant de run : le graphe fusionne alors les deux appels en un seul run, qui porte les lectures des deux mais l'outil du premier événement projeté, donc selon l'ordre d'arrivée (`tests/test_trace_context_graph.py` le constate).
 - Sans authentification des émetteurs, un identifiant dérivé n'est pas une preuve d'origine : qui connaît le contexte d'un appel peut émettre un événement pour son run.

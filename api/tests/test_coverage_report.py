@@ -271,6 +271,37 @@ async def test_two_reports_of_one_window_give_the_same_state_in_either_order(
 
 @pytest.mark.integration
 @pytest.mark.anyio
+async def test_corrected_reports_of_one_window_merge_into_the_last_in_any_order_and_replay(
+    engine: AsyncEngine,
+) -> None:
+    """Un émetteur dont des événements se perdent après la clôture republie sa fenêtre :
+    chaque relevé corrigé ne fait que grandir les compteurs du précédent. Leur fusion
+    rend le dernier, quel que soit l'ordre d'arrivée, rejeux compris."""
+    sent = recent(calls_seen=10, events_emitted=6, events_lost=0, uninspected=1)
+    corrected = [
+        recent(calls_seen=10, events_emitted=7, events_lost=1, uninspected=1),
+        recent(calls_seen=10, events_emitted=8, events_lost=2, uninspected=1),
+    ]
+    orders = [
+        [sent, *corrected],
+        [corrected[1], sent, corrected[0]],
+        [corrected[0], corrected[1], sent, corrected[1], sent],
+    ]
+    states = []
+    for order in orders:
+        transport = httpx.ASGITransport(app=create_app(engine))
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+            answers = [(await client.post(COVERAGE, json=body)).json() for body in order]
+        assert answers[-1] == corrected[-1]
+        states.append(await table(engine, "coverage_report"))
+        async with engine.begin() as conn:
+            await conn.execute(text("TRUNCATE coverage_report, coverage_emitter"))
+    assert states[0] == states[1] == states[2]
+    assert states[0][0][3:] == (10, 8, 2, 1)
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
 async def test_a_window_first_received_in_another_month_merges_into_its_line(
     client: httpx.AsyncClient, engine: AsyncEngine
 ) -> None:

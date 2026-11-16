@@ -268,6 +268,8 @@ Un champ inconnu est ignoré. Le corps est lu comme celui des événements : mê
 
 Les relevés se rangent dans la table `coverage_report` ([schéma](schema.md#couverture-du-lignage)), un par émetteur et par fenêtre. Deux relevés de la même fenêtre se fusionnent compteur par compteur, au plus grand : un relevé rejoué ne change rien, deux relevés arrivés dans un ordre ou dans l'autre donnent le même état, et un émetteur peut republier une fenêtre complétée. La réponse rend l'état de la fenêtre après fusion.
 
+Un émetteur republie ainsi une fenêtre déjà close quand il apprend plus tard ce qu'il est advenu de ses événements : la [boîte d'envoi du proxy](proxy.md#boîte-denvoi) compte un événement émis une fois accepté par l'API, perdu s'il se perd, et corrige la fenêtre de l'événement. Un relevé corrigé ne fait que grandir les compteurs du précédent, appels vus inchangés : la fusion au plus grand rend le dernier, quel que soit l'ordre d'arrivée des corrections, rejeux compris. Un émetteur qui republierait une fenêtre en diminuant un compteur verrait garder l'ancienne valeur : ses compteurs doivent être monotones.
+
 Un relevé qui ouvre une fenêtre ou fait grandir un compteur date le dernier relevé de son émetteur : c'est ce que surveille le contrôle des émetteurs muets. Un rejeu ne ranime pas un émetteur muet.
 
 La couverture qui s'en déduit se lit par `GET /api/v1/coverage` et dans chaque résultat d'impact ([API de lecture](lecture.md#couverture-du-lignage)).

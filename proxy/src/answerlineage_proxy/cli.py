@@ -42,11 +42,23 @@ from answerlineage_proxy.config import (
 )
 from answerlineage_proxy.coverage import DEFAULT_WINDOW, MAX_WINDOW, MIN_WINDOW
 from answerlineage_proxy.guard import LOOPBACK_HOSTS
-from answerlineage_proxy.sink import NullSink
+from answerlineage_proxy.outbox import (
+    DEFAULT_FLUSH_SECONDS,
+    DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_EVENTS,
+    Outbox,
+    OutboxSettings,
+)
+from answerlineage_proxy.sink import EventSink, NullSink
 
 logger = logging.getLogger("answerlineage_proxy")
 
 ENV_COVERAGE_WINDOW = "ANSWERLINEAGE_PROXY_COVERAGE_WINDOW_SECONDS"
+# Boîte d'envoi : l'adresse de l'API d'AnswerLineage, ses bornes, son délai de vidage.
+ENV_API_URL = "ANSWERLINEAGE_PROXY_API_URL"
+ENV_OUTBOX_MAX_EVENTS = "ANSWERLINEAGE_PROXY_OUTBOX_MAX_EVENTS"
+ENV_OUTBOX_MAX_BYTES = "ANSWERLINEAGE_PROXY_OUTBOX_MAX_BYTES"
+ENV_OUTBOX_FLUSH_SECONDS = "ANSWERLINEAGE_PROXY_OUTBOX_FLUSH_SECONDS"
 
 # Réglages du serveur HTTP qui sert le proxy. Le journal d'accès contiendrait
 # chemins et paramètres de requête ; les en-têtes Server et Date du serveur MCP
@@ -168,6 +180,38 @@ def build_parser() -> argparse.ArgumentParser:
             f"{int(DEFAULT_WINDOW.total_seconds())} par défaut (ou {ENV_COVERAGE_WINDOW})"
         ),
     )
+    parser.add_argument(
+        "--api-url",
+        metavar="URL",
+        help=(
+            "adresse de l'API d'AnswerLineage, où la boîte d'envoi remet événements et relevés "
+            f"de couverture (ou {ENV_API_URL}) ; sans elle, ils sont comptés sans être envoyés"
+        ),
+    )
+    parser.add_argument(
+        "--outbox-max-events",
+        type=int,
+        help=(
+            "événements gardés au plus dans la boîte d'envoi, au-delà le plus ancien est perdu, "
+            f"{DEFAULT_MAX_EVENTS} par défaut (ou {ENV_OUTBOX_MAX_EVENTS})"
+        ),
+    )
+    parser.add_argument(
+        "--outbox-max-bytes",
+        type=int,
+        help=(
+            "octets gardés au plus dans la boîte d'envoi, "
+            f"{DEFAULT_MAX_BYTES} par défaut (ou {ENV_OUTBOX_MAX_BYTES})"
+        ),
+    )
+    parser.add_argument(
+        "--outbox-flush-seconds",
+        type=float,
+        help=(
+            "délai de vidage de la boîte d'envoi à l'arrêt, au-delà le reste est perdu, "
+            f"{DEFAULT_FLUSH_SECONDS:g} s par défaut (ou {ENV_OUTBOX_FLUSH_SECONDS})"
+        ),
+    )
     return parser
 
 
@@ -185,6 +229,42 @@ def coverage_window_from_args(
             "Une fenêtre des relevés de couverture dure de 1 à 86400 secondes."
         )
     return window
+
+
+def _seconds(environment: Mapping[str, str], name: str, default: float) -> float:
+    try:
+        return float(environment.get(name, default))
+    except ValueError as error:
+        raise ProxyConfigurationError(f"{name} doit être un nombre de secondes.") from error
+
+
+def outbox_settings_from_args(
+    argv: Sequence[str] | None, environment: Mapping[str, str]
+) -> OutboxSettings | None:
+    """Réglages de la boîte d'envoi : des options, sinon de l'environnement. Aucune boîte
+    sans adresse d'API."""
+    args = build_parser().parse_args(argv)
+    api_url = args.api_url or environment.get(ENV_API_URL)
+    if not api_url:
+        return None
+    return OutboxSettings.create(
+        api_url,
+        max_events=(
+            args.outbox_max_events
+            if args.outbox_max_events is not None
+            else integer(environment, ENV_OUTBOX_MAX_EVENTS, DEFAULT_MAX_EVENTS)
+        ),
+        max_bytes=(
+            args.outbox_max_bytes
+            if args.outbox_max_bytes is not None
+            else integer(environment, ENV_OUTBOX_MAX_BYTES, DEFAULT_MAX_BYTES)
+        ),
+        flush_seconds=(
+            args.outbox_flush_seconds
+            if args.outbox_flush_seconds is not None
+            else _seconds(environment, ENV_OUTBOX_FLUSH_SECONDS, DEFAULT_FLUSH_SECONDS)
+        ),
+    )
 
 
 def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str]) -> ProxySettings:
@@ -230,6 +310,26 @@ def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str
     )
 
 
+def event_sink(outbox: OutboxSettings | None) -> EventSink:
+    """La destination des événements, la même pour les deux transports : la boîte d'envoi
+    vers l'API quand son adresse est réglée, sinon une destination qui compte sans envoyer."""
+    if outbox is None:
+        logger.warning(
+            "Aucune adresse d'API (--api-url ou %s) : les appels d'outils et les relevés de "
+            "couverture sont comptés sans être envoyés.",
+            ENV_API_URL,
+        )
+        return NullSink()
+    logger.info(
+        "Événements et relevés de couverture remis à l'API par la boîte d'envoi : "
+        "%d événements et %d octets au plus, vidage en %g s à l'arrêt.",
+        outbox.max_events,
+        outbox.max_bytes,
+        outbox.flush_seconds,
+    )
+    return Outbox(outbox)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     arguments = list(sys.argv[1:] if argv is None else argv)
@@ -241,6 +341,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         settings = settings_from_args(argv, os.environ)
         coverage_window = coverage_window_from_args(argv, os.environ)
+        outbox = outbox_settings_from_args(argv, os.environ)
     except ProxyConfigurationError as error:
         print(f"Configuration invalide : {error}", file=sys.stderr)
         return 2
@@ -272,12 +373,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if settings.read_rules:
         logger.info("Règles de lecture : %d outils décrits.", len(settings.read_rules))
-    logger.warning(
-        "Aucune destination d'événements : les appels d'outils et les relevés de couverture "
-        "sont comptés, l'envoi vers l'API d'ingestion n'est pas encore disponible."
-    )
     uvicorn.run(
-        McpProxy(settings, NullSink(), coverage_window=coverage_window),
+        McpProxy(settings, event_sink(outbox), coverage_window=coverage_window),
         host=settings.host,
         port=settings.port,
         **SERVER_OPTIONS,

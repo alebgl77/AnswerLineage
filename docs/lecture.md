@@ -213,6 +213,7 @@ Pour chaque fenêtre d'un relevé, on compte les événements d'appel d'outil de
 - **Des événements, pas des runs.** Deux appels peuvent partager un run : chacun a son événement.
 - **Une fenêtre ne comble pas une autre.** Des événements en excès dans une fenêtre, d'un émetteur à l'horloge décalée par exemple, ne compensent pas un manque ailleurs.
 - **Un événement reçu mais pas encore projeté** n'est pas dans le graphe : juste après un envoi, la dernière fenêtre peut paraître incomplète le temps qu'un worker passe.
+- **Un événement encore en route** non plus : pendant une panne de l'API, le relevé d'une fenêtre close peut précéder ses événements, qui attendent dans la [boîte d'envoi](proxy.md#boîte-denvoi) du proxy. La fenêtre montre des événements manquants jusqu'à leur arrivée ; ceux que la boîte perd y deviennent des événements perdus, par un relevé corrigé.
 - Un relevé qui déborde de la période compte en entier : la mesure se fait à la fenêtre près.
 
 ### Trois états

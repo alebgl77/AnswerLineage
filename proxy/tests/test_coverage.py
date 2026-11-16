@@ -154,6 +154,96 @@ def test_a_proxy_stopped_on_a_window_boundary_reports_no_empty_window() -> None:
     assert len(counter.close_all(at(60))) == 1
 
 
+# Une destination à remise différée : l'événement est remis ou perdu après sa prise en charge.
+
+
+def handed(counter: CoverageWindows, seconds: float, receipt: str) -> None:
+    counter.begin(at(seconds))
+    counter.hand_off(at(seconds), receipt)
+
+
+def test_an_event_handed_off_counts_as_seen_and_as_emitted_only_once_delivered() -> None:
+    counter = windows()
+    handed(counter, 5, "a")
+    handed(counter, 10, "b")
+    handed(counter, 20, "c")
+    assert counter.outcome("a", delivered=True) is None
+    assert counter.outcome("b", delivered=False) is None
+
+    # La fenêtre se clôt sans attendre l'événement encore en route.
+    [report] = counter.close_due(at(60))
+    assert summary(report) == ("09:00:00", "09:01:00", 3, 1, 1, 0)
+
+
+def test_an_outcome_after_the_close_gives_the_corrected_report_of_the_same_window() -> None:
+    counter = windows()
+    handed(counter, 5, "a")
+    handed(counter, 6, "b")
+    handed(counter, 7, "c")
+    [first] = counter.close_due(at(60))
+    assert summary(first) == ("09:00:00", "09:01:00", 3, 0, 0, 0)
+
+    lost = counter.outcome("a", delivered=False)
+    assert lost is not None
+    assert summary(lost) == ("09:00:00", "09:01:00", 3, 0, 1, 0)
+    delivered = counter.outcome("b", delivered=True)
+    assert delivered is not None
+    assert summary(delivered) == ("09:00:00", "09:01:00", 3, 1, 1, 0)
+    last = counter.outcome("c", delivered=True)
+    assert last is not None
+    assert summary(last) == ("09:00:00", "09:01:00", 3, 2, 1, 0)
+    # Chaque relevé corrigé ne fait que grandir les compteurs du précédent : la fusion au plus
+    # grand de l'API garde le dernier, dans quelque ordre qu'ils arrivent.
+    for earlier, later in itertools.pairwise([first, lost, delivered, last]):
+        for counter_name in ("calls_seen", "events_emitted", "events_lost", "uninspected"):
+            assert earlier[counter_name] <= later[counter_name]
+        assert later["events_emitted"] + later["events_lost"] <= later["calls_seen"]
+    # Tout est réglé : la fenêtre est oubliée, une issue inconnue ne change rien.
+    assert counter.outcome("c", delivered=True) is None
+    assert counter.outcome("inconnu", delivered=False) is None
+
+
+def test_two_events_of_the_same_time_are_settled_one_by_one() -> None:
+    counter = windows()
+    handed(counter, 5, "même")
+    handed(counter, 5, "même")
+    counter.close_due(at(60))
+    once = counter.outcome("même", delivered=True)
+    twice = counter.outcome("même", delivered=False)
+    assert once is not None
+    assert twice is not None
+    assert (summary(once)[3:5], summary(twice)[3:5]) == ((1, 0), (1, 1))
+
+
+def test_an_event_handed_off_in_the_last_window_is_corrected_after_shutdown() -> None:
+    counter = windows()
+    handed(counter, 10, "a")
+    handed(counter, 70, "b")
+    reports = counter.close_all(at(90))
+    assert [summary(report) for report in reports] == [
+        ("09:00:00", "09:01:00", 1, 0, 0, 0),
+        ("09:01:00", "09:01:30", 1, 0, 0, 0),
+    ]
+    late = counter.outcome("b", delivered=False)
+    assert late is not None
+    assert summary(late) == ("09:01:00", "09:01:30", 1, 0, 1, 0)
+
+
+def test_events_of_merged_windows_at_shutdown_are_corrected_in_the_last_window() -> None:
+    """Un appel compté au-delà de l'heure d'arrêt reste dans la dernière fenêtre, ses
+    issues aussi."""
+    counter = windows()
+    handed(counter, 30, "a")
+    handed(counter, 70, "b")
+    [last] = counter.close_all(at(20))
+    assert summary(last) == ("09:00:00", "09:02:00", 2, 0, 0, 0)
+    first = counter.outcome("a", delivered=True)
+    second = counter.outcome("b", delivered=False)
+    assert first is not None
+    assert second is not None
+    assert summary(second) == ("09:00:00", "09:02:00", 2, 1, 1, 0)
+
+
 @pytest.mark.parametrize("length", [timedelta(0), timedelta(milliseconds=999), timedelta(days=2)])
 def test_a_window_lasts_from_one_second_to_one_day(length: timedelta) -> None:
     with pytest.raises(ValueError, match="une seconde à un jour"):

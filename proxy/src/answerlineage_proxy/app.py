@@ -74,7 +74,7 @@ from answerlineage_proxy.signals import (
     assess,
     milliseconds,
 )
-from answerlineage_proxy.sink import EventSink
+from answerlineage_proxy.sink import DeferredSink, EventSink, receipt
 from answerlineage_proxy.sql import SqlAnalysis
 from answerlineage_proxy.tracecontext import TRACEPARENT, CallTrace, resolve_trace
 
@@ -298,6 +298,11 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
         )
         self._reporting: asyncio.Task[None] | None = None
         self._sink = sink
+        # Une destination à remise différée dit plus tard si chaque événement a été remis :
+        # l'appel compte alors parmi les émis ou les perdus de sa fenêtre.
+        self._deferred = sink if isinstance(sink, DeferredSink) else None
+        if self._deferred is not None:
+            self._deferred.watch(self._settled)
         self._clock = clock
         self._sql_arguments = {tool: rule.argument for tool, rule in settings.sql_tools.items()}
         # Chaînes de reprises en cours, en mémoire bornée.
@@ -327,17 +332,22 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
             self._pending.difference_update(tasks)
 
     async def aclose(self) -> None:
-        """Termine les analyses en cours, remet la dernière fenêtre de couverture, puis arrête
-        le processus d'analyse."""
+        """Termine les analyses en cours, remet la dernière fenêtre de couverture, arrête le
+        processus d'analyse, puis vide la destination à remise différée dans son délai."""
         await self.drain()
         if self._reporting is not None:
             await _settle(self._reporting)
             self._reporting = None
         self._report(self.coverage.close_all(self._clock()))
         await self.analyzer.aclose()
+        if self._deferred is not None:
+            await self._deferred.aclose()
 
-    def _start_reporting(self) -> None:
-        """Remet chaque fenêtre de couverture close, hors du chemin des appels."""
+    async def _start_reporting(self) -> None:
+        """Démarre la destination à remise différée, puis remet chaque fenêtre de couverture
+        close, hors du chemin des appels."""
+        if self._deferred is not None:
+            await self._deferred.start()
         self._reporting = asyncio.ensure_future(
             report_periodically(self.coverage, self._clock, self._report)
         )
@@ -522,6 +532,7 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
         """Émet l'événement de l'appel. Un échec d'émission n'atteint jamais l'appel."""
         self.stats.tool_calls += 1
         trace = exchange.trace
+        handed: str | None = None
         try:
             if trace is None:  # pragma: no cover — tout appel d'outil reçoit son contexte.
                 raise RuntimeError("contexte de trace manquant")
@@ -540,14 +551,28 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
                 transport=self.transport,
                 **details,
             )
+            if self._deferred is not None:
+                handed = receipt(event)
+                self.coverage.hand_off(event_time, handed)
             self._sink.emit(event)
         except Exception as error:
             self.stats.emit_failures += 1
-            self.coverage.settle(event_time, emitted=False)
+            if handed is None:
+                self.coverage.settle(event_time, emitted=False)
+            else:
+                self._settled(handed, False)
             logger.error("Événement de lignage non émis (%s).", type(error).__name__)
         else:
             self.stats.events_emitted += 1
-            self.coverage.settle(event_time, emitted=True)
+            if handed is None:
+                self.coverage.settle(event_time, emitted=True)
+
+    def _settled(self, receipt: str, delivered: bool) -> None:
+        """La destination dit qu'un événement a été remis, ou perdu. Si sa fenêtre est déjà
+        close, son relevé corrigé part à son tour."""
+        corrected = self.coverage.outcome(receipt, delivered=delivered)
+        if corrected is not None:
+            self._report([corrected])
 
     def _report(self, reports: list[Report]) -> None:
         """Remet des relevés de couverture. Un échec de remise n'atteint jamais un appel."""
@@ -613,7 +638,8 @@ class McpProxy(CallCapture[ProxySettings]):
 
     async def aclose(self) -> None:
         """Termine les analyses en cours, remet la dernière fenêtre de couverture, arrête le
-        processus d'analyse, puis ferme les connexions vers le serveur MCP."""
+        processus d'analyse, vide la destination à remise différée dans son délai, puis ferme
+        les connexions vers le serveur MCP."""
         await super().aclose()
         if self._client is not None and self._owns_client:
             await self._client.aclose()
@@ -637,7 +663,7 @@ class McpProxy(CallCapture[ProxySettings]):
             message = await receive()
             if message["type"] == "lifespan.startup":
                 self._upstream_client()
-                self._start_reporting()
+                await self._start_reporting()
                 await send({"type": "lifespan.startup.complete"})
             elif message["type"] == "lifespan.shutdown":
                 await self.aclose()
