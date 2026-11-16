@@ -10,7 +10,7 @@ Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque me
 | `tests` | Porte de qualité du moteur d'impact : sur le [corpus de vérité](corpus.md#mesure-du-moteur-dimpact), un rappel au niveau table d'au moins 0,99 et aucune réponse hors d'atteinte ; un échec nomme les réponses manquées | `make measure` |
 | `tests`, `explorer` | Corpus d'abus : chaque cas d'attaque est rejoué et doit être bloqué. Détail plus bas | `make abuse` |
 | `secrets` | Aucun secret dans tout l'historique (gitleaks), après un canari qui prouve que le détecteur bloque. Une trouvaille est affichée avec son fichier, sa ligne et sa règle, valeur masquée ; une exception se déclare dans `.gitleaksignore`, chemin protégé | `make secrets` |
-| `image` | L'image de `deploy/Dockerfile` se construit ; son SBOM est produit (Syft, CycloneDX) et gardé comme artefact du job ; Grype l'analyse, après un canari qui prouve que l'analyse bloque. Une vulnérabilité haute ou critique sans exception valable fait échouer le job. Détail plus bas | `make image` |
+| `image` | L'image de `deploy/Dockerfile` se construit ; son SBOM est produit (Syft, CycloneDX) et gardé comme artefact du job ; Grype l'analyse, après un canari qui prouve que l'analyse bloque. Une vulnérabilité haute ou critique sans exception valable fait échouer le job. La signature est éprouvée sans rien publier : l'image signée se vérifie, une image modifiée sous la même étiquette ne passe pas. Détail plus bas | `make image` |
 | `codeql` | Analyse de sécurité du code Python et des workflows (CodeQL, requêtes étendues) | |
 | `agent-config` | Une merge request qui modifie la configuration d'agents ou un garde-fou porte l'approbation d'un mainteneur | |
 | `devcontainer` | Le conteneur de développement se construit, installe le projet et passe les tests | |
@@ -59,15 +59,16 @@ Le cas se rejoue seul avec son identifiant, puis se lit dans le fichier de sa fa
 
 **Rejouer sur le poste.** `make abuse` contrôle le corpus puis rejoue tous ses cas ; ceux de l'explorateur sont sautés tant que l'interface n'est pas construite (`make ui`).
 
-## Image : SBOM et vulnérabilités
+## Image : SBOM, vulnérabilités et signature
 
-Le job `image` et la publication d'une version (`.github/workflows/release.yml`) enchaînent les mêmes sous-commandes de `scripts/image.sh`. La merge request éprouve donc tout ce que la publication fera, sauf pousser l'image et lui attacher son SBOM.
+Le job `image` et la publication d'une version (`.github/workflows/release.yml`) enchaînent les mêmes sous-commandes de `scripts/image.sh`. La merge request éprouve donc tout ce que la publication fera, sauf pousser l'image, la signer sans clé et lui attacher ses attestations ; la signature s'y éprouve avec un registre éphémère et des clés jetables.
 
 | Sous-commande | Ce qu'elle fait |
 | --- | --- |
 | `build` | Construit l'image de `deploy/Dockerfile` et l'exporte en archive (`docker save`) |
 | `sbom` | Syft inventorie les composants de l'archive : `build/image/sbom.cdx.json` |
 | `selftest` | Canari : un SBOM écrit à la main qui déclare PyYAML 5.3 (CVE-2020-14343, critique) doit faire échouer l'analyse |
+| `signtest` | Signe l'image dans un registre éphémère avec une clé jetable et la vérifie ; une image modifiée sous la même étiquette, puis signée par une autre clé, doit être refusée. Détail dans [Publication](publication.md#la-signature-éprouvée-à-chaque-merge-request) |
 | `scan` | Grype analyse le SBOM ; `scripts/check_vulnerabilities.py` rend le verdict |
 
 **Format du SBOM.** CycloneDX en JSON : un format standard pensé pour l'analyse de sécurité, où chaque composant porte son identifiant de paquet (purl). Grype le lit sans perte, l'attestation de GitHub l'accepte, et un SBOM s'y écrit à la main en quelques lignes, comme celui du canari. Grype analyse ce SBOM, pas l'image : ce qui est analysé est exactement ce qui est publié, et quiconque tire l'image peut rejouer l'analyse sur son SBOM.
@@ -101,7 +102,7 @@ Ce fichier est un chemin protégé : le modifier demande la revue d'un mainteneu
 **Rejouer sur le poste.** Docker suffit, avec Python 3.12 ou plus :
 
 ```bash
-make image                   # ou scripts/image.sh : build, sbom, selftest, scan
+make image                   # ou scripts/image.sh : build, sbom, selftest, signtest, scan
 scripts/image.sh scan        # rejoue l'analyse du dernier SBOM, avec la base du jour
 python3 -m scripts.check_vulnerabilities exceptions   # vérifie les exceptions seules
 ```
@@ -112,24 +113,13 @@ Le mainteneur publie une version en posant une étiquette `v1.2.3` (ou `v1.2.3-r
 
 1. construit l'image, produit son SBOM, joue le canari et l'analyse, comme le job `image` : une vulnérabilité haute ou critique sans exception valable arrête la publication avant que l'image soit poussée ;
 2. pousse l'image analysée dans le registre de conteneurs de GitHub, `ghcr.io/alebgl77/answerlineage:1.2.3` ;
-3. lui attache son SBOM : une attestation de SBOM de GitHub (`actions/attest`) lie le SBOM à l'empreinte de l'image et se range à côté d'elle dans le registre.
+3. la signe sans clé par son empreinte (cosign, identité OIDC du workflow, journal de transparence public), puis vérifie la signature publiée avec l'identité exacte du workflow ;
+4. lui attache son SBOM et sa provenance (SLSA) : deux attestations de GitHub (`actions/attest`) liées à l'empreinte de l'image et rangées à côté d'elle dans le registre ;
+5. construit les paquets Python de chaque composant et atteste leur provenance ; ils sont gardés avec l'exécution du workflow.
 
-Il ne tourne jamais sur une merge request et ne lit aucun secret : il se sert du jeton du workflow, avec les seules permissions du job (`packages: write` pour pousser, `id-token: write` et `attestations: write` pour signer et enregistrer l'attestation). Ni l'image ni sa provenance ne sont signées.
+Il ne tourne jamais sur une merge request et ne lit aucun secret : il se sert du jeton du workflow, avec les seules permissions de chaque job (`packages: write` pour pousser, `id-token: write` et `attestations: write` pour signer et enregistrer les attestations).
 
-**Vérifier et lire le SBOM d'une image publiée**, avec la ligne de commande GitHub :
-
-```bash
-# L'attestation est authentique et vient de ce dépôt.
-gh attestation verify oci://ghcr.io/alebgl77/answerlineage:1.2.3 \
-  --repo alebgl77/AnswerLineage --predicate-type https://cyclonedx.org/bom
-
-# Le SBOM lui-même, en CycloneDX JSON.
-gh attestation verify oci://ghcr.io/alebgl77/answerlineage:1.2.3 \
-  --repo alebgl77/AnswerLineage --predicate-type https://cyclonedx.org/bom \
-  --format json --jq '.[0].verificationResult.statement.predicate' > sbom.cdx.json
-```
-
-L'attestation désigne l'image par son empreinte : la même commande vaut pour `ghcr.io/alebgl77/answerlineage@sha256:…`. Le SBOM est aussi gardé comme artefact de l'exécution du workflow.
+Vérifier une image ou un paquet publiés, lire le SBOM d'une image, et savoir ce que la vérification prouve : voir [Publication](publication.md).
 
 ## Seuil de couverture
 
@@ -153,9 +143,9 @@ Le contrôle `make policy` (`scripts/check_policy.py`) échoue dès que :
 - un fichier compose publie un port ailleurs que sur la boucle locale, branche un service sur le réseau de l'hôte (directement ou par un réseau externe), tire une image sans empreinte, ou inclut ou étend un fichier absent du dépôt. Tout fichier YAML qui décrit des services compose est contrôlé, quel que soit son nom, fichiers de surcharge compris ;
 - le job `ci-ok` ne dépend pas de tous les autres jobs.
 
-Le jeton du pipeline est en lecture seule. Seul le job `codeql` reçoit `security-events: write`, pour déposer ses résultats. Hors du pipeline des merge requests, le workflow `release` reçoit les permissions de publier, au seul niveau de son job.
+Le jeton du pipeline est en lecture seule. Seul le job `codeql` reçoit `security-events: write`, pour déposer ses résultats. Hors du pipeline des merge requests, le workflow `release` reçoit les permissions de publier, job par job, chacun les seules dont il a besoin.
 
-Les dépendances attendent 7 jours avant d'être adoptées, à deux endroits : `exclude-newer` dans `pyproject.toml` pour `uv lock`, et `minimumReleaseAge` dans `renovate.json`. Avec `internalChecksFilter: strict`, Renovate n'ouvre aucune merge request tant qu'aucune version n'a passé le délai. Renovate maintient aussi les empreintes des actions et des images des outils : gitleaks, Syft et Grype.
+Les dépendances attendent 7 jours avant d'être adoptées, à deux endroits : `exclude-newer` dans `pyproject.toml` pour `uv lock`, et `minimumReleaseAge` dans `renovate.json`. Avec `internalChecksFilter: strict`, Renovate n'ouvre aucune merge request tant qu'aucune version n'a passé le délai. Renovate maintient aussi les empreintes des actions et des images des outils : gitleaks, Syft, Grype, cosign et le registre éphémère de la signature éprouvée.
 
 ## Agents de code
 

@@ -53,7 +53,7 @@ secrets: ## Détection de secrets sur tout l'historique (gitleaks, Docker requis
 	scripts/gitleaks.sh selftest
 	scripts/gitleaks.sh scan
 
-image: ## Construit l'image, produit son SBOM et l'analyse : hautes et critiques bloquantes (Docker requis)
+image: ## Construit l'image, produit son SBOM, éprouve sa signature et l'analyse : hautes et critiques bloquantes (Docker requis)
 	scripts/image.sh
 
 ui: ## Construit l'explorateur dans ui/dist (Node requis)

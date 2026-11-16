@@ -1,12 +1,14 @@
 name: release
 
 # Publier est l'acte du mainteneur : il pose l'étiquette de version (v1.2.3).
-# Ce workflow ne tourne jamais sur une merge request.
+# Ce workflow ne tourne jamais sur une merge request et ne lit aucun secret : il
+# signe et atteste par l'identité OIDC du workflow, et pousse avec son jeton
+# éphémère.
 on:
   push:
     tags: ["v*"]
 
-# Lecture seule par défaut : le job déclare ce dont il a besoin en plus.
+# Lecture seule par défaut : chaque job déclare ce dont il a besoin en plus.
 permissions:
   contents: read
 
@@ -20,20 +22,21 @@ defaults:
 
 env:
   REGISTRY: ghcr.io
+  UV_VERSION: "0.11.32"
 
 jobs:
   # Construit, inventorie et analyse avec les mêmes sous-commandes que le job
   # image de ci.yml ; une vulnérabilité haute ou critique sans exception
   # valable arrête la publication avant que l'image soit poussée.
   publish:
-    name: Publie l'image et son SBOM
+    name: Publie l'image, signée, avec son SBOM et sa provenance
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
-      # Pousse l'image et l'attestation de son SBOM dans le registre de conteneurs de GitHub.
+      # Pousse l'image, sa signature et ses attestations dans le registre de conteneurs de GitHub.
       packages: write
-      # Signe l'attestation du SBOM avec un certificat Sigstore éphémère, puis l'enregistre.
+      # Signe l'image et ses attestations avec des certificats Sigstore éphémères, puis les enregistre.
       id-token: write
       attestations: write
     steps:
@@ -84,17 +87,18 @@ jobs:
           TOKEN: ${{ github.token }}
         run: |
           printf '%s' "$TOKEN" | docker login "$REGISTRY" --username "$GITHUB_ACTOR" --password-stdin
-          docker push "$IMAGE" | tee "$RUNNER_TEMP/push.log"
-          digest=$(grep --only-matching --extended-regexp 'digest: sha256:[0-9a-f]{64}' "$RUNNER_TEMP/push.log" \
-            | tail -n 1 | cut -d ' ' -f 2)
-          if [ -z "$digest" ]; then
-            echo "Empreinte de l'image poussée introuvable dans la sortie de docker push."
-            exit 1
-          fi
+          digest=$(scripts/image.sh push "$IMAGE")
           echo "Image poussée : ${IMAGE%:*}@$digest"
           echo "digest=$digest" >>"$GITHUB_OUTPUT"
-      # L'attestation lie le SBOM à l'empreinte de l'image et se range à côté
-      # d'elle dans le registre : qui tire l'image retrouve son SBOM.
+      # Signature sans clé, par l'empreinte : l'identité du certificat est ce
+      # workflow à cette étiquette, et la signature entre au journal de
+      # transparence public. La sous-commande la vérifie aussitôt publiée.
+      - name: Signe l'image par son empreinte (cosign, sans clé)
+        env:
+          SUBJECT: ${{ steps.version.outputs.name }}@${{ steps.push.outputs.digest }}
+        run: scripts/image.sh sign "$SUBJECT"
+      # Les attestations lient le SBOM et la provenance à l'empreinte de l'image
+      # et se rangent à côté d'elle dans le registre : qui tire l'image les retrouve.
       - name: Attache le SBOM à l'image
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
@@ -104,6 +108,48 @@ jobs:
           push-to-registry: true
           # Les enregistrements de stockage ne valent que pour un dépôt d'organisation.
           create-storage-record: false
+      - name: Attache sa provenance à l'image (SLSA)
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.version.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
       - name: Oublie l'identifiant du registre
         if: ${{ always() }}
         run: docker logout "$REGISTRY"
+
+  packages:
+    name: Construit les paquets Python et atteste leur provenance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Signe l'attestation de provenance avec un certificat Sigstore éphémère, puis l'enregistre.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Construit les paquets de chaque composant
+        # Sans les sources de l'espace de travail : chaque paquet se construit
+        # comme il le serait depuis PyPI.
+        run: uv build --all-packages --no-sources --out-dir dist
+      - name: Atteste leur provenance (SLSA)
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+      - name: Garde les paquets avec l'exécution
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: paquets-${{ github.ref_name }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error

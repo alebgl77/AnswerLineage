@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
-# Image d'AnswerLineage : construction, inventaire des composants (SBOM) et
-# analyse de vulnérabilités. Le pipeline de chaque merge request et celui de
-# publication d'une version enchaînent les mêmes sous-commandes.
+# Image d'AnswerLineage : construction, inventaire des composants (SBOM),
+# analyse de vulnérabilités et signature. Le pipeline de chaque merge request
+# et celui de publication d'une version enchaînent les mêmes sous-commandes.
 #
-#   scripts/image.sh            tout, dans l'ordre : build, sbom, selftest, scan
+#   scripts/image.sh            tout, dans l'ordre : build, sbom, selftest, signtest, scan
 #   scripts/image.sh build      construit l'image de deploy/Dockerfile et l'exporte en archive
 #   scripts/image.sh sbom       inventorie ses composants avec Syft, en CycloneDX JSON
 #   scripts/image.sh selftest   vérifie que l'analyse bloque une vulnérabilité critique connue
+#   scripts/image.sh signtest   éprouve la signature, sans réseau public : l'image signée se
+#                               vérifie, une image modifiée sous la même étiquette ne se vérifie pas
 #   scripts/image.sh scan       analyse le SBOM avec Grype : une vulnérabilité haute ou
 #                               critique sans exception valable fait échouer la commande
 #
-# Syft et Grype tournent depuis leurs images, épinglées par empreinte, sans
-# accès au démon Docker : l'image leur est passée en archive, en lecture seule.
-# Syft tourne sans réseau ; Grype télécharge sa base de vulnérabilités à chaque
-# exécution. Les exceptions se déclarent, avec leur motif et leur date de
-# revue, dans vulnerability-exceptions.toml.
+# À la publication d'une version seulement :
+#
+#   scripts/image.sh push NOM:ÉTIQUETTE      pousse l'image et écrit son empreinte
+#   scripts/image.sh sign NOM@sha256:…       la signe sans clé, puis vérifie la signature
+#                                            avec l'identité exacte du workflow
+#
+# Syft, Grype et cosign tournent depuis leurs images, épinglées par empreinte,
+# sans privilège ni accès au démon Docker : l'image leur est passée en archive,
+# en lecture seule, ou par un registre. Syft tourne sans réseau ; Grype
+# télécharge sa base de vulnérabilités à chaque exécution. Les exceptions se
+# déclarent, avec leur motif et leur date de revue, dans
+# vulnerability-exceptions.toml.
 #
 # IMAGE (le nom local de l'image), IMAGE_VERSION (la version inscrite dans le
 # SBOM) et IMAGE_OUT (le dossier des résultats) se règlent par l'environnement.
@@ -24,6 +33,11 @@ cd "$(dirname "$0")/.."
 
 SYFT_IMAGE="ghcr.io/anchore/syft:v1.57.0@sha256:3c70e6d5979364cefdc22b51617a78fd264574d3bd6b4f84a351204147025e2a"
 GRYPE_IMAGE="ghcr.io/anchore/grype:v0.121.2@sha256:6a36234da13f9faa327306ac0b3dab3405cfa2b4eb20c8f904125a8707863913"
+COSIGN_IMAGE="ghcr.io/sigstore/cosign/cosign:v3.1.4@sha256:0f06154836d2de34f887a5c273506d52ca43edaa1d9e53e6510fa78a48f69c2d"
+# Registre éphémère de signtest.
+REGISTRY_IMAGE="public.ecr.aws/docker/library/registry:3.1.1@sha256:325b4b29b041e82803abeb703e201655e4e23ab83264ec1a7c9ddb0a5b14a6e0"
+# Émetteur des jetons OIDC des workflows GitHub : l'identité d'une signature sans clé.
+GITHUB_OIDC_ISSUER="https://token.actions.githubusercontent.com"
 
 IMAGE=${IMAGE:-answerlineage:local}
 IMAGE_VERSION=${IMAGE_VERSION:-local}
@@ -33,8 +47,23 @@ ARCHIVE="$OUT/image.tar"
 SBOM="$OUT/sbom.cdx.json"
 REPORT="$OUT/grype.json"
 EXCEPTIONS=vulnerability-exceptions.toml
-# Dossier du canari : hors de la fonction, pour que le nettoyage à la sortie le retrouve.
+
+# Ressources temporaires : hors des fonctions, pour que le nettoyage à la sortie
+# les retrouve, et retirées quoi qu'il arrive, sans changer le code de sortie.
 CANARY_DIR=""
+WORK_DIR=""
+REGISTRY_CONTAINER=""
+SIGN_NETWORK=""
+SIGN_TAG=""
+
+cleanup() {
+  if [ -n "$SIGN_TAG" ]; then docker image rm "$SIGN_TAG" >/dev/null 2>&1 || true; fi
+  if [ -n "$REGISTRY_CONTAINER" ]; then docker rm --force "$REGISTRY_CONTAINER" >/dev/null 2>&1 || true; fi
+  if [ -n "$SIGN_NETWORK" ]; then docker network rm "$SIGN_NETWORK" >/dev/null 2>&1 || true; fi
+  if [ -n "$CANARY_DIR" ]; then rm -rf "$CANARY_DIR" || true; fi
+  if [ -n "$WORK_DIR" ]; then rm -rf "$WORK_DIR" || true; fi
+}
+trap cleanup EXIT
 
 fail() {
   echo "ÉCHEC : $1" >&2
@@ -62,6 +91,13 @@ tool() {
 grype() {
   tool --env GRYPE_CHECK_FOR_APP_UPDATE=false --env GRYPE_DB_CACHE_DIR=/tmp/grype-db \
     --volume "$1:/sbom.json:ro" "$GRYPE_IMAGE" sbom:/sbom.json --output json
+}
+
+# cosign tourne sous l'utilisateur du poste ; son seul dossier inscriptible est
+# WORK_DIR, où il trouve ses clés et range son cache. Les options de docker run
+# précèdent l'image, ses propres arguments la suivent.
+cosign() {
+  tool --user "$(id -u):$(id -g)" --env HOME=/work --volume "$WORK_DIR:/work" --workdir /work "$@"
 }
 
 build() {
@@ -108,7 +144,6 @@ PYTHON
 selftest() {
   local workdir status=0
   CANARY_DIR=$(mktemp -d)
-  trap 'rm -rf "$CANARY_DIR"' EXIT
   workdir=$CANARY_DIR
   cat >"$workdir/sbom.cdx.json" <<'JSON'
 {
@@ -146,16 +181,142 @@ scan() {
   python3 -m scripts.check_vulnerabilities report "$REPORT" --exceptions "$EXCEPTIONS"
 }
 
+# Pousse une image et écrit sur la sortie standard l'empreinte que le registre
+# lui a donnée : c'est elle, jamais l'étiquette, qui se signe et s'atteste.
+push() {
+  local reference=$1 output digest
+  output=$(docker push "$reference") || fail "l'image $reference ne se pousse pas"
+  printf '%s\n' "$output" >&2
+  digest=$(printf '%s\n' "$output" | grep --only-matching --extended-regexp 'digest: sha256:[0-9a-f]{64}' \
+    | tail -n 1 | cut -d ' ' -f 2)
+  [ -n "$digest" ] || fail "empreinte de l'image poussée introuvable dans la sortie de docker push"
+  echo "$digest"
+}
+
+# Ce que cosign verify répond quand l'image n'a aucune signature, et quand
+# aucune de ses signatures ne vient de la clé attendue.
+UNSIGNED="no signatures found"
+FOREIGN="no matching (signatures|attestations)"
+
+# Une vérification refusée ne prouve quelque chose que si elle l'est pour la
+# bonne raison : un registre injoignable la ferait échouer aussi.
+expect_refused() {
+  local reason=$1 expected=$2 reference=$3 status=0
+  cosign --network "$SIGN_NETWORK" "$COSIGN_IMAGE" verify --key projet.pub \
+    --insecure-ignore-tlog=true --allow-http-registry "$reference" >"$WORK_DIR/verify.log" 2>&1 \
+    || status=$?
+  if [ "$status" -eq 0 ]; then
+    cat "$WORK_DIR/verify.log" >&2
+    fail "$reason passe la vérification : la signature ne protège rien."
+  fi
+  if ! grep --quiet --extended-regexp "$expected" "$WORK_DIR/verify.log"; then
+    cat "$WORK_DIR/verify.log" >&2
+    fail "$reason est refusée pour une autre raison que « $expected » (code $status) : le contrôle ne prouve rien."
+  fi
+}
+
+# La signature éprouvée à chaque merge request, sans réseau public : un registre
+# éphémère, une paire de clés jetable, l'image signée par son empreinte puis
+# vérifiée ; puis une image modifiée poussée sous la même étiquette, sans
+# signature puis signée par une autre clé, ne doit jamais se vérifier. cosign
+# n'a pour réseau qu'un réseau interne où le registre est la seule machine
+# joignable, et sa configuration de signature ne nomme aucun journal de
+# transparence : aucune signature n'en sort.
+signtest() {
+  local address digest modified attempt inside="registre:5000/answerlineage"
+  docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE absente : lancer d'abord « $0 build »"
+  WORK_DIR=$(mktemp -d)
+  SIGN_NETWORK="answerlineage-signature-$$-$RANDOM"
+  docker network create --internal "$SIGN_NETWORK" >/dev/null
+  # Le registre écoute sur un port libre de la boucle locale, pour le démon
+  # Docker qui y pousse, et sur le réseau interne, pour cosign.
+  REGISTRY_CONTAINER=$(retry tool --detach --publish 127.0.0.1::5000 "$REGISTRY_IMAGE") \
+    || fail "le registre éphémère ne démarre pas"
+  docker network connect --alias registre "$SIGN_NETWORK" "$REGISTRY_CONTAINER"
+  address=$(docker port "$REGISTRY_CONTAINER" 5000/tcp | head -n 1)
+  for attempt in $(seq 1 50); do
+    curl --silent --fail --max-time 2 "http://$address/v2/" >/dev/null && break
+    [ "$attempt" -lt 50 ] || fail "le registre éphémère ne répond pas sur $address"
+    sleep 0.2
+  done
+
+  SIGN_TAG="$address/answerlineage:signature"
+  docker tag "$IMAGE" "$SIGN_TAG"
+  digest=$(push "$SIGN_TAG")
+  echo "Image poussée dans le registre éphémère : $digest."
+
+  cosign --network none --env COSIGN_PASSWORD= "$COSIGN_IMAGE" \
+    generate-key-pair --output-key-prefix projet >/dev/null
+  cosign --network none --env COSIGN_PASSWORD= "$COSIGN_IMAGE" \
+    generate-key-pair --output-key-prefix intrus >/dev/null
+  cosign --network none "$COSIGN_IMAGE" signing-config create --out sans-journal.json
+  cosign --network "$SIGN_NETWORK" --env COSIGN_PASSWORD= "$COSIGN_IMAGE" sign --yes \
+    --key projet.key --signing-config sans-journal.json --allow-http-registry "$inside@$digest" \
+    || fail "l'image ne se signe pas"
+  cosign --network "$SIGN_NETWORK" "$COSIGN_IMAGE" verify --key projet.pub \
+    --insecure-ignore-tlog=true --allow-http-registry "$inside:signature" >/dev/null \
+    || fail "l'image signée ne se vérifie pas"
+  echo "Image signée par son empreinte, puis vérifiée par son étiquette avec la clé publique."
+
+  # Une autre image sous la même étiquette : l'image publiée, une couche de plus.
+  local container
+  container=$(docker create "$IMAGE")
+  docker commit --change "LABEL org.opencontainers.image.description=modifiee" "$container" "$SIGN_TAG" >/dev/null
+  docker rm "$container" >/dev/null
+  modified=$(push "$SIGN_TAG")
+  [ "$modified" != "$digest" ] || fail "l'image modifiée a la même empreinte que l'image signée"
+  expect_refused "l'image modifiée" "$UNSIGNED" "$inside:signature"
+  echo "Image modifiée sous la même étiquette : refusée, elle n'a pas de signature."
+
+  cosign --network "$SIGN_NETWORK" --env COSIGN_PASSWORD= "$COSIGN_IMAGE" sign --yes \
+    --key intrus.key --signing-config sans-journal.json --allow-http-registry "$inside@$modified" \
+    || fail "l'image modifiée ne se signe pas avec l'autre clé"
+  expect_refused "l'image modifiée et signée par une autre clé" "$FOREIGN" "$inside:signature"
+  echo "Image modifiée et signée par une autre clé : refusée, aucune signature ne vient de la clé du projet."
+}
+
+# Signature sans clé, à la publication : cosign obtient de Fulcio un certificat
+# éphémère pour l'identité OIDC du workflow, signe l'image par son empreinte et
+# inscrit la signature au journal de transparence public (Rekor). La signature
+# publiée est aussitôt vérifiée avec l'identité exacte que l'on donnera à qui
+# installe l'image.
+sign() {
+  local subject=$1 identity config
+  [[ "$subject" =~ ^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+@sha256:[0-9a-f]{64}$ ]] \
+    || fail "une image se signe par son empreinte (nom@sha256:…), jamais par son étiquette"
+  if [ -z "${GITHUB_WORKFLOW_REF:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+    fail "la signature sans clé se fait dans le workflow de publication, avec la permission id-token: write"
+  fi
+  identity="${GITHUB_SERVER_URL:-https://github.com}/$GITHUB_WORKFLOW_REF"
+  config="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+  [ -f "$config" ] || fail "identifiant du registre absent ($config) : docker login d'abord"
+  WORK_DIR=$(mktemp -d)
+  echo "Signature sans clé de $subject ($COSIGN_IMAGE), identité $identity."
+  cosign --env ACTIONS_ID_TOKEN_REQUEST_URL --env ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+    --volume "$config:/docker/config.json:ro" --env DOCKER_CONFIG=/docker \
+    "$COSIGN_IMAGE" sign --yes "$subject" || fail "l'image ne se signe pas"
+  cosign --volume "$config:/docker/config.json:ro" --env DOCKER_CONFIG=/docker \
+    "$COSIGN_IMAGE" verify "$subject" \
+    --certificate-identity "$identity" --certificate-oidc-issuer "$GITHUB_OIDC_ISSUER" >/dev/null \
+    || fail "la signature publiée ne se vérifie pas avec l'identité du workflow"
+  echo "Signature publiée et vérifiée : $subject, signée par $identity."
+}
+
 case "${1:-all}" in
-  build | sbom | selftest | scan) "$1" ;;
+  build | sbom | selftest | signtest | scan) "$1" ;;
+  push | sign)
+    [ $# -eq 2 ] || fail "usage : $0 $1 IMAGE"
+    "$1" "$2"
+    ;;
   all)
     build
     sbom
     selftest
+    signtest
     scan
     ;;
   *)
-    echo "Usage : $0 [all | build | sbom | selftest | scan]" >&2
+    echo "Usage : $0 [all | build | sbom | selftest | signtest | scan | push IMAGE | sign IMAGE@sha256:…]" >&2
     exit 2
     ;;
 esac

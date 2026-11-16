@@ -10,7 +10,7 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Images des outils épinglées par empreinte dans les scripts : gitleaks, Syft, Grype",
+      "description": "Images des outils épinglées par empreinte dans les scripts : gitleaks, Syft, Grype, cosign, registre éphémère",
       "managerFilePatterns": ["/^scripts/(gitleaks|image)\\.sh$/"],
       "matchStrings": [
         "IMAGE=\"(?<depName>[^:\"]+):(?<currentValue>[^@\"]+)@(?<currentDigest>sha256:[a-f0-9]{64})\""

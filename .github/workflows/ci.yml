@@ -93,7 +93,7 @@ jobs:
   # Les mêmes sous-commandes de scripts/image.sh que la publication d'une
   # version (release.yml), qui ne s'essaie qu'à la première étiquette.
   image:
-    name: Image, SBOM et vulnérabilités
+    name: Image, SBOM, vulnérabilités et signature
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -111,6 +111,10 @@ jobs:
         run: scripts/image.sh sbom
       - name: Vérifie que l'analyse bloque une vulnérabilité critique connue
         run: scripts/image.sh selftest
+      # Registre éphémère, clés jetables, aucun journal public : la signature de
+      # la publication s'éprouve sans rien publier.
+      - name: Vérifie qu'une image signée se vérifie et qu'une image modifiée ne passe pas
+        run: scripts/image.sh signtest
       - name: Analyse ses vulnérabilités (Grype), hautes et critiques bloquantes
         run: scripts/image.sh scan
       - name: Garde le SBOM
