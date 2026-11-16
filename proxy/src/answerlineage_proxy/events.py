@@ -37,6 +37,12 @@ TOOL_CALL_FACET_SCHEMA_READ_KEYS = (
     "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-1-0/"
     "ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
 )
+# La version 1-2-0 dit si la requête SQL relayée a reçu le commentaire qui porte
+# l'identifiant de run : la facette ne s'en réclame que lorsqu'elle le dit.
+TOOL_CALL_FACET_SCHEMA_RUN_ID_TAG = (
+    "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-2-0/"
+    "ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
+)
 # Clés lues dans un jeu de données d'entrée, sous leurs empreintes à clé (spec/facets/1-0-0/).
 KEYS_FACET = "answerlineage_keys"
 KEYS_FACET_SCHEMA = (
@@ -109,6 +115,7 @@ def build_tool_call_event(
     signals: CallSignals | None = None,
     declared: DeclaredReads | None = None,
     transport: Transport = "http",
+    tagged_with_run_id: bool | None = None,
 ) -> dict[str, Any]:
     """Construit le RunEvent d'un appel d'outil relayé.
 
@@ -122,7 +129,9 @@ def build_tool_call_event(
     qualité de service. ``declared`` sont les lectures qu'une règle déclare :
     chaque jeu de données porte ses colonnes et les empreintes des clés lues.
     ``transport`` est celui de l'appel relayé : ``http``, ou ``stdio`` pour un
-    serveur lancé par le proxy.
+    serveur lancé par le proxy. ``tagged_with_run_id`` dit, pour un outil dont la
+    requête relayée doit porter l'identifiant de run en commentaire, si elle l'a
+    reçu : un indicateur, jamais la requête.
     """
     facet: dict[str, Any] = {
         "_producer": PRODUCER,
@@ -179,6 +188,9 @@ def build_tool_call_event(
             facet["readKeys"] = declared.key_status
             facet["_schemaURL"] = TOOL_CALL_FACET_SCHEMA_READ_KEYS
         inputs.extend(_declared_input(dataset, declared.keys) for dataset in declared.datasets)
+    if tagged_with_run_id is not None:
+        facet["taggedWithRunId"] = tagged_with_run_id
+        facet["_schemaURL"] = TOOL_CALL_FACET_SCHEMA_RUN_ID_TAG
     run_facets: dict[str, Any] = {TOOL_CALL_FACET: facet}
     if signals is not None:
         run_facets[QOS_FACET] = {

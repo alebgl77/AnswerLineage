@@ -26,7 +26,7 @@ Un UUID version 5 aurait aussi convenu. Il impose SHA-1, qu'on n'emploie plus da
 
 ## Conséquences
 
-- Le proxy n'ajoute un en-tête `traceparent` que pour un appel arrivé sans contexte ; il ne remplace ni ne double jamais un en-tête existant, et ne modifie jamais le corps.
+- Le proxy n'ajoute un en-tête `traceparent` que pour un appel arrivé sans contexte ; il ne remplace ni ne double jamais un en-tête existant, et ne modifie jamais le corps pour porter le contexte. Seule l'option qui écrit l'identifiant de run dans la requête SQL relayée touche au corps ([décision 0015](0015-requete-etiquetee-par-le-run-sur-option.md)).
 - Un client qui réutilise le même span pour deux appels d'outil leur donne le même run : le graphe les fusionne en un seul, qui porte les lectures des deux mais l'outil du premier événement projeté ([limites du proxy](../proxy.md#limites-connues)).
 - Une reprise HTTP garde son run quand le contexte vient de `_meta`. Quand il vient de l'en-tête d'un client qui ouvre un span par tentative, ou quand le proxy le crée, chaque tentative est un run distinct.
 - Sans authentification des émetteurs, un identifiant dérivé n'est pas une preuve d'origine : qui connaît le contexte d'un appel peut émettre un événement pour son run.

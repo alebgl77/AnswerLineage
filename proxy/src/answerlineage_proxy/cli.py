@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import timedelta
 from typing import Any, Final
 
@@ -130,6 +131,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "outil dont l'argument porte une requête SQL à analyser, par exemple "
             "execute_sql=query:bigquery (dialectes : bigquery, snowflake, postgres)"
+        ),
+    )
+    parser.add_argument(
+        "--sql-run-comment",
+        action="append",
+        default=[],
+        metavar="OUTIL",
+        help=(
+            "outil déclaré par --sql-tool dont la requête relayée commence par un commentaire "
+            "qui porte l'identifiant de run ; désactivé par défaut, le proxy sort alors de la "
+            "stricte transparence pour cet outil"
         ),
     )
     parser.add_argument(
@@ -276,6 +288,32 @@ def outbox_settings_from_args(
     )
 
 
+def sql_tools_from_args(args: argparse.Namespace) -> dict[str, SqlTool]:
+    """Les outils SQL déclarés par ``--sql-tool``, et ceux dont la requête relayée porte
+    l'identifiant de run en commentaire (``--sql-run-comment``)."""
+    tools = dict(SqlTool.parse(value) for value in args.sql_tool)
+    for tool in args.sql_run_comment:
+        if tool not in tools:
+            # Le nom n'est pas cité : un message d'erreur ne recopie aucune valeur reçue.
+            raise ProxyConfigurationError(
+                "--sql-run-comment nomme un outil que --sql-tool ne déclare pas."
+            )
+        tools[tool] = replace(tools[tool], run_comment=True)
+    return tools
+
+
+def log_run_comments(tools: Mapping[str, SqlTool]) -> None:
+    """Dit au démarrage pour quels outils le proxy modifie la requête relayée."""
+    for tool in sorted(name for name, rule in tools.items() if rule.run_comment):
+        # Un nom d'outil validé, jamais une valeur reçue.
+        logger.warning(
+            "Les requêtes de l'outil « %s » commencent, une fois relayées, par un commentaire "
+            "qui porte l'identifiant de run : le proxy n'est plus strictement transparent "
+            "pour cet outil.",
+            tool,
+        )
+
+
 def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str]) -> ProxySettings:
     args = build_parser().parse_args(argv)
     upstream = args.upstream or environment.get(ENV_UPSTREAM)
@@ -296,7 +334,7 @@ def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str
         port=port,
         preserve_host=not args.no_preserve_host,
         max_inspected_bytes=args.max_inspected_bytes,
-        sql_tools=dict(SqlTool.parse(value) for value in args.sql_tool),
+        sql_tools=sql_tools_from_args(args),
         allowed_hosts=args.allow_host or listed(environment.get(ENV_ALLOWED_HOSTS)),
         allowed_origins=args.allow_origin or listed(environment.get(ENV_ALLOWED_ORIGINS)),
         sql_budget_ms=(
@@ -390,6 +428,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if settings.read_rules:
         logger.info("Règles de lecture : %d outils décrits.", len(settings.read_rules))
+    log_run_comments(settings.sql_tools)
     proxy = McpProxy(settings, event_sink(outbox), coverage_window=coverage_window)
     log_instance(proxy.instance)
     uvicorn.run(

@@ -19,10 +19,12 @@ Sur le chemin de l'appel, le relais ne fait que prendre des horodatages et
 garder une copie bornée de la réponse : latence, latence ajoutée, issue et
 reprises se calculent après l'échange (``signals.py``).
 
-Seule exception à la transparence : un appel d'outil qui ne porte aucun
-contexte de trace W3C reçoit celui que le proxy crée, dans un en-tête
-``traceparent`` ajouté à la requête relayée, sauf si son corps est trop grand
-pour être lu en entier. Le corps n'est jamais modifié.
+Exception à la transparence : un appel d'outil qui ne porte aucun contexte de
+trace W3C reçoit celui que le proxy crée, dans un en-tête ``traceparent`` ajouté
+à la requête relayée, sauf si son corps est trop grand pour être lu en entier.
+Le corps n'est modifié que sur option, pour un outil SQL déclaré
+(``--sql-run-comment``) : sa requête commence alors par un commentaire qui porte
+l'identifiant de run (``tagging.py``), et rien d'autre du corps ne change.
 """
 
 from __future__ import annotations
@@ -77,6 +79,7 @@ from answerlineage_proxy.signals import (
 )
 from answerlineage_proxy.sink import DeferredSink, EventSink, receipt
 from answerlineage_proxy.sql import SqlAnalysis
+from answerlineage_proxy.tagging import comment_query
 from answerlineage_proxy.tracecontext import TRACEPARENT, CallTrace, resolve_trace
 
 Scope = MutableMapping[str, Any]
@@ -108,6 +111,23 @@ _INSPECTED_HEADERS = frozenset(
 _TRACEPARENT = TRACEPARENT.encode("ascii")
 # Session MCP (révision 2025-11-25) : lue pour reconnaître une reprise, jamais conservée.
 _SESSION = b"mcp-session-id"
+_CONTENT_LENGTH = b"content-length"
+# En-têtes qu'un corps modifié démentirait : un codage du contenu que le proxy ne déploie
+# pas, une empreinte ou une signature du message (RFC 9530, RFC 9421). Une requête qui en
+# porte un n'est pas étiquetée ; seul le nom de l'en-tête est regardé.
+_BODY_BOUND = frozenset(
+    {
+        b"content-encoding",
+        b"content-digest",
+        b"repr-digest",
+        b"digest",
+        b"content-md5",
+        b"signature",
+        b"signature-input",
+    }
+)
+# En-têtes qui recopient des arguments d'outil, que le serveur peut comparer au corps.
+_PARAM_HEADERS = b"mcp-param-"
 _BAD_GATEWAY_BODY = b'{"error":"upstream_unreachable"}'
 _BAD_REQUEST_BODY = b'{"error":"invalid_request_target"}'
 _FORBIDDEN_BODIES = {
@@ -195,6 +215,11 @@ class ProxyStats:
     unmatched_calls: int = 0
     unidentified_replies: int = 0
     lagged_bytes: int = 0
+    # Outils dont la requête relayée porte l'identifiant de run en commentaire : appels dont
+    # la requête l'a reçu ; appels relayés sans lui, et, l'option active, requêtes qui n'ont
+    # pas pu être lues sans ambiguïté et qui pouvaient en cacher un.
+    tagged_queries: int = 0
+    untagged_queries: int = 0
 
 
 @dataclass
@@ -224,6 +249,8 @@ class _Exchange:
     sessions: list[bytes] = field(default_factory=list, repr=False)
     # Erreur JSON-RPC et son code, quand le relais a lu lui-même la réponse entière (stdio).
     reply_error: tuple[bool, int | None] = (False, None)
+    # Outil dont la requête relayée porte l'identifiant de run en commentaire : l'a-t-elle reçu ?
+    query_tagged: bool | None = None
 
 
 def _now() -> datetime:
@@ -311,6 +338,10 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
             self._deferred.watch(self._settled)
         self._clock = clock
         self._sql_arguments = {tool: rule.argument for tool, rule in settings.sql_tools.items()}
+        # Outils SQL dont la requête relayée commence par le commentaire de son run.
+        self._commented = frozenset(
+            tool for tool, rule in settings.sql_tools.items() if rule.run_comment
+        )
         # Chaînes de reprises en cours, en mémoire bornée.
         self.retries = retries if retries is not None else RetryMemory()
         # Outils sans règle de lecture déjà journalisés, des noms validés seulement.
@@ -358,12 +389,19 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
             report_periodically(self.coverage, self._clock, self._report)
         )
 
-    def _inspected(self, inspection: Inspection | None) -> None:
+    def _inspected(self, inspection: Inspection | None, *, untagged: bool = True) -> None:
         """Compte une requête que le proxy n'a pas pu lire sans ambiguïté ; journalise un
-        écart entre les en-têtes MCP et le corps, par le nom des en-têtes seulement."""
+        écart entre les en-têtes MCP et le corps, par le nom des en-têtes seulement.
+
+        Quand un outil reçoit le commentaire de son run, une telle requête est aussi
+        comptée parmi les non étiquetées : elle pouvait en cacher un appel. ``untagged``
+        est faux pour un appel dont l'étiquetage est déjà compté.
+        """
         if inspection is None:
             self.stats.uninspected += 1
             self.coverage.uninspected(self._clock())
+            if untagged and self._commented:
+                self.stats.untagged_queries += 1
         elif inspection.header_mismatches:
             self.stats.header_mismatches += 1
             # Seuls les noms des en-têtes sont journalisés, jamais leur valeur.
@@ -371,6 +409,13 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
                 "En-têtes MCP contredits par le corps de la requête : %s",
                 ", ".join(inspection.header_mismatches),
             )
+
+    def _tagged(self, tagged: bool) -> None:
+        """Compte un appel d'un outil à commentaire, selon que sa requête l'a reçu."""
+        if tagged:
+            self.stats.tagged_queries += 1
+        else:
+            self.stats.untagged_queries += 1
 
     @abstractmethod
     def _assess(self, exchange: _Exchange) -> tuple[CallOutcome, int | None]:
@@ -555,6 +600,7 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
                 trace=trace,
                 dialect=dialect,
                 transport=self.transport,
+                tagged_with_run_id=exchange.query_tagged,
                 **details,
             )
             if self._deferred is not None:
@@ -716,12 +762,49 @@ class McpProxy(CallCapture[ProxySettings]):
             elif exchange.trace.forwarded is not None:
                 # Seul en-tête que le proxy ajoute : le contexte qu'il a créé, transmis au serveur.
                 relayed = [*headers, (_TRACEPARENT, exchange.trace.forwarded.encode("ascii"))]
+            tool = inspection.tool
+            if tool is not None and tool in self._commented:
+                # Un corps qui n'a pas été lu en entier n'est jamais modifié.
+                tagged = None if oversized else self._comment(body, relayed, tool, exchange.trace)
+                exchange.query_tagged = tagged is not None
+                self._tagged(exchange.query_tagged)
+                if tagged is not None:
+                    body, relayed = tagged
         try:
             await self._exchange(scope, relayed, body, stream, upload_done, receive, send, exchange)
         finally:
             timing.finish()
             if inspection is not None and inspection.is_tool_call:
                 self._describe(inspection, exchange, oversized=oversized)
+
+    def _comment(
+        self, body: bytes, headers: list[Header], tool: str, trace: CallTrace
+    ) -> tuple[bytes, list[Header]] | None:
+        """Le corps et les en-têtes relayés quand la requête SQL commence par le commentaire
+        qui porte l'identifiant de run ; ``None`` quand elle ne peut pas le recevoir.
+
+        Seule la chaîne de la requête change, et la longueur du corps avec elle. Un corps
+        que des en-têtes lient (codage du contenu, empreinte, signature, arguments
+        recopiés) est relayé tel quel. La requête analysée reste celle que l'agent a
+        envoyée.
+        """
+        if any(
+            name.lower() in _BODY_BOUND or name.lower().startswith(_PARAM_HEADERS)
+            for name, _ in headers
+        ):
+            return None
+        try:
+            tagged = comment_query(body, self.settings.sql_tools[tool].argument, trace.run_id)
+        except Exception as error:
+            # L'étiquetage ne fait jamais échouer un appel : la requête part telle quelle.
+            logger.error("Requête relayée sans son commentaire (%s).", type(error).__name__)
+            return None
+        if not isinstance(tagged, bytes):
+            return None
+        length = str(len(tagged)).encode("ascii")
+        return tagged, [
+            (name, length if name.lower() == _CONTENT_LENGTH else value) for name, value in headers
+        ]
 
     def _inspect(
         self, method: str, headers: list[Header], body: bytes, oversized: bool

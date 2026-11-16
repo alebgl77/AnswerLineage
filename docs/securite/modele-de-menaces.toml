@@ -320,6 +320,39 @@ code = "proxy/src/answerlineage_proxy/app.py"
 test = "proxy/tests/test_relay.py::test_a_dot_segment_cannot_leave_the_prefix_of_the_mcp_server"
 
 [[threat]]
+id = "proxy/requete-relayee-alteree"
+name = "La requête relayée est altérée par l'étiquetage de son run"
+category = "tampering"
+boundary = "agent-proxy-mcp"
+assets = ["contenus", "continuite-des-agents"]
+description = "Sur option, le proxy écrit l'identifiant de run en commentaire dans la requête SQL relayée. Une écriture fautive changerait ce que le serveur exécute : un contexte de trace piégé qui fermerait le commentaire pour injecter du SQL, un corps resérialisé que le serveur lirait autrement, une longueur fausse, un corps compressé, signé ou ambigu modifié à l'aveugle."
+
+[[threat.mitigation]]
+description = "Seule la chaîne de la requête change, par un commentaire inséré à sa place : le reste du corps est recopié à l'octet près, et la longueur suit."
+code = "proxy/src/answerlineage_proxy/tagging.py::comment_query"
+test = "proxy/tests/test_tagging_relay.py::test_only_the_comment_of_the_run_differs_in_what_the_server_receives"
+
+[[threat.mitigation]]
+description = "Le commentaire vient d'un gabarit fixe où n'entre que l'identifiant de run, de forme canonique vérifiée : un contexte de trace piégé n'atteint pas la requête."
+code = "proxy/src/answerlineage_proxy/warehouse.py::WarehouseTags"
+test = "proxy/tests/test_tagging_relay.py::test_a_trapped_trace_context_never_reaches_the_query"
+
+[[threat.mitigation]]
+description = "Un corps ambigu, compressé, trop grand, ou lié par un en-tête d'empreinte, de signature ou d'argument recopié, part tel quel et se compte."
+code = "proxy/src/answerlineage_proxy/app.py"
+test = "proxy/tests/test_tagging_relay.py::test_a_body_that_cannot_be_tagged_with_certainty_is_relayed_untouched_and_counted"
+
+[[threat.mitigation]]
+description = "En stdio, seule une ligne entière lue sans ambiguïté est étiquetée ; le reste passe tel quel."
+code = "proxy/src/answerlineage_proxy/stdio.py"
+test = "proxy/tests/test_tagging_relay.py::test_in_stdio_what_cannot_be_tagged_with_certainty_passes_untouched_and_is_counted"
+
+[[threat.mitigation]]
+description = "L'option est désactivée par défaut, nommée outil par outil, et un outil qu'elle ne nomme pas n'est jamais touché."
+code = "proxy/src/answerlineage_proxy/cli.py::sql_tools_from_args"
+test = "proxy/tests/test_tagging_relay.py::test_a_tool_without_the_option_is_never_touched"
+
+[[threat]]
 id = "proxy/nom-piege"
 name = "Un nom piégé entre dans l'événement"
 category = "tampering"

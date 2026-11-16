@@ -209,6 +209,9 @@ class SqlTool:
     namespace: str
     default_catalog: str | None = None
     default_db: str | None = None
+    # La requête relayée commence par un commentaire qui porte l'identifiant de run
+    # (``--sql-run-comment``) : le proxy sort de la stricte transparence pour cet outil.
+    run_comment: bool = False
 
     def __post_init__(self) -> None:
         if not _ARGUMENT_NAME.fullmatch(self.argument):

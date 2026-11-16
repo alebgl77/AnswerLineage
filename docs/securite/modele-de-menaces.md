@@ -79,6 +79,7 @@ Le détail de chaque menace, son scénario, ses parades avec leur code et leur t
 | `proxy/agent-retarde` | La capture retarde ou bloque un appel d'agent | Déni de service | 4 parades |
 | `proxy/entree-demesuree` | Une entrée démesurée épuise la mémoire ou le temps du proxy | Déni de service | 4 parades |
 | `proxy/sortie-du-prefixe` | Une requête sort du préfixe du serveur MCP | Élévation de privilège | 1 parade |
+| `proxy/requete-relayee-alteree` | La requête relayée est altérée par l'étiquetage de son run | Altération | 5 parades |
 | `proxy/nom-piege` | Un nom piégé entre dans l'événement | Altération | 2 parades |
 | `proxy/lecture-omise` | L'analyse du SQL omet une colonne lue | Altération | 2 parades |
 | `proxy/regle-de-lecture-trompee` | Un outil non SQL lit autre chose que ce que sa règle de lecture déclare | Altération | 1 parade, acceptation à signer |

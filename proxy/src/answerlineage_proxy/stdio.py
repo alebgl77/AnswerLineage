@@ -20,7 +20,12 @@ devinés, et le relais n'est pas freiné.
 En stdio, il n'y a ni en-têtes, ni statut HTTP, ni rien qui écoute sur le
 réseau : pas de contrôle Host ni Origin. Le contexte de trace se lit dans
 ``params._meta.traceparent`` du message ; à défaut, le proxy en crée un, qui ne
-sert qu'à l'identifiant de run : un message n'est jamais modifié.
+sert qu'à l'identifiant de run. Un message n'est modifié que sur option, pour un
+outil SQL déclaré (``--sql-run-comment``) : le fil du client rassemble alors
+chaque ligne avant de l'écrire, et la requête SQL d'un appel de cet outil
+commence par un commentaire qui porte l'identifiant de run (``tagging.py``).
+L'inspection reçoit la ligne d'origine, avec ce que le relais a décidé : le
+contexte de trace dont le run dérive, et si la requête a reçu son commentaire.
 
 Aucun argument, résultat, identifiant de requête, ni la commande lancée, n'est
 conservé ni journalisé. POSIX seulement.
@@ -59,7 +64,6 @@ from answerlineage_proxy.config import (
     ENV_SQL_CACHE_SIZE,
     ENV_SQL_QUEUE_SIZE,
     ProxyConfigurationError,
-    SqlTool,
     StdioSettings,
     fingerprint_key,
     integer,
@@ -84,6 +88,7 @@ from answerlineage_proxy.signals import (
     reply_error,
 )
 from answerlineage_proxy.sink import EventSink
+from answerlineage_proxy.tagging import comment_query
 from answerlineage_proxy.tracecontext import CallTrace, resolve_trace
 
 logger = logging.getLogger("answerlineage_proxy")
@@ -110,6 +115,10 @@ PENDING_REQUESTS: Final = 1024
 PENDING_BYTES: Final = 32 * 1024 * 1024
 
 CANCELLED: Final = "notifications/cancelled"
+# Une ligne qui ne contient pas ces octets n'est pas lue par le relais pour être étiquetée :
+# un appel d'outil dont la méthode est écrite avec des échappements part tel quel, et
+# l'inspection le compte comme non étiqueté.
+_TOOLS_CALL: Final = b"tools/call"
 
 Direction = Literal["client", "server"]
 _CLIENT: Final[Direction] = "client"
@@ -133,13 +142,24 @@ class _Stamp:
         self.written_at: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _Mark:
+    """Ce que le relais a décidé d'un appel d'un outil à commentaire, avant de l'écrire : le
+    contexte de trace dont son run dérive, et si sa requête a reçu le commentaire."""
+
+    trace: CallTrace
+    tagged: bool
+
+
 @dataclass(slots=True)
 class _Copy:
-    """Copie d'un morceau relayé, remise à l'inspection."""
+    """Copie d'un morceau relayé, remise à l'inspection. Un morceau marqué est une ligne
+    entière : l'appel d'un outil à commentaire, tel que le client l'a écrit."""
 
     direction: Direction
     data: bytes
     stamp: _Stamp
+    mark: _Mark | None = None
 
 
 @dataclass(slots=True)
@@ -179,11 +199,13 @@ class _Backlog:
         self._signaled = False
         self._closed = False
 
-    def offer(self, direction: Direction, data: bytes, stamp: _Stamp) -> None:
+    def offer(
+        self, direction: Direction, data: bytes, stamp: _Stamp, mark: _Mark | None = None
+    ) -> None:
         with self._lock:
             cost = len(data) + _ITEM_BYTES
             if self._size + cost <= self._limit:
-                self._items.append(_Copy(direction, data, stamp))
+                self._items.append(_Copy(direction, data, stamp, mark))
                 self._size += cost
                 self._gaps.pop(direction, None)
             else:
@@ -230,6 +252,72 @@ class _Line:
     # Morceaux dont l'écriture n'était pas encore prête à l'inspection : comptés plus tard.
     unsettled: tuple[_Stamp, ...]
     digest: Digest | None = field(repr=False)
+    # Ce que le relais a décidé de l'appel d'un outil à commentaire, avant de l'écrire.
+    mark: _Mark | None = None
+
+
+Piece = tuple[bytes, bytes, _Mark | None]
+
+
+class _Commenter:
+    """Rassemble en lignes ce que le client écrit, pour étiqueter la requête SQL d'un appel
+    d'outil avant de la relayer.
+
+    Ne sert que lorsqu'un outil reçoit le commentaire de son run : une ligne n'est alors
+    écrite au serveur qu'entière, ce que le serveur attend de toute façon pour la lire.
+    Une ligne plus longue que ``limit`` passe au fil de l'eau, telle quelle : seul son
+    début est lu, et sa requête n'est pas étiquetée. La mémoire tient dans ``limit``
+    octets, plus un morceau lu.
+    """
+
+    def __init__(self, limit: int, decide: Callable[[bytes], tuple[bytes, _Mark | None]]) -> None:
+        self._limit = limit
+        self._decide = decide
+        self._line = bytearray()
+        self._passing = False
+
+    def feed(self, data: bytes) -> list[Piece]:
+        """Ce que ``data`` permet de relayer : pour chaque morceau, les octets reçus, ceux à
+        écrire, et ce que le relais a décidé de la ligne, quand c'est un appel d'outil à
+        commentaire. Les morceaux relayés tels quels sont rassemblés."""
+        pieces: list[Piece] = []
+        plain: list[bytes] = []
+        start = 0
+        while start < len(data):
+            end = data.find(b"\n", start)
+            stop = len(data) if end < 0 else end + 1
+            if self._passing:
+                plain.append(data[start:stop])
+                self._passing = end < 0
+            elif end < 0:
+                self._line += data[start:]
+                if len(self._line) > self._limit:
+                    # Trop long pour être lu : il passe dès maintenant, et sa suite avec lui.
+                    plain.append(self.flush())
+                    self._passing = True
+            else:
+                line = bytes(self._line) + data[start:end]
+                self._line.clear()
+                relayed, mark = (line, None) if len(line) > self._limit else self._decide(line)
+                if mark is None:
+                    plain.append(line + b"\n")
+                else:
+                    if plain:
+                        joined = b"".join(plain)
+                        pieces.append((joined, joined, None))
+                        plain = []
+                    pieces.append((line + b"\n", relayed + b"\n", mark))
+            start = stop
+        if plain:
+            joined = b"".join(plain)
+            pieces.append((joined, joined, None))
+        return pieces
+
+    def flush(self) -> bytes:
+        """La ligne commencée, rendue telle quelle : le flux se ferme, ou elle est trop longue."""
+        rest = bytes(self._line)
+        self._line.clear()
+        return rest
 
 
 class _Lines:
@@ -345,6 +433,8 @@ class _Call:
     # que sa réponse manque, l'une d'elles était peut-être la sienne.
     unidentified: int
     weight: int
+    # Outil à commentaire : la requête relayée l'a-t-elle reçu ? ``None`` pour un autre outil.
+    tagged: bool | None = None
 
 
 @dataclass
@@ -549,19 +639,27 @@ class StdioProxy(CallCapture[StdioSettings]):
 
     def _pump_client(self, child_input: IO[bytes], backlog: _Backlog) -> None:
         """Entrée du client vers l'entrée de l'enfant. La copie part avant l'écriture : une
-        requête est toujours remise à l'inspection avant sa réponse."""
+        requête est toujours remise à l'inspection avant sa réponse.
+
+        Quand un outil reçoit le commentaire de son run, les lignes sont rassemblées avant
+        d'être écrites ; l'inspection reçoit toujours la ligne d'origine."""
         target = child_input.fileno()
+        commenter = (
+            _Commenter(self.settings.max_inspected_bytes, self._decide) if self._commented else None
+        )
         try:
             while self._wait_readable(self._input):
                 data = _read(self._input)
+                read_at = time.monotonic_ns()
                 if not data:
+                    if commenter is not None:
+                        rest = commenter.flush()
+                        _relay_requests(target, backlog, [(rest, rest, None)], read_at)
                     # Le client a fermé son entrée : l'enfant voit la fin de la sienne.
                     self._note_end(_CLIENT)
                     return
-                stamp = _Stamp(time.monotonic_ns())
-                backlog.offer(_CLIENT, data, stamp)
-                stamp.sent_at = time.monotonic_ns()
-                if not _write_all(target, data):
+                pieces = [(data, data, None)] if commenter is None else commenter.feed(data)
+                if not _relay_requests(target, backlog, pieces, read_at):
                     # L'enfant a fermé son entrée : celle du proxy se ferme aussi.
                     self._note_end(_SERVER)
                     _release(self._input)
@@ -570,6 +668,32 @@ class StdioProxy(CallCapture[StdioSettings]):
             logger.error("Relais vers le serveur MCP interrompu (%s).", type(error).__name__)
         finally:
             child_input.close()
+
+    def _decide(self, line: bytes) -> tuple[bytes, _Mark | None]:
+        """La ligne à écrire au serveur : celle du client, sauf pour l'appel d'un outil à
+        commentaire, dont la requête SQL commence par le commentaire de son run.
+
+        Le relais choisit ici le contexte de trace de l'appel, puisque le commentaire en
+        porte le run ; l'inspection reprend ce choix. Un appel sans identifiant, que
+        l'inspection ne décrira pas, part tel quel. Un échec ne retient jamais la ligne."""
+        try:
+            if _TOOLS_CALL not in line:
+                return line, None
+            message = parse_message(line)
+            if not isinstance(message, dict) or not _usable(message.get("id")):
+                return line, None
+            inspection = inspect_message(message, [], self._sql_arguments)
+            tool = inspection.tool if inspection is not None else None
+            if inspection is None or tool is None or tool not in self._commented:
+                return line, None
+            trace = replace(resolve_trace(inspection.trace_context, []), forwarded=None)
+            tagged = comment_query(line, self.settings.sql_tools[tool].argument, trace.run_id)
+        except Exception as error:
+            logger.error("Requête relayée sans son commentaire (%s).", type(error).__name__)
+            return line, None
+        if isinstance(tagged, bytes):
+            return tagged, _Mark(trace, tagged=True)
+        return line, _Mark(trace, tagged=False)
 
     def _pump_server(self, child_output: IO[bytes], backlog: _Backlog) -> None:
         """Sortie de l'enfant vers la sortie du client. La copie part après l'écriture : une
@@ -631,7 +755,11 @@ class StdioProxy(CallCapture[StdioSettings]):
                 )
             self._lost(item.direction, lines.gap(item))
             return
-        for line in lines.feed(item.data, item.stamp):
+        done = lines.feed(item.data, item.stamp)
+        if item.mark is not None and done and done[-1] is not None:
+            # Une copie marquée est une ligne entière : la décision du relais la suit.
+            done[-1].mark = item.mark
+        for line in done:
             if line is None:
                 self._lost(item.direction, 1)
                 continue
@@ -673,7 +801,9 @@ class StdioProxy(CallCapture[StdioSettings]):
             inspection = inspect_prefix(line.head, [])
             if inspection is None or shape.identifier is None:
                 # Appel d'outil qu'on ne pourrait pas suivre jusqu'à sa réponse : non décrit.
-                self._inspected(None)
+                self._inspected(
+                    None, untagged=inspection is None or inspection.tool in self._commented
+                )
                 return
             self.stats.inspected_from_prefix += 1
             self._call(inspection, shape.identifier, line, oversized=True)
@@ -699,16 +829,26 @@ class StdioProxy(CallCapture[StdioSettings]):
                 self._expect(self._key(identifier), None)
             return
         if not _usable(identifier):
-            # Sans identifiant, pas de réponse à attendre : l'appel n'est pas décrit.
-            self._inspected(None)
+            # Sans identifiant, pas de réponse à attendre : l'appel n'est pas décrit. Le
+            # relais ne l'a pas étiqueté.
+            self._inspected(None, untagged=inspection.tool in self._commented)
             return
         self._call(inspection, identifier, line, oversized=False)
 
     def _call(
         self, inspection: Inspection, identifier: str | int, line: _Line, *, oversized: bool
     ) -> None:
-        # Rien n'est jamais ajouté à un message : un contexte créé ne sert qu'au run.
-        trace = replace(resolve_trace(inspection.trace_context, []), forwarded=None)
+        # Rien n'est jamais ajouté au message : un contexte créé ne sert qu'au run. Pour un
+        # outil à commentaire, le relais a choisi le contexte avant d'écrire la ligne.
+        mark = line.mark
+        tagged: bool | None
+        if mark is not None:
+            trace, tagged = mark.trace, mark.tagged
+        else:
+            trace = replace(resolve_trace(inspection.trace_context, []), forwarded=None)
+            tagged = False if inspection.tool in self._commented else None
+        if tagged is not None:
+            self._tagged(tagged)
         call = _Call(
             inspection=inspection,
             trace=trace,
@@ -718,6 +858,7 @@ class StdioProxy(CallCapture[StdioSettings]):
             unsettled=line.unsettled,
             unidentified=self._unidentified,
             weight=0 if oversized else line.size,
+            tagged=tagged,
         )
         self._expect(self._key(identifier), call)
 
@@ -730,7 +871,8 @@ class StdioProxy(CallCapture[StdioSettings]):
             known.replies += 1
             self._lose(self._forget(known))
             if call is not None:
-                self._inspected(None)
+                # Son étiquetage est déjà compté.
+                self._inspected(None, untagged=False)
             return
         weight = call.weight if call is not None else 0
         while self._requests and (
@@ -831,6 +973,7 @@ class StdioProxy(CallCapture[StdioSettings]):
             delivered=reply is not None,
             observed=True,
             reply_error=error,
+            query_tagged=call.tagged,
         )
         if reply is not None:
             exchange.size = reply.size
@@ -867,6 +1010,21 @@ def _forward(process: subprocess.Popen[bytes], number: signal.Signals) -> None:
     """Transmet un signal reçu à l'enfant ; le proxy s'arrêtera avec lui."""
     logger.info("Signal %s transmis au serveur MCP.", number.name)
     process.send_signal(number)
+
+
+def _relay_requests(target: int, backlog: _Backlog, pieces: Sequence[Piece], read_at: int) -> bool:
+    """Remet chaque morceau à l'inspection, tel que le client l'a écrit, puis l'écrit au
+    serveur, étiqueté s'il le faut ; faux si l'entrée du serveur est fermée. ``read_at``
+    est la lecture du morceau reçu qui les a rendus prêts."""
+    for original, relayed, mark in pieces:
+        if not original:
+            continue
+        stamp = _Stamp(read_at)
+        backlog.offer(_CLIENT, original, stamp, mark)
+        stamp.sent_at = time.monotonic_ns()
+        if not _write_all(target, relayed):
+            return False
+    return True
 
 
 def _read(fd: int) -> bytes:
@@ -926,7 +1084,11 @@ def settings_from_args(
     arguments: Sequence[str], environment: Mapping[str, str]
 ) -> tuple[StdioSettings, timedelta]:
     """Les réglages d'un proxy stdio : ceux qui précèdent ``--``, puis la commande."""
-    from answerlineage_proxy.cli import build_parser, coverage_window_from_args
+    from answerlineage_proxy.cli import (
+        build_parser,
+        coverage_window_from_args,
+        sql_tools_from_args,
+    )
 
     options, command = _split(arguments)
     args = build_parser().parse_args(options)
@@ -943,7 +1105,7 @@ def settings_from_args(
         command,
         args.server_name or environment.get(ENV_SERVER_NAME) or None,
         max_inspected_bytes=args.max_inspected_bytes,
-        sql_tools=dict(SqlTool.parse(value) for value in args.sql_tool),
+        sql_tools=sql_tools_from_args(args),
         sql_budget_ms=tuned(args.sql_budget_ms, ENV_SQL_BUDGET_MS, DEFAULT_SQL_BUDGET_MS),
         sql_queue_size=tuned(args.sql_queue_size, ENV_SQL_QUEUE_SIZE, DEFAULT_SQL_QUEUE_SIZE),
         sql_cache_size=tuned(args.sql_cache_size, ENV_SQL_CACHE_SIZE, DEFAULT_SQL_CACHE_SIZE),
@@ -961,7 +1123,12 @@ def main(arguments: Sequence[str], environment: Mapping[str, str]) -> int:
     L'arrêt suit la fin du serveur : la boîte s'y vide dans son délai, qui borne le temps
     que la sortie du proxy peut suivre celle du serveur.
     """
-    from answerlineage_proxy.cli import event_sink, log_instance, outbox_settings_from_args
+    from answerlineage_proxy.cli import (
+        event_sink,
+        log_instance,
+        log_run_comments,
+        outbox_settings_from_args,
+    )
 
     try:
         settings, coverage_window = settings_from_args(arguments, environment)
@@ -983,6 +1150,7 @@ def main(arguments: Sequence[str], environment: Mapping[str, str]) -> int:
             "sa requête est analysée.",
             tool,
         )
+    log_run_comments(settings.sql_tools)
     proxy = StdioProxy(settings, event_sink(outbox), coverage_window=coverage_window)
     log_instance(proxy.instance)
     return asyncio.run(proxy.run())

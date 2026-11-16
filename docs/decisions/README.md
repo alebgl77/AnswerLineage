@@ -25,6 +25,7 @@ Elles décrivent le code tel qu'il est : une décision qui n'est plus celle du c
 | [0012](0012-partitions-par-mois-de-reception.md) | Partitions par mois de réception | Des partitions par heure d'événement |
 | [0013](0013-artefacts-signes-sans-cle.md) | Des artefacts signés sans clé et attestés | Une clé de signature stockée |
 | [0014](0014-regles-de-lecture-en-yaml.md) | Règles de lecture des outils non SQL : un fichier YAML déclaratif | Un format de la bibliothèque standard (TOML, JSON) |
+| [0015](0015-requete-etiquetee-par-le-run-sur-option.md) | La requête SQL relayée porte l'identifiant de run, sur option et par outil | Lire puis réécrire le corps ; un commentaire en fin de requête ; l'option pour tous les outils |
 
 ## Ajouter ou réviser une décision
 

@@ -197,3 +197,28 @@ def test_proxy_event_of_an_undescribed_tool_is_accepted() -> None:
     assert errors == []
     assert accepted is not None
     assert accepted.inputs == []
+
+
+@pytest.mark.parametrize("tagged", [True, False])
+def test_proxy_event_that_says_whether_the_query_carried_its_run_is_accepted(
+    tagged: bool,
+) -> None:
+    trace = resolve_trace(None, [])
+    event = build_tool_call_event(
+        run_id=trace.run_id,
+        event_time=datetime.now(UTC),
+        outcome="COMPLETE",
+        server="entrepot",
+        inspection=Inspection(is_tool_call=True, tool="execute_sql"),
+        http_status=200,
+        reads=analyze_sql("SELECT c.nom FROM crm.clients c", "bigquery"),
+        namespace="bigquery",
+        trace=trace,
+        tagged_with_run_id=tagged,
+    )
+    assert event["run"]["facets"]["answerlineage_toolCall"]["taggedWithRunId"] is tagged
+    assert list(OFFICIAL.iter_errors(event)) == []
+    accepted, errors = validate_event(event)
+    assert errors == []
+    assert accepted is not None
+    assert accepted.run.run_id == trace.run_id

@@ -7,7 +7,7 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrep
 uv run answerlineage-proxy --server-name fichiers --api-url http://127.0.0.1:8000 -- /opt/mcp/serveur-fichiers --racine /srv/partage
 ```
 
-La première ligne écoute devant un serveur HTTP. La seconde lance un serveur local en stdio et se place entre lui et le client : voir [Mode stdio](#mode-stdio). Sauf mention contraire, ce qui suit décrit le mode HTTP ; le mode stdio en reprend l'inspection, l'analyse du SQL, les règles de lecture, les empreintes, la qualité de service, les relevés de couverture et la boîte d'envoi.
+La première ligne écoute devant un serveur HTTP. La seconde lance un serveur local en stdio et se place entre lui et le client : voir [Mode stdio](#mode-stdio). Sauf mention contraire, ce qui suit décrit le mode HTTP ; le mode stdio en reprend l'inspection, l'analyse du SQL, l'étiquetage des requêtes, les règles de lecture, les empreintes, la qualité de service, les relevés de couverture et la boîte d'envoi.
 
 | Réglage | Option | Variable | Défaut |
 | --- | --- | --- | --- |
@@ -20,6 +20,7 @@ La première ligne écoute devant un serveur HTTP. La seconde lance un serveur l
 | En-tête `Host` du serveur MCP | `--no-preserve-host` | | celui du client |
 | Taille de corps lue | `--max-inspected-bytes` | | 1 Mo |
 | Outil dont un argument porte du SQL | `--sql-tool` | | aucun |
+| Outil SQL dont la requête relayée porte l'identifiant de run en commentaire | `--sql-run-comment` | | aucun : la requête n'est jamais modifiée |
 | Budget de calcul de l'analyse d'une requête SQL | `--sql-budget-ms` | `ANSWERLINEAGE_PROXY_SQL_BUDGET_MS` | 50 ms (1 à 60 000) |
 | Analyses du SQL en attente, au plus | `--sql-queue-size` | `ANSWERLINEAGE_PROXY_SQL_QUEUE_SIZE` | 32 (1 à 10 000) |
 | Résultats d'analyse gardés en cache | `--sql-cache-size` | `ANSWERLINEAGE_PROXY_SQL_CACHE_SIZE` | 1 024 (0 pour aucun, jusqu'à 1 000 000) |
@@ -39,7 +40,7 @@ L'adresse du serveur MCP ne porte ni identifiant ni paramètre : elle peut appar
 
 - Toutes les méthodes HTTP, le chemin et les paramètres tels que reçus, le chemin à la suite de celui de l'adresse du serveur MCP. Un chemin qui contient un segment `.` ou `..`, même encodé (`%2e`), sortirait de ce préfixe une fois résolu : il est refusé en `400` avec `{"error":"invalid_request_target"}`, sans être relayé. Les révisions 2026-07-28 (sans session) et 2025-11-25 (session, flux `GET`, clôture par `DELETE`) de MCP fonctionnent sans réglage.
 - Tous les en-têtes, dans leur ordre, sauf ceux qui sont propres à une connexion (RFC 9110, section 7.6.1). Le proxy n'en ajoute aucun (ni `Server`, ni `Date`, ni `Forwarded`), à une exception près : le `traceparent` qu'il crée pour un appel d'outil arrivé sans contexte de trace (voir [Identifiant de run et contexte de trace](#identifiant-de-run-et-contexte-de-trace)).
-- Le corps de la requête, octet pour octet : le proxy ne le modifie jamais.
+- Le corps de la requête, octet pour octet : le proxy ne le modifie jamais, sauf, sur option et pour un outil SQL que l'on nomme, la requête de cet outil, qui commence alors par le commentaire de son run ([Étiquetage des requêtes de l'entrepôt](#étiquetage-des-requêtes-de-lentrepôt)).
 - Le corps de la réponse, octet pour octet et au fil de l'eau : rien n'est décompressé ni retenu, un flux SSE arrive événement par événement.
 - La fermeture du flux par le client : le proxy ferme aussitôt sa connexion au serveur MCP, ce qui annule l'appel.
 
@@ -414,7 +415,7 @@ Une valeur est bien formée quand elle suit le format W3C : version (2 hexadéci
 | appel d'outil au corps plus grand que la taille lue | l'en-tête `traceparent` s'il est unique et bien formé, sinon un contexte créé | inchangée : `_meta` n'a pas été lu, rien n'est ajouté |
 | requête qui n'est pas un appel d'outil, corps illisible, ou corps trop grand dont le début n'établit pas un appel d'outil | aucun (pas d'événement) | inchangée |
 
-Un en-tête `traceparent` déjà présent n'est donc jamais remplacé ni doublé. Quand il est mal formé, le contexte créé ne sert qu'à l'identifiant de run : le transmettre ferait deux en-têtes `traceparent`, que le serveur ne saurait départager. Le corps n'est jamais modifié.
+Un en-tête `traceparent` déjà présent n'est donc jamais remplacé ni doublé. Quand il est mal formé, le contexte créé ne sert qu'à l'identifiant de run : le transmettre ferait deux en-têtes `traceparent`, que le serveur ne saurait départager. Le corps n'est jamais modifié pour porter le contexte ; seule l'option d'[étiquetage](#étiquetage-des-requêtes-de-lentrepôt) y écrit l'identifiant de run, dans la requête SQL.
 
 Rien ne retarde l'appel : `_meta` est lu par l'inspection déjà faite du corps, et la création du contexte ne fait ni entrée-sortie ni attente.
 
@@ -447,6 +448,113 @@ run_id = uuid.UUID(bytes=bytes(octets))
 Exemple : `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01` donne `a7e19836-59d9-8033-bd72-8a4bccb7271f`. Les vecteurs de test, valeurs acceptées avec leur identifiant et valeurs refusées, sont publiés dans [`spec/run-id/vectors-v1.json`](../spec/run-id/vectors-v1.json) pour vérifier tout autre émetteur. Le [kit de conformité](conformite.md) refait ce calcul pour juger un point de capture, et cherche par des canaris ce qu'un émetteur laisserait sortir : le proxy le passe sous le profil `capture`.
 
 Un UUID version 5 aurait aussi convenu. La version 8 est retenue parce que la version 5 impose SHA-1, que l'on n'emploie plus dans une construction nouvelle, et un UUID d'espace de noms à publier en plus ; la RFC 9562 recommande la version 8 pour un nom haché par un autre algorithme, et en donne un exemple avec SHA-256. Tout langage a SHA-256 ; le calcul tient en cinq étapes. L'API d'ingestion accepte tout UUID de forme canonique. Une autre dérivation, demain, changerait d'étiquette (`…/v2`) et de fichier de vecteurs.
+
+## Étiquetage des requêtes de l'entrepôt
+
+Une requête qu'un outil envoie à un entrepôt de données y laisse une trace : BigQuery garde chaque job, son texte et ses labels (`INFORMATION_SCHEMA.JOBS`), Snowflake chaque requête, son texte et son tag (`QUERY_HISTORY`). Quand la requête porte l'identifiant de run de l'appel d'outil, la lecture que le lignage en tire se rapproche de ce que l'entrepôt a réellement exécuté, dans ses journaux d'audit. Ce rapprochement n'est pas encore fait par AnswerLineage : ce qui suit fixe ce que la requête porte, et comment.
+
+Deux voies portent le même identifiant :
+
+| Qui l'écrit | Où | Forme |
+| --- | --- | --- |
+| Le serveur MCP, qui lit le contexte de trace de l'appel | Label du job BigQuery | Clé `answerlineage_run_id`, valeur l'identifiant de run |
+| Le serveur MCP, qui lit le contexte de trace de l'appel | Paramètre de session `QUERY_TAG` de Snowflake | `{"answerlineage_run_id":"<run>"}`, sans blanc |
+| Le proxy, sur option, pour un outil SQL déclaré | Commentaire en tête de la requête | `/* answerlineage_run_id=<run> */`, suivi d'une espace |
+
+L'identifiant de run est celui de l'événement de l'appel ([dérivation](#la-dérivation-à-loctet-près)), sous la forme canonique d'un UUID : 36 caractères, chiffres, lettres de `a` à `f` et tirets. Pour le contexte `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01` :
+
+```text
+label BigQuery    : answerlineage_run_id = a7e19836-59d9-8033-bd72-8a4bccb7271f
+QUERY_TAG         : {"answerlineage_run_id":"a7e19836-59d9-8033-bd72-8a4bccb7271f"}
+commentaire SQL   : /* answerlineage_run_id=a7e19836-59d9-8033-bd72-8a4bccb7271f */ SELECT …
+```
+
+### Ce que les entrepôts admettent
+
+**BigQuery** ([Introduction to labels](https://cloud.google.com/bigquery/docs/labels-intro)) : 64 labels au plus par ressource ; une clé de 1 à 63 caractères, qui commence par une lettre minuscule ou un caractère international, unique sur la ressource ; une valeur de 0 à 63 caractères ; des lettres minuscules, des chiffres, des soulignés et des tirets seulement, en UTF-8. La clé `answerlineage_run_id` (20 caractères) et l'identifiant de run (36) les respectent. Un job de requête porte ses labels dans sa configuration, et la vue `INFORMATION_SCHEMA.JOBS` les rend avec le job.
+
+**Snowflake** ([Parameters](https://docs.snowflake.com/en/sql-reference/parameters)) : `QUERY_TAG` est un paramètre de session, une chaîne, posée par `ALTER SESSION SET QUERY_TAG = '…'` ; chaque requête de la session la porte, et `QUERY_HISTORY` la rend avec la requête. Le tag d'AnswerLineage est un objet JSON de 61 caractères ASCII, sans apostrophe : un serveur qui pose déjà un tag JSON y ajoute la clé `answerlineage_run_id`.
+
+### La fonction de référence
+
+[`warehouse.py`](../proxy/src/answerlineage_proxy/warehouse.py) calcule, depuis le contexte de trace qu'un serveur MCP reçoit avec l'appel, l'identifiant de run et ses trois formes. Elle n'importe que la bibliothèque standard, et rien d'AnswerLineage : elle se recopie telle quelle dans un serveur écrit en Python, et se réécrit en quelques lignes ailleurs, vérifiée par les [vecteurs de l'identifiant de run](../spec/run-id/vectors-v1.json). Elle choisit le contexte comme le proxy : `params._meta.traceparent` d'abord, puis l'en-tête HTTP `traceparent` s'il est unique et bien formé. Sans contexte lisible, elle rend `None`, et le serveur ne pose rien. Un contexte mal formé n'est jamais recopié : les trois formes ne contiennent que l'identifiant de run, de forme vérifiée, dans un gabarit fixe.
+
+```python
+from answerlineage_proxy.warehouse import warehouse_tags  # ou sa copie dans le serveur
+
+# Pour une requête tools/call : `params` est celui du message reçu ; en HTTP, `traceparents`
+# est la liste des valeurs de l'en-tête traceparent, en stdio une liste vide.
+tags = warehouse_tags(params.get("_meta"), traceparents)
+```
+
+BigQuery, avec sa bibliothèque cliente Python :
+
+```python
+from google.cloud import bigquery
+
+config = bigquery.QueryJobConfig(labels=tags.bigquery_labels if tags else {})
+rows = client.query(sql, job_config=config).result()
+```
+
+Snowflake, avec son connecteur Python. `QUERY_TAG` vaut pour la session : il se pose avant la requête et se retire après, et une session partagée par des appels concurrents mélangerait leurs tags.
+
+```python
+cursor = connection.cursor()
+if tags:
+    # Le tag vient d'un gabarit fixe, sans apostrophe : il s'écrit tel quel entre apostrophes.
+    cursor.execute(f"ALTER SESSION SET QUERY_TAG = '{tags.snowflake_query_tag}'")
+try:
+    cursor.execute(sql)
+finally:
+    if tags:
+        cursor.execute("ALTER SESSION UNSET QUERY_TAG")
+```
+
+En stdio, sans `_meta`, le contexte que le proxy crée ne le quitte pas : le serveur ne connaît pas le run et ne pose rien. Le commentaire, que le proxy écrit lui-même, porte alors seul l'identifiant.
+
+### Le commentaire que le proxy écrit, sur option
+
+`--sql-run-comment OUTIL`, répétable, nomme un outil déclaré par `--sql-tool` dont la requête relayée commence par le commentaire de son run, en HTTP comme en stdio :
+
+```bash
+uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrepot \
+  --sql-tool execute_sql=query:bigquery --sql-run-comment execute_sql
+```
+
+L'option est désactivée par défaut, parce qu'elle fait sortir le proxy de la stricte transparence : le serveur ne reçoit plus exactement ce que l'agent a envoyé. Un outil qu'elle ne nomme pas n'est jamais touché. Nommer un outil qu'aucun `--sql-tool` ne déclare arrête le proxy avec « Configuration invalide : --sql-run-comment nomme un outil que --sql-tool ne déclare pas. » et le code 2. Au démarrage, le proxy journalise chaque outil dont il modifiera les requêtes.
+
+**Seule la chaîne de la requête change.** Le commentaire est écrit juste après le guillemet ouvrant de l'argument que déclare `--sql-tool`. Le corps n'est pas lu puis réécrit : le proxy y trouve la position du premier caractère de la requête et recopie tels quels les octets qui la précèdent et ceux qui la suivent, ordre des clés, blancs et échappements compris. En HTTP, l'en-tête `Content-Length` prend la nouvelle longueur ; aucun autre en-tête ne change.
+
+```text
+reçu   : {"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"execute_sql","arguments":{"query":"SELECT nom FROM crm.clients"},"_meta":{"traceparent":"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}}
+relayé : {"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"execute_sql","arguments":{"query":"/* answerlineage_run_id=a7e19836-59d9-8033-bd72-8a4bccb7271f */ SELECT nom FROM crm.clients"},"_meta":{"traceparent":"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}}
+```
+
+**Le gabarit est fixe.** `/* answerlineage_run_id=`, l'identifiant de run, ` */`, puis une espace : rien d'une valeur reçue n'y entre. L'identifiant dérive du contexte de trace, que le proxy a validé avant toute chose ; sa forme canonique est vérifiée de nouveau avant l'écriture. Le commentaire ne contient donc ni `*/` qui le fermerait plus tôt, ni `/*` qu'un dialecte à commentaires imbriqués (PostgreSQL) ouvrirait, ni guillemet ni barre oblique inverse à échapper dans la chaîne JSON : un contexte de trace piégé n'atteint pas la requête. `/* … */` est un commentaire dans les trois dialectes du proxy ; il s'ouvre sur une espace, ce qui le distingue d'un indice d'optimiseur (`/*+`) ou d'un commentaire exécutable (`/*!`).
+
+**L'analyse porte sur la requête d'origine.** L'inspection, l'analyse du SQL, la forme sans littéraux et l'empreinte des arguments portent sur la requête que l'agent a envoyée. L'événement dit seulement si la requête relayée a reçu son commentaire, par un indicateur, `taggedWithRunId`, dans la facette [`answerlineage_toolCall`](facettes.md#answerlineage_toolcall) en version 1-2-0 : vrai ou faux pour un outil qui a l'option, absent pour les autres.
+
+**Ce que le proxy ne lit pas avec certitude n'est jamais modifié.** La requête part telle quelle, et l'appel compte parmi les non étiquetés :
+
+| Cas | Pourquoi | `taggedWithRunId` |
+| --- | --- | --- |
+| Corps qui n'est pas du JSON, clé répétée, lot, corps compressé | [Il ne se lit pas sans ambiguïté](#ce-que-le-proxy-ne-peut-pas-inspecter) : un appel de l'outil peut s'y cacher | pas d'événement |
+| Corps plus grand que la taille lue | Il est relayé en flux, avant d'être lu en entier | `false` |
+| Corps qui n'est pas de l'UTF-8 strict : marque d'ordre des octets en tête, demi-paire de substitution encodée | Un lecteur JSON l'accepte, un autre non | `false` |
+| En-tête `Content-Encoding`, `Content-Digest`, `Repr-Digest`, `Digest`, `Content-MD5`, `Signature` ou `Signature-Input` | Le corps modifié démentirait son codage, son empreinte ou sa signature (RFC 9530, RFC 9421) | `false` |
+| En-tête `Mcp-Param-*` | Il recopie un argument, que le serveur peut comparer au corps. Seul son nom est regardé | `false` |
+| Argument SQL absent, qui n'est pas une chaîne, ou requête vide | Rien à étiqueter | `false` |
+| Requête qui commence, après ses blancs, par `#` ou `/*+` | La directive de dialecte de BigQuery (`#standardSQL`, `#legacySQL`) n'est lue qu'en première ligne, et pg_hint_plan ne lit un indice que dans le premier commentaire : un commentaire devant eux les priverait d'effet | `false` |
+
+Le proxy compte, sans aucune valeur des requêtes, `ProxyStats.tagged_queries`, les appels dont la requête a reçu son commentaire, et `ProxyStats.untagged_queries`, ceux d'un outil à commentaire relayés sans lui, plus, dès qu'un outil a l'option, toute requête comptée dans `uninspected`, qui pouvait en cacher un.
+
+**En stdio**, le fil qui relaie le client rassemble chaque ligne avant de l'écrire au serveur, qui ne la lit de toute façon qu'entière : un message coupé en morceaux part d'un seul tenant, sa fin de ligne reçue. Ce fil lit la ligne comme l'inspection, choisit le contexte de trace de l'appel (celui de `_meta`, sinon un contexte créé) et écrit la ligne, étiquetée s'il y a lieu ; l'inspection reçoit la ligne d'origine avec ce choix, si bien que l'événement et le commentaire portent le même run. Une ligne plus longue que la taille lue passe au fil de l'eau, telle quelle. Une ligne qui ne contient pas `tools/call` n'est pas lue par ce fil : un appel dont la méthode s'écrit avec un échappement (`tools\/call`) part tel quel, et l'inspection le compte non étiqueté. Un appel sans identifiant, que l'inspection ne décrit pas, n'est pas étiqueté. La latence d'un appel se compte alors depuis la lecture de la fin de sa ligne. Sans l'option, le relais stdio reste celui [décrit plus bas](#le-relais), morceau par morceau.
+
+### Ce que l'option coûte
+
+- **La transparence.** Un serveur qui contrôle le début de la requête, par exemple pour n'accepter que ce qui commence par `SELECT`, peut refuser une requête étiquetée : l'option s'essaie outil par outil avant d'être activée.
+- **Les caches de résultats.** BigQuery ne sert une requête depuis son cache que si son texte est identique à celui de la précédente, blancs et commentaires compris ([Using cached query results](https://cloud.google.com/bigquery/docs/cached-results)) ; Snowflake ne réutilise un résultat persistant que pour une requête qui correspond à la précédente ([Using persisted query results](https://docs.snowflake.com/en/user-guide/querying-persisted-results)). Le commentaire change à chaque run : une requête étiquetée ne profite plus du cache de résultats, ce qui se paie en temps et, à la demande, en coût de calcul. Le label et `QUERY_TAG`, eux, ne changent pas le texte de la requête.
+- **La latence.** Le proxy relit le corps de l'appel, en entier et strictement, avant de le relayer : une vingtaine de microsecondes pour une requête ordinaire, de l'ordre de 5 ms pour un corps de 1 Mo, la taille lue par défaut ; ce temps compte dans `addedLatencyMs`. En stdio, une ligne attend sa fin avant d'être écrite.
 
 ## Empreintes à clé
 
@@ -614,11 +722,11 @@ Dans la configuration d'un client MCP, la commande devient `answerlineage-proxy`
 - Sa sortie d'erreur est celle du proxy : le proxy ne la lit pas et ne la recopie pas, ce sont les journaux du serveur. Le journal du proxy y passe aussi. Sur sa sortie standard, le proxy n'écrit que ce que l'enfant écrit.
 - Une commande qui ne démarre pas arrête le proxy avec un message fixe, qui ne cite ni la commande ni ses arguments : « Serveur MCP non lancé : commande introuvable. » (code 127) ou « Serveur MCP non lancé : commande non exécutable. » (code 126), comme un shell POSIX.
 - Sans `--server-name` ni `ANSWERLINEAGE_PROXY_SERVER_NAME`, le nom du serveur dans le lignage est celui du programme lancé, sans son chemin (`serveur-fichiers` pour `/opt/mcp/serveur-fichiers`). Un lanceur (`npx`, `uvx`, `docker`, `python`) n'est pas un nom de serveur : il confondrait tous les serveurs qu'il lance, d'où `--server-name`.
-- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, `--instance-id`, l'adresse de l'API et les bornes de la [boîte d'envoi](#boîte-denvoi), et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin` et `--no-preserve-host` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
+- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-run-comment`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, `--instance-id`, l'adresse de l'API et les bornes de la [boîte d'envoi](#boîte-denvoi), et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin` et `--no-preserve-host` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
 
 ### Le relais
 
-Deux fils relaient les flux, un par sens. Chacun lit ce qui arrive, 64 Ko au plus à la fois, l'écrit aussitôt de l'autre côté et remet une copie à l'inspection. Rien n'est réécrit ni retenu : les octets que reçoit le client sont ceux qu'écrit l'enfant, et inversement, au fil de l'eau, un message coupé en plusieurs morceaux compris.
+Deux fils relaient les flux, un par sens. Chacun lit ce qui arrive, 64 Ko au plus à la fois, l'écrit aussitôt de l'autre côté et remet une copie à l'inspection. Rien n'est réécrit ni retenu : les octets que reçoit le client sont ceux qu'écrit l'enfant, et inversement, au fil de l'eau, un message coupé en plusieurs morceaux compris. Seule exception, sur option : pour un outil qui reçoit le [commentaire de son run](#le-commentaire-que-le-proxy-écrit-sur-option), le fil du client rassemble chaque ligne avant de l'écrire.
 
 ### Ce qui est lu
 
@@ -638,7 +746,7 @@ Une réponse dont l'identifiant ne se lit pas (ligne illisible, identifiant écr
 
 ### Contexte de trace
 
-Il n'y a pas d'en-têtes : le contexte se lit dans `params._meta.traceparent`, avec la validation et la dérivation de l'identifiant de run du mode HTTP ([ci-dessus](#identifiant-de-run-et-contexte-de-trace)), et `traceOrigin` vaut `meta`. Sinon, le proxy en crée un (`traceOrigin` : `proxy`), qui ne sert qu'à l'identifiant de run : un message n'est jamais modifié. `tracestate` voyage avec le message ; il n'entre pas dans l'identifiant de run, et le proxy ne le lit pas, pas plus qu'en HTTP.
+Il n'y a pas d'en-têtes : le contexte se lit dans `params._meta.traceparent`, avec la validation et la dérivation de l'identifiant de run du mode HTTP ([ci-dessus](#identifiant-de-run-et-contexte-de-trace)), et `traceOrigin` vaut `meta`. Sinon, le proxy en crée un (`traceOrigin` : `proxy`), qui ne sert qu'à l'identifiant de run : un message n'est jamais modifié pour le porter, et seule l'option d'[étiquetage](#étiquetage-des-requêtes-de-lentrepôt) écrit l'identifiant de run dans la requête SQL. `tracestate` voyage avec le message ; il n'entre pas dans l'identifiant de run, et le proxy ne le lit pas, pas plus qu'en HTTP.
 
 ### L'issue d'un appel
 
@@ -674,6 +782,7 @@ Le relais n'attend jamais l'inspection ni l'émission : il remet sa copie et con
 | Rattacher la réponse | L'échange HTTP | L'identifiant JSON-RPC |
 | Statut HTTP | `httpStatus`, issue `http_error` | Aucun |
 | Portée d'une reprise | Session MCP, puis trace, puis le proxy | Trace, puis le proxy, qui ne sert qu'un client |
+| Requête étiquetée, sur option | Le corps lu en entier, sa longueur mise à jour | La ligne rassemblée avant d'être écrite |
 
 ## Ce qui n'est jamais conservé
 
@@ -687,7 +796,7 @@ Un test fait traverser un jeton, un cookie, un paramètre recopié en en-tête e
 
 ## L'événement émis
 
-Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COMPLETE` si le serveur a répondu sans erreur HTTP, `FAIL` sinon, `ABORT` si le client est parti. Le job est `mcp://<serveur>` / `<outil>`, l'identifiant de run celui que dérive le contexte de trace. La facette `answerlineage_toolCall` porte le serveur, l'outil, le transport, la révision du protocole, le statut HTTP, les écarts relevés, la résolution de la lecture, le contexte de trace (`traceId`, `spanId`, `traceOrigin`), les empreintes à clé des arguments et du résultat et la taille du résultat ; son schéma est publié (voir [Facettes OpenLineage](facettes.md)). La facette `answerlineage_qos` porte la latence, la latence ajoutée, l'issue et les reprises ([Qualité de service](#qualité-de-service)). Les tables lues, ou les jeux de données que déclare la règle de lecture de l'outil, sont les jeux de données d'entrée ; leurs colonnes sont dans la facette standard `schema`, les empreintes des clés lues dans la facette `answerlineage_keys`. La forme sans littéraux d'une requête SQL est dans la facette de job standard `sql`.
+Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COMPLETE` si le serveur a répondu sans erreur HTTP, `FAIL` sinon, `ABORT` si le client est parti. Le job est `mcp://<serveur>` / `<outil>`, l'identifiant de run celui que dérive le contexte de trace. La facette `answerlineage_toolCall` porte le serveur, l'outil, le transport, la révision du protocole, le statut HTTP, les écarts relevés, la résolution de la lecture, le contexte de trace (`traceId`, `spanId`, `traceOrigin`), les empreintes à clé des arguments et du résultat et la taille du résultat, et, pour un outil dont la requête relayée porte l'identifiant de run, si elle l'a reçu (`taggedWithRunId`) ; son schéma est publié (voir [Facettes OpenLineage](facettes.md)). La facette `answerlineage_qos` porte la latence, la latence ajoutée, l'issue et les reprises ([Qualité de service](#qualité-de-service)). Les tables lues, ou les jeux de données que déclare la règle de lecture de l'outil, sont les jeux de données d'entrée ; leurs colonnes sont dans la facette standard `schema`, les empreintes des clés lues dans la facette `answerlineage_keys`. La forme sans littéraux d'une requête SQL est dans la facette de job standard `sql`.
 
 ## Limites connues
 
@@ -717,3 +826,9 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - La forme d'une requête garde les noms d'un seul mot choisis par son auteur : un alias qui serait une donnée métier (`AS "Dupont"`) est conservé tel quel. Un nom qui n'a pas la forme d'un identifiant fait renoncer à la forme.
 - L'empreinte du résultat porte sur les octets relayés : le même résultat, compressé ou non, ou découpé autrement en événements SSE, a deux empreintes différentes.
 - Les arguments d'un appel dont le corps dépasse la taille lue ne sont pas lus : pas d'empreinte des arguments.
+- Le label, le tag et le commentaire qui portent l'identifiant de run sont posés, mais rien ne les lit encore : le rapprochement des lectures avec les journaux d'audit de l'entrepôt reste à faire.
+- Le commentaire est écrit en tête de la requête : un serveur qui n'accepte une requête que d'après ses premiers mots peut refuser une requête étiquetée.
+- Une requête étiquetée ne profite plus du cache de résultats de l'entrepôt, puisque son texte change à chaque run.
+- En HTTP, pour un corps plus grand que la taille lue, le proxy dérive le run de l'en-tête `traceparent` sans lire `_meta` : un serveur qui suit la fonction de référence, et lit `_meta`, peut poser un autre run que celui de l'événement.
+- En stdio, sans `_meta`, le serveur ne connaît pas le run : seul le commentaire du proxy, sur option, le porte.
+- En stdio, une requête que l'inspection en retard n'a pas pu lire compte parmi les non étiquetées, même si le relais l'a étiquetée : le compte surestime ce qui manque, il ne le cache pas.

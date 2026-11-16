@@ -29,7 +29,7 @@ Aucune facette ne ferme ses objets : un champ inconnu est admis, comme dans Open
 | Facette | Versions | Clé | Portée | Où la placer | Obligatoires |
 | --- | --- | --- | --- | --- | --- |
 | `AgentRunFacet` | [1-0-0](../spec/facets/1-0-0/AgentRunFacet.json) | `answerlineage_agent` | Run | `run.facets` | aucun |
-| `ToolCallRunFacet` | [1-0-0](../spec/facets/1-0-0/ToolCallRunFacet.json), [1-1-0](../spec/facets/1-1-0/ToolCallRunFacet.json) | `answerlineage_toolCall` | Run | `run.facets` | `server` |
+| `ToolCallRunFacet` | [1-0-0](../spec/facets/1-0-0/ToolCallRunFacet.json), [1-1-0](../spec/facets/1-1-0/ToolCallRunFacet.json), [1-2-0](../spec/facets/1-2-0/ToolCallRunFacet.json) | `answerlineage_toolCall` | Run | `run.facets` | `server` |
 | `QosRunFacet` | [1-0-0](../spec/facets/1-0-0/QosRunFacet.json), [1-1-0](../spec/facets/1-1-0/QosRunFacet.json) | `answerlineage_qos` | Run | `run.facets` | aucun |
 | `DeliveryOutputDatasetFacet` | [1-0-0](../spec/facets/1-0-0/DeliveryOutputDatasetFacet.json) | `answerlineage_delivery` | Jeu de données de sortie | `outputs[].outputFacets` | `fingerprint`, `channel`, `messageRef` |
 | `KeysInputDatasetFacet` | [1-0-0](../spec/facets/1-0-0/KeysInputDatasetFacet.json) | `answerlineage_keys` | Jeu de données d'entrée | `inputs[].inputFacets` | `hmacs` ou `bloomFilter` |
@@ -47,6 +47,8 @@ Décrit un appel d'outil MCP, posé sur le run enfant de l'appel. Le graphe reco
 Facultatifs émis aujourd'hui : `tool` (absent quand le nom reçu n'a pas une forme admise), `transport` (`http`, ou `stdio` pour un serveur que le proxy [lance lui-même](proxy.md#mode-stdio)), `protocolVersion`, `httpStatus` (absent en stdio), `proxyError`, `headerMismatch`, `invalidToolName`, `readResolution` (`resolved` ou `unresolved`), `unresolvedReason` (`undescribed_tool` pour un outil sans règle de lecture ni SQL déclaré, voir [le proxy](proxy.md#les-outils-à-décrire)).
 
 La version 1-1-0 ajoute un champ facultatif, `readKeys` : ce qu'est devenue la clé lue quand une [règle de lecture](proxy.md#règles-de-lecture-des-outils-non-sql) nomme l'argument qui la porte, d'une liste fermée (`fingerprinted`, `no_fingerprint_key`, `request_too_large`, `missing_argument`, `unsupported_argument`, `too_many_keys`). Hors de `fingerprinted`, la lecture vaut pour tout le jeu de données. Le proxy ne se réclame de cette version que pour une facette qui porte `readKeys`.
+
+La version 1-2-0 ajoute un champ facultatif, `taggedWithRunId`, un booléen : pour un outil SQL dont la requête relayée doit commencer par le commentaire qui porte l'identifiant de run ([étiquetage, sur option](proxy.md#étiquetage-des-requêtes-de-lentrepôt)), vrai quand elle l'a reçu, faux quand elle est partie telle quelle. Il est absent pour tout autre outil. C'est un indicateur : ni la requête ni le commentaire n'entrent dans l'événement. Le proxy ne se réclame de cette version que pour une facette qui porte `taggedWithRunId`.
 
 Le contexte de trace W3C de l'appel, d'où dérive l'identifiant de run (voir [le proxy](proxy.md#identifiant-de-run-et-contexte-de-trace)), pour passer du lignage à la trace dans un outil d'observabilité :
 

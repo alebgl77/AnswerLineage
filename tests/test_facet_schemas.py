@@ -101,11 +101,12 @@ def facet(name: str, version: str = "1-0-0", **fields: Any) -> dict[str, Any]:
     return {"_producer": PRODUCER, "_schemaURL": address(name, version), **fields}
 
 
-def test_five_facets_are_published_in_1_0_0_and_two_extended_in_1_1_0() -> None:
+def test_five_facets_are_published_in_1_0_0_two_extended_in_1_1_0_and_one_in_1_2_0() -> None:
     assert {path.relative_to(FACETS).as_posix() for path in schema_files()} == {
         *(f"1-0-0/{name}.json" for name in NAMES.values()),
         "1-1-0/QosRunFacet.json",
         "1-1-0/ToolCallRunFacet.json",
+        "1-2-0/ToolCallRunFacet.json",
     }
 
 
@@ -441,6 +442,24 @@ def test_a_tool_call_1_1_0_says_what_became_of_the_key_read_from_a_closed_list()
     assert list(check.iter_errors(full)) == []
 
 
+def test_a_tool_call_1_2_0_says_whether_the_query_carried_its_run_by_a_flag_only() -> None:
+    check = validator("ToolCallRunFacet", "1-2-0")
+    for flag in (True, False):
+        emitted = facet("ToolCallRunFacet", "1-2-0", server="s", taggedWithRunId=flag)
+        assert list(check.iter_errors(emitted)) == []
+    for value in ("oui", 1, "/* answerlineage_run_id=… */"):
+        emitted = facet("ToolCallRunFacet", "1-2-0", server="s", taggedWithRunId=value)
+        assert list(check.iter_errors(emitted)) != []
+    # Tout ce que la version 1-1-0 accepte, la version 1-2-0 l'accepte aussi.
+    full = facet(
+        "ToolCallRunFacet",
+        "1-2-0",
+        **EXAMPLES["ToolCallRunFacet"]["full"],
+        readKeys="fingerprinted",
+    )
+    assert list(check.iter_errors(full)) == []
+
+
 def own_facets(event: Mapping[str, Any]) -> Iterator[tuple[str, Mapping[str, Any]]]:
     """Les facettes propres d'un événement, avec leur clé, sur le run et sur les jeux de données."""
     owners: list[Mapping[str, Any]] = [event["run"]]
@@ -593,6 +612,22 @@ def proxy_events() -> list[dict[str, Any]]:
         arguments_fingerprint=arguments_fingerprint(key, {"query": "…"}),
         result_fingerprint=key.fingerprint(RESULT_LABEL, b"{}"),
         result_size=2,
+    )
+    # Un outil dont la requête relayée porte l'identifiant de run : étiquetée, ou partie telle
+    # quelle.
+    events.extend(
+        build_tool_call_event(
+            run_id=uuid4(),
+            event_time=datetime.now(UTC),
+            outcome="COMPLETE",
+            server="entrepot",
+            inspection=inspections[0],
+            http_status=200,
+            reads=SqlAnalysis(resolved=False, reason="request_too_large"),
+            namespace="bigquery",
+            tagged_with_run_id=tagged,
+        )
+        for tagged in (True, False)
     )
     return [*events, failed, resolved, unresolved, fingerprinted]
 
