@@ -14,6 +14,7 @@
 - [API de lecture](lecture.md)
 - [Facettes OpenLineage d'AnswerLineage](facettes.md)
 - [Kit de conformité des émetteurs](conformite.md)
+- [Extension A2A de lignage](a2a.md)
 - [Workers](workers.md)
 - [Schéma du graphe](schema.md)
 - [Ligne de commande](cli.md)
