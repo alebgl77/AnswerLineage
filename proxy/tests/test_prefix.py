@@ -113,6 +113,10 @@ def test_a_key_seen_twice_makes_its_value_uncertain() -> None:
         b'{"bad":"\x01","method":"tools/call"}',
         b'{"a":1 2,"method":"tools/call"}',
         b'{"a":[1}],"method":"tools/call"',
+        # Une accolade fermée par un crochet, ou l'inverse, n'est pas du JSON.
+        b'{"x":{],"method":"tools/call","params":{"name":"t"}',
+        b'{"x":[},"method":"tools/call","params":{"name":"t"}',
+        b'{"x":[{]},"method":"tools/call"',
         b"  \r\n\t",
     ],
 )

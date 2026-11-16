@@ -37,6 +37,8 @@ _FLAT = re.compile(rb'(?:[^"\[\]{}]++|"[^"\\]*+(?:\\[\s\S][^"\\]*+)*+")*+')
 _OPENERS = re.compile(rb"[\[{]++")
 _CLOSERS = re.compile(rb"[\]}]++")
 _QUOTE = ord('"')
+# L'ouvrant qui répond à chaque fermant.
+_OPENER_OF = {ord("]"): ord("["), ord("}"): ord("{")}
 # Un entier JSON : le code d'une erreur JSON-RPC.
 _INTEGER = re.compile(rb"-?(?:0|[1-9][0-9]{0,18})")
 
@@ -112,20 +114,25 @@ def _string(data: bytes, pos: int) -> tuple[str | None, int | None]:
 
 
 def _container(data: bytes, pos: int) -> int | None:
-    """Saute l'objet ou le tableau qui commence en ``pos``."""
-    depth = 0
+    """Saute l'objet ou le tableau qui commence en ``pos``.
+
+    Chaque crochet ou accolade fermant doit répondre au dernier ouvert : un ``]``
+    qui fermerait un ``{`` écarte le préfixe de la syntaxe JSON.
+    """
+    opened: list[int] = []
     while True:
         openers = _OPENERS.match(data, pos)
         if openers is not None:
-            depth += openers.end() - pos
+            opened.extend(data[pos : openers.end()])
             pos = openers.end()
         pos = _end(_FLAT, data, pos)
         closers = _CLOSERS.match(data, pos)
         if closers is not None:
-            count = closers.end() - pos
-            if count >= depth:
-                return pos + depth
-            depth -= count
+            for index in range(pos, closers.end()):
+                if opened.pop() != _OPENER_OF[data[index]]:
+                    raise _MalformedError
+                if not opened:
+                    return index + 1
             pos = closers.end()
         elif pos >= len(data) or data[pos] == _QUOTE:
             # Fin du préfixe, ou chaîne inachevée.
