@@ -107,7 +107,7 @@ Le détail de chaque menace, son scénario, ses parades avec leur code et leur t
 
 | Menace | Ce qui est craint | Catégorie | Traitement |
 | --- | --- | --- | --- |
-| `workers/evenement-empoisonne` | Un événement qui fait échouer la projection bloque la file | Déni de service | 5 parades |
+| `workers/evenement-empoisonne` | Un événement qui fait échouer la projection bloque la file | Déni de service | 7 parades |
 | `workers/double-traitement` | Deux workers traitent un événement deux fois, ou un arrêt en perd un | Altération | 2 parades |
 | `workers/identifiant-non-revalide` | Un événement brut enregistré avant un contrôle plus strict projette un identifiant piégé | Altération | 1 parade |
 | `workers/analyse-epuisante` | L'analyse d'un incident déclaré épuise les workers | Déni de service | 2 parades |

@@ -18,7 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from answerlineage_api.ingest.models import validate_event
 from answerlineage_api.ingest.store import AcceptedEvent, event_identifier, store_events
 from answerlineage_workers import cli
-from answerlineage_workers.queue import BatchResult, process_batch, record_event, run_worker
+from answerlineage_workers.queue import (
+    DEFAULT_BATCH_SIZE,
+    BatchResult,
+    process_batch,
+    record_event,
+    run_worker,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -300,3 +306,32 @@ def test_command_line_reports_a_missing_database(
     monkeypatch.delenv("ANSWERLINEAGE_DATABASE_URL", raising=False)
     assert cli.main(["--batch-size", "5"]) == 2
     assert "ANSWERLINEAGE_DATABASE_URL" in capsys.readouterr().err
+
+
+def test_the_command_line_sets_the_batch_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    received: list[int] = []
+
+    async def serve(batch_size: int, **_: object) -> None:
+        received.append(batch_size)
+
+    monkeypatch.setattr(cli, "serve", serve)
+    assert cli.main([]) == 0
+    assert cli.main(["--batch-size", "10000"]) == 0
+    assert received == [DEFAULT_BATCH_SIZE, 10_000]
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "2.5", "cent", "10001", "100000000000000000000"])
+def test_the_command_line_refuses_a_batch_size_out_of_bounds(
+    value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Un lot est une transaction : sans borne, une faute de frappe la ferait tenir des heures."""
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["--batch-size", value])
+    assert stopped.value.code == 2
+    assert "de 1 à 10000" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("batch_size", [0, 10_001])
+async def test_a_worker_refuses_a_batch_size_out_of_bounds(batch_size: int) -> None:
+    with pytest.raises(ValueError, match="de 1 à 10000"):
+        await run_worker(None, asyncio.Event(), batch_size=batch_size)  # type: ignore[arg-type]

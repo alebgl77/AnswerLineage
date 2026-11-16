@@ -15,7 +15,8 @@ L'API d'ingestion écrit une ligne dans la file dans la transaction qui enregist
 - **aucun double traitement** : les lignes réclamées par un worker sont verrouillées, les autres workers les sautent (`FOR UPDATE SKIP LOCKED`) ;
 - **aucune perte** : si un worker s'arrête en plein lot, sa transaction est annulée, les lignes redeviennent visibles et aucune écriture partielle ne reste dans le graphe ;
 - **un événement fautif ne bloque pas le lot** : il est remis à plus tard, avec un délai qui double à chaque essai (5 s, 10 s, 20 s, jusqu'à une heure). La file garde le nombre d'essais, l'heure du premier en échec et la classe de la dernière erreur, jamais son message ;
-- **un événement fautif ne tourne pas sans fin** : il va à la [file de rebut](#file-de-rebut), au premier échec ou au dernier essai selon son motif, dans la transaction qui le retire de la file.
+- **un événement fautif ne tourne pas sans fin** : il va à la [file de rebut](#file-de-rebut), au premier échec ou au dernier essai selon son motif, dans la transaction qui le retire de la file ;
+- **des workers concurrents ne s'interbloquent pas** : chaque lot pose d'avance, dans un ordre global, les lignes du graphe qu'il partage avec les autres. Un interblocage qui survient malgré tout reprend le lot sans compter d'essai : un pic de trafic n'envoie pas au rebut un événement sain ([plusieurs workers](#plusieurs-workers)).
 
 Les événements bruts restent dans `event_raw` : le graphe peut être [reconstruit](#reconstruire-le-graphe) en les rejouant.
 
@@ -62,10 +63,10 @@ Aucun contenu : ni l'événement, ni le message d'une exception.
 | `invalid_event` | L'événement n'a pas la forme que la projection lit : champ obligatoire absent ou d'un autre type, identifiant de run ou heure illisible (`KeyError`, `TypeError`, `ValueError`) | Au premier échec |
 | `constraint_violation` | L'écriture du graphe viole une contrainte de la base (`IntegrityError`) : la projection et le schéma du graphe ne s'accordent pas | Au premier échec |
 | `invalid_value` | La base refuse une valeur (`DataError`) : hors de portée, texte qu'elle ne sait pas conserver | Au premier échec |
-| `database_error` | Une autre erreur de la base : connexion perdue, interblocage, schéma pas encore migré | Au dernier essai |
+| `database_error` | Une autre erreur de la base : connexion perdue, schéma pas encore migré, interblocage au-delà des [reprises du lot](#erreurs-passagères) | Au dernier essai |
 | `projection_error` | Toute autre erreur | Au dernier essai |
 
-Les quatre premiers motifs ne se corrigent pas en réessayant : réessayer ne ferait que retarder le signalement. Les deux derniers peuvent passer : l'événement est remis à plus tard, et ne va au rebut qu'au dernier essai, le dixième par défaut, 42 minutes après le premier. Une panne qui fait échouer le lot entier, base injoignable par exemple, ne compte d'essai à aucun événement : le lot reste dans la file, tel quel.
+Les quatre premiers motifs ne se corrigent pas en réessayant : réessayer ne ferait que retarder le signalement. Les deux derniers peuvent passer : l'événement est remis à plus tard, et ne va au rebut qu'au dernier essai, le dixième par défaut, 42 minutes après le premier. Une panne qui fait échouer le lot entier, base injoignable par exemple, ne compte d'essai à aucun événement : le lot reste dans la file, tel quel. Un interblocage n'en compte pas non plus : le lot est repris ([erreurs passagères](#erreurs-passagères)).
 
 | Réglage | Option | Défaut |
 | --- | --- | --- |
@@ -93,6 +94,58 @@ Le chemin d'une erreur de schéma :
 3. le correctif déployé, `answerlineage dead-letters replay --reason constraint_violation` les remet en file, et les workers les intègrent au graphe.
 
 Un événement sort du rebut par un rejeu, ou par la [purge](#partitions-mensuelles) du mois où il a été reçu.
+
+## Plusieurs workers
+
+Les workers se partagent la file sans se coordonner : chacun réclame son lot (`FOR UPDATE SKIP LOCKED`) et le projette dans sa transaction. Les événements de lots différents écrivent pourtant les mêmes lignes du graphe : les jeux de données et leurs versions du jour, les outils, les agents et les destinataires qu'ils nomment tous, et les runs dont les événements tombent dans deux lots.
+
+### Un ordre pour les lignes partagées
+
+Une transaction garde, jusqu'à sa validation, chaque ligne qu'elle a créée ou dont elle a avancé l'heure d'enregistrement, et chaque run qu'elle a écrit. Un lot qui projette ses événements l'un après l'autre prend ces lignes dans l'ordre de ses événements ; deux lots qui les prennent dans des ordres différents s'attendent l'un l'autre, et PostgreSQL rompt l'interblocage en annulant l'un d'eux. Son journal le montrait, à chaque interblocage : une insertion dans `agent`, `tool`, `dataset_version`, `recipient` ou `run`, ou l'heure d'enregistrement d'un outil, d'un jeu de données ou d'une version avancée, attendait la fin d'une transaction qui attendait elle-même la sienne. Chaque interblocage remettait un événement à plus tard et lui comptait un essai : au dixième, un événement sain allait au rebut (`database_error`).
+
+Avant de projeter ses événements, un lot écrit donc ces lignes, table par table (agents, outils, jeux de données, versions, destinataires, puis runs) et, dans chaque table, dans l'ordre de leur clé naturelle (`prepare_runs`, dans `answerlineage_api.store.graph`). Toutes les transactions prennent leurs verrous dans le même ordre : aucune n'attend une ligne que tient une transaction qui attend la sienne. Les arêtes d'un run ne sont écrites que par la transaction qui tient ce run.
+
+L'[écriture du graphe](schema.md#écrire-dans-le-graphe) reste idempotente et commutative, et le graphe est celui que donne la projection des événements un à un : chaque ligne partagée reçoit la plus ancienne réception du lot qui la nomme, un jeu de données la nature du premier événement du lot qui le nomme, chaque run l'écriture de chacun de ses événements dans l'ordre du lot ; la projection de chaque événement retrouve ensuite ces lignes telles quelles.
+
+Rien d'un événement en échec ne reste dans le graphe. Quand un événement échoue après que le lot a posé ses lignes, le lot est refait sans lui, dans la même transaction, et son échec est gardé. Quand la base refuse l'une des lignes posées d'avance (une contrainte, une valeur), le lot est projeté événement par événement, sans ordre global, et l'échec revient à l'événement fautif.
+
+### Erreurs passagères
+
+Un interblocage (`40P01`) ou un échec de sérialisation (`40001`) qui survient malgré tout ne dit rien des événements : PostgreSQL a annulé la transaction pour en laisser passer une autre. Le lot est repris en entier, dans une nouvelle transaction, après une courte attente : 0,05 s, puis 0,1 s, jusqu'à 0,25 s. Pas dans la même : une transaction qui attendait une ligne du lot n'est libérée qu'à la fin de la sienne, et la reprise l'attendrait à son tour.
+
+| Erreur | Un essai compté | Ce qui se passe |
+| --- | --- | --- |
+| Interblocage, échec de sérialisation | Non, pendant cinq reprises | Le lot entier est repris dans une nouvelle transaction |
+| Les mêmes, au-delà de cinq reprises | Oui, à l'événement touché | Le lot est projeté une dernière fois, événement par événement : l'erreur compte comme toute erreur de la base (`database_error`) |
+| Une autre erreur de la base pendant la projection d'un événement : connexion perdue, base injoignable, schéma pas encore migré | Oui | L'événement est remis à plus tard, et va au rebut au dernier essai |
+| Une panne qui fait échouer le lot entier, hors de la projection d'un événement : base injoignable à la réclamation | Non | Le lot reste dans la file, tel quel ; le worker réessaie cinq secondes plus tard |
+
+La borne de cinq reprises évite qu'un lot tourne sans fin : un événement qu'une erreur passagère toucherait à chaque reprise finit au rebut au dernier essai, comme les autres.
+
+Chaque reprise est journalisée, en nombres et en codes : les événements repris, le code SQLSTATE, la classe de l'erreur, jamais son message. Le résultat d'un lot (`BatchResult.retried`) compte ses reprises.
+
+```text
+WARNING answerlineage_workers Lot de 100 événement(s) repris sans compter d'essai : 40P01 (OperationalError), reprise 1 sur 5.
+```
+
+### Taille des lots
+
+| Réglage | Option | Défaut |
+| --- | --- | --- |
+| Événements réclamés et projetés par lot, dans une transaction | `--batch-size` | 100 (1 à 10 000) |
+
+Un lot est une transaction, qui tient jusqu'à sa validation les lignes qu'elle écrit. Une taille hors de ces bornes empêche le worker de démarrer, comme les autres réglages.
+
+### Débit
+
+Mesuré sur la machine de test : 4 processeurs virtuels Intel Xeon à 2,10 GHz, 15 Gio de mémoire, PostgreSQL 18 dans Docker sur la même machine, réglages par défaut. La file tient les 11 903 événements de l'entreprise synthétique à 3 000 demandes, reçus en envois de 50 ; le graphe est vide au départ, chaque worker tourne dans son processus, avec des lots de 100. La durée va du départ des workers à la file vide, attente des événements remis à plus tard comprise. Le code d'avant et celui d'après ont été mesurés en alternance ; la machine faisait tourner d'autres charges en même temps : ce sont des ordres de grandeur.
+
+| Workers | Avant l'ordre global | Après |
+| --- | --- | --- |
+| 1 | 207 à 218 événements par seconde | 296 à 308 événements par seconde |
+| 4 | 43 à 161 événements par seconde ; 83 à 279 interblocages par passage, autant d'événements remis à plus tard avec un essai compté | 593 à 649 événements par seconde ; aucun interblocage, aucune reprise, aucun événement remis à plus tard |
+
+Avant, le débit de quatre workers tombait sous celui d'un seul : chaque interblocage attendait une seconde que PostgreSQL le détecte, puis remettait un événement à plus tard de 5 s, 10 s, 20 s. Un seul worker va aussi plus vite : la projection de chaque événement reprend les lignes que son lot a posées d'avance, sans les relire.
 
 ## Analyse des incidents
 
@@ -216,7 +269,7 @@ La commande sort avec le code `0` quand le graphe est reconstruit, `1` quand ell
    ```
 
 2. **Une à la fois.** La reconstruction prend un verrou consultatif de PostgreSQL sans l'attendre : une seconde reconstruction ne démarre pas (« Une autre reconstruction du graphe tourne : celle-ci ne démarre pas. Rien n'a changé. »).
-3. **Les workers s'écartent.** Elle prend la barrière du graphe, un second verrou consultatif : elle laisse finir les lots et les analyses en cours, puis les workers ne réclament plus ni lot ni analyse tant qu'elle la tient. Leur boucle continue : émetteurs muets, partitions. La reconstruction projette seule parce que deux projections concurrentes sur un graphe vide s'interbloquent sur les jeux de données, outils et destinataires qu'elles créent ensemble : chaque interblocage remet un événement à plus tard et lui compte un essai. Mesurées sur 12 000 événements, quatre projections concurrentes rendaient 69 événements par seconde, une seule 235.
+3. **Les workers s'écartent.** Elle prend la barrière du graphe, un second verrou consultatif : elle laisse finir les lots et les analyses en cours, puis les workers ne réclament plus ni lot ni analyse tant qu'elle la tient. Leur boucle continue : émetteurs muets, partitions. La reconstruction projette ensuite seule, sans partager la file avec les workers ([limites connues](#limites-connues)).
 4. **Le départ, en une transaction.** Quand des lignes du graphe ne seraient pas rendues, elle s'arrête là sans `--accept-loss`, et rien ne change ([ce qu'elle ne rend pas](#ce-que-la-reconstruction-ne-rend-pas)). Sinon, elle remet en file tous les événements bruts conservés, dans l'ordre de leur réception, sauf ceux au rebut, qui y restent avec leur motif ; un événement qui attendait déjà dans la file y garde sa place et ses essais. Elle s'inscrit dans `graph_rebuild` ([la trace](#la-trace)), puis vide les tables du graphe, et elles seules. Une panne avant la fin de cette transaction ne change rien.
 5. **La projection, par lots.** Elle projette la file elle-même, lot par lot, avec la projection des workers et dans l'ordre de la file. Un événement que la projection refuse aujourd'hui va au [rebut](#file-de-rebut), comme avec un worker. Toutes les dix secondes, le journal dit où elle en est.
 6. **La fin.** Quand la file a rendu au graphe tout ce qui y était au départ, la reconstruction est close, la barrière rendue, et le journal donne le résultat.
@@ -224,7 +277,7 @@ La commande sort avec le code `0` quand le graphe est reconstruit, `1` quand ell
 ```text
 INFO answerlineage_workers Reconstruction du graphe commencée : 954 événement(s) à rejouer, 1 laissé(s) au rebut.
 INFO answerlineage_workers Reconstruction du graphe : 954 événement(s) projeté(s), 0 à projeter dans la file, 0 mis au rebut.
-INFO answerlineage_workers Graphe reconstruit en 4,5 s : 954 événements rejoués, 1 au rebut laissés tels quels, 0 mis au rebut pendant la reconstruction.
+INFO answerlineage_workers Graphe reconstruit en 3,3 s : 954 événements rejoués, 1 au rebut laissés tels quels, 0 mis au rebut pendant la reconstruction.
 INFO answerlineage_workers Événements bruts conservés reçus du 2026-11-16T12:13:07.400791+00:00 au 2026-11-16T12:13:09.102214+00:00 : ce que la conservation a purgé avant n'est pas rendu.
 ```
 
@@ -272,13 +325,13 @@ Mesurée sur la machine de test : 4 processeurs virtuels Intel Xeon à 2,10 GHz,
 
 | Événements conservés | Lignes du graphe | Départ | Reconstruction entière | Débit |
 | --- | --- | --- | --- | --- |
-| 954, l'entreprise synthétique de la démonstration | 2 359 | négligeable | 4,5 s | 214 événements par seconde |
-| 99 954, la même entreprise avec 25 000 demandes | 232 389 | moins d'une seconde | 7 min 39 s | 218 événements par seconde |
-| 1 000 000, estimés | environ 2,3 millions | 17 s mesurées | environ 77 min | |
+| 954, l'entreprise synthétique de la démonstration | 2 359 | négligeable | 3,3 s | 292 événements par seconde |
+| 99 954, la même entreprise avec 25 000 demandes | 232 389 | moins d'une seconde | 5 min 51 s | 285 événements par seconde |
+| 1 000 000, estimés | environ 2,3 millions | 17 s mesurées | environ 59 min | |
 
-La durée est celle de la projection, un événement après l'autre, environ 4,6 ms chacun : le départ, la remise en file d'un million d'événements comprise, prend 17 secondes, pendant lesquelles le graphe reste lisible ; le vidage, quelques millisecondes. Une reconstruction croît donc avec les événements conservés, de l'ordre de 77 minutes par million sur cette machine.
+La durée est celle de la projection, un événement après l'autre, environ 3,5 ms chacun : le départ, la remise en file d'un million d'événements comprise, prend 17 secondes, pendant lesquelles le graphe reste lisible ; le vidage, quelques millisecondes. Une reconstruction croît donc avec les événements conservés, de l'ordre d'une heure par million sur cette machine.
 
-Pour un délai de reprise d'une heure au plus, la reconstruction suffit tant que la base conserve moins de 750 000 événements environ, sur une machine comparable. Au-delà, elle ne tient pas l'objectif à elle seule : la restauration d'une sauvegarde de la base, ou une machine plus rapide, doit le tenir. Le journal de progression, toutes les dix secondes, permet d'en estimer la fin.
+Pour un délai de reprise d'une heure au plus, la reconstruction suffit tant que la base conserve moins d'un million d'événements environ, sur une machine comparable. Au-delà, elle ne tient pas l'objectif à elle seule : la restauration d'une sauvegarde de la base, ou une machine plus rapide, doit le tenir. Le journal de progression, toutes les dix secondes, permet d'en estimer la fin.
 
 ### La trace
 
@@ -295,7 +348,7 @@ FROM graph_rebuild ORDER BY started_at DESC;
 
 - Le motif suit la classe de l'erreur : un défaut de la projection qui lève `KeyError`, `TypeError` ou `ValueError` met l'événement au rebut dès le premier échec, comme un événement mal formé. Le correctif déployé, il se rejoue.
 - Les essais d'un événement remis à plus tard avant la migration `0011` n'avaient pas d'heure : sa mise en file tient lieu de premier échec.
-- La reconstruction projette seule, un événement après l'autre : sa durée croît avec les événements conservés ([durée](#durée)), et des workers de plus ne l'accélèrent pas.
+- La reconstruction projette seule, un événement après l'autre : sa durée croît avec les événements conservés ([durée](#durée)), et des workers de plus ne l'accélèrent pas, alors que quatre workers vident une file chargée deux fois plus vite qu'un seul ([débit](#débit)).
 - Pendant une reconstruction, l'API lit un graphe partiel ; la couverture ne signale que les appels d'outil encore en file ([pendant la reconstruction](#pendant-la-reconstruction)). Une analyse faite sur un graphe corrompu n'est pas rejouée d'elle-même.
 - Un run garde l'agent, l'outil, le run parent et le contexte de trace du premier événement projeté qui les donne, et un jeu de données la nature du premier qui le nomme. Tant que les événements d'un run s'accordent, comme ceux des émetteurs d'AnswerLineage, l'ordre n'y fait rien ; deux événements qui se contredisent peuvent donner l'autre valeur, quand ils ont été reçus dans le même envoi ou que leur première projection n'a pas suivi leur réception (un événement remis à plus tard, puis rejoué du rebut).
 - Un émetteur retiré pour de bon est signalé muet une fois, puis le reste : rien ne permet encore de le déclarer retiré, ni de l'oublier. Sa dernière couverture reste lisible, et son silence rend partielle la couverture des périodes qui suivent.

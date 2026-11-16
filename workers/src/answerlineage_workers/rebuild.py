@@ -59,6 +59,7 @@ from answerlineage_workers.queue import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_MAX_ATTEMPTS,
     Handler,
+    checked_batch_size,
     project_batch,
     record_event,
 )
@@ -67,7 +68,6 @@ logger = logging.getLogger("answerlineage_workers")
 
 # Clé du verrou consultatif d'une reconstruction, propre à AnswerLineage (« ALREBUIL »).
 REBUILD_LOCK_KEY: Final = 0x414C_5245_4255_494C
-MAX_BATCH_SIZE: Final = 10_000
 DEFAULT_PROGRESS_EVERY: Final = timedelta(seconds=10)
 # Attente quand la file ne rend rien pour l'instant : ce qui reste est remis à plus tard.
 IDLE_DELAY: Final = 1.0
@@ -388,8 +388,7 @@ async def rebuild_graph(
     n'a alors changé. Rend un résultat interrompu quand ``stop`` est levé avant la
     fin : la file garde ce qui reste à projeter.
     """
-    if not 1 <= batch_size <= MAX_BATCH_SIZE:
-        raise ValueError(f"Un lot compte de 1 à {MAX_BATCH_SIZE} événements.")
+    checked_batch_size(batch_size)
     stop = stop or asyncio.Event()
     async with engine.connect() as conn:
         try:

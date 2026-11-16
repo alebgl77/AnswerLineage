@@ -10,11 +10,17 @@ Chaque ligne garde la plus ancienne heure d'enregistrement qu'on lui présente :
 la réception de l'événement qui l'a fait connaître le premier. Une lecture garde
 la première et la dernière heure d'événement reçues : un événement antidaté
 élargit son intervalle, il ne la déplace pas.
+
+Plusieurs transactions écrivent le graphe en même temps, une par lot de la file,
+et chacune garde jusqu'à sa validation les lignes qu'elle a créées ou modifiées.
+``prepare_runs`` pose d'avance, dans un ordre global, celles que les lots se
+disputent : sans lui, deux lots qui créent les mêmes jeux de données dans des
+ordres différents s'attendent l'un l'autre, et PostgreSQL en annule un.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
@@ -256,11 +262,50 @@ async def _get_or_create(
     return int(found.id)
 
 
+@dataclass(frozen=True)
+class PreparedRuns:
+    """Ce que ``prepare_runs`` a posé pour un lot, que ``record_run`` n'a pas à refaire.
+
+    Les lignes partagées, par table et clé naturelle : leur identifiant, et la plus
+    ancienne réception du lot qui les nomme, qu'elles portent déjà (nulle : l'heure
+    de la transaction). Les enregistrements dont le run est déjà écrit.
+    """
+
+    ids: Mapping[tuple[str, tuple[object, ...]], tuple[int, datetime | None]]
+    runs: frozenset[RunRecord]
+
+
+async def _shared_id(
+    conn: AsyncConnection,
+    prepared: PreparedRuns | None,
+    table: Table,
+    key: Mapping[str, Any],
+    recorded_at: datetime | None,
+    defaults: Mapping[str, Any] | None = None,
+) -> int:
+    """L'identifiant d'une ligne partagée.
+
+    Celui que le lot a posé, quand la ligne porte déjà une réception qui ne suit pas
+    celle-ci ; sinon ``_get_or_create``, qui avance son heure d'enregistrement.
+    """
+    if prepared is not None:
+        known = prepared.ids.get((table.name, tuple(key.values())))
+        if known is not None:
+            found, earliest = known
+            if recorded_at is None or (earliest is not None and earliest <= recorded_at):
+                return found
+    return await _get_or_create(conn, table, key, recorded_at, defaults)
+
+
 async def _dataset_ids(
-    conn: AsyncConnection, ref: DatasetRef, recorded_at: datetime | None
+    conn: AsyncConnection,
+    ref: DatasetRef,
+    recorded_at: datetime | None,
+    prepared: PreparedRuns | None = None,
 ) -> tuple[int, int | None]:
-    dataset_id = await _get_or_create(
+    dataset_id = await _shared_id(
         conn,
+        prepared,
         schema.dataset,
         {"namespace": ref.namespace, "name": ref.name},
         recorded_at,
@@ -268,8 +313,9 @@ async def _dataset_ids(
     )
     if ref.version is None:
         return dataset_id, None
-    version_id = await _get_or_create(
+    version_id = await _shared_id(
         conn,
+        prepared,
         schema.dataset_version,
         {"dataset_id": dataset_id, "version": ref.version},
         recorded_at,
@@ -281,31 +327,22 @@ def _dataset_order(ref: DatasetRef) -> tuple[str, str, str]:
     return (ref.namespace, ref.name, ref.version or "")
 
 
-async def record_run(conn: AsyncConnection, record: RunRecord) -> None:
-    """Enregistre un run et ses arêtes dans la transaction en cours."""
+def _checked_times(record: RunRecord) -> None:
     for moment in (record.event_time, record.recorded_at):
         if moment is not None and moment.tzinfo is None:
             raise ValueError("event_time et recorded_at doivent porter un fuseau horaire.")
-    recorded_at = record.recorded_at
-    times = {"event_time": record.event_time, "recorded_at": recorded_at}
 
-    agent_id = (
-        await _get_or_create(
-            conn,
-            schema.agent,
-            {"namespace": record.agent.namespace, "name": record.agent.name},
-            recorded_at,
-        )
-        if record.agent is not None
-        else None
-    )
-    tool_id = (
-        await _get_or_create(
-            conn, schema.tool, {"server": record.tool.server, "name": record.tool.name}, recorded_at
-        )
-        if record.tool is not None
-        else None
-    )
+
+def _datasets(record: RunRecord) -> list[DatasetRef]:
+    """Les jeux de données d'un run, dans l'ordre où ``record_run`` les écrit."""
+    reads = sorted((read.dataset for read in record.reads), key=_dataset_order)
+    writes = sorted((write.dataset for write in record.writes), key=_dataset_order)
+    return [*reads, *writes]
+
+
+async def _upsert_run(
+    conn: AsyncConnection, record: RunRecord, agent_id: int | None, tool_id: int | None
+) -> None:
     await conn.execute(
         _UPSERT_RUN,
         {
@@ -322,14 +359,159 @@ async def record_run(conn: AsyncConnection, record: RunRecord) -> None:
             else None,
             "state": record.state,
             "state_time": record.event_time,
-            "recorded_at": recorded_at,
+            "recorded_at": record.recorded_at,
         },
     )
+
+
+class _Earliest[K: (str, tuple[str, str], tuple[str, str, str])]:
+    """Les clés d'une table, chacune avec la plus ancienne réception qui la nomme.
+
+    Une réception inconnue est l'heure de la transaction, postérieure à toute autre.
+    La première valeur annexe donnée pour une clé est gardée, comme la nature du jeu
+    de données que fixe le premier événement qui le crée.
+    """
+
+    def __init__(self) -> None:
+        self.rows: dict[K, tuple[datetime | None, Mapping[str, Any]]] = {}
+
+    def add(self, key: K, at: datetime | None, defaults: Mapping[str, Any] | None = None) -> None:
+        known = self.rows.get(key)
+        if known is None:
+            self.rows[key] = (at, defaults or {})
+        elif at is not None and (known[0] is None or at < known[0]):
+            self.rows[key] = (at, known[1])
+
+    def ordered(self) -> Iterable[tuple[K, datetime | None, Mapping[str, Any]]]:
+        """Dans l'ordre de la clé naturelle : le même pour toutes les transactions."""
+        for key in sorted(self.rows):
+            at, defaults = self.rows[key]
+            yield key, at, defaults
+
+
+async def prepare_runs(conn: AsyncConnection, records: Sequence[RunRecord]) -> PreparedRuns:
+    """Pose d'avance les lignes qu'un lot partage avec d'autres, dans un ordre global.
+
+    Un lot de la file projette ses événements l'un après l'autre dans une seule
+    transaction, qui garde jusqu'à sa validation chaque ligne qu'elle a créée, ou
+    dont elle a avancé l'heure d'enregistrement, et chaque run qu'elle a écrit. Deux
+    lots qui y viennent dans des ordres différents s'attendent l'un l'autre : un
+    interblocage, que PostgreSQL rompt en annulant l'un des deux.
+
+    Avant la projection du lot, ``prepare_runs`` écrit ces lignes, table par table
+    (agents, outils, jeux de données, versions, destinataires, puis runs) et dans
+    chaque table dans l'ordre de la clé naturelle : chaque transaction prend ses
+    verrous dans le même ordre, et n'attend qu'une transaction qui n'attend pas la
+    sienne. Chaque ligne partagée reçoit la plus ancienne réception du lot qui la
+    nomme ; chaque run, l'écriture de chacun de ses événements, dans l'ordre du lot.
+    Les arêtes d'un run ne sont écrites que par la transaction qui tient ce run :
+    elles ne se disputent pas.
+
+    Rend ce qui est posé, dont ``record_run`` se sert pour ne pas le refaire. Le
+    graphe obtenu est celui que donne ``record_run`` seul, événement après
+    événement, dans l'ordre du lot.
+    """
+    for record in records:
+        _checked_times(record)
+    agents: _Earliest[tuple[str, str]] = _Earliest()
+    tools: _Earliest[tuple[str, str]] = _Earliest()
+    datasets: _Earliest[tuple[str, str]] = _Earliest()
+    versions: _Earliest[tuple[str, str, str]] = _Earliest()
+    recipients: _Earliest[str] = _Earliest()
+    for record in records:
+        at = record.recorded_at
+        if record.agent is not None:
+            agents.add((record.agent.namespace, record.agent.name), at)
+        if record.tool is not None:
+            tools.add((record.tool.server, record.tool.name), at)
+        for ref in _datasets(record):
+            datasets.add((ref.namespace, ref.name), at, {"kind": ref.kind})
+            if ref.version is not None:
+                versions.add((ref.namespace, ref.name, ref.version), at)
+        for answer in record.answers:
+            for delivery in answer.deliveries:
+                for pseudonym in delivery.recipients:
+                    recipients.add(pseudonym, at)
+
+    ids: dict[tuple[str, tuple[object, ...]], tuple[int, datetime | None]] = {}
+
+    async def shared(
+        table: Table,
+        key: Mapping[str, Any],
+        at: datetime | None,
+        defaults: Mapping[str, Any] | None = None,
+    ) -> int:
+        found = await _get_or_create(conn, table, key, at, defaults)
+        ids[(table.name, tuple(key.values()))] = (found, at)
+        return found
+
+    for (namespace, name), at, _ in agents.ordered():
+        await shared(schema.agent, {"namespace": namespace, "name": name}, at)
+    for (server, name), at, _ in tools.ordered():
+        await shared(schema.tool, {"server": server, "name": name}, at)
+    dataset_ids = {
+        key: await shared(schema.dataset, {"namespace": key[0], "name": key[1]}, at, defaults)
+        for key, at, defaults in datasets.ordered()
+    }
+    for (namespace, name, version), at, _ in versions.ordered():
+        dataset_id = dataset_ids[(namespace, name)]
+        await shared(schema.dataset_version, {"dataset_id": dataset_id, "version": version}, at)
+    for pseudonym, at, _ in recipients.ordered():
+        await shared(schema.recipient, {"pseudonym": pseudonym}, at)
+    # Les événements d'un même run gardent l'ordre du lot : le tri est stable.
+    for record in sorted(records, key=lambda item: item.run_id):
+        agent, tool = record.agent, record.tool
+        await _upsert_run(
+            conn,
+            record,
+            None if agent is None else ids[("agent", (agent.namespace, agent.name))][0],
+            None if tool is None else ids[("tool", (tool.server, tool.name))][0],
+        )
+    return PreparedRuns(ids=ids, runs=frozenset(records))
+
+
+async def record_run(
+    conn: AsyncConnection, record: RunRecord, prepared: PreparedRuns | None = None
+) -> None:
+    """Enregistre un run et ses arêtes dans la transaction en cours.
+
+    ``prepared`` est ce que ``prepare_runs`` a posé pour le lot de cet
+    enregistrement, dans la même transaction : ses lignes partagées et son run ne
+    sont ni relus ni réécrits.
+    """
+    _checked_times(record)
+    recorded_at = record.recorded_at
+    times = {"event_time": record.event_time, "recorded_at": recorded_at}
+
+    agent_id = (
+        await _shared_id(
+            conn,
+            prepared,
+            schema.agent,
+            {"namespace": record.agent.namespace, "name": record.agent.name},
+            recorded_at,
+        )
+        if record.agent is not None
+        else None
+    )
+    tool_id = (
+        await _shared_id(
+            conn,
+            prepared,
+            schema.tool,
+            {"server": record.tool.server, "name": record.tool.name},
+            recorded_at,
+        )
+        if record.tool is not None
+        else None
+    )
+    if prepared is None or record not in prepared.runs:
+        await _upsert_run(conn, record, agent_id, tool_id)
 
     # Ordre stable des jeux de données : deux transactions concurrentes posent
     # leurs verrous dans le même ordre.
     for read in sorted(record.reads, key=lambda item: _dataset_order(item.dataset)):
-        dataset_id, version_id = await _dataset_ids(conn, read.dataset, recorded_at)
+        dataset_id, version_id = await _dataset_ids(conn, read.dataset, recorded_at, prepared)
         await conn.execute(
             _UPSERT_READ,
             {
@@ -343,7 +525,7 @@ async def record_run(conn: AsyncConnection, record: RunRecord) -> None:
             },
         )
     for write in sorted(record.writes, key=lambda item: _dataset_order(item.dataset)):
-        dataset_id, version_id = await _dataset_ids(conn, write.dataset, recorded_at)
+        dataset_id, version_id = await _dataset_ids(conn, write.dataset, recorded_at, prepared)
         await conn.execute(
             _UPSERT_WRITE,
             {
@@ -374,8 +556,8 @@ async def record_run(conn: AsyncConnection, record: RunRecord) -> None:
                 )
             ).scalar_one()
             for pseudonym in sorted(set(delivery.recipients)):
-                recipient_id = await _get_or_create(
-                    conn, schema.recipient, {"pseudonym": pseudonym}, recorded_at
+                recipient_id = await _shared_id(
+                    conn, prepared, schema.recipient, {"pseudonym": pseudonym}, recorded_at
                 )
                 await conn.execute(
                     _LINK_RECIPIENT,

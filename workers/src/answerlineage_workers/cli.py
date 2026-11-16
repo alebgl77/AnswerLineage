@@ -1,13 +1,15 @@
 """Ligne de commande du worker : ``answerlineage-worker``.
 
 La base vient de ``ANSWERLINEAGE_DATABASE_URL``. Le worker s'arrête proprement
-sur SIGINT ou SIGTERM, à la fin du lot en cours. Un événement que la projection
-n'a pas pu intégrer en ``--max-attempts`` essais va au rebut, ou au premier
-échec quand l'erreur ne se corrigera pas en réessayant. Il contrôle aussi, chaque
-minute, les émetteurs muets depuis plus de ``--silence-minutes``, et entretient
-chaque heure les partitions mensuelles : ``--partitions-ahead`` mois créés à
-l'avance, ``--retention-months`` mois conservés. Une conservation absurde
-(nulle, négative, plus courte que l'avance) empêche le worker de démarrer.
+sur SIGINT ou SIGTERM, à la fin du lot en cours, qui compte au plus
+``--batch-size`` événements. Un événement que la projection n'a pas pu intégrer
+en ``--max-attempts`` essais va au rebut, ou au premier échec quand l'erreur ne
+se corrigera pas en réessayant. Il contrôle aussi, chaque minute, les émetteurs
+muets depuis plus de ``--silence-minutes``, et entretient chaque heure les
+partitions mensuelles : ``--partitions-ahead`` mois créés à l'avance,
+``--retention-months`` mois conservés. Une conservation absurde
+(nulle, négative, plus courte que l'avance), un lot ou un nombre d'essais hors
+de leurs bornes empêchent le worker de démarrer.
 
 ``answerlineage-worker rebuild`` reconstruit le graphe depuis les événements
 bruts (``rebuild.py``). Sans ``--yes``, il n'en donne qu'un aperçu et ne change
@@ -45,11 +47,11 @@ from answerlineage_workers.partitions import (
 from answerlineage_workers.queue import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_MAX_ATTEMPTS,
+    MAX_BATCH_SIZE,
     MAX_MAX_ATTEMPTS,
     run_worker,
 )
 from answerlineage_workers.rebuild import (
-    MAX_BATCH_SIZE,
     RESUME_COMMAND,
     RebuildRefusedError,
     assess,
@@ -173,7 +175,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         prog="answerlineage-worker",
         description="Projette les événements reçus dans le graphe de lignage.",
     )
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument(
+        "--batch-size",
+        type=_batch_size,
+        default=DEFAULT_BATCH_SIZE,
+        help=(
+            f"événements projetés par lot, de 1 à {MAX_BATCH_SIZE}"
+            f" ({DEFAULT_BATCH_SIZE} par défaut)"
+        ),
+    )
     parser.add_argument(
         "--silence-minutes",
         type=_minutes,

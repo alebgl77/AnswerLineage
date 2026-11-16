@@ -186,15 +186,13 @@ async def test_workers_finishing_an_interrupted_rebuild_in_another_order_give_th
     assert not interrupted.finished and interrupted.remaining == len(events) - 30
 
     async def worker() -> None:
-        while await scalar(engine, "SELECT count(*) FROM ingest_queue"):
-            if (await process_batch(engine, batch_size=7)).empty:
-                # Un interblocage entre les deux remet un événement à plus tard : il est repris.
-                async with engine.begin() as conn:
-                    await conn.execute(text("UPDATE ingest_queue SET available_at = now()"))
+        while not (await process_batch(engine, batch_size=7)).empty:
             await asyncio.sleep(0)
 
     await asyncio.gather(worker(), worker())
 
+    # Les deux workers ne se sont pas interbloqués : rien n'est remis à plus tard.
+    assert await scalar(engine, "SELECT count(*) FROM ingest_queue") == 0
     assert await scalar(engine, "SELECT count(*) FROM dead_letter") == 0
     assert await graph_rows(engine) == graph
     assert (await rebuild_graph(engine)).resumed

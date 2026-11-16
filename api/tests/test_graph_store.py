@@ -18,8 +18,10 @@ from answerlineage_api.store.graph import (
     Delivery,
     Read,
     RunRecord,
+    RunState,
     ToolRef,
     Write,
+    prepare_runs,
     record_run,
 )
 
@@ -442,3 +444,149 @@ async def test_naive_event_time_is_refused(engine: AsyncEngine) -> None:
     with pytest.raises(ValueError, match="fuseau"):
         async with engine.begin() as conn:
             await record_run(conn, RunRecord(uuid4(), "agent", "START", naive))
+    with pytest.raises(ValueError, match="fuseau"):
+        async with engine.begin() as conn:
+            await prepare_runs(conn, [RunRecord(uuid4(), "agent", "START", T0, recorded_at=naive)])
+
+
+# Un lot pose d'avance, dans l'ordre des clés naturelles, les lignes que d'autres lots écrivent.
+
+
+def a_batch() -> list[RunRecord]:
+    """Les deux événements d'un run d'agent, à l'envers, et un appel d'outil reçu plus tôt qui
+    nomme les mêmes jeux de données, l'un sous une autre nature."""
+    run_id = uuid4()
+    call = RunRecord(
+        uuid4(),
+        "tool",
+        "COMPLETE",
+        T0 + timedelta(seconds=1),
+        tool=ToolRef("entrepot", "execute_sql"),
+        parent_run_id=run_id,
+        recorded_at=R1 - timedelta(minutes=1),
+        reads=(Read(DatasetRef("bigquery", TAUX.name, kind="api")), Read(NOTES)),
+        writes=(Write(VENTES),),
+    )
+    return [*reversed(two_events_of_one_run(run_id)), call]
+
+
+async def test_a_prepared_batch_gives_the_rows_of_its_events_recorded_one_by_one(
+    engine: AsyncEngine,
+) -> None:
+    """Mêmes lignes, mêmes heures, et la nature d'un jeu de données que donne le premier
+    événement du lot qui le nomme."""
+    batch = a_batch()
+    await record(engine, *batch)
+    one_by_one = await dated_rows(engine)
+    async with engine.begin() as conn:
+        await conn.execute(TRUNCATE_GRAPH)
+
+    async with engine.begin() as conn:
+        prepared = await prepare_runs(conn, batch)
+        for item in batch:
+            await record_run(conn, item, prepared)
+
+    assert await dated_rows(engine) == one_by_one
+    assert ("bigquery", TAUX.name, "table", R1 - timedelta(minutes=1)) in one_by_one["dataset"]
+
+
+async def test_a_batch_prepares_its_shared_rows_and_its_runs_and_no_edge(
+    engine: AsyncEngine,
+) -> None:
+    batch = a_batch()
+    async with engine.begin() as conn:
+        await prepare_runs(conn, batch)
+        await prepare_runs(conn, batch)
+
+    prepared = await counts(engine)
+    assert {table for table, count in prepared.items() if count} == {
+        "agent",
+        "tool",
+        "dataset",
+        "dataset_version",
+        "recipient",
+        "run",
+    }
+    assert (prepared["dataset"], prepared["recipient"], prepared["run"]) == (3, 2, 2)
+    # Les runs portent déjà ce que leurs événements disent d'eux : les écrire de nouveau,
+    # sans rien savoir du lot, n'y change rien.
+    runs = await dated_rows(engine)
+    async with engine.begin() as conn:
+        for item in batch:
+            await record_run(conn, item)
+    assert (await dated_rows(engine))["run"] == runs["run"]
+
+
+async def test_a_record_outside_the_prepared_batch_is_written_in_full(
+    engine: AsyncEngine,
+) -> None:
+    """Reçu avant le lot, il avance encore l'heure des lignes partagées, et écrit son run."""
+    earlier = R1 - timedelta(hours=1)
+    outside = RunRecord(
+        uuid4(),
+        "tool",
+        "COMPLETE",
+        T0,
+        tool=ToolRef("entrepot", "execute_sql"),
+        recorded_at=earlier,
+        reads=(Read(TAUX),),
+    )
+    async with engine.begin() as conn:
+        prepared = await prepare_runs(conn, a_batch())
+        await record_run(conn, outside, prepared)
+
+    dated = await dated_rows(engine)
+    assert ("bigquery", TAUX.name, "table", earlier) in dated["dataset"]
+    assert dated["tool"] == [("entrepot", "execute_sql", earlier)]
+    assert [row[-1] for row in dated["run"] if row[0] == outside.run_id] == [earlier]
+
+
+async def test_a_prepared_row_without_reception_dates_from_the_transaction(
+    engine: AsyncEngine,
+) -> None:
+    async with engine.begin() as conn:
+        await prepare_runs(
+            conn,
+            [RunRecord(uuid4(), "tool", "START", T0, tool=ToolRef("entrepot", "execute_sql"))],
+        )
+    ((tool, run),) = await rows(engine, "SELECT t.recorded_at, r.recorded_at FROM tool t, run r")
+    assert tool == run > T0
+
+
+async def test_batches_naming_the_same_new_rows_in_opposite_orders_do_not_deadlock(
+    engine: AsyncEngine,
+) -> None:
+    """Deux lots créent ensemble les mêmes jeux de données et écrivent les mêmes runs, dans
+    des ordres opposés : chacun les pose dans l'ordre des clés naturelles, aucun n'attend
+    une ligne que l'autre tient en attendant la sienne."""
+    datasets = [DatasetRef("bigquery", f"ventes.table_{index:02d}") for index in range(12)]
+    runs = [UUID(int=index + 1) for index in range(6)]
+
+    def batch(state: RunState, at: datetime, order: int) -> list[RunRecord]:
+        records = [
+            RunRecord(
+                run_id,
+                "tool",
+                state,
+                at,
+                tool=ToolRef("entrepot", f"outil_{index % 3}"),
+                recorded_at=at,
+                reads=(Read(datasets[(2 * index) % 12]), Read(datasets[(2 * index + 1) % 12])),
+            )
+            for index, run_id in enumerate(runs)
+        ]
+        return records[::order]
+
+    async def writer(records: list[RunRecord]) -> None:
+        async with engine.begin() as conn:
+            prepared = await prepare_runs(conn, records)
+            for item in records:
+                await record_run(conn, item, prepared)
+
+    await asyncio.gather(
+        writer(batch("START", T0, 1)), writer(batch("COMPLETE", T0 + timedelta(seconds=1), -1))
+    )
+
+    result = await counts(engine)
+    assert (result["dataset"], result["tool"], result["run"], result["read_edge"]) == (12, 3, 6, 12)
+    assert await rows(engine, "SELECT DISTINCT state, recorded_at FROM run") == [("COMPLETE", T0)]

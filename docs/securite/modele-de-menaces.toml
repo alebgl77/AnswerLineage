@@ -676,7 +676,7 @@ name = "Un événement qui fait échouer la projection bloque la file"
 category = "denial-of-service"
 boundary = "emetteur-ingestion"
 assets = ["disponibilite", "lignage"]
-description = "Un événement admis à l'ingestion mais que la projection ne sait pas écrire reviendrait en tête de file et empêcherait les autres d'entrer au graphe, ou tournerait sans fin sans que rien ne le montre, son lignage absent du graphe."
+description = "Un événement admis à l'ingestion mais que la projection ne sait pas écrire reviendrait en tête de file et empêcherait les autres d'entrer au graphe, ou tournerait sans fin sans que rien ne le montre, son lignage absent du graphe. À l'inverse, un pic de trafic qui fait s'interbloquer les workers compterait des essais à des événements sains, et les enverrait au rebut à tort."
 
 [[threat.mitigation]]
 description = "Un événement fautif est remis à plus tard sans bloquer son lot."
@@ -692,6 +692,16 @@ test = "workers/tests/test_dead_letters.py::test_an_event_the_projection_refuses
 description = "Une erreur qui peut passer n'envoie l'événement au rebut qu'au nombre d'essais réglé."
 code = "workers/src/answerlineage_workers/queue.py::failure_reason"
 test = "workers/tests/test_dead_letters.py::test_a_passing_error_goes_to_the_dead_letters_only_at_the_set_number_of_attempts"
+
+[[threat.mitigation]]
+description = "Des workers concurrents posent les lignes que leurs lots partagent dans un ordre global, et ne s'interbloquent pas : sur une file chargée, aucun essai n'est compté à un événement sain."
+code = "api/src/answerlineage_api/store/graph.py::prepare_runs"
+test = "workers/tests/test_deadlocks.py::test_concurrent_workers_on_a_loaded_queue_lose_no_attempt_and_no_event"
+
+[[threat.mitigation]]
+description = "Un interblocage ou un échec de sérialisation ne compte pas d'essai : le lot est repris dans une nouvelle transaction, au plus cinq fois ; au-delà, l'erreur compte comme toute erreur de la base, et rien ne tourne sans fin."
+code = "workers/src/answerlineage_workers/queue.py::project_batch"
+test = "workers/tests/test_deadlocks.py::test_a_transient_error_takes_the_batch_back_without_counting_an_attempt"
 
 [[threat.mitigation]]
 description = "Le correctif déployé, le rejeu du rebut intègre l'événement au graphe, une seule fois."

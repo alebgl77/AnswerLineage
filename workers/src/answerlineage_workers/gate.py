@@ -1,12 +1,7 @@
 """Barrière du graphe, entre sa reconstruction et les workers.
 
 La reconstruction (``rebuild.py``) vide le graphe puis le projette seule, de la
-file. Seule, parce que deux projections concurrentes sur un graphe vide
-s'interbloquent : elles créent ensemble les mêmes jeux de données, outils et
-destinataires, dans des ordres différents, et chaque interblocage remet un
-événement à plus tard, compte un essai, et ralentit la reprise au lieu de
-l'accélérer. Seule aussi pour vider le graphe sans attendre ni bloquer un lot
-en cours.
+file, sans qu'un lot des workers soit en cours ni ne commence.
 
 La barrière est un verrou consultatif de PostgreSQL. La reconstruction le tient
 en exclusif, pour sa session, tant qu'elle tourne. Un worker le prend en
