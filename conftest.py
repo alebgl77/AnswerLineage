@@ -17,7 +17,14 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-DEFAULT_POSTGRES_IMAGE = "postgres:18"
+# Images épinglées par leur empreinte, comme toutes celles du dépôt : PostgreSQL, et le
+# conteneur qui nettoie derrière Testcontainers (lu par Testcontainers à son import).
+_POSTGRES_DIGEST = "sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42"
+DEFAULT_POSTGRES_IMAGE = f"public.ecr.aws/docker/library/postgres:18.6@{_POSTGRES_DIGEST}"
+os.environ.setdefault(
+    "RYUK_CONTAINER_IMAGE",
+    "testcontainers/ryuk:0.8.1@sha256:bf3f74a47dee0acda89aba4b2fc9c7fdcf994a084db02a2d06566f07baae022e",
+)
 _TEMPLATE = "answerlineage_template"
 
 

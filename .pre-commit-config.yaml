@@ -23,5 +23,5 @@ repos:
         name: politique du dépôt
         entry: uv run python -m scripts.check_policy
         language: system
-        files: ^(\.github/|\.devcontainer/|\.gitlab-ci\.yml$|scripts/.*\.sh$)|Dockerfile
+        files: ^(\.github/|\.devcontainer/|\.gitlab-ci\.yml$|compose\.yaml$|scripts/.*\.sh$)|Dockerfile
         pass_filenames: false
