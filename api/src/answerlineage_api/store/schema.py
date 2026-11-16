@@ -16,6 +16,9 @@ Les incidents déclarés, leur périmètre et le résultat de leur analyse sont
 rangés à côté du graphe (``incident`` et les tables qui en dépendent) : des
 identifiants, des heures et des décomptes, jamais de texte libre.
 
+Les événements que la projection n'a pas pu intégrer au graphe attendent dans
+la file de rebut (``dead_letter``), qui les désigne sans les recopier.
+
 Les migrations d'Alembic font foi pour la base ; un test vérifie qu'elles
 produisent exactement ce schéma, partitions du mois courant et des deux
 suivants comprises.
@@ -80,6 +83,18 @@ AnalysisError = Literal["query_timeout", "analysis_error"]
 ANALYSIS_ERRORS: Final[tuple[str, ...]] = get_args(AnalysisError)
 # Durée maximale de la fenêtre de validité d'un incident.
 INCIDENT_WINDOW_DAYS: Final = 31
+# Motif de la mise au rebut d'un événement, d'une liste fermée : une classe
+# d'erreur, jamais le message d'une exception. Les quatre premiers ne se
+# corrigent pas en réessayant ; les deux derniers sont réessayés d'abord.
+DeadLetterReason = Literal[
+    "invalid_identifier",
+    "invalid_event",
+    "constraint_violation",
+    "invalid_value",
+    "database_error",
+    "projection_error",
+]
+DEAD_LETTER_REASONS: Final[tuple[str, ...]] = get_args(DeadLetterReason)
 
 READ_EDGE_KEY = "uq_read_edge_run_id_dataset_id_dataset_version_id"
 WRITE_EDGE_KEY = "uq_write_edge_run_id_dataset_id_dataset_version_id"
@@ -310,10 +325,11 @@ Index(
 
 # File de traitement : une ligne par événement à projeter dans le graphe. Elle
 # est écrite dans la transaction qui enregistre l'événement et retirée dans
-# celle qui le projette : aucun événement n'est perdu ni traité deux fois.
-# L'événement est désigné par son identifiant et son mois de réception, sans
-# clé étrangère : elle empêcherait de supprimer une partition purgée. La purge
-# retire de la file les événements du mois qu'elle supprime.
+# celle qui le projette, ou qui le met au rebut : aucun événement n'est perdu
+# ni traité deux fois. L'événement est désigné par son identifiant et son mois
+# de réception, sans clé étrangère : elle empêcherait de supprimer une
+# partition purgée. La purge retire de la file les événements du mois qu'elle
+# supprime.
 ingest_queue = Table(
     "ingest_queue",
     metadata,
@@ -325,8 +341,36 @@ ingest_queue = Table(
     Column("attempts", Integer, nullable=False, server_default="0"),
     # Classe de la dernière erreur, jamais son message.
     Column("last_error", Text),
+    # Premier essai en échec : nul tant qu'aucun n'a échoué.
+    Column("first_failed_at", DateTime(timezone=True)),
     UniqueConstraint("event_id"),
+    CheckConstraint("(attempts = 0) = (first_failed_at IS NULL)", name="first_failure"),
     Index(None, "available_at", "id"),
+)
+
+# File de rebut : les événements que la projection n'a pas pu intégrer au
+# graphe. Un worker y met un événement dans la transaction qui le retire de la
+# file ; un rejeu l'en retire dans celle qui le remet en file. Comme la file, le
+# rebut désigne l'événement brut par son identifiant et son mois de réception,
+# sans le recopier, et la purge retire les événements du mois qu'elle supprime.
+# L'émetteur est celui d'``event_raw`` ; le motif, un code de la liste fermée.
+dead_letter = Table(
+    "dead_letter",
+    metadata,
+    Column("event_id", Text, primary_key=True),
+    Column("recorded_month", Date, nullable=False),
+    Column("emitter", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("first_failed_at", DateTime(timezone=True), nullable=False),
+    Column("last_failed_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(_in("reason", DEAD_LETTER_REASONS), name="reason"),
+    CheckConstraint("attempts >= 1", name="attempts"),
+    CheckConstraint("first_failed_at <= last_failed_at", name="failures"),
+    # Les plus récemment mis au rebut d'abord, page par page.
+    Index(None, "last_failed_at", "event_id"),
+    # Les décomptes par motif d'un émetteur.
+    Index(None, "emitter", "reason"),
 )
 
 # Doublons reçus, par émetteur et par jour (date UTC de réception). Une ligne

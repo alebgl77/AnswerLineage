@@ -6,7 +6,7 @@ Un worker lit la file de traitement et projette chaque événement reçu dans le
 ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run answerlineage-worker
 ```
 
-Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés, contrôle les [émetteurs muets](#émetteurs-muets) et entretient les [partitions mensuelles](#partitions-mensuelles).
+Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Un événement qu'il ne parvient pas à projeter va à la [file de rebut](#file-de-rebut), où il se consulte et se rejoue. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés, contrôle les [émetteurs muets](#émetteurs-muets) et entretient les [partitions mensuelles](#partitions-mensuelles).
 
 ## Garanties
 
@@ -14,7 +14,8 @@ L'API d'ingestion écrit une ligne dans la file dans la transaction qui enregist
 
 - **aucun double traitement** : les lignes réclamées par un worker sont verrouillées, les autres workers les sautent (`FOR UPDATE SKIP LOCKED`) ;
 - **aucune perte** : si un worker s'arrête en plein lot, sa transaction est annulée, les lignes redeviennent visibles et aucune écriture partielle ne reste dans le graphe ;
-- **un événement fautif ne bloque pas le lot** : il est remis à plus tard, avec un délai qui double à chaque essai (5 s, 10 s, 20 s, jusqu'à une heure). La file garde le nombre d'essais et la classe de la dernière erreur, jamais son message.
+- **un événement fautif ne bloque pas le lot** : il est remis à plus tard, avec un délai qui double à chaque essai (5 s, 10 s, 20 s, jusqu'à une heure). La file garde le nombre d'essais, l'heure du premier en échec et la classe de la dernière erreur, jamais son message ;
+- **un événement fautif ne tourne pas sans fin** : il va à la [file de rebut](#file-de-rebut), au premier échec ou au dernier essai selon son motif, dans la transaction qui le retire de la file.
 
 Les événements bruts restent dans `event_raw` : le graphe peut être reconstruit en les rejouant.
 
@@ -31,11 +32,65 @@ Les événements bruts restent dans `event_raw` : le graphe peut être reconstru
 
 Un événement venu d'un autre émetteur OpenLineage, sans ces facettes, est enregistré comme un job ordinaire avec ses lectures et ses écritures. Une facette propre mal formée est ignorée, sans empêcher d'enregistrer le reste de l'événement. Les schémas de ces facettes sont décrits dans [Facettes OpenLineage](facettes.md).
 
-Chaque identifiant recopié dans le graphe (agent, outil, jeu de données, version, colonne, empreinte, canal, référence de message, destinataire) l'est sous sa forme normalisée NFC : deux écritures d'un même nom, composée et décomposée, donnent un seul objet. Les identifiants ont été contrôlés à l'[ingestion](ingestion.md#identifiants) ; un événement enregistré avant ce contrôle et rejoué n'en fait pas entrer de mal formé : une valeur de facette fautive est ignorée, et un espace de noms ou un nom fautif laisse l'événement dans la file.
+Chaque identifiant recopié dans le graphe (agent, outil, jeu de données, version, colonne, empreinte, canal, référence de message, destinataire) l'est sous sa forme normalisée NFC : deux écritures d'un même nom, composée et décomposée, donnent un seul objet. Les identifiants ont été contrôlés à l'[ingestion](ingestion.md#identifiants) ; un événement enregistré avant ce contrôle et rejoué n'en fait pas entrer de mal formé : une valeur de facette fautive est ignorée, et un espace de noms ou un nom fautif envoie l'événement au [rebut](#file-de-rebut) (`invalid_identifier`).
 
 L'ordre d'arrivée ne compte pas : deux événements d'un même run reçus dans le désordre donnent le même graphe.
 
 Chaque ligne que l'événement fait connaître prend pour heure d'enregistrement sa réception par l'API (`event_raw.recorded_at`), pas l'heure du passage du worker : un événement projeté plus tard, après une panne des workers ou parce qu'il a été remis dans la file, garde sa réception d'origine ([deux heures](schema.md#deux-heures)).
+
+## File de rebut
+
+Un événement que la projection ne parvient pas à intégrer au graphe quitte la file pour la file de rebut (`dead_letter`), où il attend d'être consulté puis rejoué. Sans elle, il tournerait sans fin, au plus toutes les heures, sans que rien ne le montre, et son lignage manquerait au graphe.
+
+Il y va dans la transaction du lot qui le retire de la file : ni perte, ni double traitement, même avec plusieurs workers. L'événement brut reste dans `event_raw` : le rebut le désigne, il ne le recopie pas. Il garde :
+
+| Colonne | Contenu |
+| --- | --- |
+| `event_id`, `recorded_month` | L'événement brut, par son identifiant et son mois de réception |
+| `emitter` | Son émetteur : l'espace de noms normalisé de son job, la définition du [compteur de doublons](ingestion.md#compteur-de-doublons) et de la couverture |
+| `reason` | Le motif du dernier échec, un code de la liste ci-dessous : la classe de l'erreur, jamais son message, qui peut citer l'événement |
+| `attempts` | Les essais en échec |
+| `first_failed_at`, `last_failed_at` | Le premier essai en échec, et le dernier : la mise au rebut |
+
+Aucun contenu : ni l'événement, ni le message d'une exception.
+
+### Motifs
+
+| Motif | Erreur | Au rebut |
+| --- | --- | --- |
+| `invalid_identifier` | Un identifiant obligatoire (espace de noms ou nom du job, d'un jeu de données) n'a pas la forme d'un nom : un événement enregistré avant le contrôle des identifiants | Au premier échec |
+| `invalid_event` | L'événement n'a pas la forme que la projection lit : champ obligatoire absent ou d'un autre type, identifiant de run ou heure illisible (`KeyError`, `TypeError`, `ValueError`) | Au premier échec |
+| `constraint_violation` | L'écriture du graphe viole une contrainte de la base (`IntegrityError`) : la projection et le schéma du graphe ne s'accordent pas | Au premier échec |
+| `invalid_value` | La base refuse une valeur (`DataError`) : hors de portée, texte qu'elle ne sait pas conserver | Au premier échec |
+| `database_error` | Une autre erreur de la base : connexion perdue, interblocage, schéma pas encore migré | Au dernier essai |
+| `projection_error` | Toute autre erreur | Au dernier essai |
+
+Les quatre premiers motifs ne se corrigent pas en réessayant : réessayer ne ferait que retarder le signalement. Les deux derniers peuvent passer : l'événement est remis à plus tard, et ne va au rebut qu'au dernier essai, le dixième par défaut, 42 minutes après le premier. Une panne qui fait échouer le lot entier, base injoignable par exemple, ne compte d'essai à aucun événement : le lot reste dans la file, tel quel.
+
+| Réglage | Option | Défaut |
+| --- | --- | --- |
+| Essais en échec au-delà desquels un événement va au rebut | `--max-attempts` | 10 (1 à 100) |
+
+Le journal nomme l'événement par son identifiant, une empreinte, avec le motif et la classe de l'erreur, jamais son message :
+
+```text
+WARNING answerlineage_workers Événement 2a8b9477e2742f3eaeb18f4910603feb800eff1bc80f577f9d0e9cc4851eab10 remis à plus tard : database_error (OperationalError), essai 3 sur 10.
+ERROR answerlineage_workers Événement 2a8b9477e2742f3eaeb18f4910603feb800eff1bc80f577f9d0e9cc4851eab10 mis au rebut : constraint_violation (IntegrityError), après 1 essai(s).
+```
+
+### Consulter et rejouer
+
+`GET /api/v1/ingestion/dead-letters` liste le rebut, `POST /api/v1/ingestion/dead-letters/replay` le remet en file ([API d'ingestion](ingestion.md#file-de-rebut)) ; depuis le terminal, [`answerlineage dead-letters`](cli.md#answerlineage-dead-letters) fait l'un et l'autre.
+
+Le rejeu retire les événements du rebut et les remet en file dans une seule transaction ; un worker les projette comme les autres. Rejouer est sans risque : la projection est idempotente, et un événement intégré n'entre au graphe qu'une fois, avec sa réception d'origine pour heure d'enregistrement. Un événement rejoué repart sans essai : s'il échoue encore, il revient au rebut avec son nouveau motif, ses essais et ses heures d'échec comptés depuis le rejeu.
+
+Le chemin d'une erreur de schéma :
+
+1. une version de la projection écrit dans le graphe une valeur que son schéma refuse : les événements touchés vont au rebut, motif `constraint_violation`, et le journal le dit ;
+2. `answerlineage dead-letters list` les montre, par émetteur et par motif ;
+3. le correctif déployé, `answerlineage dead-letters replay --reason constraint_violation` les remet en file, et les workers les intègrent au graphe.
+
+Un événement sort du rebut par un rejeu, ou par la [purge](#partitions-mensuelles) du mois où il a été reçu.
 
 ## Analyse des incidents
 
@@ -91,7 +146,7 @@ L'horloge du contrôle est celle du worker, comparée à l'heure de réception p
 Les événements bruts, les relevés de couverture et le compteur de doublons sont [partitionnés par mois de réception](schema.md#partitions-et-conservation). Au démarrage, puis toutes les heures, la boucle du worker les entretient, sans intervention :
 
 1. **Création à l'avance.** Le mois courant et les deux suivants ont leur partition, pour chaque table. Une écriture trouve toujours la sienne : une partition manque au plus tôt deux mois après le dernier passage réussi.
-2. **Purge.** Une partition entièrement plus ancienne que la conservation est supprimée : avec 13 mois, la maintenance du 15 mars 2026 supprime janvier 2025, qui finit avant le 15 février 2025, et garde février 2025. Les événements d'un mois purgé encore dans la file, jamais projetés après tant de mois, en sont retirés, et la ligne de journal le dit.
+2. **Purge.** Une partition entièrement plus ancienne que la conservation est supprimée : avec 13 mois, la maintenance du 15 mars 2026 supprime janvier 2025, qui finit avant le 15 février 2025, et garde février 2025. Les événements d'un mois purgé encore dans la file, jamais projetés après tant de mois, en sont retirés, comme ceux qui attendent au rebut, et une ligne de journal le dit.
 3. **Contrôle.** Une partition qui manque pour un mois qui commence dans les sept jours, ou pour le mois courant, est signalée :
 
    - une ligne de journal qui nomme la table et le mois, jamais un contenu :
@@ -130,5 +185,7 @@ L'horloge de la maintenance est celle du worker, injectée dans les tests : les 
 
 - Une analyse est un instantané : elle ne voit que les événements déjà projetés. Un événement reçu avant elle mais encore dans la file lui échappe, et la couverture le signale par un trou `missing_from_graph` ; aucune route ne relance encore une analyse ([rejouer une analyse](incidents.md#rejouer-une-analyse)).
 
-- Un événement toujours fautif reste dans la file, de plus en plus espacé : il n'y a pas encore de file de rebut à consulter et à rejouer. Il en sort quand son mois est purgé.
+- Le motif suit la classe de l'erreur : un défaut de la projection qui lève `KeyError`, `TypeError` ou `ValueError` met l'événement au rebut dès le premier échec, comme un événement mal formé. Le correctif déployé, il se rejoue.
+- `answerlineage doctor` ne compte pas encore le rebut : `answerlineage dead-letters list` sort avec le code `1` quand des événements y attendent, de quoi alerter.
+- Les essais d'un événement remis à plus tard avant la migration `0011` n'avaient pas d'heure : sa mise en file tient lieu de premier échec.
 - Un émetteur retiré pour de bon est signalé muet une fois, puis le reste : rien ne permet encore de le déclarer retiré, ni de l'oublier. Sa dernière couverture reste lisible, et son silence rend partielle la couverture des périodes qui suivent.

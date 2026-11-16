@@ -18,9 +18,15 @@ class Exit(IntEnum):
     ANOMALY = 1
     # demo : Docker absent, ou docker compose en échec.
     FAILED = 1
+    # dead-letters list : des événements attendent au rebut.
+    WAITING = 1
+    # dead-letters replay : aucun événement à rejouer sous ces filtres.
+    NOTHING_TO_REPLAY = 1
     USAGE = 2
     # impact : résultat tronqué, ou couverture du lignage non mesurée, partielle ou trouée.
     INCOMPLETE = 3
+    # dead-letters replay : la borne est atteinte, d'autres événements restent au rebut.
+    REMAINING = 3
     UNREACHABLE = 4
     # L'API a refusé la requête, ou rendu une réponse invalide.
     API_ERROR = 5

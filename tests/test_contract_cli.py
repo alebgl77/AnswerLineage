@@ -19,7 +19,7 @@ from hypothesis import strategies as st
 
 from answerlineage_api import identifiers as api
 from answerlineage_api.store.schema import INCIDENT_WINDOW_DAYS
-from answerlineage_cli import doctor, impact, incident, names
+from answerlineage_cli import dead_letters, doctor, impact, incident, names
 from answerlineage_cli.names import is_identifier
 from tests.test_contract_identifiers import SAMPLES
 
@@ -114,3 +114,29 @@ def test_the_incident_lists_and_bounds_of_the_command_are_those_of_the_api(
     assert parameters["limit"]["maximum"] == incident.MAX_LIMIT
     assert parameters["cursor"]["anyOf"][0]["pattern"] == f"^{impact.CURSOR.pattern}$"
     assert parameters["incident_id"]["pattern"] == f"^{incident.INCIDENT_ID.pattern}$"
+
+
+def test_the_dead_letter_reasons_and_bounds_of_the_command_are_those_of_the_api(
+    contract: dict[str, Any],
+) -> None:
+    schemas = contract["components"]["schemas"]
+    assert enum(schemas["DeadLetter"]["properties"]["reason"]) == list(dead_letters.REASONS)
+    assert enum(schemas["ReasonCount"]["properties"]["reason"]) == list(dead_letters.REASONS)
+    assert set(dead_letters.REASON_LABELS) == set(dead_letters.REASONS)
+
+    route = contract["paths"]["/api/v1/ingestion/dead-letters"]["get"]
+    parameters = {parameter["name"]: parameter["schema"] for parameter in route["parameters"]}
+    assert set(parameters) == {"emitter", "reason", "limit", "cursor"}
+    assert parameters["limit"]["maximum"] == dead_letters.MAX_LIMIT
+    assert parameters["emitter"]["anyOf"][0]["maxLength"] == dead_letters.MAX_EMITTER
+    assert enum(parameters["reason"]) == list(dead_letters.REASONS)
+    assert parameters["cursor"]["anyOf"][0]["pattern"] == f"^{dead_letters.CURSOR.pattern}$"
+
+    replay = schemas["DeadLetterReplay"]["properties"]
+    assert set(replay) == {"emitter", "reason", "event_ids", "limit"}
+    assert replay["limit"]["maximum"] == dead_letters.MAX_REPLAY
+    assert replay["event_ids"]["maxItems"] == dead_letters.MAX_EVENT_IDS
+    assert replay["event_ids"]["anyOf"][0]["items"]["pattern"] == (
+        f"^{dead_letters.EVENT_ID.pattern}$"
+    )
+    assert replay["emitter"]["maxLength"] == dead_letters.MAX_EMITTER

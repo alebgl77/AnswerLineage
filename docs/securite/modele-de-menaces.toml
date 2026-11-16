@@ -424,6 +424,28 @@ reason = "L'API n'authentifie pas encore ses appelants : elle est faite pour la 
 consequence = "Exposée sans contrôle d'accès, elle livre le lignage à qui la joint et le laisse déclarer des incidents, donc lancer des analyses."
 
 [[threat]]
+id = "api/rejeu-non-authentifie"
+name = "Un appelant qui joint l'API lit la file de rebut et la rejoue"
+category = "elevation-of-privilege"
+boundary = "lecteur-lecture"
+assets = ["disponibilite", "lignage"]
+description = "La file de rebut et son rejeu n'authentifient pas leurs appelants : qui joint l'API remet en file les événements que la projection a refusés, une action d'exploitation."
+
+[[threat.mitigation]]
+description = "Un rejeu remet en file un nombre borné d'événements, sous le délai des lectures ; son corps est lu borné et un champ inconnu le refuse sans rien rejouer."
+code = "api/src/answerlineage_api/ingest/dead_letters.py::replay_dead_letters"
+test = "api/tests/test_dead_letters.py::test_a_replay_moves_at_most_its_limit_the_oldest_failures_first"
+
+[[threat.mitigation]]
+description = "Deux rejeux simultanés ne remettent jamais un événement deux fois en file, et la projection d'un événement rejoué est idempotente."
+code = "api/src/answerlineage_api/ingest/dead_letters.py::replay"
+test = "api/tests/test_dead_letters.py::test_concurrent_replays_put_each_event_back_once"
+
+[threat.acceptance]
+reason = "Le rebut se lit et se rejoue sans authentification, comme le reste de l'API : elle est faite pour la boucle locale ou derrière un contrôle d'accès. Le rejeu reviendra à l'administrateur quand l'API distinguera les rôles de ses appelants."
+consequence = "Exposée sans contrôle d'accès, l'API laisse qui la joint lire les émetteurs et les identifiants des événements au rebut, et les remettre en file autant de fois qu'il le veut : les workers refont un travail sans effet sur le graphe, et un événement qui échoue encore revient au rebut."
+
+[[threat]]
 id = "api/page-web-hostile"
 name = "Une page web ouverte sur le poste se sert de l'API locale"
 category = "elevation-of-privilege"
@@ -621,12 +643,27 @@ name = "Un événement qui fait échouer la projection bloque la file"
 category = "denial-of-service"
 boundary = "emetteur-ingestion"
 assets = ["disponibilite", "lignage"]
-description = "Un événement admis à l'ingestion mais que la projection ne sait pas écrire reviendrait en tête de file et empêcherait les autres d'entrer au graphe."
+description = "Un événement admis à l'ingestion mais que la projection ne sait pas écrire reviendrait en tête de file et empêcherait les autres d'entrer au graphe, ou tournerait sans fin sans que rien ne le montre, son lignage absent du graphe."
 
 [[threat.mitigation]]
 description = "Un événement fautif est remis à plus tard sans bloquer son lot."
 code = "workers/src/answerlineage_workers/queue.py"
 test = "workers/tests/test_queue.py::test_faulty_event_is_postponed_without_blocking_the_batch"
+
+[[threat.mitigation]]
+description = "Un événement que la projection refuse va à la file de rebut au premier échec, dans la transaction qui le retire de la file, avec son émetteur et son motif : il ne tourne plus."
+code = "workers/src/answerlineage_workers/queue.py::process_batch"
+test = "workers/tests/test_dead_letters.py::test_an_event_the_projection_refuses_goes_to_the_dead_letters_at_once"
+
+[[threat.mitigation]]
+description = "Une erreur qui peut passer n'envoie l'événement au rebut qu'au nombre d'essais réglé."
+code = "workers/src/answerlineage_workers/queue.py::failure_reason"
+test = "workers/tests/test_dead_letters.py::test_a_passing_error_goes_to_the_dead_letters_only_at_the_set_number_of_attempts"
+
+[[threat.mitigation]]
+description = "Le correctif déployé, le rejeu du rebut intègre l'événement au graphe, une seule fois."
+code = "api/src/answerlineage_api/ingest/dead_letters.py::replay"
+test = "tests/test_dead_letters_end_to_end.py::test_a_refused_event_waits_in_the_dead_letters_then_a_replay_integrates_it_once"
 
 [[threat.mitigation]]
 description = "Un lot qui échoue n'arrête pas le worker."

@@ -295,6 +295,30 @@ async def test_unprojected_events_of_a_purged_month_leave_the_queue(
     assert "1 événement(s) jamais projeté(s)" in caplog.text
 
 
+async def test_dead_letters_of_a_purged_month_leave_the_dead_letters(
+    engine: AsyncEngine, caplog: pytest.LogCaptureFixture
+) -> None:
+    await maintain_partitions(engine, now=at(2025, 1, 10), retention=THIRTEEN)
+    await received_in(engine, at(2025, 1, 20))
+    await received_in(engine, at(2025, 2, 20))
+    await execute(
+        engine,
+        """
+        INSERT INTO dead_letter (event_id, recorded_month, emitter, reason, attempts,
+                                 first_failed_at, last_failed_at)
+        SELECT event_id, recorded_month, emitter, 'invalid_event', 1, recorded_at, recorded_at
+        FROM event_raw
+        """,
+    )
+    with caplog.at_level(logging.WARNING, logger="answerlineage_workers"):
+        await maintain_partitions(engine, now=at(2026, 3, 15), retention=THIRTEEN)
+    async with engine.connect() as conn:
+        kept = await conn.execute(text("SELECT event_id FROM dead_letter"))
+        # Février 2025 finit après la limite de la purge : il reste, au rebut comme ailleurs.
+        assert kept.scalars().all() == ["2025-02-0"]
+    assert "event_raw_2025_01 purgée : 1 événement(s) retiré(s) du rebut" in caplog.text
+
+
 @pytest.mark.parametrize(
     ("months", "ahead"), [(0, 2), (-1, 2), (3, 4), (13, 1), (13, 25), (1201, 2)]
 )

@@ -153,7 +153,7 @@ async def test_faulty_event_is_postponed_without_blocking_the_batch(
     ) -> None:
         await record_event(conn, payload, received_at)
         if payload["run"]["runId"] == faulty:
-            raise ValueError("canari : le message d'erreur peut citer l'événement")
+            raise RuntimeError("canari : le message d'erreur peut citer l'événement")
 
     with caplog.at_level(logging.WARNING, logger="answerlineage_workers"):
         result = await process_batch(engine, handler=failing_on_one)
@@ -167,8 +167,8 @@ async def test_faulty_event_is_postponed_without_blocking_the_batch(
                 text("SELECT attempts, last_error, available_at > now() FROM ingest_queue")
             )
         ).all()
-    assert (attempts, last_error, later) == (1, "ValueError", True)
-    assert "ValueError" in caplog.text
+    assert (attempts, last_error, later) == (1, "RuntimeError", True)
+    assert "RuntimeError" in caplog.text
     assert "canari" not in caplog.text
 
     # Pas encore disponible : il n'est pas repris tout de suite.

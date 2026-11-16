@@ -25,6 +25,8 @@ from answerlineage_api.incidents.models import declaration_json_schema
 from answerlineage_api.incidents.routes import router as incidents_router
 from answerlineage_api.ingest.body import max_body_bytes_from_settings
 from answerlineage_api.ingest.coverage import router as coverage_router
+from answerlineage_api.ingest.dead_letters import replay_json_schema
+from answerlineage_api.ingest.dead_letters import router as dead_letters_router
 from answerlineage_api.ingest.duplicates import router as duplicates_router
 from answerlineage_api.ingest.models import run_event_json_schema
 from answerlineage_api.ingest.routes import router as ingestion_router
@@ -111,6 +113,7 @@ def create_app(
     app.state.max_body_bytes = body_limit
     app.include_router(ingestion_router)
     app.include_router(duplicates_router)
+    app.include_router(dead_letters_router)
     app.include_router(undescribed_router)
     app.include_router(coverage_router)
     app.include_router(lineage_router)
@@ -135,6 +138,7 @@ def create_app(
             declaration = declaration_json_schema()
             schemas.update(declaration.pop("$defs", {}))
             schemas["IncidentDeclaration"] = declaration
+            schemas["DeadLetterReplay"] = replay_json_schema()
             app.openapi_schema = document
         return app.openapi_schema
 

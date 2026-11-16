@@ -24,7 +24,8 @@ write_edge   agent, tool
 | `delivery_recipient` | diffusion et destinataire | Destinataire d'une diffusion |
 | `recipient` | pseudonyme | Destinataire pseudonymisé, sans table de correspondance |
 | `event_raw` | empreinte de l'événement | Événement OpenLineage reçu tel quel, rejouable |
-| `ingest_queue` | événement | File de traitement : événements à projeter dans le graphe |
+| `ingest_queue` | événement | File de traitement : événements à projeter dans le graphe, leurs essais en échec |
+| `dead_letter` | événement | File de rebut : événements que la projection n'a pas pu intégrer, leur émetteur et le motif de l'échec |
 | `ingest_duplicate` | émetteur et jour | Nombre d'événements reçus en double, par émetteur et par jour UTC |
 | `coverage_report` | émetteur, début et fin de fenêtre | Relevé de couverture : appels vus, événements émis et perdus, requêtes non inspectées |
 | `coverage_emitter` | émetteur | Émetteur connu : réception de son dernier relevé, silence signalé |
@@ -99,7 +100,7 @@ Une partition couvre un mois UTC, du premier jour inclus au premier jour du mois
 - **Aucune mise à jour ne déplace une ligne.** La clé n'est jamais réécrite : une fusion de relevés ou un doublon compté modifient la ligne dans sa partition.
 - **Les écritures restent idempotentes.** PostgreSQL exige que la clé primaire d'une table partitionnée contienne sa clé de partition : un événement déjà reçu est donc cherché dans toutes les partitions avant d'être enregistré, et la clé primaire départage deux réceptions simultanées du même mois. Une fenêtre de relevé se cherche de même.
 - **Aucune écriture n'échoue faute de partition.** Les migrations créent le mois courant et les deux suivants ; la maintenance garde ensuite ces mois d'avance, et son contrôle signale, sept jours avant, un mois qui commence sans partition (`partition_alert`).
-- **La file de traitement n'a pas de clé étrangère vers `event_raw`** : une clé étrangère vers une table partitionnée empêcherait d'en supprimer une partition. `ingest_queue` désigne l'événement par son identifiant et son mois de réception (`recorded_month`) ; la purge retire de la file les événements du mois qu'elle supprime, jamais projetés.
+- **La file de traitement et la file de rebut n'ont pas de clé étrangère vers `event_raw`** : une clé étrangère vers une table partitionnée empêcherait d'en supprimer une partition. `ingest_queue` et `dead_letter` désignent l'événement par son identifiant et son mois de réception (`recorded_month`) ; la purge retire de l'une et de l'autre les événements du mois qu'elle supprime, jamais projetés.
 
 ### Le graphe n'est pas partitionné
 
@@ -134,6 +135,19 @@ La migration `0008` recrée chaque table partitionnée : ses lignes sont mises d
 
 - Deux réceptions simultanées d'un même événement, à cheval sur deux mois à quelques millisecondes près, ne se voient pas l'une l'autre : l'événement est enregistré deux fois, une fois dans chaque partition. Le graphe n'en est pas changé (la projection est idempotente) ; le doublon n'est pas compté, et la couverture de sa fenêtre compte l'appel deux fois, au plus jusqu'aux appels vus. Une fenêtre de relevé reçue ainsi a deux lignes ; la lecture les réunit au plus grand, comme la réception.
 - Un relevé reçu juste après un changement de mois survit un mois de plus que les événements de sa fenêtre : pendant ce mois, la couverture de cette fenêtre, la plus ancienne de la conservation, compte ses appels comme manquants.
+
+## File de rebut
+
+Un événement que la projection n'a pas pu intégrer au graphe quitte `ingest_queue` pour `dead_letter`, dans la transaction du lot ; un rejeu fait le chemin inverse, dans une transaction aussi ([workers](workers.md#file-de-rebut)). Un événement est donc dans l'une ou dans l'autre, jamais dans les deux, et sa ligne d'`event_raw` reste : le rebut la désigne, il ne la recopie pas.
+
+| Table | Contraintes |
+| --- | --- |
+| `ingest_queue` | `first_failed_at`, l'heure du premier essai en échec, est remplie dès le premier échec, et seulement alors (`ck_ingest_queue_first_failure`) |
+| `dead_letter` | Un événement une fois (clé primaire, son identifiant). Motif de la liste fermée (`ck_dead_letter_reason`) ; un essai au moins (`ck_dead_letter_attempts`) ; le premier échec ne suit pas le dernier (`ck_dead_letter_failures`) |
+
+`dead_letter.emitter` est l'émetteur d'`event_raw`, sous sa forme normalisée : la même définition que le compteur de doublons et la couverture. `reason` est un code, jamais le message d'une exception ; ajouter un motif demande une révision de la base, qui étend sa contrainte. Un index range le rebut par heure du dernier échec, pour ses pages ; un autre par émetteur et par motif, pour ses décomptes.
+
+La migration `0011` crée la table et ajoute `first_failed_at` à la file. Un événement déjà remis à plus tard n'avait pas d'heure de premier échec : il prend son heure de mise en file, la plus ancienne possible. La descente remet en file les événements du rebut, avec leurs essais et leur motif pour dernière erreur, avant de retirer la table : aucun n'est perdu.
 
 ## Incidents
 

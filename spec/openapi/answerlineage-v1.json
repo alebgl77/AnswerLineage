@@ -777,6 +777,198 @@
         "title": "DatasetSource",
         "type": "object"
       },
+      "DeadLetter": {
+        "description": "Un événement au rebut, désigné par son identifiant : son contenu n'est pas recopié.",
+        "properties": {
+          "attempts": {
+            "description": "Essais de projection en échec depuis la mise en file.",
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "emitter": {
+            "description": "Émetteur : l'espace de noms du job de l'événement, sous sa forme normalisée.",
+            "title": "Emitter",
+            "type": "string"
+          },
+          "event_id": {
+            "description": "Identifiant de l'événement : l'empreinte de sa forme canonique, celle que rend l'ingestion.",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "first_failed_at": {
+            "description": "Premier essai en échec.",
+            "format": "date-time",
+            "title": "First Failed At",
+            "type": "string"
+          },
+          "last_failed_at": {
+            "description": "Dernier essai en échec : la mise au rebut.",
+            "format": "date-time",
+            "title": "Last Failed At",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Motif du dernier échec. « invalid_identifier » : un identifiant obligatoire (espace de noms ou nom du job, d'un jeu de données) n'a pas la forme d'un nom. « invalid_event » : l'événement n'a pas la forme que la projection lit. « constraint_violation » : l'écriture du graphe viole une contrainte de la base. « invalid_value » : la base refuse une valeur. Ces quatre motifs mettent l'événement au rebut au premier échec. « database_error » : la base a échoué (connexion, interblocage, schéma) ; « projection_error » : toute autre erreur. Ces deux motifs ne mettent l'événement au rebut qu'après le nombre d'essais réglé sur le worker.",
+            "enum": [
+              "invalid_identifier",
+              "invalid_event",
+              "constraint_violation",
+              "invalid_value",
+              "database_error",
+              "projection_error"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "received_at": {
+            "description": "Réception de l'événement par l'API.",
+            "format": "date-time",
+            "title": "Received At",
+            "type": "string"
+          },
+          "run_id": {
+            "description": "Run que l'événement décrit.",
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "emitter",
+          "reason",
+          "attempts",
+          "received_at",
+          "first_failed_at",
+          "last_failed_at"
+        ],
+        "title": "DeadLetter",
+        "type": "object"
+      },
+      "DeadLetterList": {
+        "description": "Une page du rebut, et les décomptes par motif.",
+        "properties": {
+          "counts": {
+            "description": "Événements au rebut par motif, chaque motif de la liste fermée dans son ordre, zéro compris. Ils suivent le filtre d'émetteur, pas celui de motif : ils disent la répartition des motifs.",
+            "items": {
+              "$ref": "#/components/schemas/ReasonCount"
+            },
+            "title": "Counts",
+            "type": "array"
+          },
+          "dead_letters": {
+            "description": "Les plus récemment mis au rebut d'abord, sous les filtres demandés.",
+            "items": {
+              "$ref": "#/components/schemas/DeadLetter"
+            },
+            "title": "Dead Letters",
+            "type": "array"
+          },
+          "more": {
+            "description": "Vrai quand d'autres événements suivent cette page.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor ». Nul quand il n'y en a plus.",
+            "title": "Next Cursor"
+          },
+          "truncated": {
+            "description": "Vrai quand le rebut compte plus de 100000 événements sous le filtre d'émetteur : les décomptes sont alors des minimums.",
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dead_letters",
+          "counts",
+          "truncated",
+          "more",
+          "next_cursor"
+        ],
+        "title": "DeadLetterList",
+        "type": "object"
+      },
+      "DeadLetterReplay": {
+        "additionalProperties": false,
+        "description": "Les événements du rebut à remettre en file : tous, ou ceux que les filtres désignent.\n\nLes filtres donnés se cumulent. Sans filtre, tout le rebut est rejoué, ``limit``\névénements à la fois.",
+        "properties": {
+          "emitter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Seulement les événements de cet émetteur : l'espace de noms de leur job.",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Emitter"
+          },
+          "event_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Seulement ces événements, par leur identifiant.",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Event Ids"
+          },
+          "limit": {
+            "default": 1000,
+            "description": "Nombre maximal d'événements remis en file par ce rejeu, les plus anciens d'abord.",
+            "maximum": 10000,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "invalid_identifier",
+                  "invalid_event",
+                  "constraint_violation",
+                  "invalid_value",
+                  "database_error",
+                  "projection_error"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Seulement les événements mis au rebut pour ce motif.",
+            "title": "Reason"
+          }
+        },
+        "title": "DeadLetterReplay",
+        "type": "object"
+      },
       "DeclaredDataset": {
         "additionalProperties": false,
         "description": "Un jeu de données faux, tel que le déclarant le nomme.",
@@ -1683,6 +1875,33 @@
         "title": "QueueHealth",
         "type": "object"
       },
+      "ReasonCount": {
+        "description": "Événements au rebut pour un motif.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "reason": {
+            "enum": [
+              "invalid_identifier",
+              "invalid_event",
+              "constraint_violation",
+              "invalid_value",
+              "database_error",
+              "projection_error"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "count"
+        ],
+        "title": "ReasonCount",
+        "type": "object"
+      },
       "RecipientNode": {
         "properties": {
           "id": {
@@ -1724,6 +1943,27 @@
           "errors"
         ],
         "title": "Rejection",
+        "type": "object"
+      },
+      "ReplayResult": {
+        "description": "Bilan d'un rejeu.",
+        "properties": {
+          "more": {
+            "description": "Vrai quand d'autres événements du rebut répondent aux filtres : la borne est atteinte, ou un autre rejeu les tenait. Relancer le rejeu.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "replayed": {
+            "description": "Événements retirés du rebut et remis en file : un worker les projettera.",
+            "title": "Replayed",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "replayed",
+          "more"
+        ],
+        "title": "ReplayResult",
         "type": "object"
       },
       "ReportWindow": {
@@ -3079,6 +3319,211 @@
         "summary": "Donne un incident, l'état de son analyse et les réponses touchées",
         "tags": [
           "incidents"
+        ]
+      }
+    },
+    "/api/v1/ingestion/dead-letters": {
+      "get": {
+        "description": "Les plus récemment mis au rebut d'abord, chacun avec son émetteur, son motif, ses essais\net ses heures d'échec ; et les décomptes par motif. Aucun contenu d'événement.\n\nComme toute lecture, elle s'exécute sous le délai maximal des lectures.",
+        "operationId": "list_dead_letters_api_v1_ingestion_dead_letters_get",
+        "parameters": [
+          {
+            "description": "Seulement les événements de cet émetteur : l'espace de noms de leur job, par exemple « mcp://entrepot ».",
+            "in": "query",
+            "name": "emitter",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Seulement les événements de cet émetteur : l'espace de noms de leur job, par exemple « mcp://entrepot ».",
+              "title": "Emitter"
+            }
+          },
+          {
+            "description": "Seulement les événements mis au rebut pour ce motif.",
+            "in": "query",
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "invalid_identifier",
+                    "invalid_event",
+                    "constraint_violation",
+                    "invalid_value",
+                    "database_error",
+                    "projection_error"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Seulement les événements mis au rebut pour ce motif.",
+              "title": "Reason"
+            }
+          },
+          {
+            "description": "Nombre maximal d'événements renvoyés.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "description": "Nombre maximal d'événements renvoyés.",
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{1,18}\\.[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeadLetterList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Liste les événements au rebut, que la projection n'a pas pu intégrer au graphe",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
+    "/api/v1/ingestion/dead-letters/replay": {
+      "post": {
+        "description": "Les événements retirés du rebut sont remis en file dans la même transaction ; un worker\nles projette de nouveau. Un événement qui échoue encore revient au rebut, avec son nouveau\nmotif. Le corps est lu borné, compressé ou non (``gzip``).\n\nLe rejeu s'exécute sous le délai maximal des lectures : au-delà, rien n'est remis en file.",
+        "operationId": "replay_dead_letters_api_v1_ingestion_dead_letters_replay_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeadLetterReplay"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`)."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "La demande de rejeu est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Remet en file les événements du rebut, tous ou filtrés, en nombre borné",
+        "tags": [
+          "ingestion"
         ]
       }
     },

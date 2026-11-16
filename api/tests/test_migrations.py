@@ -496,6 +496,76 @@ def test_reports_received_before_their_instance_keep_their_place(empty_database:
         engine.dispose()
 
 
+def test_the_dead_letters_lose_nothing_on_the_way_up_or_down(empty_database: URL) -> None:
+    """Un événement déjà remis à plus tard prend sa mise en file pour premier échec ; la
+    descente remet en file les événements du rebut, avec leurs essais."""
+    raw = text(
+        """
+        INSERT INTO event_raw (event_id, run_id, event_type, event_time, producer, payload,
+                               emitter, tool_call)
+        VALUES (:id, gen_random_uuid(), 'COMPLETE', now(), 'p', '{}', 'mcp://entrepot', true)
+        """
+    )
+    queued = text(
+        "INSERT INTO ingest_queue (event_id, recorded_month, attempts, last_error)"
+        " SELECT event_id, recorded_month, :attempts, :error FROM event_raw WHERE event_id = :id"
+    )
+    upgrade(empty_database, "0010")
+    engine = create_engine(empty_database)
+    try:
+        with engine.begin() as connection:
+            for event_id, attempts in (("neuf", 0), ("remis", 2), ("rebut", 0)):
+                connection.execute(raw, {"id": event_id})
+                connection.execute(
+                    queued,
+                    {"id": event_id, "attempts": attempts, "error": "X" if attempts else None},
+                )
+        upgrade(empty_database, "0011")
+        with engine.begin() as connection:
+            kept = connection.execute(
+                text(
+                    "SELECT event_id, first_failed_at = enqueued_at FROM ingest_queue"
+                    " ORDER BY event_id"
+                )
+            ).all()
+            assert [tuple(row) for row in kept] == [
+                ("neuf", None),
+                ("rebut", None),
+                ("remis", True),
+            ]
+            connection.execute(
+                text(
+                    """
+                    WITH moved AS (DELETE FROM ingest_queue WHERE event_id = 'rebut'
+                                   RETURNING event_id, recorded_month)
+                    INSERT INTO dead_letter (event_id, recorded_month, emitter, reason, attempts,
+                                             first_failed_at, last_failed_at)
+                    SELECT event_id, recorded_month, 'mcp://entrepot', 'invalid_event', 3,
+                           now(), now()
+                    FROM moved
+                    """
+                )
+            )
+        with (
+            pytest.raises(IntegrityError, match="ck_dead_letter_reason"),
+            engine.begin() as connection,
+        ):
+            connection.execute(text("UPDATE dead_letter SET reason = 'ValueError'"))
+
+        downgrade(empty_database, "0010")
+        with engine.connect() as connection:
+            back = connection.execute(
+                text("SELECT event_id, attempts, last_error FROM ingest_queue ORDER BY event_id")
+            ).all()
+        assert [tuple(row) for row in back] == [
+            ("neuf", 0, None),
+            ("rebut", 3, "invalid_event"),
+            ("remis", 2, "X"),
+        ]
+    finally:
+        engine.dispose()
+
+
 def test_the_partition_key_follows_the_reception(database: URL) -> None:
     """Le mois de partition est celui de la réception : un autre est refusé."""
     engine = create_engine(database)

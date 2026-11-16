@@ -12,9 +12,11 @@ ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run 
 | `POST /api/v1/lineage/batch` | Un tableau d'événements, 1 000 au plus | `202` avec le bilan du lot |
 | `GET /api/v1/ingestion/duplicates` | Aucun | Les doublons reçus, par émetteur et par jour |
 | `GET /api/v1/ingestion/undescribed-tools` | Aucun | Les outils appelés sans règle de lecture, par émetteur |
+| `GET /api/v1/ingestion/dead-letters` | Aucun | Les événements au rebut, que la projection n'a pas pu intégrer, et les décomptes par motif |
+| `POST /api/v1/ingestion/dead-letters/replay` | Les filtres du rejeu | `202` avec le nombre d'événements remis en file |
 | `POST /api/v1/coverage` | Un relevé de couverture | `201` avec l'état de sa fenêtre, `422` avec les champs fautifs |
 
-`/api/v1/lineage` est le point d'entrée standard d'OpenLineage : un émetteur conforme s'y branche sans adaptation. `/api/v1/coverage` reçoit ce que chaque émetteur a vu, pour mesurer la part du trafic réellement captée ([Relevés de couverture](#relevés-de-couverture)).
+`/api/v1/lineage` est le point d'entrée standard d'OpenLineage : un émetteur conforme s'y branche sans adaptation. `/api/v1/coverage` reçoit ce que chaque émetteur a vu, pour mesurer la part du trafic réellement captée ([Relevés de couverture](#relevés-de-couverture)). Les événements que les workers n'ont pas pu intégrer au graphe se consultent et se rejouent par la [file de rebut](#file-de-rebut).
 
 ## Lots
 
@@ -278,6 +280,97 @@ Un relevé qui ouvre une fenêtre ou fait grandir un compteur date le dernier re
 
 La couverture qui s'en déduit se lit par `GET /api/v1/coverage` et dans chaque résultat d'impact ([API de lecture](lecture.md#couverture-du-lignage)).
 
+## File de rebut
+
+Un événement accepté que les [workers](workers.md#file-de-rebut) ne parviennent pas à intégrer au graphe va à la file de rebut, avec son émetteur et le motif de l'échec, un code d'une [liste fermée](workers.md#motifs). Deux routes la consultent et la rejouent ; depuis le terminal, [`answerlineage dead-letters`](cli.md#answerlineage-dead-letters).
+
+### Consulter le rebut
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/ingestion/dead-letters?emitter=mcp://catalogue&limit=50"
+```
+
+```json
+{
+  "dead_letters": [
+    {
+      "event_id": "2a8b9477e2742f3eaeb18f4910603feb800eff1bc80f577f9d0e9cc4851eab10",
+      "run_id": "0193a9c5-7a10-7c3e-9d5e-2f1b6c8a0001",
+      "emitter": "mcp://catalogue",
+      "reason": "constraint_violation",
+      "attempts": 1,
+      "received_at": "2026-11-16T09:00:00.120000Z",
+      "first_failed_at": "2026-11-16T09:00:01.500000Z",
+      "last_failed_at": "2026-11-16T09:00:01.500000Z"
+    }
+  ],
+  "counts": [
+    { "reason": "invalid_identifier", "count": 0 },
+    { "reason": "invalid_event", "count": 0 },
+    { "reason": "constraint_violation", "count": 1 },
+    { "reason": "invalid_value", "count": 0 },
+    { "reason": "database_error", "count": 0 },
+    { "reason": "projection_error", "count": 0 }
+  ],
+  "truncated": false,
+  "more": false,
+  "next_cursor": null
+}
+```
+
+| Paramètre | Rôle |
+| --- | --- |
+| `emitter` | Seulement cet émetteur, sous l'une ou l'autre écriture Unicode : un identifiant d'espace de noms, 512 caractères au plus |
+| `reason` | Seulement ce motif, de la liste fermée |
+| `limit` | Événements par page, de 1 à 500, 100 par défaut |
+| `cursor` | La page suivante : la valeur de `next_cursor` |
+
+| Champ | Contenu |
+| --- | --- |
+| `dead_letters` | Les plus récemment mis au rebut d'abord : l'événement (`event_id`, `run_id`), son émetteur, le motif, les essais en échec, la réception de l'événement et ses heures d'échec. Aucun contenu |
+| `counts` | Les événements au rebut par motif, chaque motif de la liste fermée dans son ordre, zéro compris. Ils suivent le filtre d'émetteur, pas celui de motif : ils disent la répartition des motifs |
+| `truncated` | Vrai au-delà de 100 000 événements au rebut sous le filtre d'émetteur : les décomptes sont alors des minimums |
+| `more`, `next_cursor` | La suite de la liste, page par page, sans perte ni doublon, comme les autres listes de l'API ([pagination](lecture.md#pagination)) |
+
+Un paramètre invalide répond `422` avec son chemin et son motif, jamais la valeur reçue ; un émetteur qui n'a pas la forme d'un [identifiant](#identifiants) est refusé avec le code de l'ingestion (`identifier_…`). Comme toute lecture, la route s'exécute sous le délai maximal des lectures : au-delà, elle répond `503` et `query_timeout`.
+
+### Rejouer le rebut
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/ingestion/dead-letters/replay -H 'content-type: application/json' -d '{"reason": "constraint_violation"}'
+```
+
+```json
+{ "replayed": 1, "more": false }
+```
+
+| Champ | Contenu |
+| --- | --- |
+| `emitter` | Seulement les événements de cet émetteur |
+| `reason` | Seulement ceux mis au rebut pour ce motif |
+| `event_ids` | Seulement ces événements, par leur identifiant, de 1 à 1 000 |
+| `limit` | Événements remis en file au plus, les plus anciens échecs d'abord, de 1 à 10 000, 1 000 par défaut |
+
+Les filtres donnés se cumulent ; un corps vide, `{}`, rejoue tout le rebut, `limit` événements à la fois. Les événements choisis sont retirés du rebut et remis en file dans une seule transaction. La réponse, `202`, dit combien (`replayed`) et s'il en reste sous ces filtres (`more`) : la borne est atteinte, ou un autre rejeu les tenait. Relancer jusqu'à `more: false`. Deux rejeux simultanés ne remettent jamais un événement en file deux fois.
+
+Rejouer est sans risque : la projection est idempotente. Un événement qui échoue encore revient au rebut, avec son nouveau motif.
+
+Le corps est lu borné, compressé ou non, comme celui des événements, 256 Kio au plus : mêmes refus `400`, `413` et `415`. Chaque faute est rapportée par son chemin, un code et un motif fixe, jamais la valeur reçue :
+
+| Code | Motif |
+| --- | --- |
+| `unknown_field` | Le corps porte un autre champ que `emitter`, `reason`, `event_ids` et `limit`. Il n'est pas nommé, et rien n'est rejoué : un filtre mal orthographié ne doit pas rejouer tout le rebut |
+| `not_an_object` | Le corps n'est pas un objet JSON |
+| `identifier_…` | L'émetteur n'a pas la forme d'un identifiant d'espace de noms |
+| `literal_error` | Le motif n'est pas de la liste fermée |
+| `string_pattern_mismatch` | Un identifiant d'événement n'est pas une empreinte de 64 chiffres hexadécimaux |
+| `too_many_items`, `too_few_items` | `event_ids` nomme plus de 1 000 événements, ou aucun |
+| `int_type`, `greater_than_equal`, `less_than_equal` | `limit` n'est pas un entier de 1 à 10 000 |
+
+Le rejeu s'exécute sous le délai maximal des lectures : au-delà, il répond `503` et `query_timeout`, et rien n'est remis en file.
+
+Ces routes n'authentifient pas encore leurs appelants, comme le reste de l'API. Rejouer est une action d'exploitation : quand l'API authentifiera ses appelants et distinguera leurs rôles, le rejeu sera réservé à l'administrateur. D'ici là, l'API ne s'expose pas hors d'un réseau de confiance.
+
 ## Limites
 
 Tout ce que l'ingestion reçoit est borné, pour qu'une entrée piégée ne puisse pas épuiser le service : la mémoire et le temps d'une requête restent proportionnels à la taille maximale du corps.
@@ -311,6 +404,7 @@ Tout ce que l'ingestion reçoit est borné, pour qu'une entrée piégée ne puis
 ## Limites connues
 
 - Les émetteurs ne sont pas authentifiés : l'API ne s'expose pas hors d'un réseau de confiance.
+- Les routes du rebut ne le sont pas davantage : quiconque joint l'API lit le rebut et le rejoue. Un rejeu ne change pas le graphe d'un événement déjà intégré, mais remet du travail aux workers.
 - Aucune limite de débit par émetteur : la taille d'une requête est bornée, pas leur nombre.
 - Le corps est déployé puis analysé en mémoire, jusqu'à sa taille maximale : l'analyse JSON n'est pas incrémentale.
 - Le contrôle des identifiants porte sur leur forme, pas sur leur sens : une instruction écrite sans espace (`ignore_les_consignes`) a la forme d'un nom et passe. Aucun texte reçu n'atteint un modèle ni un destinataire autrement que dans un gabarit fixe.

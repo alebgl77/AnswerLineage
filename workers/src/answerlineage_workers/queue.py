@@ -7,7 +7,15 @@ Un lot est réclamé, traité et retiré de la file dans une seule transaction :
 - un worker arrêté en plein lot ne perd rien : sa transaction est annulée, les
   lignes redeviennent visibles et les écritures partielles disparaissent ;
 - un événement fautif ne bloque pas le lot : il est remis à plus tard, avec un
-  délai qui double à chaque essai.
+  délai qui double à chaque essai ;
+- un événement que la projection ne pourra pas intégrer ne tourne pas sans fin :
+  il est mis au rebut (``dead_letter``) au premier échec quand l'erreur ne se
+  corrigera pas en réessayant, après ``max_attempts`` essais sinon. Le passage
+  au rebut et le retrait de la file se font dans la transaction du lot.
+
+Le motif d'un échec est un code d'une liste fermée, tiré de la classe de
+l'erreur (``failure_reason``) : jamais le message d'une exception, qui peut
+citer l'événement.
 
 Le graphe reçoit, avec chaque événement, l'heure à laquelle AnswerLineage l'a
 reçu : c'est son heure d'enregistrement, que le passage du worker ne change pas.
@@ -23,12 +31,16 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import text
+from sqlalchemy.exc import DataError, DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from answerlineage_api.identifiers import InvalidIdentifierError
+from answerlineage_api.ingest.dead_letters import bury
 from answerlineage_api.store.graph import record_run
+from answerlineage_api.store.schema import DeadLetterReason
 from answerlineage_workers.incidents import DEFAULT_ANALYSIS_TIMEOUT, process_analysis
 from answerlineage_workers.partitions import (
     DEFAULT_MAINTENANCE_EVERY,
@@ -50,10 +62,17 @@ DEFAULT_BATCH_SIZE = 100
 DEFAULT_SILENCE_CHECK_EVERY = timedelta(minutes=1)
 RETRY_BASE_SECONDS = 5.0
 RETRY_CAP_SECONDS = 3600.0
+# Dix essais, espacés de 5 s à 21 min : 42 minutes pour qu'une panne passe.
+DEFAULT_MAX_ATTEMPTS: Final = 10
+MAX_MAX_ATTEMPTS: Final = 100
+# Ces motifs ne se corrigent pas en réessayant : l'événement va au rebut au premier échec.
+PERMANENT_REASONS: Final[frozenset[DeadLetterReason]] = frozenset(
+    {"invalid_identifier", "invalid_event", "constraint_violation", "invalid_value"}
+)
 
 _CLAIM = text(
     """
-    SELECT q.id, e.payload, e.recorded_at
+    SELECT q.id, q.event_id, q.attempts, e.payload, e.recorded_at, e.emitter
     FROM ingest_queue AS q
     JOIN event_raw AS e ON e.event_id = q.event_id AND e.recorded_month = q.recorded_month
     WHERE q.available_at <= now()
@@ -68,6 +87,7 @@ _POSTPONE = text(
     UPDATE ingest_queue
     SET attempts = attempts + 1,
         last_error = :error,
+        first_failed_at = COALESCE(first_failed_at, now()),
         available_at = now() + make_interval(secs => LEAST(:cap, :base * power(2, attempts)))
     WHERE id = :id
     """
@@ -78,10 +98,32 @@ _POSTPONE = text(
 class BatchResult:
     processed: int = 0
     postponed: int = 0
+    dead_lettered: int = 0
 
     @property
     def empty(self) -> bool:
-        return self.processed == 0 and self.postponed == 0
+        return self.processed == 0 and self.postponed == 0 and self.dead_lettered == 0
+
+
+def failure_reason(error: Exception) -> DeadLetterReason:
+    """Le motif d'un échec de projection, d'après la classe de l'erreur.
+
+    Un identifiant refusé, un événement que la projection ne sait pas lire, une
+    contrainte de la base violée ou une valeur qu'elle refuse ne se corrigent pas
+    en réessayant (``PERMANENT_REASONS``). Une erreur de la base (connexion,
+    interblocage, schéma pas encore migré) ou toute autre erreur peut passer.
+    """
+    if isinstance(error, InvalidIdentifierError):
+        return "invalid_identifier"
+    if isinstance(error, IntegrityError):
+        return "constraint_violation"
+    if isinstance(error, DataError):
+        return "invalid_value"
+    if isinstance(error, DBAPIError):
+        return "database_error"
+    if isinstance(error, KeyError | TypeError | ValueError):
+        return "invalid_event"
+    return "projection_error"
 
 
 async def record_event(
@@ -96,26 +138,52 @@ async def process_batch(
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
     handler: Handler = record_event,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
 ) -> BatchResult:
-    """Réclame un lot, le traite et le retire de la file, dans une transaction."""
+    """Réclame un lot, le traite et le retire de la file, dans une transaction.
+
+    Un événement en échec est remis à plus tard, ou mis au rebut quand son motif
+    ne se corrigera pas en réessayant ou qu'il atteint ``max_attempts`` essais.
+    """
     async with engine.begin() as conn:
         rows = (await conn.execute(_CLAIM, {"limit": batch_size})).all()
         done: list[int] = []
-        postponed = 0
+        postponed = buried = 0
         for row in rows:
             try:
                 # Point de reprise : l'échec d'un événement n'annule pas le lot.
                 async with conn.begin_nested():
                     await handler(conn, row.payload, row.recorded_at)
             except Exception as error:
+                # Seuls le motif et la classe de l'erreur sont gardés : son message peut
+                # citer l'événement. L'identifiant de l'événement est une empreinte.
+                reason, kind = failure_reason(error), type(error).__name__
+                attempt = row.attempts + 1
+                if reason in PERMANENT_REASONS or attempt >= max_attempts:
+                    buried += 1
+                    await bury(conn, queue_id=row.id, emitter=row.emitter, reason=reason)
+                    logger.error(
+                        "Événement %s mis au rebut : %s (%s), après %d essai(s).",
+                        row.event_id,
+                        reason,
+                        kind,
+                        attempt,
+                    )
+                    continue
                 postponed += 1
-                # Seule la classe de l'erreur est gardée : son message peut citer l'événement.
-                logger.warning("Événement remis à plus tard (%s).", type(error).__name__)
+                logger.warning(
+                    "Événement %s remis à plus tard : %s (%s), essai %d sur %d.",
+                    row.event_id,
+                    reason,
+                    kind,
+                    attempt,
+                    max_attempts,
+                )
                 await conn.execute(
                     _POSTPONE,
                     {
                         "id": row.id,
-                        "error": type(error).__name__,
+                        "error": kind,
                         "base": RETRY_BASE_SECONDS,
                         "cap": RETRY_CAP_SECONDS,
                     },
@@ -124,7 +192,7 @@ async def process_batch(
                 done.append(row.id)
         if done:
             await conn.execute(_DONE, {"ids": done})
-    return BatchResult(processed=len(done), postponed=postponed)
+    return BatchResult(processed=len(done), postponed=postponed, dead_lettered=buried)
 
 
 def _now() -> datetime:
@@ -139,6 +207,7 @@ async def run_worker(
     idle_delay: float = 0.5,
     error_delay: float = 5.0,
     handler: Handler = record_event,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     silence_threshold: timedelta = DEFAULT_SILENCE,
     silence_every: timedelta = DEFAULT_SILENCE_CHECK_EVERY,
     retention: Retention = DEFAULT_RETENTION,
@@ -148,8 +217,10 @@ async def run_worker(
 ) -> None:
     """Traite la file jusqu'à ce que ``stop`` soit levé.
 
-    Après chaque lot, le worker analyse un incident déclaré si une demande
-    attend, sous le délai ``analysis_timeout``.
+    Un événement en échec va au rebut après ``max_attempts`` essais, ou au
+    premier quand son motif ne se corrigera pas en réessayant. Après chaque lot,
+    le worker analyse un incident déclaré si une demande attend, sous le délai
+    ``analysis_timeout``.
 
     Au démarrage, puis toutes les ``silence_every`` sur l'horloge ``clock``, le
     worker contrôle les émetteurs muets depuis plus que ``silence_threshold``.
@@ -177,7 +248,9 @@ async def run_worker(
                 logger.error("Maintenance des partitions en échec (%s).", type(error).__name__)
         delay = 0.0
         try:
-            result = await process_batch(engine, batch_size=batch_size, handler=handler)
+            result = await process_batch(
+                engine, batch_size=batch_size, handler=handler, max_attempts=max_attempts
+            )
             analysed = await process_analysis(engine, timeout=analysis_timeout)
         except Exception as error:
             # Base injoignable, interblocage : le lot ou la demande est resté dans la file.

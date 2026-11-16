@@ -1,18 +1,22 @@
-"""Ligne de commande : ``answerlineage impact | incident | doctor | demo | proxy``.
+"""Ligne de commande : ``answerlineage impact | incident | dead-letters | doctor | demo | proxy``.
 
 ``impact`` propage un incident de données jusqu'aux réponses et aux
 destinataires touchés ; ``incident`` déclare un incident et lit son analyse ;
-``doctor`` vérifie chaque composant d'une installation ; ``demo`` lance la
+``dead-letters`` consulte et rejoue la file de rebut des événements que la
+projection n'a pas pu intégrer ; ``doctor`` vérifie chaque composant d'une
+installation ; ``demo`` lance la
 démonstration d'un clone du dépôt. Toutes parlent à l'API par HTTP, à
 l'adresse de ``--url`` ou de ``ANSWERLINEAGE_API_URL``,
 ``http://127.0.0.1:8000`` par défaut. ``proxy`` cède la place au proxy MCP,
 avec ses arguments (``proxy.py``).
 
 Codes de sortie (``exits.py``) : 0 succès ; 1 rien de touché (impact,
-incident show), une anomalie (doctor) ou un échec de Docker (demo) ; 2 usage
-fautif ; 3 résultat incomplet (impact, incident show) ; 4 API injoignable ;
-5 refus de l'API ou réponse invalide ; 6 analyse en attente et 7 analyse en
-échec (incident show).
+incident show), une anomalie (doctor), un échec de Docker (demo), des
+événements au rebut (dead-letters list) ou rien à rejouer (dead-letters
+replay) ; 2 usage fautif ; 3 résultat incomplet (impact, incident show) ou
+rejeu à poursuivre (dead-letters replay) ; 4 API injoignable ; 5 refus de l'API
+ou réponse invalide ; 6 analyse en attente et 7 analyse en échec (incident
+show).
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ from typing import TextIO
 
 import httpx
 
-from answerlineage_cli import demo, doctor, impact, incident, proxy
+from answerlineage_cli import dead_letters, demo, doctor, impact, incident, proxy
 from answerlineage_cli.client import (
     DEFAULT_TIMEOUT,
     DEFAULT_URL,
@@ -108,6 +112,38 @@ def _incident_id(value: str) -> str:
     return identifier
 
 
+def _reason(value: str) -> str:
+    if value not in dead_letters.REASONS:
+        raise argparse.ArgumentTypeError(
+            "un motif de la liste : " + ", ".join(dead_letters.REASONS)
+        )
+    return value
+
+
+def _event_id(value: str) -> str:
+    identifier = value.lower()
+    if not dead_letters.EVENT_ID.fullmatch(identifier):
+        raise argparse.ArgumentTypeError(
+            "l'identifiant d'un événement : 64 chiffres hexadécimaux, tel que le rend "
+            "answerlineage dead-letters list"
+        )
+    return identifier
+
+
+def _dead_letter_cursor(value: str) -> str:
+    if not dead_letters.CURSOR.fullmatch(value):
+        raise argparse.ArgumentTypeError("la valeur de next_cursor d'une page précédente")
+    return value
+
+
+def _emitter(value: str) -> str:
+    if len(value) > dead_letters.MAX_EMITTER or "\x00" in value:
+        raise argparse.ArgumentTypeError(
+            f"un espace de noms de {dead_letters.MAX_EMITTER} caractères au plus"
+        )
+    return value
+
+
 def _dataset_part(value: str) -> str:
     if len(value) > incident.MAX_DATASET_ARGUMENT or "\x00" in value:
         raise argparse.ArgumentTypeError(
@@ -130,8 +166,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="answerlineage",
         description=(
-            "AnswerLineage depuis le terminal : propager un incident, vérifier une "
-            "installation, lancer la démonstration."
+            "AnswerLineage depuis le terminal : propager un incident, consulter et rejouer la "
+            "file de rebut, vérifier une installation, lancer la démonstration."
         ),
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -266,6 +302,74 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--format", choices=("text", "json"), default="text")
     _common(show)
 
+    rejected = commands.add_parser(
+        "dead-letters",
+        help="consulter et rejouer les événements que la projection n'a pas pu intégrer",
+        description=(
+            "Consulte la file de rebut (list) et remet ses événements en file (replay), une fois "
+            "le correctif déployé."
+        ),
+    )
+    letters = rejected.add_subparsers(dest="action", required=True)
+    listing = letters.add_parser(
+        "list",
+        help="les événements au rebut, leur émetteur, leur motif et les décomptes par motif",
+        description=(
+            "Lit la file de rebut, les plus récemment mis au rebut d'abord. Codes de sortie : "
+            "0 aucun événement au rebut sous ces filtres ; 1 des événements attendent ; "
+            "2 usage ; 4 API injoignable ; 5 refus de l'API."
+        ),
+    )
+    listing.add_argument(
+        "--emitter", type=_emitter, help="seulement cet émetteur, par exemple mcp://entrepot"
+    )
+    listing.add_argument(
+        "--reason", type=_reason, help="seulement ce motif : " + ", ".join(dead_letters.REASONS)
+    )
+    listing.add_argument(
+        "--limit",
+        type=_bounded(1, dead_letters.MAX_LIMIT, "d'événements"),
+        help=f"événements par page, de 1 à {dead_letters.MAX_LIMIT}, 100 par défaut",
+    )
+    listing.add_argument(
+        "--cursor", type=_dead_letter_cursor, help="page suivante : la valeur de next_cursor"
+    )
+    listing.add_argument("--format", choices=("text", "json"), default="text")
+    _common(listing)
+    replaying = letters.add_parser(
+        "replay",
+        help="remet en file les événements du rebut, tous ou filtrés",
+        description=(
+            "Remet en file les événements du rebut que les filtres désignent, les plus anciens "
+            "d'abord, en nombre borné ; tout le rebut avec --all. Codes de sortie : 0 événements "
+            "remis en file, aucun ne reste ; 1 rien à rejouer ; 3 d'autres restent, relancer ; "
+            "2 usage ; 4 API injoignable ; 5 refus de l'API."
+        ),
+    )
+    replaying.add_argument("--all", action="store_true", help="tout le rebut, sans filtre")
+    replaying.add_argument("--emitter", type=_emitter, help="seulement cet émetteur")
+    replaying.add_argument(
+        "--reason", type=_reason, help="seulement ce motif : " + ", ".join(dead_letters.REASONS)
+    )
+    replaying.add_argument(
+        "--event-id",
+        dest="event_ids",
+        action="append",
+        default=[],
+        type=_event_id,
+        metavar="IDENTIFIANT",
+        help=(f"seulement cet événement ; à répéter, {dead_letters.MAX_EVENT_IDS} fois au plus"),
+    )
+    replaying.add_argument(
+        "--limit",
+        type=_bounded(1, dead_letters.MAX_REPLAY, "d'événements"),
+        help=(
+            f"événements remis en file au plus, de 1 à {dead_letters.MAX_REPLAY}, 1000 par défaut"
+        ),
+    )
+    replaying.add_argument("--format", choices=("text", "json"), default="text")
+    _common(replaying)
+
     check = commands.add_parser(
         "doctor",
         help="vérifie chaque composant d'une installation et liste les anomalies",
@@ -396,6 +500,36 @@ def _incident(api: Api, args: argparse.Namespace) -> Exit:
         return code
 
 
+def _dead_letters(api: Api, args: argparse.Namespace) -> Exit:
+    event_ids = getattr(args, "event_ids", [])
+    fault = dead_letters.filters_fault(args.emitter, event_ids)
+    if fault is not None:
+        err(f"Usage fautif : {fault}")
+        return Exit.USAGE
+    filters = dead_letters.Filters(
+        emitter=args.emitter, reason=args.reason, event_ids=tuple(dict.fromkeys(event_ids))
+    )
+    try:
+        if args.action == "list":
+            return dead_letters.run_list(
+                api, filters, limit=args.limit, cursor=args.cursor, output=args.format, write=out
+            )
+        filtered = filters != dead_letters.Filters()
+        if filtered == args.all:
+            err(
+                "Usage fautif : rejouer tout le rebut se demande par --all, sans autre filtre ; "
+                "sinon, --emitter, --reason ou --event-id."
+            )
+            return Exit.USAGE
+        return dead_letters.run_replay(
+            api, filters, limit=args.limit, output=args.format, write=out
+        )
+    except dead_letters.RefusedError as refused:
+        code, message = dead_letters.refusal_message(refused)
+        err(message)
+        return code
+
+
 def _doctor(api: Api, args: argparse.Namespace) -> Exit:
     checks = doctor.diagnose(api, queue_max_age=args.queue_max_age)
     render = doctor.render_json if args.format == "json" else doctor.render_text
@@ -419,7 +553,13 @@ def _demo(api: Api, args: argparse.Namespace) -> Exit:
     return Exit.OK
 
 
-_COMMANDS = {"impact": _impact, "incident": _incident, "doctor": _doctor, "demo": _demo}
+_COMMANDS = {
+    "impact": _impact,
+    "incident": _incident,
+    "dead-letters": _dead_letters,
+    "doctor": _doctor,
+    "demo": _demo,
+}
 
 
 def main(argv: Sequence[str] | None = None, *, transport: httpx.BaseTransport | None = None) -> int:

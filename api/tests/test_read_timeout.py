@@ -27,7 +27,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 READ_TABLES = (
     "agent, tool, dataset, dataset_version, run, read_edge, write_edge,"
-    " answer, delivery, recipient, delivery_recipient, ingest_duplicate"
+    " answer, delivery, recipient, delivery_recipient, ingest_duplicate, dead_letter"
 )
 IMPACT = {
     "namespace": "bigquery",
@@ -43,6 +43,7 @@ READS = [
     ("/api/v1/datasets", {}),
     ("/api/v1/impact", IMPACT),
     ("/api/v1/ingestion/duplicates", {}),
+    ("/api/v1/ingestion/dead-letters", {"emitter": "mcp://entrepot"}),
 ]
 # Au-delà, la lecture n'a pas été interrompue : le test échoue au lieu d'attendre.
 PATIENCE = 10.0

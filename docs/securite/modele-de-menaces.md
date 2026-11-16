@@ -90,6 +90,7 @@ Le détail de chaque menace, son scénario, ses parades avec leur code et leur t
 | `api/emetteur-usurpe` | Un émetteur envoie des événements au nom d'un autre | Usurpation | Acceptation à signer |
 | `api/releve-usurpe` | Un relevé de couverture est publié au nom d'un autre émetteur | Usurpation | 1 parade, acceptation à signer |
 | `api/appelant-non-authentifie` | Un appelant qui joint l'API lit le lignage et déclare des incidents | Divulgation | 1 parade, acceptation à signer |
+| `api/rejeu-non-authentifie` | Un appelant qui joint l'API lit la file de rebut et la rejoue | Élévation de privilège | 2 parades, acceptation à signer |
 | `api/page-web-hostile` | Une page web ouverte sur le poste se sert de l'API locale | Élévation de privilège | 3 parades |
 | `api/corps-demesure` | Un corps démesuré épuise l'ingestion | Déni de service | 4 parades |
 | `api/debit-non-borne` | Un émetteur inonde l'ingestion de requêtes valides | Déni de service | Acceptation à signer |
@@ -105,7 +106,7 @@ Le détail de chaque menace, son scénario, ses parades avec leur code et leur t
 
 | Menace | Ce qui est craint | Catégorie | Traitement |
 | --- | --- | --- | --- |
-| `workers/evenement-empoisonne` | Un événement qui fait échouer la projection bloque la file | Déni de service | 2 parades |
+| `workers/evenement-empoisonne` | Un événement qui fait échouer la projection bloque la file | Déni de service | 5 parades |
 | `workers/double-traitement` | Deux workers traitent un événement deux fois, ou un arrêt en perd un | Altération | 2 parades |
 | `workers/identifiant-non-revalide` | Un événement brut enregistré avant un contrôle plus strict projette un identifiant piégé | Altération | 1 parade |
 | `workers/analyse-epuisante` | L'analyse d'un incident déclaré épuise les workers | Déni de service | 2 parades |
@@ -176,6 +177,7 @@ Un risque accepté l'est par le mainteneur, pour un motif dit et une conséquenc
 | `api/emetteur-usurpe` | Les émetteurs ne sont pas encore authentifiés : l'API est faite pour la boucle locale ou un réseau de confiance, comme le dit la politique de sécurité. | Un tiers qui joint l'ingestion peut inventer des lectures, donc faire rappeler des réponses saines, et fausser le décompte des doublons d'un émetteur. | à signer |
 | `api/releve-usurpe` | Un relevé n'est pas authentifié plus qu'un événement, et deux relevés d'une même fenêtre se fusionnent au plus grand. | Un tiers qui joint l'ingestion peut faire croire à des appels que le graphe n'a pas : la couverture d'une fenêtre se lit alors partielle à tort. | à signer |
 | `api/appelant-non-authentifie` | L'API n'authentifie pas encore ses appelants : elle est faite pour la boucle locale ou derrière un contrôle d'accès. | Exposée sans contrôle d'accès, elle livre le lignage à qui la joint et le laisse déclarer des incidents, donc lancer des analyses. | à signer |
+| `api/rejeu-non-authentifie` | Le rebut se lit et se rejoue sans authentification, comme le reste de l'API : elle est faite pour la boucle locale ou derrière un contrôle d'accès. Le rejeu reviendra à l'administrateur quand l'API distinguera les rôles de ses appelants. | Exposée sans contrôle d'accès, l'API laisse qui la joint lire les émetteurs et les identifiants des événements au rebut, et les remettre en file autant de fois qu'il le veut : les workers refont un travail sans effet sur le graphe, et un événement qui échoue encore revient au rebut. | à signer |
 | `api/debit-non-borne` | L'ingestion n'a pas de limite de débit par émetteur ; sans authentification, une telle limite se contournerait en changeant de nom d'émetteur. | Un tiers qui joint l'ingestion peut retarder la projection des événements légitimes et faire grossir la base jusqu'à sa purge. | à signer |
 | `api/donnees-au-repos` | AnswerLineage ne chiffre pas la base : son accès, le chiffrement du disque et des sauvegardes reviennent à l'exploitant. Le mot de passe de la démonstration est écrit dans compose.yaml, pour une base que la démonstration ne publie pas. | Qui obtient un accès à la base lit les noms des jeux de données, des agents et des outils, les empreintes et les pseudonymes, sans aucun contenu ; avec la clé des empreintes en plus, il peut éprouver des valeurs candidates. | à signer |
 | `conformance/resume-a2a-mensonger` | Le résumé A2A n'est pas signé dans la version 1 de l'extension, et aucun adaptateur A2A n'est encore fourni : le lignage d'un agent appelé se prend sur sa parole. | Une lecture tue par un agent appelé manque au lignage de son appelant : une réponse qui en dépend n'est pas rappelée. | à signer |

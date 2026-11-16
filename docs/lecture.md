@@ -336,7 +336,7 @@ Une lecture du graphe ne peut ni épuiser le service, ni rendre un résultat inc
 
 ### Délai maximal
 
-Chaque route de lecture, celles de ce document comme le [compteur de doublons](ingestion.md#compteur-de-doublons), s'exécute sous un délai maximal, 5 secondes par défaut. Le délai court dès l'arrivée de la requête ; avant chacune de ses requêtes SQL, PostgreSQL reçoit le temps qui en reste (`statement_timeout`, posé pour la transaction seulement). Une requête qui le dépasse est annulée dans la base elle-même, et la route répond :
+Chaque route de lecture, celles de ce document comme le [compteur de doublons](ingestion.md#compteur-de-doublons) ou la [file de rebut](ingestion.md#file-de-rebut), s'exécute sous un délai maximal, 5 secondes par défaut. Le délai court dès l'arrivée de la requête ; avant chacune de ses requêtes SQL, PostgreSQL reçoit le temps qui en reste (`statement_timeout`, posé pour la transaction seulement). Une requête qui le dépasse est annulée dans la base elle-même, et la route répond :
 
 ```json
 { "error": "query_timeout" }
@@ -357,6 +357,7 @@ Toute requête porte une borne sur les lignes qu'elle lit. Un dépassement se di
 | Propagation | 20 000 lectures du jeu de données dans la fenêtre, 20 000 runs parents, 100 000 réponses et 200 000 liens de diffusion comptés |
 | Jeux de données connus | 500 par page |
 | Incidents | 100 par page ; pour un incident, 200 réponses touchées par page et 200 000 liens vers leurs destinataires |
+| File de rebut | 500 événements par page ; décomptes par motif sur 100 000 événements au plus ; un rejeu remet en file 10 000 événements au plus |
 | Couverture | 1 000 émetteurs pour un résultat d'impact ou une remontée, 500 par page ; 50 000 relevés lus ; 1 000 trous rendus ; dans chaque fenêtre, les événements comptés au plus jusqu'aux appels vus |
 
 Une couverture tronquée (`coverage.truncated`) n'est jamais donnée pour `measured` : ses trous peuvent être incomplets. Réduire la période la rend complète.

@@ -1,11 +1,12 @@
 # Ligne de commande
 
-`answerlineage` fait depuis le terminal ce que fait l'explorateur, et un peu plus : propager un incident jusqu'aux réponses et aux destinataires touchés, déclarer un incident et lire son analyse, vérifier une installation, lancer la démonstration. Elle parle à l'API par HTTP, comme l'explorateur, et ne lit jamais la base. Elle lance aussi le proxy MCP.
+`answerlineage` fait depuis le terminal ce que fait l'explorateur, et un peu plus : propager un incident jusqu'aux réponses et aux destinataires touchés, déclarer un incident et lire son analyse, consulter et rejouer la file de rebut, vérifier une installation, lancer la démonstration. Elle parle à l'API par HTTP, comme l'explorateur, et ne lit jamais la base. Elle lance aussi le proxy MCP.
 
 | Sous-commande | Ce qu'elle fait |
 | --- | --- |
 | [`answerlineage impact`](#answerlineage-impact) | Les réponses et les destinataires touchés par un jeu de données faux pendant une fenêtre ; le code de sortie dit si l'on peut conclure |
 | [`answerlineage incident`](#answerlineage-incident) | Déclare un incident de données, puis lit l'analyse d'impact que les workers en font ; le code de sortie de `show` dit si l'on peut conclure |
+| [`answerlineage dead-letters`](#answerlineage-dead-letters) | Consulte la file de rebut, les événements que la projection n'a pas pu intégrer au graphe, et les remet en file une fois le correctif déployé |
 | [`answerlineage doctor`](#answerlineage-doctor) | Vérifie chaque composant d'une installation et liste les anomalies, chacune avec son remède |
 | [`answerlineage demo`](#answerlineage-demo) | Lance la démonstration d'un clone du dépôt, attend qu'elle réponde et donne l'adresse de l'explorateur |
 | [`answerlineage proxy`](#answerlineage-proxy) | Le proxy MCP : devant un serveur HTTP, ou qui lance un serveur stdio donné après `--` |
@@ -239,6 +240,88 @@ C'est le premier incident de la démonstration : l'analyse trouve exactement sa 
 
 La réponse est validée comme celle d'`impact` ([une réponse de l'API est hostile](#une-réponse-de-lapi-est-hostile)), et un peu plus : l'incident rendu est celui demandé, un état et ce qu'il porte vont ensemble (un résultat pour une analyse faite, et seulement pour elle ; un code d'échec pour une analyse en échec), et chaque état, gravité ou code d'échec appartient à sa liste fermée.
 
+## `answerlineage dead-letters`
+
+Un événement que les workers ne parviennent pas à intégrer au graphe va à la [file de rebut](workers.md#file-de-rebut), avec son émetteur et le motif de l'échec. `list` la consulte, `replay` la remet en file, une fois le correctif déployé. Ce sont les routes `GET` et `POST` de la file de rebut ([API d'ingestion](ingestion.md#file-de-rebut)).
+
+### `answerlineage dead-letters list`
+
+```bash
+answerlineage dead-letters list --emitter mcp://catalogue
+```
+
+```text
+Rebut de mcp://catalogue : 2 événements
+  constraint_violation       1  l'écriture du graphe viole une contrainte de la base
+  database_error             1  la base a échoué à chaque essai
+
+Les plus récemment mis au rebut d'abord (2 sur cette page) :
+  2026-11-16T09:42:10.031000Z  database_error  mcp://catalogue
+    événement 9c1e7d04b2a6f3851e0c9d7a4b3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f
+    run 0193a9c5-7a10-7c3e-9d5e-2f1b6c8a0002, reçu le 2026-11-16T09:00:02.410000Z
+    10 essais en échec, le premier le 2026-11-16T08:59:29.870000Z
+  2026-11-16T09:00:01.500000Z  constraint_violation  mcp://catalogue
+    événement 2a8b9477e2742f3eaeb18f4910603feb800eff1bc80f577f9d0e9cc4851eab10
+    run 0193a9c5-7a10-7c3e-9d5e-2f1b6c8a0001, reçu le 2026-11-16T09:00:00.120000Z
+    1 essai en échec, le premier le 2026-11-16T09:00:01.500000Z
+
+Une fois le correctif déployé, les rejouer : answerlineage dead-letters replay --emitter mcp://catalogue
+```
+
+La sortie lisible donne les décomptes par motif, chacun avec ce qu'il veut dire, puis chaque événement : l'heure de sa mise au rebut, son motif, son émetteur, son identifiant, son run, sa réception, ses essais en échec. Elle finit par la commande qui rejoue ce que la liste montre. Aucun contenu d'événement : le rebut n'en garde pas.
+
+| Option | Rôle | Défaut |
+| --- | --- | --- |
+| `--emitter` | Seulement cet émetteur, par l'espace de noms de ses jobs (512 caractères au plus) | aucun |
+| `--reason` | Seulement ce motif : `invalid_identifier`, `invalid_event`, `constraint_violation`, `invalid_value`, `database_error` ou `projection_error` ([motifs](workers.md#motifs)) | aucun |
+| `--limit` | Événements par page, de 1 à 500 | 100 |
+| `--cursor` | La page suivante : la valeur de `next_cursor`, que la sortie lisible rappelle | aucun |
+| `--format` | `text` ou `json` ; en JSON, la réponse de `GET /api/v1/ingestion/dead-letters`, réduite aux champs du contrat | `text` |
+
+Les décomptes suivent `--emitter`, pas `--reason` : ils disent la répartition des motifs. Au-delà de 100 000 événements, ce sont des minimums, et la sortie le dit (« au moins »).
+
+| Code | Sens |
+| --- | --- |
+| `0` | Aucun événement n'attend au rebut, sous ces filtres |
+| `1` | Des événements attendent au rebut : de quoi alerter depuis un script |
+| `2` | Usage fautif : émetteur, motif ou option mal formés ; ou paramètre refusé par l'API (`422`), qui nomme l'option |
+| `4` | L'API ne répond pas, ou pas dans le délai |
+| `5` | L'API a refusé la requête (délai de lecture dépassé, adresse refusée) ou rendu une réponse invalide |
+
+### `answerlineage dead-letters replay`
+
+```bash
+answerlineage dead-letters replay --reason constraint_violation
+```
+
+```text
+1 événement remis en file : un worker les projettera dans le graphe ; un événement qui échoue encore reviendra au rebut.
+```
+
+| Option | Rôle | Défaut |
+| --- | --- | --- |
+| `--emitter` | Seulement les événements de cet émetteur | aucun |
+| `--reason` | Seulement ceux mis au rebut pour ce motif | aucun |
+| `--event-id IDENTIFIANT` | Seulement cet événement, par l'identifiant que donne `list` ; à répéter, 1 000 fois au plus | aucun |
+| `--all` | Tout le rebut, sans filtre | non |
+| `--limit` | Événements remis en file au plus, les plus anciens échecs d'abord, de 1 à 10 000 | 1 000 |
+| `--format` | `text` ou `json` ; en JSON, le bilan que rend `POST /api/v1/ingestion/dead-letters/replay` | `text` |
+
+Les filtres se cumulent. Rejouer tout le rebut se demande par `--all`, et lui seul : une commande sans filtre, ou `--all` avec un filtre, est un usage fautif. Un filtre oublié ne rejoue donc pas tout le rebut. Le rejeu est sans risque : la projection est idempotente, et un événement qui échoue encore revient au rebut avec son nouveau motif.
+
+| Code | Sens |
+| --- | --- |
+| `0` | Des événements sont remis en file, et aucun ne reste au rebut sous ces filtres |
+| `1` | Aucun événement à rejouer sous ces filtres |
+| `2` | Usage fautif : aucun filtre ni `--all`, `--all` avec un filtre, identifiant ou option mal formés ; ou paramètre refusé par l'API (`422`) |
+| `3` | D'autres événements restent au rebut sous ces filtres : la borne `--limit` est atteinte, ou un autre rejeu les tenait. Relancer la même commande |
+| `4` | L'API ne répond pas, ou pas dans le délai |
+| `5` | L'API a refusé la requête ou rendu une réponse invalide |
+
+La réponse est validée comme celle d'`impact` ([une réponse de l'API est hostile](#une-réponse-de-lapi-est-hostile)) : un identifiant d'événement ou de run a sa forme, un émetteur celle d'un nom, un motif appartient à sa liste fermée, et une page qui annonce une suite donne son curseur.
+
+Les routes du rebut n'authentifient pas encore leurs appelants : la commande non plus. Le rejeu sera réservé à l'administrateur quand l'API distinguera les rôles de ses appelants.
+
 ## `answerlineage doctor`
 
 ```bash
@@ -414,16 +497,16 @@ Le paquet `answerlineage-cli` ne dépend pas du proxy. Sans le paquet `answerlin
 
 ## Tous les codes de sortie
 
-| Code | `impact` | `incident declare` | `incident show` | `doctor` | `demo` |
-| --- | --- | --- | --- | --- | --- |
-| `0` | Réponses touchées, liste complète | Incident déclaré | Réponses touchées, liste complète | Aucune anomalie | La démonstration répond |
-| `1` | Aucune réponse touchée, résultat complet | | Aucune réponse touchée, résultat complet | Au moins une anomalie | Docker absent ou en échec |
-| `2` | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif, hors d'un clone |
-| `3` | Résultat incomplet | | Résultat incomplet | | |
-| `4` | API injoignable | API injoignable | API injoignable | | La démonstration ne répond pas |
-| `5` | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | | |
-| `6` | | | Analyse en attente | | |
-| `7` | | | Analyse en échec | | |
+| Code | `impact` | `incident declare` | `incident show` | `dead-letters list` | `dead-letters replay` | `doctor` | `demo` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `0` | Réponses touchées, liste complète | Incident déclaré | Réponses touchées, liste complète | Rebut vide | Tout est remis en file | Aucune anomalie | La démonstration répond |
+| `1` | Aucune réponse touchée, résultat complet | | Aucune réponse touchée, résultat complet | Des événements attendent | Rien à rejouer | Au moins une anomalie | Docker absent ou en échec |
+| `2` | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif, hors d'un clone |
+| `3` | Résultat incomplet | | Résultat incomplet | | D'autres restent, relancer | | |
+| `4` | API injoignable | API injoignable | API injoignable | API injoignable | API injoignable | | La démonstration ne répond pas |
+| `5` | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | | |
+| `6` | | | Analyse en attente | | | | |
+| `7` | | | Analyse en échec | | | | |
 
 `answerlineage proxy` rend les codes du proxy, et `2` quand le proxy n'est pas installé.
 
@@ -437,5 +520,6 @@ La commande n'écrit dans aucun journal. Le client HTTP qu'elle emploie, httpx, 
 - `impact` lit une page de réponses à la fois, 200 au plus ; les décomptes sont ceux de tout l'incident, et `--cursor` donne la suite. `incident show` de même.
 - `incident declare` n'attend pas l'analyse : `incident show` la lit quand un worker l'a faite.
 - `doctor` ne voit pas les workers : une file vide ne dit pas qu'un worker tourne, et sans worker, aucun émetteur n'est signalé muet.
+- `doctor` ne compte pas encore le rebut : `dead-letters list` le dit, par son code de sortie.
 - `demo` attend la démonstration sur le port que publie `compose.yaml`, 8000 : il doit être libre.
 - La commande ignore les variables de mandataire : une API qu'on ne joint que par un mandataire ne lui est pas accessible.

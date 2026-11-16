@@ -7,9 +7,10 @@ boucle du worker les entretient au démarrage, puis toutes les heures :
 - **création à l'avance** : le mois courant et les ``ahead`` suivants (deux par
   défaut) ont leur partition, pour qu'aucune écriture n'échoue faute de partition ;
 - **purge** : une partition entièrement plus ancienne que la conservation (13 mois
-  par défaut) est supprimée. Jamais le mois courant : la conservation compte au
-  moins deux mois, et la limite est prise sur la plus prudente de deux horloges,
-  celle du worker et celle de la base ;
+  par défaut) est supprimée, et ses événements quittent la file et le rebut.
+  Jamais le mois courant : la conservation compte au moins deux mois, et la
+  limite est prise sur la plus prudente de deux horloges, celle du worker et
+  celle de la base ;
 - **contrôle** : une partition qui manque pour un mois qui commence dans les sept
   jours est signalée, une fois par épisode, par une ligne de journal qui nomme la
   table et le mois, et par une ligne de ``partition_alert`` tant qu'elle manque.
@@ -76,12 +77,9 @@ _BOUND = re.compile(
     r"FOR VALUES FROM \((?:MINVALUE|'(\d{4}-\d{2}-\d{2})')\)"
     r" TO \((?:MAXVALUE|'(\d{4}-\d{2}-\d{2})')\)"
 )
-_UNQUEUE = text(
-    """
-    DELETE FROM ingest_queue
-    WHERE (CAST(:lower AS date) IS NULL OR recorded_month >= :lower) AND recorded_month < :upper
-    """
-)
+_MONTHS = "(CAST(:lower AS date) IS NULL OR recorded_month >= :lower) AND recorded_month < :upper"
+_UNQUEUE = text(f"DELETE FROM ingest_queue WHERE {_MONTHS}")  # noqa: S608 — constant.
+_UNBURY = text(f"DELETE FROM dead_letter WHERE {_MONTHS}")  # noqa: S608 — constant.
 # L'état du contrôle : les épisodes en cours. Un épisode clos s'efface.
 _CLOSE = text(
     """
@@ -251,15 +249,21 @@ async def _purge(
         try:
             async with conn.begin_nested():
                 if partition.table == "event_raw":
-                    removed = await conn.execute(
-                        _UNQUEUE, {"lower": partition.lower, "upper": partition.upper}
-                    )
+                    months = {"lower": partition.lower, "upper": partition.upper}
+                    removed = await conn.execute(_UNQUEUE, months)
                     if removed.rowcount:
                         logger.warning(
                             "Partition %s purgée : %d événement(s) jamais projeté(s) retiré(s)"
                             " de la file.",
                             partition.name,
                             removed.rowcount,
+                        )
+                    buried = await conn.execute(_UNBURY, months)
+                    if buried.rowcount:
+                        logger.warning(
+                            "Partition %s purgée : %d événement(s) retiré(s) du rebut.",
+                            partition.name,
+                            buried.rowcount,
                         )
                 await conn.execute(text(f"DROP TABLE {_quoted(partition.name)}"))
         except DBAPIError as error:

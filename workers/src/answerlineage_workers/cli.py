@@ -1,7 +1,9 @@
 """Ligne de commande du worker : ``answerlineage-worker``.
 
 La base vient de ``ANSWERLINEAGE_DATABASE_URL``. Le worker s'arrête proprement
-sur SIGINT ou SIGTERM, à la fin du lot en cours. Il contrôle aussi, chaque
+sur SIGINT ou SIGTERM, à la fin du lot en cours. Un événement que la projection
+n'a pas pu intégrer en ``--max-attempts`` essais va au rebut, ou au premier
+échec quand l'erreur ne se corrigera pas en réessayant. Il contrôle aussi, chaque
 minute, les émetteurs muets depuis plus de ``--silence-minutes``, et entretient
 chaque heure les partitions mensuelles : ``--partitions-ahead`` mois créés à
 l'avance, ``--retention-months`` mois conservés. Une conservation absurde
@@ -30,7 +32,12 @@ from answerlineage_workers.partitions import (
     MIN_AHEAD_MONTHS,
     Retention,
 )
-from answerlineage_workers.queue import DEFAULT_BATCH_SIZE, run_worker
+from answerlineage_workers.queue import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_MAX_ATTEMPTS,
+    MAX_MAX_ATTEMPTS,
+    run_worker,
+)
 from answerlineage_workers.silence import DEFAULT_SILENCE
 
 logger = logging.getLogger("answerlineage_workers")
@@ -41,6 +48,7 @@ async def serve(
     stop: asyncio.Event | None = None,
     silence_threshold: timedelta = DEFAULT_SILENCE,
     retention: Retention = DEFAULT_RETENTION,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
 ) -> None:
     engine = create_engine(database_url_from_environment())
     stop = stop or asyncio.Event()
@@ -55,6 +63,7 @@ async def serve(
             batch_size=batch_size,
             silence_threshold=silence_threshold,
             retention=retention,
+            max_attempts=max_attempts,
         )
     finally:
         for signum in (signal.SIGINT, signal.SIGTERM):
@@ -76,6 +85,12 @@ def _months(low: int, high: int) -> Callable[[str], int]:
         return int(value)
 
     return parse
+
+
+def _attempts(value: str) -> int:
+    if not value.isdigit() or not 1 <= int(value) <= MAX_MAX_ATTEMPTS:
+        raise argparse.ArgumentTypeError(f"un nombre entier d'essais, de 1 à {MAX_MAX_ATTEMPTS}")
+    return int(value)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -102,6 +117,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_RETENTION.ahead,
         help="mois créés à l'avance après le mois courant (2 par défaut)",
     )
+    parser.add_argument(
+        "--max-attempts",
+        type=_attempts,
+        default=DEFAULT_MAX_ATTEMPTS,
+        help=(
+            "essais en échec au-delà desquels un événement va au rebut "
+            f"({DEFAULT_MAX_ATTEMPTS} par défaut)"
+        ),
+    )
     args = parser.parse_args(argv)
     try:
         retention = Retention(months=args.retention_months, ahead=args.partitions_ahead)
@@ -110,7 +134,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     try:
         asyncio.run(
-            serve(args.batch_size, silence_threshold=args.silence_minutes, retention=retention)
+            serve(
+                args.batch_size,
+                silence_threshold=args.silence_minutes,
+                retention=retention,
+                max_attempts=args.max_attempts,
+            )
         )
     except DatabaseConfigurationError as error:
         print(f"Configuration invalide : {error}", file=sys.stderr)
