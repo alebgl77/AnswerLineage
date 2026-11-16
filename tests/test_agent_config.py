@@ -11,10 +11,12 @@ from scripts.check_agent_config import (
     APPROVAL_LABEL,
     changed_files,
     evaluate,
+    gitlab_labels,
     is_protected,
     labels,
     main,
     printable,
+    read_merge_request,
 )
 
 
@@ -29,6 +31,11 @@ from scripts.check_agent_config import (
         "CLAUDE.md",
         ".github/workflows/ci.yml",
         ".github/CODEOWNERS",
+        ".gitlab-ci.yml",
+        # GitLab lit ses propriétaires du code à la racine, dans docs/ ou dans .gitlab/.
+        ".gitlab/CODEOWNERS",
+        "CODEOWNERS",
+        "docs/CODEOWNERS",
         ".devcontainer/devcontainer.json",
         "scripts/check_policy.py",
         "renovate.json",
@@ -48,6 +55,8 @@ def test_agent_configuration_and_guardrails_are_protected(path: str) -> None:
         "docs/CLAUDE.md",
         "README.md",
         "api/.mcp.json.bak",
+        # Un fichier de ce nom ailleurs qu'à la racine n'est pas lu par GitLab.
+        "docs/exemples/.gitlab-ci.yml",
         # Ajouter un cas d'attaque est libre ; seule une exception demande la revue.
         "corpus/src/answerlineage_corpus/abuse_data/lots.json",
         # La page qui présente le modèle de menaces se relit comme toute documentation.
@@ -91,6 +100,64 @@ def test_labels_are_read_from_the_pipeline_event() -> None:
     assert labels(None) == set()
     assert labels("pas du json") == set()
     assert labels('[1, "ok"]') == {"ok"}
+
+
+def test_gitlab_labels_are_separated_by_commas() -> None:
+    """GitLab les donne séparés par des virgules, qu'un nom de label ne peut pas contenir."""
+    assert gitlab_labels("bug,agent-config-approved") == {"bug", "agent-config-approved"}
+    assert gitlab_labels("priorité::haute, agent-config-approved ") == {
+        "priorité::haute",
+        "agent-config-approved",
+    }
+    assert gitlab_labels('["agent-config-approved"]') == {'["agent-config-approved"]'}
+    assert gitlab_labels("") == set()
+    assert gitlab_labels(None) == set()
+
+
+BASE = "a" * 40
+HEAD = "b" * 40
+MERGED = "c" * 40
+
+
+def gitlab(**variables: str) -> dict[str, str]:
+    """Les variables prédéfinies d'un pipeline GitLab de merge request."""
+    return {
+        "GITLAB_CI": "true",
+        "CI_MERGE_REQUEST_IID": "12",
+        "CI_MERGE_REQUEST_DIFF_BASE_SHA": BASE,
+        "CI_COMMIT_SHA": HEAD,
+        **variables,
+    }
+
+
+def test_the_merge_request_is_read_from_the_github_workflow() -> None:
+    environment = {"BASE_SHA": BASE, "HEAD_SHA": HEAD, "PR_LABELS": '["agent-config-approved"]'}
+    assert read_merge_request(environment) == (BASE, HEAD, {APPROVAL_LABEL})
+    assert read_merge_request({"BASE_SHA": BASE}) is None
+    assert read_merge_request({}) is None
+
+
+def test_the_merge_request_is_read_from_the_gitlab_predefined_variables() -> None:
+    # Pipeline détaché : le commit du pipeline est la tête de la branche source.
+    detached = gitlab(CI_MERGE_REQUEST_LABELS="bug,agent-config-approved")
+    assert read_merge_request(detached) == (BASE, HEAD, {"bug", APPROVAL_LABEL})
+    # Résultat fusionné : le commit du pipeline est la fusion, la tête est donnée à part.
+    merged = gitlab(CI_COMMIT_SHA=MERGED, CI_MERGE_REQUEST_SOURCE_BRANCH_SHA=HEAD)
+    assert read_merge_request(merged) == (BASE, HEAD, set())
+    # Les variables du workflow GitHub ne valent rien sur GitLab.
+    github_only = gitlab(PR_LABELS='["agent-config-approved"]')
+    assert read_merge_request(github_only) == (BASE, HEAD, set())
+
+
+def test_outside_a_gitlab_merge_request_there_is_nothing_to_check() -> None:
+    branch = gitlab()
+    del branch["CI_MERGE_REQUEST_IID"]
+    assert read_merge_request(branch) is None
+    # Dans une merge request, une base manquante ne passe pas pour une absence de merge request.
+    unknown = gitlab()
+    del unknown["CI_MERGE_REQUEST_DIFF_BASE_SHA"]
+    assert read_merge_request(unknown) == ("", HEAD, set())
+    assert main(unknown) == 2
 
 
 def git(repository: Path, *arguments: str) -> str:
@@ -147,6 +214,19 @@ def test_pipeline_check_fails_without_the_label_and_passes_with_it(
     assert ".claude/hooks/garde é.py" in capsys.readouterr().out
     approved = {"BASE_SHA": base, "HEAD_SHA": head, "PR_LABELS": '["agent-config-approved"]'}
     assert main(approved) == 0
+
+
+def test_gitlab_pipeline_check_fails_without_the_label_and_passes_with_it(
+    merge_request: tuple[Path, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository, base, head = merge_request
+    monkeypatch.chdir(repository)
+    pipeline = gitlab(CI_MERGE_REQUEST_DIFF_BASE_SHA=base, CI_COMMIT_SHA=head)
+    assert main({**pipeline, "CI_MERGE_REQUEST_LABELS": "bug"}) == 1
+    assert ".claude/hooks/garde é.py" in capsys.readouterr().out
+    assert main({**pipeline, "CI_MERGE_REQUEST_LABELS": "bug,agent-config-approved"}) == 0
 
 
 def test_outside_a_merge_request_there_is_nothing_to_check(

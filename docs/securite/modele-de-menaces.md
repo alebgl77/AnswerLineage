@@ -156,10 +156,10 @@ Le détail de chaque menace, son scénario, ses parades avec leur code et leur t
 
 | Menace | Ce qui est craint | Catégorie | Traitement |
 | --- | --- | --- | --- |
-| `pipeline/action-deplacee` | Une action ou une image tierce change sous la même étiquette | Altération | 2 parades |
+| `pipeline/action-deplacee` | Une action ou une image tierce change sous la même étiquette | Altération | 3 parades |
 | `pipeline/merge-request-privilegiee` | Le code d'une merge request obtient un droit d'écriture ou un secret | Élévation de privilège | 3 parades |
 | `pipeline/agent-de-code-piege` | Un agent de code suit une instruction piégée avec un secret ou un droit d'écriture | Élévation de privilège | 2 parades |
-| `pipeline/garde-fou-modifie` | Une merge request affaiblit un garde-fou sans revue du mainteneur | Élévation de privilège | 2 parades |
+| `pipeline/garde-fou-modifie` | Une merge request affaiblit un garde-fou sans revue du mainteneur | Élévation de privilège | 3 parades |
 | `pipeline/reglages-du-depot` | Une protection du dépôt manque : une étiquette, une fusion ou un label viennent d'un autre que le mainteneur | Élévation de privilège | Acceptation à signer |
 | `pipeline/secret-dans-l-historique` | Un secret entre dans l'historique public | Divulgation | 1 parade |
 | `pipeline/image-vulnerable` | Une image est publiée avec une vulnérabilité haute ou critique connue | Altération | 2 parades |

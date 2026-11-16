@@ -19,7 +19,10 @@ un vecteur d'attaque. Ce contrôle échoue dès que :
 - un fichier compose publie un port ailleurs que sur la boucle locale, ou branche un
   service sur le réseau de l'hôte ;
 - un fichier compose inclut ou étend un fichier absent du dépôt, que ce contrôle ne
-  pourrait pas lire.
+  pourrait pas lire ;
+- le pipeline GitLab (``.gitlab-ci.yml``) nomme une image sans empreinte, écrit un
+  secret en clair, a un job qui peut échouer ou attendre une main sans faire échouer
+  le pipeline, ou inclut un autre fichier, que ce contrôle ne lirait pas.
 
 Un fichier compose se reconnaît à son nom ou à son contenu : tout fichier YAML du
 dépôt qui déclare des services en est un, quel que soit son nom.
@@ -47,7 +50,8 @@ _DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 # Référence d'image dans un script : registre connu, puis chemin de l'image.
 _IMAGE_IN_SCRIPT = re.compile(
     r"(?<![\w./-])((?:ghcr\.io|docker\.io|quay\.io|gcr\.io|registry\.k8s\.io|"
-    r"mcr\.microsoft\.com|public\.ecr\.aws|[\w.-]+\.pkg\.dev)/[^\s\"'`;|&)]+)"
+    r"mcr\.microsoft\.com|public\.ecr\.aws|registry\.gitlab\.com|[\w.-]+\.pkg\.dev)"
+    r"/[^\s\"'`;|&)]+)"
 )
 _WRITE_ALL = "write-all"
 # Événements dont le contenu vient d'un tiers : issue, commentaire, merge request.
@@ -622,6 +626,178 @@ def _services_violations(
     return violations
 
 
+# Le pipeline GitLab : un seul fichier, à la racine du dépôt.
+GITLAB_CI = ".gitlab-ci.yml"
+# Mots-clés de premier niveau d'un fichier .gitlab-ci.yml qui ne décrivent pas un job.
+GITLAB_GLOBALS = frozenset(
+    {
+        "after_script",
+        "before_script",
+        "cache",
+        "default",
+        "image",
+        "include",
+        "services",
+        "stages",
+        "variables",
+        "workflow",
+    }
+)
+# Nom d'une variable qui porte un secret.
+_SECRET_NAME = re.compile(
+    r"TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIAL",
+    re.IGNORECASE,
+)
+# Une valeur faite seulement de références à d'autres variables, $NOM ou ${NOM}.
+_REFERENCES = re.compile(r"(?:\$\w+|\$\{\w+\})+")
+# Un mot de passe écrit dans une adresse : schéma://utilisateur:mot-de-passe@hôte.
+_ADDRESS_PASSWORD = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s/:@'\"]*:([^\s/@'\"]+)@", re.IGNORECASE)
+# Un job qui attend une main ne bloque rien tant que personne ne la donne.
+_WAITING = frozenset({"manual", "delayed"})
+
+
+def _gitlab_events(value: object, key: object = None) -> Iterator[tuple[str, object]]:
+    """Ce que le contrôle regarde dans un fichier GitLab, à toute profondeur.
+
+    ``image`` : une image, sous ``image`` ou ``services`` ; ``variables`` : une table
+    de variables, ou une case de ``parallel:matrix`` ; ``text`` : tout autre texte,
+    scripts et valeurs de variables compris.
+    """
+    if key == "image":
+        yield "image", value.get("name") if isinstance(value, Mapping) else value
+        return
+    if key == "services":
+        entries = value if isinstance(value, list) else [value]
+        for entry in entries:
+            yield "image", entry.get("name") if isinstance(entry, Mapping) else entry
+            if isinstance(entry, Mapping):
+                for name, item in entry.items():
+                    if name != "name":
+                        yield from _gitlab_events(item, name)
+        return
+    if key == "variables" and isinstance(value, Mapping):
+        yield "variables", value
+    if key == "matrix" and isinstance(value, list):
+        for entry in value:
+            if isinstance(entry, Mapping):
+                yield "variables", entry
+    if isinstance(value, Mapping):
+        for name, item in value.items():
+            yield from _gitlab_events(item, name)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _gitlab_events(item)
+    elif isinstance(value, str):
+        yield "text", value
+
+
+def _written_in_clear(value: object) -> bool:
+    """Une valeur écrite dans le fichier, et non lue d'une variable du projet."""
+    if isinstance(value, Mapping):
+        value = value.get("value")
+    values = value if isinstance(value, list) else [value]
+    return any(
+        isinstance(item, str | int | float)
+        and str(item) != ""
+        and not _REFERENCES.fullmatch(str(item))
+        for item in values
+    )
+
+
+def _gitlab_secrets(path: str, where: str, variables: Mapping[Any, Any]) -> Iterator[Violation]:
+    for name, value in variables.items():
+        if _SECRET_NAME.search(str(name)) and _written_in_clear(value):
+            yield Violation(
+                path,
+                where,
+                "secret-en-clair",
+                f"la variable {name} porte un secret écrit dans le fichier, que tout lecteur "
+                "du dépôt voit : il vient d'une variable protégée et masquée du projet",
+            )
+
+
+def _gitlab_text(path: str, where: str, text: str) -> Iterator[Violation]:
+    for match in _IMAGE_IN_SCRIPT.finditer(text):
+        problem = _image_violation(match.group(1))
+        if problem:
+            yield Violation(path, where, "image-epinglee", problem)
+    for match in _ADDRESS_PASSWORD.finditer(text):
+        if not _REFERENCES.fullmatch(match.group(1)):
+            yield Violation(
+                path,
+                where,
+                "secret-en-clair",
+                "une adresse porte un mot de passe écrit dans le fichier : il vient d'une "
+                "variable protégée et masquée du projet",
+            )
+
+
+def _blocks(setting: Mapping[Any, Any]) -> bool:
+    """Un job, ou une de ses règles, dont l'échec fait échouer le pipeline sans attendre."""
+    return setting.get("allow_failure") in (None, False) and setting.get("when") not in _WAITING
+
+
+def _gitlab_job(path: str, where: str, job: Mapping[Any, Any]) -> Iterator[Violation]:
+    if "trigger" in job:
+        yield Violation(
+            path,
+            where,
+            "pipeline-en-un-fichier",
+            "un pipeline déclenché exécute un fichier que ce contrôle ne lit pas",
+        )
+    rules = job.get("rules")
+    settings = (
+        [job, *(rule for rule in rules if isinstance(rule, Mapping))]
+        if isinstance(rules, list)
+        else [job]
+    )
+    if not all(_blocks(setting) for setting in settings):
+        yield Violation(
+            path,
+            where,
+            "porte-complete",
+            "chaque job est bloquant : allow_failure et when: manual ou delayed laisseraient "
+            "passer une fusion sans que le job ait réussi",
+        )
+
+
+def check_gitlab_ci(path: str, document: object) -> list[Violation]:
+    """Le pipeline GitLab, contrôlé comme un workflow.
+
+    Ses images sont épinglées par empreinte, où qu'elles soient nommées ; il ne
+    porte aucun secret ; chacun de ses jobs est bloquant ; et il tient dans ce
+    fichier : un fichier inclus, ou un pipeline qu'il déclencherait, échapperait au
+    contrôle.
+    """
+    if not isinstance(document, Mapping):
+        return [Violation(path, "fichier", "lisible", "le fichier n'est pas un pipeline GitLab")]
+    violations: list[Violation] = []
+    for key, value in document.items():
+        where = str(key) if key in GITLAB_GLOBALS else f"job {key}"
+        if key == "include":
+            violations.append(
+                Violation(
+                    path,
+                    where,
+                    "pipeline-en-un-fichier",
+                    "un fichier inclus échapperait au contrôle : le pipeline tient dans "
+                    f"{GITLAB_CI}",
+                )
+            )
+        for kind, item in _gitlab_events(value, key):
+            if kind == "image":
+                problem = _image_violation(item)
+                if problem:
+                    violations.append(Violation(path, where, "image-epinglee", problem))
+            elif kind == "variables":
+                violations.extend(_gitlab_secrets(path, where, _mapping(item)))
+            else:
+                violations.extend(_gitlab_text(path, where, str(item)))
+        if key not in GITLAB_GLOBALS and isinstance(value, Mapping):
+            violations.extend(_gitlab_job(path, where, value))
+    return violations
+
+
 def check_codeowners(path: str, content: str) -> list[Violation]:
     """Chaque chemin protégé a un propriétaire, dont la revue peut être exigée."""
     owned = set()
@@ -694,6 +870,7 @@ def discover(root: Path) -> list[Path]:
         *(root / "scripts").glob("*.sh"),
         *(root / ".devcontainer").glob("**/devcontainer.json"),
         *github.glob("CODEOWNERS"),
+        *root.glob(GITLAB_CI),
     }
     for path in _repository_files(root):
         if path.name.startswith("Dockerfile") or _is_compose_file(path):
@@ -718,6 +895,8 @@ def check_file(path: Path, root: Path | None = None) -> list[Violation]:
         return [Violation(str(path), "fichier", "lisible", type(error).__name__)]
     if path.name.startswith("action."):
         return check_action(str(path), document)
+    if path.name == GITLAB_CI:
+        return check_gitlab_ci(str(path), document)
     if not _is_workflow(path) and (
         _COMPOSE_NAME.fullmatch(path.name) or _describes_compose(document)
     ):

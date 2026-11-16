@@ -1,0 +1,223 @@
+# Pipeline d'intégration continue pour GitLab CI : les mêmes étapes bloquantes que
+# .github/workflows/ci.yml, celles que son job ci-ok exige, par les mêmes commandes
+# du dépôt. Chaque stage porte le nom du job GitHub qu'il reproduit, et
+# tests/test_ci_parity.py compare les deux pipelines commande par commande.
+#
+# Ce fichier ne porte aucun secret, n'en inclut aucun autre, épingle chaque image par
+# empreinte et n'a que des jobs bloquants : make policy le vérifie. docs/ci.md dit ce
+# qui diffère du pipeline GitHub, et pourquoi.
+
+workflow:
+  rules:
+    # Chaque merge request, et chaque fusion dans la branche par défaut.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  auto_cancel:
+    # Un commit plus récent annule le pipeline en cours de la même branche.
+    on_new_commit: interruptible
+
+stages:
+  - static
+  - tests
+  - secrets
+  - image
+  - agent-config
+  - devcontainer
+  - explorer
+  - demo
+
+default:
+  interruptible: true
+
+# Python 3.13 et uv 0.11.32, sur Debian : git, make et curl y sont.
+.uv:
+  image: &uv-image ghcr.io/astral-sh/uv:0.11.32-python3.13-trixie@sha256:656194585e22cf53cab0bedd2c2d9158428220a33255f3bfe668e124d4f2fe6f
+  needs: []
+
+# PostgreSQL vient d'un service du job plutôt que de Testcontainers : ces jobs n'ont
+# besoin d'aucun démon Docker. Le service n'est joignable que du job : il accepte ses
+# connexions sans mot de passe, et aucun n'est écrit ici.
+.postgres:
+  variables:
+    POSTGRES_HOST_AUTH_METHOD: trust
+    ANSWERLINEAGE_TEST_DATABASE_URL: postgresql://postgres@postgres:5432/postgres
+
+.postgres-17:
+  extends: .postgres
+  services:
+    - name: public.ecr.aws/docker/library/postgres:17.11@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
+      alias: postgres
+
+.postgres-18:
+  extends: .postgres
+  services:
+    - name: public.ecr.aws/docker/library/postgres:18.6@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
+      alias: postgres
+
+# Les jobs qui demandent Docker font tourner le démon dans leur propre conteneur, depuis
+# l'image officielle Docker-in-Docker, et non dans un service : la démonstration et la
+# signature éprouvée joignent sur la boucle locale les ports que le démon publie, et
+# les scripts montent des dossiers du job, /tmp compris, dans leurs conteneurs. Un
+# service aurait sa propre boucle locale et son propre système de fichiers. Comme pour
+# un service Docker-in-Docker, le runner accepte les conteneurs privilégiés.
+.docker:
+  image:
+    name: public.ecr.aws/docker/library/docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977
+    entrypoint: [""]
+  needs: []
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  before_script: &docker-daemon
+    # Ce que les scripts du dépôt demandent et que l'image n'a pas.
+    - apk add --no-cache bash curl python3
+    # Le script du job arrive au shell par son entrée standard : le démon n'en lit rien.
+    - dind dockerd --host="$DOCKER_HOST" </dev/null >/var/log/dockerd.log 2>&1 &
+    - timeout 60 sh -c 'until docker info >/dev/null 2>&1; do sleep 1; done' || { tail -n 40 /var/log/dockerd.log; exit 1; }
+
+static:
+  extends: .uv
+  stage: static
+  timeout: 10 minutes
+  variables:
+    # Le contrat de l'API se compare à celui de la branche cible ; les notes de version
+    # partent de la dernière étiquette.
+    GIT_DEPTH: "0"
+    BASE_SHA: $CI_MERGE_REQUEST_DIFF_BASE_SHA
+  script:
+    - uv sync --all-packages --locked
+    - make policy
+    - make contract
+    - make format-check
+    - make lint
+    - make typecheck
+    # Ce que la publication d'une version contrôle avant de rien publier, avec
+    # l'étiquette fictive de la version déclarée.
+    - make packages
+
+# La matrice : Python 3.13 et 3.14, PostgreSQL 17 et 18. uv installe Python 3.14 comme
+# setup-uv le fait sur GitHub ; 3.13 est celui de l'image.
+.tests:
+  extends: .uv
+  stage: tests
+  timeout: 20 minutes
+  parallel:
+    matrix:
+      - UV_PYTHON: ["3.13", "3.14"]
+  variables:
+    UV_PYTHON_DOWNLOADS: automatic
+  script:
+    - uv sync --all-packages --locked
+    # Les tests dans le navigateur ont leurs propres jobs : explorer et demo.
+    - make test PYTEST_ARGS='-m "not e2e and not demo"'
+    - make coverage-gate
+
+tests-postgres-17:
+  extends: [.tests, .postgres-17]
+
+tests-postgres-18:
+  extends: [.tests, .postgres-18]
+
+secrets:
+  extends: .docker
+  stage: secrets
+  timeout: 10 minutes
+  variables:
+    # Tout l'historique : un secret retiré depuis reste un secret publié.
+    GIT_DEPTH: "0"
+  script:
+    - scripts/gitleaks.sh selftest
+    - scripts/gitleaks.sh scan
+
+# Les mêmes sous-commandes de scripts/image.sh que la publication d'une version. Le job
+# ne peut pas s'appeler image, mot-clé de GitLab : son stage porte ce nom.
+image-sbom:
+  extends: .docker
+  stage: image
+  timeout: 25 minutes
+  variables:
+    IMAGE_VERSION: $CI_COMMIT_SHA
+  script:
+    - python3 -m scripts.check_vulnerabilities exceptions
+    - scripts/image.sh build
+    - scripts/image.sh sbom
+    - scripts/image.sh selftest
+    # Registre éphémère, clés jetables, aucun journal public : la signature de la
+    # publication s'éprouve sans rien publier.
+    - scripts/image.sh signtest
+    - scripts/image.sh scan
+  artifacts:
+    name: sbom-answerlineage
+    when: always
+    paths:
+      - build/image/sbom.cdx.json
+
+agent-config:
+  extends: .uv
+  stage: agent-config
+  timeout: 5 minutes
+  variables:
+    # La comparaison avec la branche cible demande son historique.
+    GIT_DEPTH: "0"
+  script:
+    # Les empreintes et les labels de la merge request viennent des variables
+    # prédéfinies de GitLab, que le script lit lui-même.
+    - python3 -m scripts.check_agent_config
+
+devcontainer:
+  extends: .docker
+  stage: devcontainer
+  timeout: 15 minutes
+  script:
+    - docker build --tag answerlineage-dev .devcontainer
+    - docker run --rm --volume "$PWD:/src:ro" answerlineage-dev sh -c 'cp -r /src /tmp/projet && cd /tmp/projet && make setup && uv run pytest -m "not integration" -q'
+
+# L'explorateur se construit dans l'image de Node 22, puis se pilote dans Chromium
+# depuis celle de uv : sur GitHub, un même job reçoit les deux outillages.
+explorer-ui:
+  stage: explorer
+  image: public.ecr.aws/docker/library/node:22.23.4-trixie@sha256:c46850e69b4fab3c4f225aa36b777c8cc001d1cd5b2136e1ea024796f6d3bbbb
+  needs: []
+  timeout: 10 minutes
+  script:
+    - make ui
+  artifacts:
+    paths:
+      - ui/dist/
+    expire_in: 1 day
+
+explorer:
+  extends: [.uv, .postgres-18]
+  stage: explorer
+  needs: [explorer-ui]
+  timeout: 15 minutes
+  script:
+    - uv sync --all-packages --locked
+    - uv run playwright install --with-deps chromium
+    - make e2e
+
+# Chaque étape est une sous-commande de scripts/check_demo.sh. Elles tournent dans le
+# poste : un conteneur Debian, l'image de uv, qui partage le réseau, le démon et les
+# dossiers du job. Chromium y trouve la glibc que l'image du démon, Alpine, n'a pas, et
+# la démonstration y est jointe sur la boucle locale du job, la seule où elle écoute.
+demo:
+  extends: .docker
+  stage: demo
+  timeout: 25 minutes
+  variables:
+    POSTE_IMAGE: *uv-image
+  before_script:
+    - *docker-daemon
+    - docker run --detach --name poste --network host --entrypoint "" --env CI --volume /var/run/docker.sock:/var/run/docker.sock --volume /usr/local/bin/docker:/usr/local/bin/docker:ro --volume /usr/local/libexec/docker/cli-plugins:/usr/local/libexec/docker/cli-plugins:ro --volume "$CI_PROJECT_DIR:$CI_PROJECT_DIR" --workdir "$CI_PROJECT_DIR" "$POSTE_IMAGE" sleep infinity
+  script:
+    - docker exec poste uv sync --all-packages --locked
+    - docker exec poste uv run playwright install --with-deps chromium
+    # Les blocs bash de docs/demarrage.md, dans l'ordre, depuis le départ : le premier
+    # lignage dans le budget de cinq minutes, une commande qui échoue nommée. Le guide
+    # arrête la démonstration et efface ses données.
+    - docker exec poste scripts/check_demo.sh guide
+    - docker exec poste scripts/check_demo.sh up
+    - docker exec poste scripts/check_demo.sh checks
+    - docker exec poste scripts/check_demo.sh browser
+    - docker exec poste scripts/check_demo.sh restart
+    # Sur un échec, le démon et la démonstration disparaissent avec le conteneur du job.
+    - docker exec poste scripts/check_demo.sh down

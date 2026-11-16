@@ -28,7 +28,7 @@ Le dépôt fournit aussi un conteneur de développement (`.devcontainer/`), sans
 make check
 ```
 
-Toute contribution passe `make check` : politique du dépôt, compatibilité de l'API, format, lint, typage strict, paquets publiables, tests et couverture. Le pipeline rejoue la même porte sur Python 3.13 et 3.14, avec PostgreSQL 17 et 18. [`docs/ci.md`](docs/ci.md) décrit chaque contrôle.
+Toute contribution passe `make check` : politique du dépôt, compatibilité de l'API, format, lint, typage strict, paquets publiables, tests et couverture. Le pipeline rejoue la même porte sur Python 3.13 et 3.14, avec PostgreSQL 17 et 18. [`docs/ci.md`](docs/ci.md) décrit chaque contrôle, et le même pipeline pour GitLab CI (`.gitlab-ci.yml`), qu'un test tient à parité.
 
 | Commande | Usage |
 | --- | --- |
@@ -68,7 +68,7 @@ Un changement qui rompt l'une d'elles est refusé, même si ses tests passent :
 ## Ce qui demande l'accord du mainteneur
 
 - **Une nouvelle dépendance.** Elle se discute dans une issue. Une fois acceptée, elle s'ajoute au `pyproject.toml` du composant, puis `uv lock` ; pour l'explorateur, à `ui/package.json` en version exacte, puis `npm install --package-lock-only`. Une version publiée depuis moins de 7 jours n'est pas adoptée.
-- **Les chemins protégés** : workflows, `scripts/`, `.devcontainer/`, configuration d'agents de code, modèle de menaces. Une merge request qui en modifie un échoue au contrôle `agent-config` tant que le mainteneur n'a pas posé le label `agent-config-approved`. Signalez-le dans la description plutôt que de contourner le contrôle.
+- **Les chemins protégés** : workflows et pipeline GitLab, `scripts/`, `.devcontainer/`, configuration d'agents de code, modèle de menaces. Une merge request qui en modifie un échoue au contrôle `agent-config` tant que le mainteneur n'a pas posé le label `agent-config-approved`. Signalez-le dans la description plutôt que de contourner le contrôle.
 - **Un changement incompatible de l'API.** Le pipeline le refuse : une rupture demande une nouvelle version de l'API.
 
 Les actions GitHub s'épinglent par empreinte de commit et les images par empreinte `@sha256:`.

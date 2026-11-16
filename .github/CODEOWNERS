@@ -19,6 +19,10 @@
 /.github/workflows/               @alebgl77
 /.github/actions/                 @alebgl77
 /.github/CODEOWNERS               @alebgl77
+/.gitlab-ci.yml                   @alebgl77
+/.gitlab/                         @alebgl77
+/CODEOWNERS                       @alebgl77
+/docs/CODEOWNERS                  @alebgl77
 /.pre-commit-config.yaml          @alebgl77
 /renovate.json                    @alebgl77
 /scripts/                         @alebgl77

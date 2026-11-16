@@ -1170,6 +1170,11 @@ description = "Une image se référence par empreinte sha256, dans un workflow, 
 code = "scripts/check_policy.py"
 test = "tests/test_policy.py::test_container_images_must_be_pinned_by_digest"
 
+[[threat.mitigation]]
+description = "Le pipeline GitLab épingle aussi ses images par empreinte, où qu'il les nomme, et tient dans un seul fichier : aucun fichier inclus ni pipeline déclenché n'échappe au contrôle."
+code = "scripts/check_policy.py::check_gitlab_ci"
+test = "tests/test_policy.py::test_gitlab_images_must_be_pinned_by_digest"
+
 [[threat]]
 id = "pipeline/merge-request-privilegiee"
 name = "Le code d'une merge request obtient un droit d'écriture ou un secret"
@@ -1228,6 +1233,11 @@ test = "tests/test_agent_config.py::test_merge_request_touching_a_hook_fails_unt
 description = "Chaque chemin protégé a un propriétaire dans CODEOWNERS."
 code = "scripts/check_policy.py::check_codeowners"
 test = "tests/test_policy.py::test_every_protected_path_needs_a_code_owner"
+
+[[threat.mitigation]]
+description = "Sur GitLab, le même contrôle lit les labels de la merge request dans les variables prédéfinies du pipeline."
+code = "scripts/check_agent_config.py::read_merge_request"
+test = "tests/test_agent_config.py::test_gitlab_pipeline_check_fails_without_the_label_and_passes_with_it"
 
 [[threat]]
 id = "pipeline/reglages-du-depot"

@@ -1,6 +1,6 @@
 # Pipeline d'intégration continue
 
-Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque merge request et sur chaque fusion dans `main`.
+Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque merge request et sur chaque fusion dans `main`. Le même pipeline existe pour GitLab CI, dans `.gitlab-ci.yml` : voir [Pipeline GitLab](#pipeline-gitlab).
 
 | Job | Ce qu'il vérifie | Commande locale |
 | --- | --- | --- |
@@ -143,11 +143,12 @@ Le contrôle `make policy` (`scripts/check_policy.py`) échoue dès que :
 - `actions/checkout` conserve le jeton du pipeline ;
 - un job qui publie (permission `packages` ou `id-token` en écriture, envoi sur PyPI) reçoit un secret ou un mot de passe : il publie par l'identité OIDC du workflow ou par son jeton éphémère, jamais par un jeton de longue durée ;
 - un fichier compose publie un port ailleurs que sur la boucle locale, branche un service sur le réseau de l'hôte (directement ou par un réseau externe), tire une image sans empreinte, ou inclut ou étend un fichier absent du dépôt. Tout fichier YAML qui décrit des services compose est contrôlé, quel que soit son nom, fichiers de surcharge compris ;
-- le job `ci-ok` ne dépend pas de tous les autres jobs.
+- le job `ci-ok` ne dépend pas de tous les autres jobs ;
+- le pipeline GitLab (`.gitlab-ci.yml`) nomme une image sans empreinte, sous `image` ou `services`, dans un script ou dans une variable ; écrit un secret en clair, dans une variable dont le nom dit un secret (`TOKEN`, `PASSWORD`, `SECRET`, `API_KEY`…) ou dans une adresse (`schéma://utilisateur:mot-de-passe@hôte`) ; a un job qui peut échouer sans faire échouer le pipeline (`allow_failure`) ou qui attend une main (`when: manual` ou `delayed`) ; inclut un autre fichier (`include`) ou déclenche un autre pipeline (`trigger`), que ce contrôle ne lirait pas.
 
 Le jeton du pipeline est en lecture seule. Seul le job `codeql` reçoit `security-events: write`, pour déposer ses résultats. Hors du pipeline des merge requests, le workflow `release` reçoit les permissions de publier, job par job, chacun les seules dont il a besoin.
 
-Les dépendances attendent 7 jours avant d'être adoptées, à deux endroits : `exclude-newer` dans `pyproject.toml` pour `uv lock`, et `minimumReleaseAge` dans `renovate.json`. Avec `internalChecksFilter: strict`, Renovate n'ouvre aucune merge request tant qu'aucune version n'a passé le délai. Renovate maintient aussi les empreintes des actions et des images des outils : gitleaks, Syft, Grype, cosign et le registre éphémère de la signature éprouvée.
+Les dépendances attendent 7 jours avant d'être adoptées, à deux endroits : `exclude-newer` dans `pyproject.toml` pour `uv lock`, et `minimumReleaseAge` dans `renovate.json`. Avec `internalChecksFilter: strict`, Renovate n'ouvre aucune merge request tant qu'aucune version n'a passé le délai. Renovate maintient aussi les empreintes des actions et des images des outils : gitleaks, Syft, Grype, cosign et le registre éphémère de la signature éprouvée. Son gestionnaire `gitlabci`, actif par défaut, lit les images de `.gitlab-ci.yml`.
 
 ## Agents de code
 
@@ -155,7 +156,7 @@ Une issue, un commentaire ou une merge request peuvent porter des instructions p
 
 **Aucun agent de code sur une entrée non fiable avec un secret ou un droit d'écriture.** `make policy` refuse un workflow déclenché par une issue, un commentaire, une discussion ou une merge request qui lance un agent de code (action ou ligne de commande) en lui donnant un secret ou une permission d'écriture.
 
-**Revue obligatoire de la configuration d'agents et des garde-fous.** Les fichiers qui pilotent ce qu'un agent a le droit de faire sont protégés : `.claude/`, `.mcp.json`, `CLAUDE.md` et leurs équivalents pour d'autres agents, ainsi que `.github/workflows/`, `.github/CODEOWNERS`, `.devcontainer/`, `.pre-commit-config.yaml`, `renovate.json`, `scripts/`, les exceptions des analyses (`.gitleaksignore`, `vulnerability-exceptions.toml`), celles du corpus d'abus (`corpus/src/answerlineage_corpus/abuse_open.json`) et le modèle de menaces (`docs/securite/modele-de-menaces.toml`). Deux mécanismes se complètent :
+**Revue obligatoire de la configuration d'agents et des garde-fous.** Les fichiers qui pilotent ce qu'un agent a le droit de faire sont protégés : `.claude/`, `.mcp.json`, `CLAUDE.md` et leurs équivalents pour d'autres agents, ainsi que `.github/workflows/`, `.github/CODEOWNERS`, le pipeline GitLab (`.gitlab-ci.yml`) et les emplacements où GitLab lit ses propriétaires du code (`CODEOWNERS`, `docs/CODEOWNERS`, `.gitlab/`), `.devcontainer/`, `.pre-commit-config.yaml`, `renovate.json`, `scripts/`, les exceptions des analyses (`.gitleaksignore`, `vulnerability-exceptions.toml`), celles du corpus d'abus (`corpus/src/answerlineage_corpus/abuse_open.json`) et le modèle de menaces (`docs/securite/modele-de-menaces.toml`). Deux mécanismes se complètent :
 
 - `.github/CODEOWNERS` leur donne un propriétaire, dont la revue peut être exigée ; `make policy` vérifie que chaque chemin protégé y figure ;
 - le job `agent-config` échoue quand une merge request modifie l'un d'eux, jusqu'à ce qu'un mainteneur lui pose le label `agent-config-approved`.
@@ -181,3 +182,89 @@ Ces réglages ne se versionnent pas. Ils reviennent à un administrateur du dép
 - réserver les noms de distribution, créer l'environnement `pypi` et déclarer les éditeurs de confiance de PyPI : voir [Ce que le mainteneur règle une fois](publication.md#ce-que-le-mainteneur-règle-une-fois).
 
 `ci-ok` est le seul contrôle à exiger : il échoue dès qu'un autre job échoue, est annulé ou est sauté, y compris une case de la matrice.
+
+## Pipeline GitLab
+
+`.gitlab-ci.yml` décrit le même pipeline pour GitLab CI, pour qui adopte le projet sans GitHub Actions : les étapes bloquantes de `ci.yml`, celles que `ci-ok` exige, par les mêmes commandes du dépôt (`make …`, `scripts/…`). Le verdict vient donc du même code. Il tourne sur chaque merge request et sur chaque fusion dans la branche par défaut ; un commit plus récent annule le pipeline en cours de la même branche.
+
+Chaque stage porte le nom du job GitHub qu'il reproduit. `tests/test_ci_parity.py` tient la parité : il compare, stage par stage, les commandes des jobs GitLab à celles des étapes bloquantes de GitHub, et échoue dès que l'un des deux pipelines gagne une étape ou un job que l'autre n'a pas, sauf exception déclarée dans le test avec sa raison. Il compare aussi les cases de la matrice des tests, et les versions de uv et de Node des deux pipelines.
+
+### Correspondance job par job
+
+| Job GitHub | Jobs GitLab (stage) | Ce qui diffère |
+| --- | --- | --- |
+| `static` | `static` | `BASE_SHA` vient de `CI_MERGE_REQUEST_DIFF_BASE_SHA`, la base de la merge request ; tout l'historique et les étiquettes sont récupérés (`GIT_DEPTH: "0"`) |
+| `tests` | `tests-postgres-17` et `tests-postgres-18`, chacun sur Python 3.13 et 3.14 (`parallel:matrix`) | PostgreSQL est un service du job, et non un conteneur de Testcontainers ; ses images sont épinglées (17.11 et 18.6) |
+| `secrets` | `secrets` | Le démon Docker tourne dans le conteneur du job |
+| `image` | `image-sbom` | `image` est un mot-clé de GitLab, interdit comme nom de job. Le SBOM est gardé comme artefact du job, même quand une étape suivante échoue |
+| `codeql` | aucun | Voir [Ce qui n'a pas d'équivalent](#ce-qui-na-pas-déquivalent) |
+| `agent-config` | `agent-config` | Les labels viennent de `CI_MERGE_REQUEST_LABELS`, que le script lit lui-même ; poser le label ne relance rien |
+| `devcontainer` | `devcontainer` | Le démon Docker tourne dans le conteneur du job |
+| `explorer` | `explorer-ui`, puis `explorer` | Node 22 et uv sont deux images : `explorer-ui` construit l'explorateur, `explorer` reçoit `ui/dist` comme artefact et le pilote dans Chromium, devant un service PostgreSQL 18 |
+| `demo` | `demo` | Le démon Docker tourne dans le conteneur du job ; les commandes, dans le poste (plus bas) |
+| `ci-ok` | aucun | Le statut du pipeline en tient lieu : voir [La porte](#la-porte) |
+
+### Ce qui diffère, et pourquoi
+
+#### La porte
+
+GitLab n'a pas besoin d'un job comme `ci-ok` : un pipeline échoue dès qu'un de ses jobs échoue, et le réglage « Pipelines must succeed » (Settings, Merge requests) refuse la fusion d'une merge request dont le dernier pipeline n'a pas réussi, annulé compris. La faille que `ci-ok` ferme sur GitHub, un job qui ne compterait pas, prend sur GitLab la forme d'un job autorisé à échouer (`allow_failure`) ou qui attend une main (`when: manual`) : `make policy` refuse l'un et l'autre, dans un job comme dans ses règles.
+
+#### Docker : le démon dans le job, pas dans un service
+
+Les jobs `secrets`, `image-sbom`, `devcontainer` et `demo` font tourner le démon Docker dans leur propre conteneur, depuis l'image officielle Docker-in-Docker (`docker:29.9.2-dind`), lancée par son script `dind`. Un service Docker-in-Docker ne conviendrait pas : il a sa propre boucle locale et son propre système de fichiers, alors que ces jobs reproduisent un poste où le démon et les commandes partagent les deux.
+
+- La démonstration ne publie son port que sur la boucle locale, et `scripts/check_demo.sh checks` vérifie justement que rien ne répond ailleurs : derrière un service, elle serait injoignable du job.
+- `scripts/image.sh signtest` interroge sur la boucle locale le registre éphémère que le démon publie.
+- `scripts/gitleaks.sh selftest` et `scripts/image.sh` montent dans leurs conteneurs des dossiers créés par `mktemp`, sous `/tmp`, qu'un service ne verrait pas.
+
+Comme pour un service Docker-in-Docker, le runner doit accepter les conteneurs privilégiés. L'image, Alpine, reçoit à chaque job `bash`, `curl` et `python3` (`apk add`), que les scripts demandent.
+
+La démonstration demande en plus Chromium, que Playwright n'installe que sur Debian ou Ubuntu. Ses commandes tournent donc dans le poste : un conteneur de l'image de uv (Debian) lancé sur le démon du job, qui partage son réseau (`--network host`), son démon, le client Docker de l'image et le dossier du dépôt, au même chemin. Chaque étape s'y lance par `docker exec poste`, suivi de la commande du dépôt : `tests/test_ci_parity.py` ôte ce préfixe avant de comparer. Sur un échec, le démon et la démonstration disparaissent avec le conteneur du job : l'arrêt, que le job GitHub joue toujours, n'est joué que sur le chemin de la réussite.
+
+#### PostgreSQL : un service, sans Testcontainers
+
+Les tests d'intégration et ceux de l'explorateur joignent un service PostgreSQL du job par `ANSWERLINEAGE_TEST_DATABASE_URL`, que les fixtures prennent avant Testcontainers. Ces jobs n'ont besoin d'aucun démon Docker, et l'image de PostgreSQL est épinglée par empreinte, là où Testcontainers la tire, sur GitHub, par son étiquette (`postgres:17`, `postgres:18`). Le service accepte les connexions sans mot de passe (`POSTGRES_HOST_AUTH_METHOD: trust`) : seul le job le joint, et aucun mot de passe n'est écrit dans le fichier.
+
+#### Python 3.14
+
+L'image du pipeline porte Python 3.13. Pour la case 3.14, uv installe l'interpréteur qu'il gère (`UV_PYTHON`), comme `setup-uv` le fait sur GitHub.
+
+#### Le label `agent-config-approved`
+
+`scripts/check_agent_config.py` lit, sous GitLab, les variables prédéfinies de la merge request : la base de la différence (`CI_MERGE_REQUEST_DIFF_BASE_SHA`), la tête de la branche source (`CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` dans un pipeline de résultat fusionné, sinon `CI_COMMIT_SHA`), et les labels, séparés par des virgules (`CI_MERGE_REQUEST_LABELS`). Rien de sa logique n'est dupliqué.
+
+GitLab ne lance aucun pipeline quand un label est posé, là où GitHub relance le workflow (`labeled`). Après avoir posé le label, le mainteneur relance le pipeline de la merge request (onglet Pipelines, « Run pipeline »).
+
+#### Le jeton du pipeline
+
+Un workflow GitHub déclare ses permissions ; un fichier `.gitlab-ci.yml` ne le peut pas. Le jeton d'un job GitLab (`CI_JOB_TOKEN`) expire avec lui, et ce pipeline ne s'en sert pas. Ses droits se règlent dans le projet : n'autoriser l'accès qu'aux projets nécessaires (Settings, CI/CD, Job token permissions).
+
+#### Ce qui n'a pas d'équivalent
+
+- **CodeQL.** Hors de GitHub Advanced Security, la licence de CodeQL n'autorise l'analyse automatisée, en CI, que d'un code ouvert hébergé et maintenu sur GitHub.com ; un projet adopté sur GitLab en sort. L'équivalent GitLab est l'analyse SAST (Semgrep), à imposer par une politique d'exécution des analyses du groupe, tenue hors du dépôt. Elle n'est pas dans `.gitlab-ci.yml` : elle s'inclut par un modèle de GitLab (`include: template`) et tire ses analyseurs par étiquette, ce que la politique du dépôt refuse. Ses résultats ne bloquent une fusion qu'avec une politique d'approbation (GitLab Ultimate).
+- **L'événement d'étiquette.** Voir plus haut : le mainteneur relance le pipeline.
+- **Le banc de latence et la publication.** `bench.yml` et `release.yml` ne sont pas des étapes bloquantes et ne sont pas reproduits. Le banc se lancerait d'un pipeline programmé, sur un runner qui ne fait que cela ; la publication repose sur l'identité OIDC des workflows GitHub, que vérifient la signature sans clé et la publication de confiance de PyPI.
+
+### Monter un miroir
+
+1. Créer le projet GitLab depuis le dépôt : import du dépôt GitHub, ou miroir en tirage (GitLab Premium), avec « Trigger pipelines for mirror updates ».
+2. Fournir un runner Linux à exécuteur Docker qui accepte les conteneurs privilégiés : les runners Linux hébergés de GitLab.com (`saas-linux-*`) le font. Les registres `ghcr.io`, `public.ecr.aws`, PyPI, npm, `github.com` (Python 3.14 géré par uv), les dépôts de paquets d'Alpine et de Debian, et ce que les jobs téléchargent comme sur GitHub (navigateurs de Playwright, base de vulnérabilités de Grype) doivent être joignables.
+3. Régler le projet :
+   - protéger la branche par défaut : fusion par merge request seulement, « Pipelines must succeed » ;
+   - exiger l'approbation des propriétaires du code (GitLab Premium). GitLab ne lit pas `.github/CODEOWNERS` : il prend le premier de `CODEOWNERS`, `docs/CODEOWNERS` et `.gitlab/CODEOWNERS`. Y recopier `.github/CODEOWNERS` avec les noms des mainteneurs sur GitLab ; ces trois emplacements sont des chemins protégés ;
+   - créer le label `agent-config-approved`. Sur GitLab, tout membre de rôle Reporter ou au-delà, auteur compris, peut poser un label sur une merge request : réserver ces rôles aux mainteneurs, ou s'en remettre à l'approbation des propriétaires du code, qui fait foi ;
+   - laisser les pipelines des merge requests issues de forks tourner dans le fork. Lancer l'un d'eux dans le projet lui donnerait les variables du projet ; ce pipeline n'en lit aucune, mais toute variable qui porte un secret reste protégée et masquée.
+4. Ouvrir une merge request qui ne change rien : chaque stage doit passer au vert.
+
+### Ce qui reste à éprouver sur un vrai miroir
+
+Aucun GitLab n'était joignable quand ce pipeline a été écrit. Sont vérifiés dans le dépôt : la syntaxe du fichier, contre le schéma que publie GitLab (`spec/gitlab-ci/`) ; ce que le schéma ne voit pas (stages, `extends`, `needs`) ; la parité avec `ci.yml` ; la politique du dépôt. Ont été éprouvés hors de GitLab, sur un démon Docker : le démon lancé dans un conteneur privilégié de l'image `docker:29.9.2-dind`, un dossier de `/tmp` monté dans un conteneur, un port publié sur la boucle locale joint depuis le job et depuis un conteneur sur son réseau, injoignable sur son adresse réseau ; le poste, qui pilote Compose avec le client de l'image ; les tests d'intégration sur un PostgreSQL sans mot de passe, joint par `ANSWERLINEAGE_TEST_DATABASE_URL`.
+
+Reste à éprouver sur un miroir :
+
+- chaque job jusqu'au bout, en particulier `demo` (le guide dans son budget de cinq minutes, Chromium dans le poste) et `image-sbom` (la signature éprouvée, avec le registre éphémère) ;
+- le démon dans le job sur un hôte en cgroup v2, et, sur les runners Arm de GitLab.com, l'écart de MTU connu de Docker-in-Docker, qui se corrige par l'option `--mtu` du démon ;
+- `make contract` et `agent-config` dans un pipeline de résultat fusionné, et la variable `CI_MERGE_REQUEST_DIFF_BASE_SHA` dans un pipeline de merge request issue d'un fork ;
+- relancer le seul job `agent-config` après avoir posé le label : GitLab calcule les variables d'un job à son démarrage, ce qui devrait suffire, mais seul un nouveau pipeline est sûr ;
+- Playwright sur Debian 13, la version de Debian des images de uv et de Node.

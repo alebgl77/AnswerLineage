@@ -17,6 +17,7 @@ from scripts.check_policy import (
     check_devcontainer,
     check_dockerfile,
     check_file,
+    check_gitlab_ci,
     check_script,
     check_workflow,
     discover,
@@ -248,6 +249,7 @@ def test_main_checks_the_working_directory_by_default(
 def test_repository_workflows_respect_the_policy() -> None:
     paths = discover(ROOT)
     assert ROOT / ".github" / "workflows" / "ci.yml" in paths
+    assert ROOT / ".gitlab-ci.yml" in paths
     assert [violation for path in paths for violation in check_file(path)] == []
 
 
@@ -748,3 +750,228 @@ def test_other_networks_are_allowed() -> None:
         },
     }
     assert check_compose("compose.yaml", document) == []
+
+
+# Pipeline GitLab : .gitlab-ci.yml, contrôlé comme un workflow.
+
+PINNED = f"ghcr.io/org/outil:1.2@{DIGEST}"
+POSTGRES = f"public.ecr.aws/docker/library/postgres:18@{DIGEST}"
+
+
+def pipeline(**overrides: Any) -> dict[str, Any]:
+    """Un pipeline GitLab conforme : images épinglées, aucun secret, un seul fichier."""
+    document: dict[str, Any] = {
+        "stages": ["test"],
+        "workflow": {"rules": [{"if": '$CI_PIPELINE_SOURCE == "merge_request_event"'}]},
+        "default": {"image": PINNED, "interruptible": True},
+        "variables": {"GIT_DEPTH": "0", "BASE_SHA": "$CI_MERGE_REQUEST_DIFF_BASE_SHA"},
+        ".commandes": ["make policy"],
+        "test": {
+            "stage": "test",
+            "image": {"name": PINNED, "entrypoint": [""]},
+            "services": [{"name": POSTGRES, "alias": "postgres"}],
+            "variables": {
+                "POSTGRES_HOST_AUTH_METHOD": "trust",
+                "ANSWERLINEAGE_TEST_DATABASE_URL": "postgresql://postgres@postgres:5432/postgres",
+                "API_TOKEN": "${CI_JOB_TOKEN}",
+                "DB_PASSWORD": "$MOT_DE_PASSE_PROTEGE",
+                "AUTRE_SECRET": "",
+            },
+            "parallel": {"matrix": [{"UV_PYTHON": ["3.13", "3.14"]}]},
+            "before_script": [["make setup"]],
+            "script": [f"docker run --rm {PINNED} scan", "curl http://127.0.0.1:8000/api"],
+            "allow_failure": False,
+            "rules": [{"if": "$CI", "when": "always"}, {"when": "never"}],
+        },
+    }
+    document.update(overrides)
+    return document
+
+
+def job(**settings: Any) -> dict[str, Any]:
+    return {"stage": "test", "script": ["make"], **settings}
+
+
+def test_compliant_gitlab_pipeline_has_no_violation() -> None:
+    assert check_gitlab_ci(".gitlab-ci.yml", pipeline()) == []
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        {"image": "python:3.13"},
+        {"image": {"name": "ghcr.io/org/outil:1.2", "entrypoint": [""]}},
+        {"image": "$IMAGE_DU_JOB"},
+        {"image": f"python:3.13@sha256:{'c0' * 31}"},
+        {"services": ["postgres:18"]},
+        {"services": [{"name": "postgres:18", "alias": "postgres"}]},
+        {"services": "postgres:18"},
+    ],
+)
+def test_gitlab_images_must_be_pinned_by_digest(setting: dict[str, Any]) -> None:
+    """Une image prise par son étiquette peut changer sous le pipeline sans être relue."""
+    for where, document in (
+        ("job test", pipeline(test=job(**setting))),
+        ("job .modele", pipeline(**{".modele": setting})),
+        ("default", pipeline(default=setting)),
+        (next(iter(setting)), pipeline(**setting)),
+    ):
+        violations = check_gitlab_ci(".gitlab-ci.yml", document)
+        assert rules(violations) == ["image-epinglee"], where
+        assert violations[0].where == where
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        pipeline(test=job(script=["docker run --rm ghcr.io/gitleaks/gitleaks:v8.30.1 git /depot"])),
+        pipeline(test=job(before_script=[["docker pull quay.io/org/analyseur:2"]])),
+        pipeline(test=job(after_script=["docker run registry.gitlab.com/org/outil:3 nettoie"])),
+        pipeline(**{".commandes": ["docker run public.ecr.aws/docker/library/node:22 npm ci"]}),
+        pipeline(variables={"OUTIL": "ghcr.io/org/outil:1.2"}),
+        pipeline(test=job(variables={"POSTE_IMAGE": {"value": "ghcr.io/org/poste:1"}})),
+        pipeline(test=job(parallel={"matrix": [{"POSTE": ["ghcr.io/org/poste:1", PINNED]}]})),
+    ],
+)
+def test_gitlab_image_named_in_a_script_or_a_variable_must_be_pinned_by_digest(
+    document: dict[str, Any],
+) -> None:
+    assert rules(check_gitlab_ci(".gitlab-ci.yml", document)) == ["image-epinglee"]
+
+
+@pytest.mark.parametrize(
+    "include",
+    [
+        "ci/tests.yml",
+        {"local": "ci/tests.yml"},
+        [{"project": "org/outils", "ref": SHA, "file": "/ci.yml"}],
+        [{"remote": "https://exemple.org/ci.yml"}],
+        [{"template": "Jobs/SAST.gitlab-ci.yml"}],
+        [{"component": f"gitlab.com/org/composant/analyse@{SHA}"}],
+    ],
+)
+def test_the_gitlab_pipeline_holds_in_one_file(include: object) -> None:
+    """Un fichier inclus, même du dépôt, échapperait au contrôle : tout tient en un fichier."""
+    violations = check_gitlab_ci(".gitlab-ci.yml", pipeline(include=include))
+    assert rules(violations) == ["pipeline-en-un-fichier"]
+    assert violations[0].where == "include"
+
+
+@pytest.mark.parametrize("trigger", ["org/autre-projet", {"include": "ci/enfant.yml"}])
+def test_a_gitlab_job_does_not_start_another_pipeline(trigger: object) -> None:
+    document = pipeline(enfant={"stage": "test", "trigger": trigger})
+    violations = check_gitlab_ci(".gitlab-ci.yml", document)
+    assert rules(violations) == ["pipeline-en-un-fichier"]
+    assert violations[0].where == "job enfant"
+
+
+SECRET_NAMES = [
+    "JETON_API_TOKEN",
+    "DB_PASSWORD",
+    "pgpasswd",
+    "CLE_SECRET",
+    "AWS_SECRET_ACCESS_KEY",
+    "SERVICE_API_KEY",
+    "SERVICE_APIKEY",
+    "DEPLOY_PRIVATE_KEY",
+    "GPG_PASSPHRASE",
+    "REGISTRY_CREDENTIALS",
+]
+
+
+@pytest.mark.parametrize("name", SECRET_NAMES)
+def test_a_gitlab_secret_written_in_clear_fails(name: str) -> None:
+    """Un secret vient des variables protégées du projet, pas du fichier, que tout lecteur voit."""
+    service = {"name": POSTGRES, "variables": {name: "motdepasse"}}
+    for where, document in (
+        ("variables", pipeline(variables={name: "motdepasse"})),
+        ("variables", pipeline(variables={name: {"value": "motdepasse", "description": "x"}})),
+        ("variables", pipeline(variables={name: 1234})),
+        ("job test", pipeline(test=job(variables={name: "motdepasse"}))),
+        ("job test", pipeline(test=job(services=[service]))),
+        ("job test", pipeline(test=job(parallel={"matrix": [{name: ["motdepasse"]}]}))),
+        ("job test", pipeline(test=job(rules=[{"if": "$CI", "variables": {name: "motdepasse"}}]))),
+        ("workflow", pipeline(workflow={"rules": [{"variables": {name: "x$CLE"}}]})),
+    ):
+        violations = check_gitlab_ci(".gitlab-ci.yml", document)
+        assert rules(violations) == ["secret-en-clair"], where
+        assert violations[0].where == where
+        assert name in violations[0].message
+        # Le contrôle ne recopie jamais la valeur qu'il refuse.
+        assert "motdepasse" not in str(violations[0])
+        assert "1234" not in str(violations[0])
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "postgresql://answerlineage:motdepasse@postgres:5432/base",
+        "https://jeton:motdepasse@exemple.org/depot.git",
+    ],
+)
+def test_a_gitlab_password_written_in_an_address_fails(address: str) -> None:
+    for document in (
+        pipeline(variables={"ANSWERLINEAGE_TEST_DATABASE_URL": address}),
+        pipeline(test=job(script=[f"curl --fail {address}"])),
+    ):
+        violations = check_gitlab_ci(".gitlab-ci.yml", document)
+        assert rules(violations) == ["secret-en-clair"]
+        assert "motdepasse" not in str(violations[0])
+
+
+def test_a_gitlab_address_without_a_written_password_is_allowed() -> None:
+    variables = {
+        "AVEC_VARIABLE": "postgresql://answerlineage:$MOT_DE_PASSE@postgres:5432/base",
+        "SANS_MOT_DE_PASSE": "postgresql://postgres@postgres:5432/postgres",
+        "PORT": "http://127.0.0.1:8000/api/v1/graph",
+    }
+    assert check_gitlab_ci(".gitlab-ci.yml", pipeline(variables=variables)) == []
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        {"allow_failure": True},
+        {"allow_failure": {"exit_codes": [137]}},
+        {"when": "manual"},
+        {"when": "delayed", "start_in": "5 minutes"},
+        {"rules": [{"if": "$CI", "allow_failure": True}]},
+        {"rules": [{"if": "$CI"}, {"when": "manual"}]},
+    ],
+)
+def test_every_gitlab_job_is_blocking(setting: dict[str, Any]) -> None:
+    """Un job qui peut échouer, ou qui attend une main, laisserait passer une fusion."""
+    for where, document in (
+        ("job test", pipeline(test=job(**setting))),
+        ("job .modele", pipeline(**{".modele": setting})),
+    ):
+        violations = check_gitlab_ci(".gitlab-ci.yml", document)
+        assert rules(violations) == ["porte-complete"], where
+        assert violations[0].where == where
+
+
+def test_an_unreadable_gitlab_pipeline_is_reported(tmp_path: Path) -> None:
+    assert rules(check_gitlab_ci(".gitlab-ci.yml", ["pas", "un", "pipeline"])) == ["lisible"]
+    # Des formes inattendues ne font pas tomber le contrôle.
+    odd = pipeline(
+        default="aucun",
+        variables=["liste"],
+        test=job(variables="aucune", parallel={"matrix": "aucune"}, rules="aucune", services=[3]),
+        reglage=3,
+    )
+    assert rules(check_gitlab_ci(".gitlab-ci.yml", odd)) == ["image-epinglee"]
+    broken = tmp_path / ".gitlab-ci.yml"
+    broken.write_text("test: [", "utf-8")
+    assert rules(check_file(broken)) == ["lisible"]
+
+
+def test_the_gitlab_pipeline_is_discovered_and_checked(tmp_path: Path) -> None:
+    gitlab = tmp_path / ".gitlab-ci.yml"
+    gitlab.write_text(yaml.safe_dump(pipeline(test=job(image="python:3.13"))), "utf-8")
+    # Ailleurs qu'à la racine, GitLab ne lit pas ce fichier.
+    elsewhere = tmp_path / "exemples" / ".gitlab-ci.yml"
+    elsewhere.parent.mkdir()
+    elsewhere.write_text(yaml.safe_dump(pipeline(test=job(image="python:3.13"))), "utf-8")
+
+    assert discover(tmp_path) == [gitlab]
+    assert rules(check_file(gitlab)) == ["image-epinglee"]
