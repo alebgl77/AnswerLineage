@@ -1,4 +1,5 @@
-"""Outils de test du proxy : serveurs HTTP réels sur la boucle locale et faux serveur MCP."""
+"""Outils de test du proxy : serveurs HTTP réels sur la boucle locale, faux serveur MCP, et
+client d'un proxy stdio devant le serveur MCP de test en stdio."""
 
 from __future__ import annotations
 
@@ -6,9 +7,14 @@ import asyncio
 import gzip
 import hashlib
 import json
-from collections.abc import AsyncIterator, Callable
+import os
+import sys
+import threading
+import time
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -17,10 +23,11 @@ import uvicorn
 
 from answerlineage_proxy.analyzer import SqlAnalyzer
 from answerlineage_proxy.app import McpProxy, Message, Receive, Scope, Send
-from answerlineage_proxy.config import ProxySettings, SqlTool
+from answerlineage_proxy.config import ProxySettings, SqlTool, StdioSettings
 from answerlineage_proxy.fingerprint import FingerprintKey
 from answerlineage_proxy.rules import ReadRule
 from answerlineage_proxy.sink import MemorySink
+from answerlineage_proxy.stdio import StdioProxy
 
 TOOL_RESULT = (
     b'{"jsonrpc":"2.0","id":1,\n  "result":{"content":[{"type":"text","text":'
@@ -40,6 +47,13 @@ CHALLENGE = 'Bearer resource_metadata="https://mcp.exemple.fr/.well-known/oauth-
 UNAUTHORIZED = b'{"error":"invalid_token"}'
 # Résultat volumineux, rendu en morceaux de 64 Ko.
 LARGE_RESULT = bytes(range(256)) * (32 * 1024)
+# Serveur MCP de test en stdio, lancé comme un vrai serveur.
+STDIO_SERVER = Path(__file__).with_name("stdio_server.py")
+
+
+def stdio_server(*options: str) -> list[str]:
+    """La commande qui lance le serveur MCP de test en stdio, avec ses options."""
+    return [sys.executable, str(STDIO_SERVER), *options]
 
 
 @pytest.fixture
@@ -355,3 +369,165 @@ MODERN_HEADERS = [
     ("mcp-method", "tools/call"),
     ("mcp-name", "get_weather"),
 ]
+
+# Le mode stdio : un client devant le proxy, lui-même devant le serveur de test.
+
+STDIO_KEY = FingerprintKey(bytes(range(32)))
+
+
+def stdio_message(
+    identifier: object, method: str, params: Mapping[str, Any] | None = None
+) -> bytes:
+    """Une ligne JSON-RPC, telle qu'un client stdio l'écrit."""
+    body: dict[str, Any] = {"jsonrpc": "2.0", "id": identifier, "method": method}
+    if params is not None:
+        body["params"] = params
+    return json.dumps(body, ensure_ascii=False).encode() + b"\n"
+
+
+def stdio_call(identifier: object, tool: str, arguments: Mapping[str, Any], **meta: str) -> bytes:
+    params: dict[str, Any] = {"name": tool, "arguments": dict(arguments)}
+    if meta:
+        params["_meta"] = meta
+    return stdio_message(identifier, "tools/call", params)
+
+
+def stdio_notification(method: str, params: Mapping[str, Any] | None = None) -> bytes:
+    body: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+    if params is not None:
+        body["params"] = params
+    return json.dumps(body).encode() + b"\n"
+
+
+INITIALIZE = stdio_message(
+    0,
+    "initialize",
+    {
+        "protocolVersion": "2025-11-25",
+        "capabilities": {},
+        "clientInfo": {"name": "client", "version": "1"},
+    },
+)
+
+
+class ClientReader(threading.Thread):
+    """Le client lit la sortie du proxy jusqu'à sa fin, sans bloquer la boucle."""
+
+    def __init__(self, fd: int) -> None:
+        super().__init__(daemon=True)
+        self.fd = fd
+        self.data = bytearray()
+
+    def run(self) -> None:
+        while chunk := os.read(self.fd, 65536):
+            self.data += chunk
+
+
+async def until(condition: Any, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "condition jamais atteinte"
+        await asyncio.sleep(0.01)
+
+
+@dataclass
+class StdioSession:
+    """Un client devant le proxy, lui-même devant le serveur de test."""
+
+    proxy: StdioProxy
+    sink: MemorySink
+    record: Path
+    to_proxy: int
+    reader: ClientReader
+    task: asyncio.Future[int]
+    closed: bool = False
+
+    async def send(self, data: bytes) -> None:
+        await asyncio.to_thread(write_all, self.to_proxy, data)
+
+    async def replies(self, count: int) -> list[bytes]:
+        await until(lambda: self.reader.data.count(b"\n") >= count)
+        return bytes(self.reader.data).splitlines(keepends=True)
+
+    async def close(self) -> int:
+        """Le client ferme son entrée ; le proxy s'arrête avec le serveur."""
+        if not self.closed:
+            self.closed = True
+            os.close(self.to_proxy)
+        return await self.finished()
+
+    async def finished(self) -> int:
+        """Attend que le proxy s'arrête de lui-même, avec le serveur ; rend son code."""
+        code = await asyncio.wait_for(self.task, timeout=20)
+        await asyncio.to_thread(self.reader.join, 10)
+        return code
+
+    @property
+    def received(self) -> bytes:
+        """Ce que le serveur a lu sur son entrée."""
+        return (self.record / "recu").read_bytes() if (self.record / "recu").exists() else b""
+
+    @property
+    def written(self) -> bytes:
+        """Ce que le serveur a écrit sur sa sortie."""
+        return (self.record / "ecrit").read_bytes() if (self.record / "ecrit").exists() else b""
+
+    @property
+    def events(self) -> list[Mapping[str, Any]]:
+        return self.sink.events
+
+
+def write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view) :]
+
+
+@asynccontextmanager
+async def stdio_session(
+    tmp_path: Path,
+    *options: str,
+    key: FingerprintKey | None = STDIO_KEY,
+    sql_tools: dict[str, SqlTool] | None = None,
+    max_inspected_bytes: int = 1024 * 1024,
+    **proxy_options: Any,
+) -> AsyncIterator[StdioSession]:
+    """Lance le proxy dans le processus du test, devant le serveur de test qu'il lance.
+
+    Le serveur note dans ``tmp_path/echanges`` les octets qu'il lit et ceux qu'il
+    écrit ; le client écrit dans un tube l'entrée du proxy et lit sa sortie dans un
+    autre. Les signaux ne sont transmis que si le test le demande.
+    """
+    record = tmp_path / "echanges"
+    record.mkdir(exist_ok=True)
+    settings = StdioSettings.create(
+        stdio_server("--record", str(record), *options),
+        "meteo",
+        fingerprint_key=key,
+        sql_tools=sql_tools,
+        max_inspected_bytes=max_inspected_bytes,
+        sql_budget_ms=60_000,
+    )
+    client_input, to_proxy = os.pipe()
+    from_proxy, client_output = os.pipe()
+    sink = MemorySink()
+    proxy_options.setdefault("forwarded_signals", ())
+    proxy = StdioProxy(
+        settings, sink, input_fd=client_input, output_fd=client_output, **proxy_options
+    )
+    reader = ClientReader(from_proxy)
+    reader.start()
+    session = StdioSession(
+        proxy, sink, record, to_proxy, reader, asyncio.ensure_future(proxy.run())
+    )
+    try:
+        yield session
+    finally:
+        if not session.closed:
+            session.closed = True
+            os.close(to_proxy)
+        if not session.task.done():
+            await asyncio.wait_for(session.task, timeout=20)
+        await asyncio.to_thread(reader.join, 10)
+        for fd in (client_input, client_output, from_proxy):
+            os.close(fd)

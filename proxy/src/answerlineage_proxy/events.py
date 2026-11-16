@@ -20,6 +20,8 @@ from answerlineage_proxy.sql import SqlAnalysis
 from answerlineage_proxy.tracecontext import CallTrace
 
 Outcome = Literal["COMPLETE", "FAIL", "ABORT"]
+# Transport de l'appel relayé : un serveur MCP en HTTP, ou lancé par le proxy en stdio.
+Transport = Literal["http", "stdio"]
 
 PRODUCER = f"https://github.com/alebgl77/AnswerLineage/tree/{__version__}/proxy"
 RUN_EVENT_SCHEMA = "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent"
@@ -106,6 +108,7 @@ def build_tool_call_event(
     result_size: int | None = None,
     signals: CallSignals | None = None,
     declared: DeclaredReads | None = None,
+    transport: Transport = "http",
 ) -> dict[str, Any]:
     """Construit le RunEvent d'un appel d'outil relayé.
 
@@ -118,12 +121,14 @@ def build_tool_call_event(
     l'appel ; ``signals``, latence, issue et reprises, dans la facette de
     qualité de service. ``declared`` sont les lectures qu'une règle déclare :
     chaque jeu de données porte ses colonnes et les empreintes des clés lues.
+    ``transport`` est celui de l'appel relayé : ``http``, ou ``stdio`` pour un
+    serveur lancé par le proxy.
     """
     facet: dict[str, Any] = {
         "_producer": PRODUCER,
         "_schemaURL": TOOL_CALL_FACET_SCHEMA,
         "server": server,
-        "transport": "http",
+        "transport": transport,
         "headerMismatch": sorted(inspection.header_mismatches),
         "invalidToolName": inspection.invalid_tool_name,
     }

@@ -44,7 +44,7 @@ Facultatifs : `agentId`, `framework`, `agentVersion`, `owner` (le responsable), 
 
 Décrit un appel d'outil MCP, posé sur le run enfant de l'appel. Le graphe reconnaît un run d'outil à cette facette. C'est ce que le proxy émet.
 
-Facultatifs émis aujourd'hui : `tool` (absent quand le nom reçu n'a pas une forme admise), `transport`, `protocolVersion`, `httpStatus`, `proxyError`, `headerMismatch`, `invalidToolName`, `readResolution` (`resolved` ou `unresolved`), `unresolvedReason` (`undescribed_tool` pour un outil sans règle de lecture ni SQL déclaré, voir [le proxy](proxy.md#les-outils-à-décrire)).
+Facultatifs émis aujourd'hui : `tool` (absent quand le nom reçu n'a pas une forme admise), `transport` (`http`, ou `stdio` pour un serveur que le proxy [lance lui-même](proxy.md#mode-stdio)), `protocolVersion`, `httpStatus` (absent en stdio), `proxyError`, `headerMismatch`, `invalidToolName`, `readResolution` (`resolved` ou `unresolved`), `unresolvedReason` (`undescribed_tool` pour un outil sans règle de lecture ni SQL déclaré, voir [le proxy](proxy.md#les-outils-à-décrire)).
 
 La version 1-1-0 ajoute un champ facultatif, `readKeys` : ce qu'est devenue la clé lue quand une [règle de lecture](proxy.md#règles-de-lecture-des-outils-non-sql) nomme l'argument qui la porte, d'une liste fermée (`fingerprinted`, `no_fingerprint_key`, `request_too_large`, `missing_argument`, `unsupported_argument`, `too_many_keys`). Hors de `fingerprinted`, la lecture vaut pour tout le jeu de données. Le proxy ne se réclame de cette version que pour une facette qui porte `readKeys`.
 
@@ -57,7 +57,7 @@ Le contexte de trace W3C de l'appel, d'où dérive l'identifiant de run (voir [l
 Les empreintes à clé de l'appel et la taille de son résultat (voir [le proxy](proxy.md#empreintes-à-clé) pour la clé et le calcul à l'octet près) :
 
 - `argumentsFingerprint` : empreinte des arguments, `hmac-sha256:` suivi de 64 hexadécimaux minuscules. HMAC-SHA-256, avec la clé du locataire, de l'étiquette `answerlineage/fingerprint/arguments/v1`, d'un octet nul et de la forme canonique JSON (RFC 8785) de `params.arguments` ; `{}` pour un appel sans arguments ;
-- `resultFingerprint` : empreinte du résultat, de même forme, sur l'étiquette `answerlineage/fingerprint/result/v1` et les octets du corps de la réponse tels que relayés ;
+- `resultFingerprint` : empreinte du résultat, de même forme, sur l'étiquette `answerlineage/fingerprint/result/v1` et les octets du corps de la réponse tels que relayés (en stdio, ceux du message de réponse, sans sa fin de ligne) ;
 - `resultSize` : taille de ces octets.
 
 Sans clé, les deux empreintes sont absentes : un émetteur n'écrit jamais un hachage sans clé, qu'une énumération inverserait, et le schéma refuse toute autre forme que `hmac-sha256:`. Quand le corps de la réponse n'a pas été relayé en entier, ni `resultFingerprint` ni `resultSize` ne sont émis. Les vecteurs de test sont dans [`spec/fingerprint/vectors-v1.json`](../spec/fingerprint/vectors-v1.json).

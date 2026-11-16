@@ -96,6 +96,15 @@ def _unambiguous(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return members
 
 
+def parse_message(body: bytes) -> object | None:
+    """Lit un message JSON sans ambiguïté : ``None`` s'il est illisible ou a une clé répétée."""
+    try:
+        message: object = json.loads(body, object_pairs_hook=_unambiguous)
+    except (ValueError, RecursionError):
+        return None
+    return message
+
+
 def inspect_request(
     body: bytes,
     headers: Iterable[tuple[str, str]],
@@ -112,10 +121,20 @@ def inspect_request(
     ambiguïté (JSON invalide, lot de requêtes, clé répétée, corps compressé) : la
     requête est alors relayée sans être décrite, et comptée.
     """
-    try:
-        message = json.loads(body, object_pairs_hook=_unambiguous)
-    except (ValueError, RecursionError):
-        return None
+    return inspect_message(
+        parse_message(body), headers, sql_arguments, keep_arguments=keep_arguments
+    )
+
+
+def inspect_message(
+    message: object,
+    headers: Iterable[tuple[str, str]],
+    sql_arguments: Mapping[str, str] | None = None,
+    *,
+    keep_arguments: bool = False,
+) -> Inspection | None:
+    """Décrit un message déjà lu par ``parse_message`` ; ``None`` s'il n'est pas une
+    requête JSON-RPC (lot, réponse, méthode absente)."""
     if not isinstance(message, dict):
         return None
     method = message.get("method")

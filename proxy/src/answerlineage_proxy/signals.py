@@ -98,6 +98,15 @@ class CallTiming:
             self.pause()
             self.ended = self._clock()
 
+    @classmethod
+    def measured(cls, *, started: int, added: int, ended: int) -> CallTiming:
+        """Un échange déjà mesuré, par un relais qui prend ses horodatages lui-même."""
+        timing = cls(clock=lambda: started)
+        timing._since = None
+        timing.added = max(added, 0)
+        timing.ended = max(ended, started)
+        return timing
+
 
 class ReplySample:
     """Copie bornée d'une réponse, pour y lire une erreur JSON-RPC une fois l'échange fini.
@@ -144,9 +153,9 @@ class ReplySample:
         whole = self._kept == self.size
         if self._kind == "json":
             if whole:
-                return _reply_error(_strict_json(data))
+                return reply_error(_strict_json(data))
             prefix = read_reply_prefix(data)
-            return prefix.error, _bounded(prefix.code)
+            return prefix.error, bounded_code(prefix.code)
         if len(data) > SAMPLE_BYTES:
             data, whole = data[-SAMPLE_BYTES:], False
         return _event_stream_error(data, whole=whole)
@@ -167,20 +176,22 @@ def _strict_json(data: bytes) -> object:
         return None
 
 
-def _bounded(code: object) -> int | None:
+def bounded_code(code: object) -> int | None:
+    """Un code d'erreur recopiable : un entier signé sur 32 bits, sinon rien."""
     # Un booléen est un entier pour Python, pas pour JSON-RPC.
     if isinstance(code, int) and not isinstance(code, bool):
         return code if ERROR_CODE_MIN <= code <= ERROR_CODE_MAX else None
     return None
 
 
-def _reply_error(message: object) -> tuple[bool, int | None]:
+def reply_error(message: object) -> tuple[bool, int | None]:
+    """L'erreur que porte une réponse JSON-RPC déjà lue, et son code s'il est recopiable."""
     if not isinstance(message, dict):
         return False, None
     error = message.get("error")
     if error is None:
         return False, None
-    return True, _bounded(error.get("code")) if isinstance(error, dict) else None
+    return True, bounded_code(error.get("code")) if isinstance(error, dict) else None
 
 
 def _is_reply(message: object) -> bool:
@@ -208,7 +219,7 @@ def _event_stream_error(data: bytes, *, whole: bool) -> tuple[bool, int | None]:
             continue
         message = _strict_json(b"\n".join(line.removeprefix(b" ") for line in lines))
         if _is_reply(message):
-            return _reply_error(message)
+            return reply_error(message)
     return False, None
 
 

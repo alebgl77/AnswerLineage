@@ -1,10 +1,11 @@
-"""Ligne de commande : ``answerlineage impact | doctor | demo``.
+"""Ligne de commande : ``answerlineage impact | doctor | demo | proxy``.
 
 ``impact`` propage un incident de données jusqu'aux réponses et aux
 destinataires touchés ; ``doctor`` vérifie chaque composant d'une
 installation ; ``demo`` lance la démonstration d'un clone du dépôt. Toutes
-parlent à l'API par HTTP, à l'adresse de ``--url`` ou de
-``ANSWERLINEAGE_API_URL``, ``http://127.0.0.1:8000`` par défaut.
+trois parlent à l'API par HTTP, à l'adresse de ``--url`` ou de
+``ANSWERLINEAGE_API_URL``, ``http://127.0.0.1:8000`` par défaut. ``proxy``
+cède la place au proxy MCP, avec ses arguments (``proxy.py``).
 
 Codes de sortie (``exits.py``) : 0 succès ; 1 rien de touché (impact), une
 anomalie (doctor) ou un échec de Docker (demo) ; 2 usage fautif ; 3 résultat
@@ -24,7 +25,7 @@ from typing import TextIO
 
 import httpx
 
-from answerlineage_cli import demo, doctor, impact
+from answerlineage_cli import demo, doctor, impact, proxy
 from answerlineage_cli.client import (
     DEFAULT_TIMEOUT,
     DEFAULT_URL,
@@ -199,6 +200,18 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"délai d'attente de la démonstration, en secondes, {demo.DEFAULT_WAIT} par défaut",
     )
     _common(launch)
+
+    # Pour l'aide seulement : main cède la place au proxy avant de lire les arguments,
+    # que le proxy lit lui-même (answerlineage proxy --help donne les siens).
+    relay = commands.add_parser(
+        "proxy",
+        add_help=False,
+        help=(
+            "proxy MCP : devant un serveur HTTP, ou qui lance un serveur stdio donné après "
+            "« -- » (answerlineage-proxy requis)"
+        ),
+    )
+    relay.add_argument("arguments", nargs=argparse.REMAINDER)
     return parser
 
 
@@ -274,6 +287,9 @@ _COMMANDS = {"impact": _impact, "doctor": _doctor, "demo": _demo}
 
 def main(argv: Sequence[str] | None = None, *, transport: httpx.BaseTransport | None = None) -> int:
     """Lance une sous-commande ; ``transport`` remplace le réseau dans les tests."""
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["proxy"]:
+        return proxy.delegate(arguments[1:], err)
     try:
         args = build_parser().parse_args(argv)
     except SystemExit as exit_:

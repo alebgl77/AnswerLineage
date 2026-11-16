@@ -1,4 +1,10 @@
-"""Relais ASGI transparent devant un serveur MCP.
+"""Capture des appels d'outils, et relais ASGI transparent devant un serveur MCP.
+
+``CallCapture`` est la part commune aux deux transports : une fois un échange
+terminé, elle décrit l'appel d'outil (empreintes, signaux de qualité de
+service, lectures déclarées ou analyse du SQL), émet son événement et tient les
+compteurs et les relevés de couverture. ``McpProxy`` relaie HTTP ; le relais
+stdio est dans ``stdio.py``.
 
 Le proxy relaie chaque requête HTTP à l'identique et rend la réponse du
 serveur octet pour octet, en flux : il ne décompresse rien, ne réécrit rien et
@@ -23,23 +29,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, MutableMapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import unquote_to_bytes
 
 import httpx
 
 from answerlineage_proxy.analyzer import Origin, SqlAnalyzer
-from answerlineage_proxy.config import ProxySettings, SqlTool
+from answerlineage_proxy.config import CaptureSettings, ProxySettings, SqlTool
 from answerlineage_proxy.coverage import (
     DEFAULT_WINDOW,
     CoverageWindows,
     Report,
     report_periodically,
 )
-from answerlineage_proxy.events import UNDESCRIBED_TOOL, Outcome, build_tool_call_event
+from answerlineage_proxy.events import (
+    UNDESCRIBED_TOOL,
+    Outcome,
+    Transport,
+    build_tool_call_event,
+)
 from answerlineage_proxy.fingerprint import RESULT_LABEL, Digest, arguments_fingerprint
 from answerlineage_proxy.inspection import (
     HEADER_METHOD,
@@ -49,8 +61,10 @@ from answerlineage_proxy.inspection import (
     inspect_prefix,
     inspect_request,
 )
+from answerlineage_proxy.prefix import PREFIX_BYTES
 from answerlineage_proxy.rules import DeclaredReads, declared_reads
 from answerlineage_proxy.signals import (
+    CallOutcome,
     CallSignals,
     CallTiming,
     Failure,
@@ -111,7 +125,7 @@ _DOT_SEGMENTS = frozenset({b".", b".."})
 # Début gardé d'un corps trop grand pour être lu : la méthode et le nom de
 # l'outil y sont cherchés. Borné pour que la lecture, faite sur la boucle qui
 # relaie les appels, ne prenne que quelques millisecondes, même sur un début hostile.
-_PREFIX_WINDOW = 16 * 1024
+_PREFIX_WINDOW = PREFIX_BYTES
 # Compteur de ProxyStats de chaque origine d'une analyse du SQL qui en a un.
 # Noms d'outils sans règle de lecture journalisés, une fois chacun : au-delà, plus aucun.
 _UNDESCRIBED_LOGGED = 1_000
@@ -173,11 +187,18 @@ class ProxyStats:
     # Appels d'un outil sans règle de lecture ni SQL déclaré : leurs lectures ne sont
     # pas décrites.
     undescribed_calls: int = 0
+    # Transport stdio : appels d'outil dont l'issue n'a pas pu être établie (réponse
+    # illisible, identifiant en double, mémoire des requêtes en attente pleine), dont
+    # l'événement est donc perdu ; réponses du serveur rattachées à aucune requête ;
+    # octets relayés sans être inspectés parce que l'inspection avait pris du retard.
+    unmatched_calls: int = 0
+    unidentified_replies: int = 0
+    lagged_bytes: int = 0
 
 
 @dataclass
 class _Exchange:
-    """Issue d'un échange relayé."""
+    """Issue d'un échange relayé, en HTTP ou en stdio."""
 
     outcome: Outcome = "FAIL"
     status: int | None = None
@@ -200,6 +221,8 @@ class _Exchange:
     sample: ReplySample | None = None
     # En-têtes Mcp-Session-Id reçus, gardés le temps de calculer la portée d'une reprise.
     sessions: list[bytes] = field(default_factory=list, repr=False)
+    # Erreur JSON-RPC et son code, quand le relais a lu lui-même la réponse entière (stdio).
+    reply_error: tuple[bool, int | None] = (False, None)
 
 
 def _now() -> datetime:
@@ -249,21 +272,23 @@ async def _settle(task: asyncio.Task[Any]) -> None:
     await asyncio.gather(task, return_exceptions=True)
 
 
-class McpProxy:
-    """Application ASGI placée devant un serveur MCP."""
+class CallCapture[SettingsT: CaptureSettings](ABC):
+    """Ce que les deux transports partagent : décrire un appel d'outil terminé, émettre son
+    événement, compter, et remettre les relevés de couverture."""
+
+    # Transport des appels, recopié dans la facette de l'appel.
+    transport: ClassVar[Transport]
 
     def __init__(
         self,
-        settings: ProxySettings,
+        settings: SettingsT,
         sink: EventSink,
         *,
-        client: httpx.AsyncClient | None = None,
         clock: Callable[[], datetime] = _now,
         analyzer: SqlAnalyzer | None = None,
         coverage_window: timedelta = DEFAULT_WINDOW,
         retries: RetryMemory | None = None,
     ) -> None:
-        quiet_transport_logs()
         self.settings = settings
         self.stats = ProxyStats()
         # Compteurs par fenêtre, remis à la destination des événements comme relevés de
@@ -273,12 +298,8 @@ class McpProxy:
         )
         self._reporting: asyncio.Task[None] | None = None
         self._sink = sink
-        self._client = client
-        self._owns_client = client is None
         self._clock = clock
-        self._prefix = settings.upstream.raw_path.rstrip(b"/")
         self._sql_arguments = {tool: rule.argument for tool, rule in settings.sql_tools.items()}
-        self._guard = settings.guard()
         # Chaînes de reprises en cours, en mémoire bornée.
         self.retries = retries if retries is not None else RetryMemory()
         # Outils sans règle de lecture déjà journalisés, des noms validés seulement.
@@ -296,16 +317,6 @@ class McpProxy:
             )
         )
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http":
-            await self._http(scope, receive, send)
-        elif scope["type"] == "lifespan":
-            await self._lifespan(receive, send)
-        elif scope["type"] == "websocket":
-            # MCP ne passe pas par WebSocket : la connexion est refusée.
-            await receive()
-            await send({"type": "websocket.close", "code": 1003})
-
     async def drain(self) -> None:
         """Attend la fin des analyses en cours, pour que leurs événements soient émis."""
         while self._pending:
@@ -316,14 +327,294 @@ class McpProxy:
             self._pending.difference_update(tasks)
 
     async def aclose(self) -> None:
-        """Termine les analyses en cours, remet la dernière fenêtre de couverture, arrête le
-        processus d'analyse, puis ferme les connexions vers le serveur MCP."""
+        """Termine les analyses en cours, remet la dernière fenêtre de couverture, puis arrête
+        le processus d'analyse."""
         await self.drain()
         if self._reporting is not None:
             await _settle(self._reporting)
             self._reporting = None
         self._report(self.coverage.close_all(self._clock()))
         await self.analyzer.aclose()
+
+    def _start_reporting(self) -> None:
+        """Remet chaque fenêtre de couverture close, hors du chemin des appels."""
+        self._reporting = asyncio.ensure_future(
+            report_periodically(self.coverage, self._clock, self._report)
+        )
+
+    def _inspected(self, inspection: Inspection | None) -> None:
+        """Compte une requête que le proxy n'a pas pu lire sans ambiguïté ; journalise un
+        écart entre les en-têtes MCP et le corps, par le nom des en-têtes seulement."""
+        if inspection is None:
+            self.stats.uninspected += 1
+            self.coverage.uninspected(self._clock())
+        elif inspection.header_mismatches:
+            self.stats.header_mismatches += 1
+            # Seuls les noms des en-têtes sont journalisés, jamais leur valeur.
+            logger.warning(
+                "En-têtes MCP contredits par le corps de la requête : %s",
+                ", ".join(inspection.header_mismatches),
+            )
+
+    @abstractmethod
+    def _assess(self, exchange: _Exchange) -> tuple[CallOutcome, int | None]:
+        """L'issue d'un échange terminé et son code d'erreur, selon le transport."""
+
+    def _describe(
+        self, inspection: Inspection, exchange: _Exchange, *, oversized: bool = False
+    ) -> None:
+        """Émet l'événement de l'appel, après analyse du SQL si l'outil est déclaré.
+
+        Empreintes et signaux de qualité de service se calculent ici, l'échange
+        terminé, dans l'ordre où les appels s'achèvent : c'est cet ordre qui
+        relie une reprise à l'appel qu'elle reprend.
+        """
+        event_time = self._clock()
+        self.coverage.begin(event_time)
+        try:
+            details = self._details(inspection, exchange)
+        except Exception as error:
+            logger.error("Signaux de l'appel non établis (%s).", type(error).__name__)
+            details = {}
+        finally:
+            # Rien de la réponse ni de la session n'est gardé au-delà.
+            exchange.sample = None
+            exchange.sessions = []
+        rule = self.settings.sql_tools.get(inspection.tool) if inspection.tool else None
+        if rule is None:
+            try:
+                reads, declared = self._without_sql(inspection, exchange)
+            except Exception as error:
+                logger.error("Lectures de l'appel non établies (%s).", type(error).__name__)
+                reads, declared = None, None
+            if declared is not None:
+                details = {**details, "declared": declared}
+            self._emit(inspection, exchange, event_time, details, reads)
+            return
+        if exchange.outcome != "COMPLETE":
+            # Un appel qui a échoué n'a rien fait lire à l'agent.
+            self._emit(inspection, exchange, event_time, details)
+            return
+        if oversized:
+            # La requête n'a pas été lue : sa lecture n'est pas connue.
+            reads = SqlAnalysis(resolved=False, reason="request_too_large")
+            self._emit(
+                inspection, exchange, event_time, details, reads, rule.namespace, rule.dialect
+            )
+            return
+        task = asyncio.ensure_future(
+            self._analyze_then_emit(inspection, exchange, event_time, details, rule)
+        )
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    def _without_sql(
+        self, inspection: Inspection, exchange: _Exchange
+    ) -> tuple[SqlAnalysis | None, DeclaredReads | None]:
+        """Les lectures d'un appel sans SQL : celles que déclare la règle de l'outil, ou
+        une lecture non décrite, comptée, et journalisée une fois par nom d'outil."""
+        tool = inspection.tool
+        if tool is None:
+            return None, None
+        rule = self.settings.read_rules.get(tool)
+        if rule is None:
+            self.stats.undescribed_calls += 1
+            if tool not in self._undescribed and len(self._undescribed) < _UNDESCRIBED_LOGGED:
+                self._undescribed.add(tool)
+                # Un nom d'outil validé, jamais un argument.
+                logger.warning(
+                    "Outil « %s » sans règle de lecture : ses lectures ne sont pas décrites.",
+                    tool,
+                )
+            return SqlAnalysis(resolved=False, reason=UNDESCRIBED_TOOL), None
+        if exchange.outcome != "COMPLETE":
+            # Un appel qui a échoué n'a rien fait lire à l'agent.
+            return None, None
+        return None, declared_reads(
+            rule,
+            inspection.arguments,
+            readable=inspection.has_arguments,
+            key=self.settings.fingerprint_key,
+        )
+
+    def _details(self, inspection: Inspection, exchange: _Exchange) -> dict[str, Any]:
+        """Empreintes, taille du résultat et signaux de qualité de service de l'appel."""
+        details = self._fingerprints(inspection, exchange)
+        details["signals"] = self._signals(
+            inspection, exchange, details.get("arguments_fingerprint")
+        )
+        return details
+
+    def _signals(
+        self, inspection: Inspection, exchange: _Exchange, arguments: str | None
+    ) -> CallSignals:
+        """Latence, latence ajoutée, issue et reprises d'un appel terminé.
+
+        Une reprise se reconnaît à l'outil et à l'empreinte des arguments : sans
+        clé d'empreinte, ou sans empreinte des arguments, le nombre de reprises
+        n'est pas connu, et il est absent.
+        """
+        timing = exchange.timing
+        timing.finish()
+        ended = timing.ended if timing.ended is not None else timing.started
+        outcome, code = self._assess(exchange)
+        key = None
+        if arguments is not None and inspection.tool is not None:
+            scope = self.retries.scope(exchange.sessions, exchange.trace)
+            key = RetryKey(scope, inspection.tool, arguments)
+        retries = self.retries.record(
+            key, started=timing.started, ended=ended, failed=outcome != "success"
+        )
+        return CallSignals(
+            latency_ms=milliseconds(ended - timing.started),
+            added_latency_ms=milliseconds(timing.added),
+            outcome=outcome,
+            error_code=code,
+            retry_count=retries,
+        )
+
+    async def _analyze_then_emit(
+        self,
+        inspection: Inspection,
+        exchange: _Exchange,
+        event_time: datetime,
+        details: dict[str, Any],
+        rule: SqlTool,
+    ) -> None:
+        # Tant que l'analyse n'a pas abouti, la lecture est non résolue : l'événement
+        # part quoi qu'il arrive, même si l'attente est interrompue.
+        reads = SqlAnalysis(resolved=False, reason="analyzer_unavailable")
+        try:
+            if inspection.sql is None:
+                reads = SqlAnalysis(resolved=False, reason="missing_argument")
+            else:
+                # Dans un processus à part : l'analyse ne dispute pas l'interpréteur à la
+                # boucle qui relaie les appels.
+                result = await self.analyzer.analyze(
+                    inspection.sql,
+                    rule.dialect,
+                    default_catalog=rule.default_catalog,
+                    default_db=rule.default_db,
+                )
+                counter = _ORIGIN_COUNTERS.get(result.origin)
+                if counter is not None:
+                    setattr(self.stats, counter, getattr(self.stats, counter) + 1)
+                reads = result.analysis
+        except Exception as error:
+            self.stats.sql_analyzer_failures += 1
+            logger.error("Analyse du SQL en échec (%s).", type(error).__name__)
+            reads = SqlAnalysis(resolved=False, reason="analyzer_failed")
+        finally:
+            self._emit(
+                inspection, exchange, event_time, details, reads, rule.namespace, rule.dialect
+            )
+
+    def _emit(
+        self,
+        inspection: Inspection,
+        exchange: _Exchange,
+        event_time: datetime,
+        details: dict[str, Any],
+        reads: SqlAnalysis | None = None,
+        namespace: str | None = None,
+        dialect: str | None = None,
+    ) -> None:
+        """Émet l'événement de l'appel. Un échec d'émission n'atteint jamais l'appel."""
+        self.stats.tool_calls += 1
+        trace = exchange.trace
+        try:
+            if trace is None:  # pragma: no cover — tout appel d'outil reçoit son contexte.
+                raise RuntimeError("contexte de trace manquant")
+            event = build_tool_call_event(
+                run_id=trace.run_id,
+                event_time=event_time,
+                outcome=exchange.outcome,
+                server=self.settings.server_name,
+                inspection=inspection,
+                http_status=exchange.status,
+                proxy_error=exchange.error,
+                reads=reads,
+                namespace=namespace,
+                trace=trace,
+                dialect=dialect,
+                transport=self.transport,
+                **details,
+            )
+            self._sink.emit(event)
+        except Exception as error:
+            self.stats.emit_failures += 1
+            self.coverage.settle(event_time, emitted=False)
+            logger.error("Événement de lignage non émis (%s).", type(error).__name__)
+        else:
+            self.stats.events_emitted += 1
+            self.coverage.settle(event_time, emitted=True)
+
+    def _report(self, reports: list[Report]) -> None:
+        """Remet des relevés de couverture. Un échec de remise n'atteint jamais un appel."""
+        for report in reports:
+            try:
+                self._sink.report_coverage(report)
+            except Exception as error:
+                logger.error("Relevé de couverture non remis (%s).", type(error).__name__)
+
+    def _fingerprints(self, inspection: Inspection, exchange: _Exchange) -> dict[str, Any]:
+        """Empreintes et taille de l'appel : aucune empreinte sans clé, et rien du
+        résultat quand son corps n'a pas été relayé en entier."""
+        fields: dict[str, Any] = {}
+        key = self.settings.fingerprint_key
+        if key is not None and inspection.has_arguments:
+            fields["arguments_fingerprint"] = arguments_fingerprint(key, inspection.arguments)
+        if exchange.relayed_whole:
+            fields["result_size"] = exchange.size
+            if exchange.digest is not None:
+                fields["result_fingerprint"] = exchange.digest.fingerprint()
+        return fields
+
+
+class McpProxy(CallCapture[ProxySettings]):
+    """Application ASGI placée devant un serveur MCP."""
+
+    transport = "http"
+
+    def __init__(
+        self,
+        settings: ProxySettings,
+        sink: EventSink,
+        *,
+        client: httpx.AsyncClient | None = None,
+        clock: Callable[[], datetime] = _now,
+        analyzer: SqlAnalyzer | None = None,
+        coverage_window: timedelta = DEFAULT_WINDOW,
+        retries: RetryMemory | None = None,
+    ) -> None:
+        quiet_transport_logs()
+        super().__init__(
+            settings,
+            sink,
+            clock=clock,
+            analyzer=analyzer,
+            coverage_window=coverage_window,
+            retries=retries,
+        )
+        self._client = client
+        self._owns_client = client is None
+        self._prefix = settings.upstream.raw_path.rstrip(b"/")
+        self._guard = settings.guard()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            await self._http(scope, receive, send)
+        elif scope["type"] == "lifespan":
+            await self._lifespan(receive, send)
+        elif scope["type"] == "websocket":
+            # MCP ne passe pas par WebSocket : la connexion est refusée.
+            await receive()
+            await send({"type": "websocket.close", "code": 1003})
+
+    async def aclose(self) -> None:
+        """Termine les analyses en cours, remet la dernière fenêtre de couverture, arrête le
+        processus d'analyse, puis ferme les connexions vers le serveur MCP."""
+        await super().aclose()
         if self._client is not None and self._owns_client:
             await self._client.aclose()
             self._client = None
@@ -346,9 +637,7 @@ class McpProxy:
             message = await receive()
             if message["type"] == "lifespan.startup":
                 self._upstream_client()
-                self._reporting = asyncio.ensure_future(
-                    report_periodically(self.coverage, self._clock, self._report)
-                )
+                self._start_reporting()
                 await send({"type": "lifespan.startup.complete"})
             elif message["type"] == "lifespan.shutdown":
                 await self.aclose()
@@ -423,16 +712,7 @@ class McpProxy:
                 self._sql_arguments,
                 keep_arguments=self.settings.fingerprint_key is not None,
             )
-        if inspection is None:
-            self.stats.uninspected += 1
-            self.coverage.uninspected(self._clock())
-        elif inspection.header_mismatches:
-            self.stats.header_mismatches += 1
-            # Seuls les noms des en-têtes sont journalisés, jamais leur valeur.
-            logger.warning(
-                "En-têtes MCP contredits par le corps de la requête : %s",
-                ", ".join(inspection.header_mismatches),
-            )
+        self._inspected(inspection)
         return inspection
 
     async def _receive_body(
@@ -638,215 +918,9 @@ class McpProxy:
         )
         await send({"type": "http.response.body", "body": body, "more_body": False})
 
-    def _describe(
-        self, inspection: Inspection, exchange: _Exchange, *, oversized: bool = False
-    ) -> None:
-        """Émet l'événement de l'appel, après analyse du SQL si l'outil est déclaré.
-
-        Empreintes et signaux de qualité de service se calculent ici, l'échange
-        terminé, dans l'ordre où les appels s'achèvent : c'est cet ordre qui
-        relie une reprise à l'appel qu'elle reprend.
-        """
-        event_time = self._clock()
-        self.coverage.begin(event_time)
-        try:
-            details = self._details(inspection, exchange)
-        except Exception as error:
-            logger.error("Signaux de l'appel non établis (%s).", type(error).__name__)
-            details = {}
-        finally:
-            # Rien de la réponse ni de la session n'est gardé au-delà.
-            exchange.sample = None
-            exchange.sessions = []
-        rule = self.settings.sql_tools.get(inspection.tool) if inspection.tool else None
-        if rule is None:
-            try:
-                reads, declared = self._without_sql(inspection, exchange)
-            except Exception as error:
-                logger.error("Lectures de l'appel non établies (%s).", type(error).__name__)
-                reads, declared = None, None
-            if declared is not None:
-                details = {**details, "declared": declared}
-            self._emit(inspection, exchange, event_time, details, reads)
-            return
-        if exchange.outcome != "COMPLETE":
-            # Un appel qui a échoué n'a rien fait lire à l'agent.
-            self._emit(inspection, exchange, event_time, details)
-            return
-        if oversized:
-            # La requête n'a pas été lue : sa lecture n'est pas connue.
-            reads = SqlAnalysis(resolved=False, reason="request_too_large")
-            self._emit(
-                inspection, exchange, event_time, details, reads, rule.namespace, rule.dialect
-            )
-            return
-        task = asyncio.ensure_future(
-            self._analyze_then_emit(inspection, exchange, event_time, details, rule)
-        )
-        self._pending.add(task)
-        task.add_done_callback(self._pending.discard)
-
-    def _without_sql(
-        self, inspection: Inspection, exchange: _Exchange
-    ) -> tuple[SqlAnalysis | None, DeclaredReads | None]:
-        """Les lectures d'un appel sans SQL : celles que déclare la règle de l'outil, ou
-        une lecture non décrite, comptée, et journalisée une fois par nom d'outil."""
-        tool = inspection.tool
-        if tool is None:
-            return None, None
-        rule = self.settings.read_rules.get(tool)
-        if rule is None:
-            self.stats.undescribed_calls += 1
-            if tool not in self._undescribed and len(self._undescribed) < _UNDESCRIBED_LOGGED:
-                self._undescribed.add(tool)
-                # Un nom d'outil validé, jamais un argument.
-                logger.warning(
-                    "Outil « %s » sans règle de lecture : ses lectures ne sont pas décrites.",
-                    tool,
-                )
-            return SqlAnalysis(resolved=False, reason=UNDESCRIBED_TOOL), None
-        if exchange.outcome != "COMPLETE":
-            # Un appel qui a échoué n'a rien fait lire à l'agent.
-            return None, None
-        return None, declared_reads(
-            rule,
-            inspection.arguments,
-            readable=inspection.has_arguments,
-            key=self.settings.fingerprint_key,
-        )
-
-    def _details(self, inspection: Inspection, exchange: _Exchange) -> dict[str, Any]:
-        """Empreintes, taille du résultat et signaux de qualité de service de l'appel."""
-        details = self._fingerprints(inspection, exchange)
-        details["signals"] = self._signals(
-            inspection, exchange, details.get("arguments_fingerprint")
-        )
-        return details
-
-    def _signals(
-        self, inspection: Inspection, exchange: _Exchange, arguments: str | None
-    ) -> CallSignals:
-        """Latence, latence ajoutée, issue et reprises d'un appel terminé.
-
-        Une reprise se reconnaît à l'outil et à l'empreinte des arguments : sans
-        clé d'empreinte, ou sans empreinte des arguments, le nombre de reprises
-        n'est pas connu, et il est absent.
-        """
-        timing = exchange.timing
-        timing.finish()
-        ended = timing.ended if timing.ended is not None else timing.started
+    def _assess(self, exchange: _Exchange) -> tuple[CallOutcome, int | None]:
         failure = exchange.failure
         if failure is None and not exchange.delivered:
             # Échange interrompu sans cause connue : la réponse n'a pas été rendue.
             failure = "transport_error"
-        outcome, code = assess(failure=failure, status=exchange.answered, sample=exchange.sample)
-        key = None
-        if arguments is not None and inspection.tool is not None:
-            scope = self.retries.scope(exchange.sessions, exchange.trace)
-            key = RetryKey(scope, inspection.tool, arguments)
-        retries = self.retries.record(
-            key, started=timing.started, ended=ended, failed=outcome != "success"
-        )
-        return CallSignals(
-            latency_ms=milliseconds(ended - timing.started),
-            added_latency_ms=milliseconds(timing.added),
-            outcome=outcome,
-            error_code=code,
-            retry_count=retries,
-        )
-
-    async def _analyze_then_emit(
-        self,
-        inspection: Inspection,
-        exchange: _Exchange,
-        event_time: datetime,
-        details: dict[str, Any],
-        rule: SqlTool,
-    ) -> None:
-        # Tant que l'analyse n'a pas abouti, la lecture est non résolue : l'événement
-        # part quoi qu'il arrive, même si l'attente est interrompue.
-        reads = SqlAnalysis(resolved=False, reason="analyzer_unavailable")
-        try:
-            if inspection.sql is None:
-                reads = SqlAnalysis(resolved=False, reason="missing_argument")
-            else:
-                # Dans un processus à part : l'analyse ne dispute pas l'interpréteur à la
-                # boucle qui relaie les appels.
-                result = await self.analyzer.analyze(
-                    inspection.sql,
-                    rule.dialect,
-                    default_catalog=rule.default_catalog,
-                    default_db=rule.default_db,
-                )
-                counter = _ORIGIN_COUNTERS.get(result.origin)
-                if counter is not None:
-                    setattr(self.stats, counter, getattr(self.stats, counter) + 1)
-                reads = result.analysis
-        except Exception as error:
-            self.stats.sql_analyzer_failures += 1
-            logger.error("Analyse du SQL en échec (%s).", type(error).__name__)
-            reads = SqlAnalysis(resolved=False, reason="analyzer_failed")
-        finally:
-            self._emit(
-                inspection, exchange, event_time, details, reads, rule.namespace, rule.dialect
-            )
-
-    def _emit(
-        self,
-        inspection: Inspection,
-        exchange: _Exchange,
-        event_time: datetime,
-        details: dict[str, Any],
-        reads: SqlAnalysis | None = None,
-        namespace: str | None = None,
-        dialect: str | None = None,
-    ) -> None:
-        """Émet l'événement de l'appel. Un échec d'émission n'atteint jamais l'appel."""
-        self.stats.tool_calls += 1
-        trace = exchange.trace
-        try:
-            if trace is None:  # pragma: no cover — tout appel d'outil reçoit son contexte.
-                raise RuntimeError("contexte de trace manquant")
-            event = build_tool_call_event(
-                run_id=trace.run_id,
-                event_time=event_time,
-                outcome=exchange.outcome,
-                server=self.settings.server_name,
-                inspection=inspection,
-                http_status=exchange.status,
-                proxy_error=exchange.error,
-                reads=reads,
-                namespace=namespace,
-                trace=trace,
-                dialect=dialect,
-                **details,
-            )
-            self._sink.emit(event)
-        except Exception as error:
-            self.stats.emit_failures += 1
-            self.coverage.settle(event_time, emitted=False)
-            logger.error("Événement de lignage non émis (%s).", type(error).__name__)
-        else:
-            self.stats.events_emitted += 1
-            self.coverage.settle(event_time, emitted=True)
-
-    def _report(self, reports: list[Report]) -> None:
-        """Remet des relevés de couverture. Un échec de remise n'atteint jamais un appel."""
-        for report in reports:
-            try:
-                self._sink.report_coverage(report)
-            except Exception as error:
-                logger.error("Relevé de couverture non remis (%s).", type(error).__name__)
-
-    def _fingerprints(self, inspection: Inspection, exchange: _Exchange) -> dict[str, Any]:
-        """Empreintes et taille de l'appel : aucune empreinte sans clé, et rien du
-        résultat quand son corps n'a pas été relayé en entier."""
-        fields: dict[str, Any] = {}
-        key = self.settings.fingerprint_key
-        if key is not None and inspection.has_arguments:
-            fields["arguments_fingerprint"] = arguments_fingerprint(key, inspection.arguments)
-        if exchange.relayed_whole:
-            fields["result_size"] = exchange.size
-            if exchange.digest is not None:
-                fields["result_fingerprint"] = exchange.digest.fingerprint()
-        return fields
+        return assess(failure=failure, status=exchange.answered, sample=exchange.sample)

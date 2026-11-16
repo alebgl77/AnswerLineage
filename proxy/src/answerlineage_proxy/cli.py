@@ -63,6 +63,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="answerlineage-proxy",
         description="Proxy transparent placé devant un serveur MCP en HTTP.",
+        epilog=(
+            "Mode stdio : answerlineage-proxy [réglages] -- commande [arguments…] lance le "
+            "serveur MCP et relaie ses flux."
+        ),
     )
     parser.add_argument("--upstream", help=f"adresse du serveur MCP (ou {ENV_UPSTREAM})")
     parser.add_argument(
@@ -228,6 +232,12 @@ def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str
 
 def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if "--" in arguments:
+        # Mode stdio : la commande du serveur MCP suit « -- ».
+        from answerlineage_proxy import stdio
+
+        return stdio.main(arguments, os.environ)
     try:
         settings = settings_from_args(argv, os.environ)
         coverage_window = coverage_window_from_args(argv, os.environ)

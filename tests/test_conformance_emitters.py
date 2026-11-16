@@ -2,8 +2,8 @@
 
 L'entreprise synthétique et les scénarios de vérité parlent comme un adaptateur
 d'agents : leur capture porte la chaîne complète. Le proxy est un point de
-capture : il ne connaît pas l'agent, et cite le contexte de trace dont son
-identifiant de run dérive. Un agent joué par un script, sans modèle, derrière
+capture, en HTTP comme en stdio : il ne connaît pas l'agent, et cite le contexte
+de trace dont son identifiant de run dérive. Un agent joué par un script, sans modèle, derrière
 le vrai proxy, donne une capture combinée : les deux émetteurs voient le même
 contexte de trace, émettent pour le même run, et le graphe en tire une chaîne
 complète, du jeu de données à la réponse.
@@ -15,6 +15,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -38,6 +39,8 @@ from proxy.tests.conftest import (
     Received,
     exchange,
     running,
+    stdio_call,
+    stdio_session,
     tool_call,
 )
 
@@ -281,6 +284,33 @@ async def test_the_events_of_the_proxy_are_conformant_as_a_capture_point() -> No
     # Le proxy ne connaît pas l'agent : sa capture seule n'est pas celle d'un adaptateur.
     as_adapter = judge(events, profile="adapter", received_at=RECEIVED_AT)
     assert {"parent_missing", "no_complete_chain"} <= set(as_adapter.counts)
+
+
+@pytest.mark.anyio
+async def test_the_events_of_the_stdio_proxy_are_conformant_as_a_capture_point(
+    tmp_path: Path,
+) -> None:
+    """En stdio : contexte reçu dans ``_meta`` ou créé par le proxy ; appel réussi, en
+    erreur JSON-RPC, et interrompu par la mort du serveur."""
+    query = {"query": f"SELECT devise, taux FROM {TABLE}"}  # noqa: S608
+    async with stdio_session(tmp_path, sql_tools=SQL_TOOLS, clock=lambda: T0) as session:
+        await session.send(stdio_call(1, "execute_sql", query, traceparent=TRACEPARENT))
+        await session.send(stdio_call(2, "execute_sql", query))
+        await session.send(stdio_call(3, "fail", {"devise": "EUR"}))
+        await session.replies(3)
+        await session.send(stdio_call(4, "die", {"code": 0}))
+        assert await session.finished() == 0
+
+    events = [dict(event) for event in session.events]
+    facets = [event["run"]["facets"]["answerlineage_toolCall"] for event in events]
+    assert {facet["transport"] for facet in facets} == {"stdio"}
+    assert sorted(facet["traceOrigin"] for facet in facets) == ["meta", "proxy", "proxy", "proxy"]
+    assert sorted(event["eventType"] for event in events) == ["COMPLETE"] * 3 + ["FAIL"]
+    assert [event["inputs"][0]["name"] for event in events if event["inputs"]] == [TABLE] * 2
+
+    judgement = judge(events, profile="capture", received_at=RECEIVED_AT)
+    assert conformant(judgement)
+    assert (judgement.events, judgement.runs) == (4, 4)
 
 
 @pytest.mark.integration

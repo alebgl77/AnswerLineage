@@ -62,6 +62,17 @@ def test_the_proxy_is_charged_only_for_the_time_it_works() -> None:
     assert (timing.started, timing.ended) == (1_000, 1_000 + 30 + 5_000 + 70 + 900_000 + 25)
 
 
+def test_an_exchange_measured_by_its_relay_keeps_its_instants() -> None:
+    """Le relais stdio prend ses horodatages lui-même : rien ne s'y ajoute après coup."""
+    timing = CallTiming.measured(started=1_000, added=125, ended=901_000)
+    timing.pause()
+    timing.finish()
+    assert (timing.started, timing.added, timing.ended) == (1_000, 125, 901_000)
+    # Une fin antérieure au début, ou une latence ajoutée négative, ne se mesurent pas.
+    clamped = CallTiming.measured(started=1_000, added=-5, ended=10)
+    assert (clamped.added, clamped.ended) == (0, 1_000)
+
+
 def test_a_duration_is_given_in_milliseconds_to_the_microsecond_and_bounded() -> None:
     assert milliseconds(1_234_567) == 1.235
     assert milliseconds(0) == 0.0

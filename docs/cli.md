@@ -1,12 +1,13 @@
 # Ligne de commande
 
-`answerlineage` fait depuis le terminal ce que fait l'explorateur, et un peu plus : propager un incident jusqu'aux réponses et aux destinataires touchés, vérifier une installation, lancer la démonstration. Elle parle à l'API par HTTP, comme l'explorateur, et ne lit jamais la base.
+`answerlineage` fait depuis le terminal ce que fait l'explorateur, et un peu plus : propager un incident jusqu'aux réponses et aux destinataires touchés, vérifier une installation, lancer la démonstration. Elle parle à l'API par HTTP, comme l'explorateur, et ne lit jamais la base. Elle lance aussi le proxy MCP.
 
 | Sous-commande | Ce qu'elle fait |
 | --- | --- |
 | [`answerlineage impact`](#answerlineage-impact) | Les réponses et les destinataires touchés par un jeu de données faux pendant une fenêtre ; le code de sortie dit si l'on peut conclure |
 | [`answerlineage doctor`](#answerlineage-doctor) | Vérifie chaque composant d'une installation et liste les anomalies, chacune avec son remède |
 | [`answerlineage demo`](#answerlineage-demo) | Lance la démonstration d'un clone du dépôt, attend qu'elle réponde et donne l'adresse de l'explorateur |
+| [`answerlineage proxy`](#answerlineage-proxy) | Le proxy MCP : devant un serveur HTTP, ou qui lance un serveur stdio donné après `--` |
 
 ## Installation
 
@@ -303,6 +304,20 @@ Ce dossier n'est pas dans un clone d'AnswerLineage : la démonstration se lance 
 | `2` | Hors d'un clone, ou adresse hors de la boucle locale |
 | `4` | La démonstration ne répond pas dans le délai : `docker compose logs api` dit pourquoi |
 
+## `answerlineage proxy`
+
+Le [proxy MCP](proxy.md), par la commande commune. Sans `--`, il se place devant un serveur MCP en HTTP ; avec, il lance la commande qui suit en stdio et se place entre elle et le client :
+
+```bash
+answerlineage proxy --server-name fichiers -- /opt/mcp/serveur-fichiers --racine /srv/partage
+```
+
+Dans la configuration d'un client MCP, la commande du serveur devient `answerlineage`, et ses arguments `proxy --server-name fichiers -- /opt/mcp/serveur-fichiers --racine /srv/partage`.
+
+La sous-commande cède la place : le processus devient le proxy installé dans le même environnement, `python -m answerlineage_proxy.cli` avec les mêmes arguments. Rien ne s'intercale donc entre le client et le proxy : entrée, sorties, signaux, réglages (`answerlineage proxy --help` donne ceux du proxy) et codes de sortie sont ceux du proxy, en stdio celui du serveur ([Mode stdio](proxy.md#mode-stdio)). Elle n'emploie ni `--url` ni `--timeout`.
+
+Le paquet `answerlineage-cli` ne dépend pas du proxy. Sans le paquet `answerlineage-proxy` dans le même environnement, la commande le dit et sort avec le code `2`.
+
 ## Tous les codes de sortie
 
 | Code | `impact` | `doctor` | `demo` |
@@ -313,6 +328,8 @@ Ce dossier n'est pas dans un clone d'AnswerLineage : la démonstration se lance 
 | `3` | Résultat incomplet | | |
 | `4` | API injoignable | | La démonstration ne répond pas |
 | `5` | Refus de l'API ou réponse invalide | | |
+
+`answerlineage proxy` rend les codes du proxy, et `2` quand le proxy n'est pas installé.
 
 ## Journaux
 

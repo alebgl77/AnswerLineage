@@ -22,7 +22,11 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+# Début gardé d'un message trop grand pour être lu en entier : les clients et les
+# serveurs MCP y écrivent d'ordinaire la méthode, le nom de l'outil et l'identifiant.
+PREFIX_BYTES = 16 * 1024
 
 _WHITESPACE = re.compile(rb"[ \t\n\r]*+")
 _STRING = re.compile(rb'"[^"\\]*+(?:\\[\s\S][^"\\]*+)*+"')
@@ -56,6 +60,19 @@ class ReplyPrefix:
     error: bool = False
     # ``error.code`` quand c'est un entier écrit sans fraction ni exposant.
     code: int | None = None
+
+
+@dataclass(frozen=True)
+class MessagePrefix:
+    """Ce que le début d'un message établit sur sa nature et son identifiant."""
+
+    # ``id`` au premier niveau, vu une seule fois : une chaîne, ou un entier écrit
+    # sans fraction ni exposant. Jamais affiché : il est choisi par l'émetteur du message.
+    identifier: str | int | None = field(default=None, repr=False)
+    # Membres du premier niveau vus dans le début : ``method`` fait une requête ou une
+    # notification, ``result`` ou ``error`` une réponse.
+    method: bool = False
+    reply: bool = False
 
 
 class _MalformedError(Exception):
@@ -242,3 +259,44 @@ def read_reply_prefix(data: bytes) -> ReplyPrefix:
     if counts["error"] != 1 or not present[0]:
         return ReplyPrefix()
     return ReplyPrefix(error=True, code=found["code"] if counts["code"] == 1 else None)
+
+
+def read_message_prefix(data: bytes) -> MessagePrefix:
+    """Lit, au début d'un message JSON-RPC, son identifiant et sa nature.
+
+    L'identifiant n'est établi que si la clé ``id`` est vue une seule fois au
+    premier niveau, avec pour valeur une chaîne, ou un entier écrit en entier dans
+    le début. Un début illisible n'établit rien.
+    """
+    counts = {"id": 0}
+    found: dict[str, str | int | None] = {"id": None}
+    seen = {"method": False, "reply": False}
+
+    def on_member(key: str, pos: int) -> int | None:
+        if key == "method":
+            seen["method"] = True
+        elif key in ("result", "error"):
+            seen["reply"] = True
+        elif key == "id":
+            counts["id"] += 1
+            if data[pos : pos + 1] == b'"':
+                found["id"], end = _string(data, pos)
+                return end
+            end = _skip(data, pos)
+            number = _INTEGER.fullmatch(data, pos, end) if end is not None else None
+            found["id"] = int(number.group()) if number is not None else None
+            return end
+        return _skip(data, pos)
+
+    start = _blank(data, 0)
+    if data[start : start + 1] != b"{":
+        return MessagePrefix()
+    try:
+        _object(data, start, on_member)
+    except _MalformedError:
+        return MessagePrefix()
+    return MessagePrefix(
+        identifier=found["id"] if counts["id"] == 1 else None,
+        method=seen["method"],
+        reply=seen["reply"],
+    )

@@ -11,7 +11,13 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from answerlineage_proxy.inspection import inspect_prefix
-from answerlineage_proxy.prefix import CallPrefix, ReplyPrefix, read_call_prefix, read_reply_prefix
+from answerlineage_proxy.prefix import (
+    CallPrefix,
+    ReplyPrefix,
+    read_call_prefix,
+    read_message_prefix,
+    read_reply_prefix,
+)
 
 
 def whole(document: bytes) -> CallPrefix:
@@ -252,3 +258,34 @@ ERROR_REPLY = (
 )
 def test_the_error_of_a_reply_is_read_from_its_start(data: bytes, expected: ReplyPrefix) -> None:
     assert read_reply_prefix(data) == expected
+
+
+@pytest.mark.parametrize(
+    ("data", "identifier", "method", "reply"),
+    [
+        # Identifiant en tête : il est établi même si la suite manque.
+        (b'{"jsonrpc":"2.0","id":7,"result":{"content":[{"text":"x', 7, False, True),
+        (b'{"id":"a\\u00e9","method":"tools/call","params":{"name":"x"', "aé", True, False),
+        (b'{"id":-3,"error":{"code":-32602}}', -3, False, True),
+        # Identifiant après un résultat qui dépasse le début lu : rien n'est établi.
+        (b'{"result":{"content":[{"text":"xxxx', None, False, True),
+        # Un nombre au bord du début peut continuer au-delà ; une fraction n'est pas admise.
+        (b'{"id":12', None, False, False),
+        (b'{"id":1.5,"result":{}}', None, False, True),
+        (b'{"id":true,"result":{}}', None, False, True),
+        # Un identifiant vu deux fois n'est pas certain.
+        (b'{"id":1,"id":2,"result":{}}', None, False, True),
+        # Un membre « id » imbriqué ne compte pas.
+        (b'{"params":{"id":4},"method":"ping"}', None, True, False),
+        (b'{"id":5 "result":{}}', None, False, False),
+        (b"[1]", None, False, False),
+        (b"", None, False, False),
+    ],
+)
+def test_the_identifier_and_kind_of_a_message_are_read_from_its_start(
+    data: bytes, identifier: object, method: bool, reply: bool
+) -> None:
+    found = read_message_prefix(data)
+    assert (found.identifier, found.method, found.reply) == (identifier, method, reply)
+    # L'identifiant, choisi par l'émetteur du message, ne s'affiche pas.
+    assert "identifier" not in repr(found)

@@ -1,10 +1,13 @@
 # Proxy MCP
 
-Le proxy se place devant un serveur MCP en HTTP, sans toucher à l'agent ni au serveur. Il relaie chaque requête à l'identique et émet un événement OpenLineage par appel d'outil.
+Le proxy se place devant un serveur MCP, en HTTP ou en stdio, sans toucher à l'agent ni au serveur. Il relaie chaque requête à l'identique et émet un événement OpenLineage par appel d'outil.
 
 ```bash
 uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrepot --sql-tool execute_sql=query:bigquery
+uv run answerlineage-proxy --server-name fichiers -- /opt/mcp/serveur-fichiers --racine /srv/partage
 ```
+
+La première ligne écoute devant un serveur HTTP. La seconde lance un serveur local en stdio et se place entre lui et le client : voir [Mode stdio](#mode-stdio). Sauf mention contraire, ce qui suit décrit le mode HTTP ; le mode stdio en reprend l'inspection, l'analyse du SQL, les règles de lecture, les empreintes, la qualité de service et les relevés de couverture.
 
 | Réglage | Option | Variable | Défaut |
 | --- | --- | --- | --- |
@@ -285,7 +288,7 @@ Le proxy publie ce qu'il a vu, pour que l'on sache quelle part du trafic le lign
 | `emitter` | Son identifiant d'émetteur : `mcp://<serveur>`, l'espace de noms des jobs de ses événements |
 | `calls_seen` | Appels d'outils décrits, y compris d'après le seul début d'un corps trop grand |
 | `events_emitted` | Événements que la destination a pris en charge |
-| `events_lost` | Événements que la destination a refusés, et, à l'arrêt, ceux d'appels dont l'analyse n'avait pas abouti |
+| `events_lost` | Événements que la destination a refusés, et, à l'arrêt, ceux d'appels dont l'analyse n'avait pas abouti ; en stdio, ceux d'appels dont la réponse n'a pas pu être rattachée |
 | `uninspected` | Requêtes relayées sans pouvoir être inspectées ([ci-dessus](#ce-que-le-proxy-ne-peut-pas-inspecter)) |
 
 - **Un appel compte dans la fenêtre où tombe l'heure de son événement.** L'événement d'un outil SQL part une fois la requête analysée, parfois après la fin de sa fenêtre : la fenêtre ne se clôt qu'une fois tous ses appels réglés, et les relevés partent dans l'ordre du temps.
@@ -501,9 +504,87 @@ Mesuré sur un poste à 4 cœurs, 100 000 appels un à la fois :
 
 L'écart entre les deux mesures est le saut lui-même : un serveur HTTP qui lit la requête et une bibliothèque HTTP qui la réécrit vers le serveur MCP, que la mesure interne ne voit pas. Un maximum est une valeur isolée, une pause du ramasse-miettes ou de l'ordonnanceur ; par comparaison, la différence de deux maxima n'a pas de sens, et le banc ne la juge pas.
 
+## Mode stdio
+
+Un serveur MCP local se lance d'ordinaire en stdio : le client le démarre et lui parle par son entrée et sa sortie standard, un message JSON-RPC par ligne. Le proxy s'intercale en le lançant lui-même : le client lance le proxy à la place du serveur, avec la commande du serveur après `--`.
+
+```bash
+uv run answerlineage-proxy [réglages] -- <commande> [arguments…]
+```
+
+Dans la configuration d'un client MCP, la commande devient `answerlineage-proxy` et ses arguments `--server-name fichiers -- /opt/mcp/serveur-fichiers --racine /srv/partage`. La commande commune fait de même, `answerlineage proxy [réglages] -- <commande>`, quand le proxy est installé avec elle ([Ligne de commande](cli.md#answerlineage-proxy)). Tout ce qui suit le premier `--` est la commande, y compris un second `--`. Le mode stdio est réservé aux systèmes POSIX (Linux, macOS).
+
+### Le lancement
+
+- La commande est lancée directement, comme liste d'arguments, jamais par un shell : `$HOME`, `*` ou `|` y sont des caractères comme les autres.
+- L'enfant reçoit l'environnement du proxy tel quel, à une exception près : `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY`, la clé d'empreinte du locataire, ne lui est pas transmise. Un serveur MCP n'a pas à la connaître, et l'environnement d'un processus se lit plus facilement que sa mémoire.
+- Sa sortie d'erreur est celle du proxy : le proxy ne la lit pas et ne la recopie pas, ce sont les journaux du serveur. Le journal du proxy y passe aussi. Sur sa sortie standard, le proxy n'écrit que ce que l'enfant écrit.
+- Une commande qui ne démarre pas arrête le proxy avec un message fixe, qui ne cite ni la commande ni ses arguments : « Serveur MCP non lancé : commande introuvable. » (code 127) ou « Serveur MCP non lancé : commande non exécutable. » (code 126), comme un shell POSIX.
+- Sans `--server-name` ni `ANSWERLINEAGE_PROXY_SERVER_NAME`, le nom du serveur dans le lignage est celui du programme lancé, sans son chemin (`serveur-fichiers` pour `/opt/mcp/serveur-fichiers`). Un lanceur (`npx`, `uvx`, `docker`, `python`) n'est pas un nom de serveur : il confondrait tous les serveurs qu'il lance, d'où `--server-name`.
+- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin` et `--no-preserve-host` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
+
+### Le relais
+
+Deux fils relaient les flux, un par sens. Chacun lit ce qui arrive, 64 Ko au plus à la fois, l'écrit aussitôt de l'autre côté et remet une copie à l'inspection. Rien n'est réécrit ni retenu : les octets que reçoit le client sont ceux qu'écrit l'enfant, et inversement, au fil de l'eau, un message coupé en plusieurs morceaux compris.
+
+### Ce qui est lu
+
+L'inspection découpe chaque flux en lignes, à côté du relais, sur une copie, et lit chaque message comme le mode HTTP lit un corps :
+
+- jusqu'à `--max-inspected-bytes`, le message est lu en entier, strictement ; au-delà, seul son début (16 Ko) l'est, par le [lecteur strict des corps trop grands](#corps-plus-grand-que-la-taille-lue), qui y cherche aussi l'identifiant ;
+- une ligne illisible, un lot, une clé répétée, un appel d'outil sans identifiant (une notification : rien ne dira comment il s'achève), un message inachevé quand le flux se ferme sont relayés et comptés dans `uninspected` ;
+- un appel d'outil est rattaché à sa réponse par son identifiant (`id`, une chaîne ou un entier). Les requêtes en attente sont gardées sous une empreinte BLAKE2b de leur identifiant, à clé tirée au démarrage : 1 024 au plus, et 32 Mo des appels gardés pour être décrits (ou quatre fois la taille lue si elle est plus grande) ; au-delà, la plus ancienne est oubliée ;
+- les requêtes et notifications du serveur, et les réponses du client à celles-ci, ne sont pas des appels : elles passent sans rien compter ;
+- `notifications/cancelled` du client clôt l'appel qu'elle nomme : il est abandonné.
+
+Une fois la réponse rendue au client, l'appel est décrit avec les règles du mode HTTP : analyse du SQL, règles de lecture, empreintes, signaux de qualité de service, relevés de couverture. L'empreinte et la taille du résultat portent sur les octets du message de réponse, sans sa fin de ligne.
+
+### Ce que l'inspection ne devine pas
+
+Une réponse dont l'identifiant ne se lit pas (ligne illisible, identifiant écrit après un résultat plus grand que le début lu), ou un identifiant repris avant sa réponse, ne permettent plus de savoir quel appel s'achève. Le proxy ne choisit pas : l'appel en attente n'a pas d'événement, il compte dans `events_lost` de sa fenêtre et dans `ProxyStats.unmatched_calls`, et le journal le signale sans rien citer du message. Le nouvel appel à l'identifiant repris compte dans `uninspected`. Un appel resté sans réponse quand le serveur s'arrête est en échec, sauf si une réponse illisible est passée depuis son départ : elle était peut-être la sienne, et son événement est perdu plutôt que faux.
+
+### Contexte de trace
+
+Il n'y a pas d'en-têtes : le contexte se lit dans `params._meta.traceparent`, avec la validation et la dérivation de l'identifiant de run du mode HTTP ([ci-dessus](#identifiant-de-run-et-contexte-de-trace)), et `traceOrigin` vaut `meta`. Sinon, le proxy en crée un (`traceOrigin` : `proxy`), qui ne sert qu'à l'identifiant de run : un message n'est jamais modifié. `tracestate` voyage avec le message ; il n'entre pas dans l'identifiant de run, et le proxy ne le lit pas, pas plus qu'en HTTP.
+
+### L'issue d'un appel
+
+| Fin de l'appel | Événement | `outcome` |
+| --- | --- | --- |
+| Réponse rendue au client, avec un résultat | `COMPLETE` | `success` |
+| Réponse rendue au client, avec une erreur JSON-RPC | `COMPLETE` | `jsonrpc_error`, et son code |
+| Le serveur s'arrête, ferme sa sortie ou son entrée avant d'avoir répondu | `FAIL` | `transport_error` |
+| Le client ferme son entrée, cesse de lire ou annule l'appel avant la réponse | `ABORT` | `client_abort` |
+
+Il n'y a pas de statut HTTP : ni `httpStatus` ni `http_error`. La facette de l'appel porte `transport: "stdio"`. La latence va de la lecture du premier morceau de la requête à l'écriture du dernier morceau de la réponse. La latence ajoutée est le temps que le proxy passe sur chaque morceau entre sa lecture et son écriture : la remise à l'inspection de la copie d'une requête, faite avant son écriture pour que l'inspection voie toujours une requête avant sa réponse ; celle d'une réponse est faite après. Comme en HTTP, c'est une borne basse : elle ne compte ni le saut par un tube de plus, ni le temps où l'inspection occupe l'interpréteur. Sans contexte de trace transmis, la portée d'une reprise est le proxy, qui ne sert qu'un client.
+
+### Rien ne retarde un message
+
+Le relais n'attend jamais l'inspection ni l'émission : il remet sa copie et continue. Les copies en attente sont bornées (8 Mo, ou quatre fois la taille lue si elle est plus grande) ; au-delà, elles ne sont pas gardées. L'inspection compte les messages qu'elles portaient (`uninspected` pour ceux du client), reprend à la fin de ligne suivante, et le journal le signale une fois ; `ProxyStats.lagged_bytes` dit combien d'octets sont passés sans être inspectés.
+
+### Le cycle de vie
+
+- **Signaux.** SIGINT, SIGTERM et SIGHUP reçus par le proxy sont transmis à l'enfant. Le proxy ne s'arrête qu'avec lui : un enfant qui ignore le signal garde le proxy en vie jusqu'à ce qu'il s'arrête, par exemple à la fin de son entrée.
+- **Code de sortie.** Celui de l'enfant, ou 128 + le numéro du signal qui l'a arrêté (143 pour SIGTERM).
+- **Fermetures.** Chaque fermeture passe de l'autre côté, comme si le client et le serveur se parlaient directement : le client ferme son entrée, l'enfant voit la fin de la sienne ; l'enfant ferme sa sortie, le client voit la fin de celle du proxy ; le client cesse de lire, l'enfant le voit à sa prochaine écriture ; l'enfant ferme son entrée, celle du proxy se ferme aussi. L'enfant arrêté, le proxy rend ce qu'il a écrit sans attendre ce qu'un descendant écrirait encore sur la même sortie.
+- **Pas d'orphelin.** Le proxy attend toujours son enfant ; interrompu par une erreur, il le tue avant de s'arrêter. L'enfant reste dans le groupe de processus du proxy : un client qui arrête ce groupe les arrête ensemble.
+- **Arrêt.** L'enfant arrêté, le proxy attend les analyses du SQL en cours, remet la dernière fenêtre de couverture, puis s'arrête.
+
+### Différences avec le mode HTTP
+
+| | HTTP | stdio |
+| --- | --- | --- |
+| Lancement | Le proxy écoute sur un port | Le client lance le proxy, qui lance le serveur |
+| Contrôle Host et Origin | Avant tout relais | Sans objet : rien n'écoute sur le réseau |
+| En-têtes MCP comparés au corps | `headerMismatch` | Sans objet : pas d'en-têtes |
+| Contexte de trace | `_meta`, puis l'en-tête `traceparent`, sinon créé et transmis | `_meta`, sinon créé, jamais transmis |
+| Rattacher la réponse | L'échange HTTP | L'identifiant JSON-RPC |
+| Statut HTTP | `httpStatus`, issue `http_error` | Aucun |
+| Portée d'une reprise | Session MCP, puis trace, puis le proxy | Trace, puis le proxy, qui ne sert qu'un client |
+
 ## Ce qui n'est jamais conservé
 
-Aucun argument, résultat, en-tête ni jeton n'est stocké ou journalisé : des arguments et du résultat, l'événement ne garde que des empreintes à clé et une taille ; d'une requête SQL, sa forme sans littéraux ; d'une erreur, sa catégorie et son code ; d'une clé lue d'après une règle, son empreinte à clé. Seuls le `trace-id` et le `parent-id` d'un contexte de trace bien formé, qui ne disent rien du contenu, sont recopiés dans l'événement ; ils ne sont jamais journalisés. Les en-têtes `Mcp-Param-*`, qui recopient des arguments d'outil, ne sont pas lus. L'en-tête `Mcp-Session-Id` n'est lu que pour reconnaître une reprise, et oublié après l'appel, sauf son empreinte à clé. Le journal d'accès du serveur HTTP est coupé. Les journaux des bibliothèques qui citeraient une URL complète, des en-têtes ou une requête SQL (`httpx`, `httpcore`, `sqlglot`) sont coupés pour tout le processus.
+Aucun argument, résultat, en-tête ni jeton n'est stocké ou journalisé : des arguments et du résultat, l'événement ne garde que des empreintes à clé et une taille ; d'une requête SQL, sa forme sans littéraux ; d'une erreur, sa catégorie et son code ; d'une clé lue d'après une règle, son empreinte à clé. Seuls le `trace-id` et le `parent-id` d'un contexte de trace bien formé, qui ne disent rien du contenu, sont recopiés dans l'événement ; ils ne sont jamais journalisés. Les en-têtes `Mcp-Param-*`, qui recopient des arguments d'outil, ne sont pas lus. L'en-tête `Mcp-Session-Id` n'est lu que pour reconnaître une reprise, et oublié après l'appel, sauf son empreinte à clé. En stdio, l'identifiant d'une requête n'est gardé que sous une empreinte à clé, le temps d'attendre sa réponse, et la commande lancée n'apparaît ni dans le journal, ni dans un message d'erreur, ni dans la représentation des réglages. Le journal d'accès du serveur HTTP est coupé. Les journaux des bibliothèques qui citeraient une URL complète, des en-têtes ou une requête SQL (`httpx`, `httpcore`, `sqlglot`) sont coupés pour tout le processus.
 
 ## Autorisation
 
@@ -527,7 +608,11 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - L'issue d'une réponse compressée tient à son seul statut HTTP : son corps n'est pas lu.
 - Le proxy ne pose lui-même aucun délai de lecture : seul le délai de connexion au serveur MCP (10 s) fait une issue `timeout`, sauf avec un client HTTP qui en a un autre.
 - Sans session MCP ni contexte de trace transmis par le client, la portée d'une reprise est le proxy entier : deux clients qui font le même appel, aux mêmes arguments, dans la minute qui suit un échec, sont comptés comme une reprise.
-- Le transport stdio n'est pas pris en charge.
+- Le mode stdio est réservé aux systèmes POSIX (Linux, macOS).
+- Tué par SIGKILL, le proxy ne peut rien transmettre à son enfant : celui-ci voit la fin de son entrée, sur laquelle un serveur MCP s'arrête, mais un serveur qui l'ignore lui survit. Arrêter le groupe de processus les arrête ensemble.
+- Un Ctrl-C au terminal atteint tout le groupe de processus : en stdio, l'enfant reçoit alors SIGINT deux fois, du terminal et du proxy.
+- En stdio, une réponse plus grande que la taille lue, dont l'identifiant suit le résultat au-delà des 16 premiers Ko, ne se rattache pas à son appel : l'appel n'a pas d'événement et compte comme perdu. De même, un appel d'outil plus grand que la taille lue dont l'identifiant suit les arguments n'est pas décrit. Relever `--max-inspected-bytes` en réduit le nombre.
+- En stdio, l'inspection partage l'interpréteur avec les fils de relais : lire un message de la taille maximale (1 Mo par défaut) l'occupe quelques millisecondes, que le relais peut attendre.
 - Une règle de lecture se fie à l'outil : si l'outil lit autre chose que ce qu'elle déclare, le lignage le croit. Elle ne dit pas non plus quelles lignes d'un jeu de données correspondent à une clé : l'empreinte rapproche des appels, pas des lignes.
 - Les règles de lecture ne se rechargent pas à chaud : un changement demande de relancer le proxy.
 - Dans un corps plus grand que la taille lue, une clé `method` ou `name` répétée au-delà des 16 premiers Ko ne peut pas être vue : l'événement décrit la première.

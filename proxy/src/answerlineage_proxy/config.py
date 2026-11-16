@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import cast
+from pathlib import Path, PurePosixPath
+from typing import Protocol, cast
 
 import httpx
 
@@ -55,6 +55,61 @@ _KEY_FILE_BYTES = 4096
 
 class ProxyConfigurationError(ValueError):
     """Un réglage du proxy est absent ou invalide."""
+
+
+class CaptureSettings(Protocol):
+    """Réglages de la capture, communs aux transports HTTP et stdio."""
+
+    @property
+    def server_name(self) -> str:
+        """Nom logique du serveur : il nomme les jobs, sous ``mcp://<nom>``."""
+
+    @property
+    def max_inspected_bytes(self) -> int:
+        """Taille de message au-delà de laquelle seul son début est lu."""
+
+    @property
+    def sql_tools(self) -> Mapping[str, SqlTool]:
+        """Outils dont la requête SQL est analysée, par nom d'outil."""
+
+    @property
+    def sql_budget_ms(self) -> int:
+        """Budget de calcul de l'analyse d'une requête SQL."""
+
+    @property
+    def sql_queue_size(self) -> int:
+        """Analyses du SQL en attente, au plus."""
+
+    @property
+    def sql_cache_size(self) -> int:
+        """Résultats d'analyse gardés en cache."""
+
+    @property
+    def fingerprint_key(self) -> FingerprintKey | None:
+        """Clé d'empreinte du locataire ; sans clé, aucune empreinte."""
+
+    @property
+    def read_rules(self) -> Mapping[str, ReadRule]:
+        """Règles de lecture qui valent pour ce serveur, par outil."""
+
+
+def _check_server_name(name: str, hint: str) -> None:
+    if not _SERVER_NAME.fullmatch(name):
+        raise ProxyConfigurationError(
+            "Le nom du serveur accepte 1 à 128 lettres, chiffres, points, tirets et "
+            f"soulignés ; {hint}"
+        )
+
+
+def _check_capture(settings: CaptureSettings) -> None:
+    """Contrôles communs aux deux transports : taille lue, outils, analyse du SQL."""
+    if settings.max_inspected_bytes < 0:
+        raise ProxyConfigurationError("La taille maximale lue ne peut pas être négative.")
+    if not all(_TOOL_NAME.fullmatch(tool) for tool in [*settings.sql_tools, *settings.read_rules]):
+        raise ProxyConfigurationError("Un nom d'outil SQL est invalide.")
+    for name, (minimum, maximum) in _SQL_LIMITS.items():
+        if not minimum <= getattr(settings, name) <= maximum:
+            raise ProxyConfigurationError(f"{name} doit être compris entre {minimum} et {maximum}.")
 
 
 def listed(value: str | None) -> tuple[str, ...]:
@@ -206,23 +261,13 @@ class ProxySettings:
             raise ProxyConfigurationError(
                 "L'adresse du serveur MCP ne doit porter ni paramètres ni fragment."
             )
-        if not _SERVER_NAME.fullmatch(self.server_name):
-            raise ProxyConfigurationError(
-                "Le nom du serveur accepte 1 à 128 lettres, chiffres, points, tirets et "
-                f"soulignés ; sans --server-name ni {ENV_SERVER_NAME}, il est tiré de l'hôte "
-                "du serveur MCP."
-            )
+        _check_server_name(
+            self.server_name,
+            f"sans --server-name ni {ENV_SERVER_NAME}, il est tiré de l'hôte du serveur MCP.",
+        )
         if not 0 <= self.port <= 65535:
             raise ProxyConfigurationError("Le port doit être compris entre 0 et 65535.")
-        if self.max_inspected_bytes < 0:
-            raise ProxyConfigurationError("La taille maximale lue ne peut pas être négative.")
-        if not all(_TOOL_NAME.fullmatch(tool) for tool in [*self.sql_tools, *self.read_rules]):
-            raise ProxyConfigurationError("Un nom d'outil SQL est invalide.")
-        for name, (minimum, maximum) in _SQL_LIMITS.items():
-            if not minimum <= getattr(self, name) <= maximum:
-                raise ProxyConfigurationError(
-                    f"{name} doit être compris entre {minimum} et {maximum}."
-                )
+        _check_capture(self)
         try:
             RequestGuard.create([self.upstream_host])
         except ValueError as error:
@@ -314,4 +359,60 @@ class ProxySettings:
             sql_cache_size=integer(environment, ENV_SQL_CACHE_SIZE, DEFAULT_SQL_CACHE_SIZE),
             fingerprint_key=fingerprint_key(environment),
             read_rules=read_rules(environment),
+        )
+
+
+@dataclass(frozen=True)
+class StdioSettings:
+    """Réglages d'un proxy qui lance un serveur MCP en stdio et relaie ses flux."""
+
+    # Commande du serveur MCP : le programme, puis ses arguments, lancés sans shell.
+    # Elle n'apparaît dans aucun journal, aucun événement ni aucun message d'erreur.
+    command: tuple[str, ...] = field(repr=False)
+    server_name: str
+    max_inspected_bytes: int = DEFAULT_MAX_INSPECTED_BYTES
+    sql_tools: Mapping[str, SqlTool] = field(default_factory=dict)
+    sql_budget_ms: int = DEFAULT_SQL_BUDGET_MS
+    sql_queue_size: int = DEFAULT_SQL_QUEUE_SIZE
+    sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE
+    fingerprint_key: FingerprintKey | None = field(default=None, repr=False)
+    read_rules: Mapping[str, ReadRule] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.command or not self.command[0]:
+            raise ProxyConfigurationError("Indiquer la commande du serveur MCP après « -- ».")
+        _check_server_name(
+            self.server_name,
+            f"sans --server-name ni {ENV_SERVER_NAME}, il est tiré du nom du programme lancé.",
+        )
+        _check_capture(self)
+
+    @classmethod
+    def create(
+        cls,
+        command: Sequence[str],
+        server_name: str | None = None,
+        *,
+        max_inspected_bytes: int = DEFAULT_MAX_INSPECTED_BYTES,
+        sql_tools: Mapping[str, SqlTool] | None = None,
+        sql_budget_ms: int = DEFAULT_SQL_BUDGET_MS,
+        sql_queue_size: int = DEFAULT_SQL_QUEUE_SIZE,
+        sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE,
+        fingerprint_key: FingerprintKey | None = None,
+        read_rules: Sequence[ReadRule] = (),
+    ) -> StdioSettings:
+        """Sans nom de serveur, celui du programme lancé, sans son chemin."""
+        name = server_name
+        if name is None:
+            name = PurePosixPath(command[0]).name if command else ""
+        return cls(
+            command=tuple(command),
+            server_name=name,
+            max_inspected_bytes=max_inspected_bytes,
+            sql_tools=dict(sql_tools or {}),
+            sql_budget_ms=sql_budget_ms,
+            sql_queue_size=sql_queue_size,
+            sql_cache_size=sql_cache_size,
+            fingerprint_key=fingerprint_key,
+            read_rules=rules_for(tuple(read_rules), name),
         )

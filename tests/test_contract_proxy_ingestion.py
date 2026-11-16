@@ -55,6 +55,29 @@ def test_proxy_event_is_a_valid_openlineage_run_event(name: str) -> None:
     assert len(event_identifier(event)) == 64
 
 
+def test_a_stdio_proxy_event_is_a_valid_openlineage_run_event() -> None:
+    """En stdio, ni statut HTTP ni en-têtes : la facette dit le transport."""
+    trace = resolve_trace(None, [])
+    event = build_tool_call_event(
+        run_id=trace.run_id,
+        event_time=datetime.now(UTC),
+        outcome="FAIL",
+        server="entrepot",
+        inspection=Inspection(is_tool_call=True, tool="execute_sql"),
+        trace=trace,
+        signals=CallSignals(latency_ms=2.5, added_latency_ms=0.01, outcome="transport_error"),
+        transport="stdio",
+    )
+    facet = event["run"]["facets"]["answerlineage_toolCall"]
+    assert facet["transport"] == "stdio"
+    assert "httpStatus" not in facet
+    assert list(OFFICIAL.iter_errors(event)) == []
+    accepted, errors = validate_event(event)
+    assert errors == []
+    assert accepted is not None
+    assert accepted.run.run_id == trace.run_id
+
+
 def test_proxy_event_with_sql_reads_is_a_valid_openlineage_run_event() -> None:
     sql = "SELECT c.nom, fx.taux FROM crm.clients c JOIN ref.taux_change fx ON fx.devise = c.devise"
     event = build_tool_call_event(
