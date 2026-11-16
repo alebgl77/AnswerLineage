@@ -15,6 +15,7 @@
 - [Facettes OpenLineage d'AnswerLineage](facettes.md)
 - [Kit de conformité des émetteurs](conformite.md)
 - [Extension A2A de lignage](a2a.md)
+- [Modèle de menaces](securite/modele-de-menaces.md) : frontières de confiance, actifs, menaces de chaque composant, parades et acceptations, revu à chaque version
 - [Workers](workers.md)
 - [Schéma du graphe](schema.md)
 - [Ligne de commande](cli.md)
