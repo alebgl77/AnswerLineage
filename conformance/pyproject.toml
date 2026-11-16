@@ -4,13 +4,31 @@ version = "0.0.0"
 description = "Kit de conformité d'AnswerLineage : juge un émetteur sur les événements, les journaux et les métriques qu'il a produits."
 requires-python = ">=3.13"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Natural Language :: French",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 dependencies = [
-    "answerlineage-workers",
+    "answerlineage-workers==0.0.0",
     "jsonschema>=4.25",
 ]
 
 [project.scripts]
 answerlineage-conformance = "answerlineage_conformance.cli:main"
+
+[project.urls]
+Source = "https://github.com/alebgl77/AnswerLineage"
+Documentation = "https://github.com/alebgl77/AnswerLineage/tree/main/docs"
+Issues = "https://github.com/alebgl77/AnswerLineage/issues"
 
 [tool.uv.sources]
 answerlineage-workers = { workspace = true }

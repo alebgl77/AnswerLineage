@@ -305,6 +305,72 @@ def test_code_agent_with_write_access_is_allowed_on_trusted_triggers() -> None:
     assert check_workflow("agent.yml", document) == []
 
 
+PYPI_ACTION = f"pypa/gh-action-pypi-publish@{SHA}"
+
+
+def publishing_workflow(step: dict[str, Any], **job: Any) -> dict[str, Any]:
+    document = workflow([step], on={"push": {"tags": ["v*"]}})
+    document["jobs"]["build"].update(job)
+    return document
+
+
+@pytest.mark.parametrize("scope", ["packages", "id-token"])
+def test_a_job_that_publishes_receives_no_secret(scope: str) -> None:
+    """Un jeton de longue durée volé publie à la place du projet : la publication passe par OIDC."""
+    step = {"run": "make publier", "env": {"JETON": "${{ secrets.JETON_DU_REGISTRE }}"}}
+    document = publishing_workflow(step, permissions={"contents": "read", scope: "write"})
+    violations = check_workflow("release.yml", document)
+    assert rules(violations) == ["publication-sans-secret"]
+    assert violations[0].where == "job build"
+
+
+def test_a_pypi_upload_uses_trusted_publishing_rather_than_a_token() -> None:
+    with_secret = {"uses": PYPI_ACTION, "with": {"password": "${{ secrets['PYPI_TOKEN'] }}"}}
+    assert rules(check_workflow("release.yml", publishing_workflow(with_secret))) == [
+        "publication-sans-secret"
+    ]
+    written = {"uses": PYPI_ACTION, "with": {"password": "pypi-AgEIcHlwaS5vcmc"}}
+    assert rules(check_workflow("release.yml", publishing_workflow(written))) == [
+        "publication-sans-secret"
+    ]
+    trusted = {"uses": PYPI_ACTION, "with": {"packages-dir": "dist/"}}
+    document = publishing_workflow(trusted, permissions={"id-token": "write"})
+    assert check_workflow("release.yml", document) == []
+
+
+def test_a_secret_shared_by_the_whole_workflow_reaches_the_job_that_publishes() -> None:
+    document = publishing_workflow({"run": "make publier"}, permissions={"packages": "write"})
+    document["env"] = {"JETON": "${{ secrets.JETON }}"}
+    assert rules(check_workflow("release.yml", document)) == ["publication-sans-secret"]
+
+
+def test_a_reusable_workflow_that_publishes_inherits_no_secret() -> None:
+    document = workflow(on={"push": {"tags": ["v*"]}})
+    document["jobs"] = {
+        "publier": {
+            "uses": f"exemple/outils/.github/workflows/publier.yml@{SHA}",
+            "permissions": {"id-token": "write"},
+            "secrets": "inherit",
+        }
+    }
+    assert rules(check_workflow("release.yml", document)) == ["publication-sans-secret"]
+
+
+def test_the_ephemeral_workflow_token_may_publish() -> None:
+    step = {
+        "run": "printf '%s' \"$JETON\" | docker login ghcr.io --password-stdin",
+        "env": {"JETON": "${{ github.token }}", "AUSSI": "${{ secrets.GITHUB_TOKEN }}"},
+    }
+    document = publishing_workflow(step, permissions={"packages": "write", "id-token": "write"})
+    assert check_workflow("release.yml", document) == []
+
+
+def test_a_job_that_does_not_publish_may_use_a_secret() -> None:
+    step = {"run": "make notifier", "env": {"JETON": "${{ secrets.JETON }}"}}
+    document = publishing_workflow(step, permissions={"contents": "write"})
+    assert check_workflow("release.yml", document) == []
+
+
 def test_workflow_without_agent_may_use_secrets_on_pull_requests() -> None:
     step = {"run": "make deploy", "env": {"JETON": "${{ secrets.JETON }}"}}
     assert check_workflow("ci.yml", agent_workflow({"pull_request": None}, step)) == []

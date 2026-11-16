@@ -11,6 +11,9 @@ un vecteur d'attaque. Ce contrôle échoue dès que :
 - le job ``ci-ok``, seul contrôle exigé avant fusion, ne dépend pas de tous les autres ;
 - un agent de code s'exécute sur une entrée non fiable (issue, commentaire, merge
   request) avec un secret ou un droit d'écriture ;
+- un job qui publie (permission ``packages`` ou ``id-token`` en écriture, envoi sur
+  PyPI) reçoit un secret : il publie par l'identité OIDC du workflow ou par son
+  jeton éphémère, jamais par un jeton de longue durée ;
 - le conteneur de développement monte un identifiant de l'hôte ou reçoit un de ses jetons ;
 - un chemin protégé n'a pas de propriétaire dans ``.github/CODEOWNERS`` ;
 - un fichier compose publie un port ailleurs que sur la boucle locale, ou branche un
@@ -71,6 +74,13 @@ _AGENT_COMMANDS = re.compile(
     r"(?<![\w./-])(claude|codex|gemini|aider|cursor-agent|opencode|goose|amp)(?![\w./-])"
 )
 _SECRET_REFERENCE = re.compile(r"\bsecrets\s*[.\[]")
+# Le jeton éphémère du workflow, sous son nom de secret : il expire avec le job.
+_WORKFLOW_TOKEN = re.compile(
+    r"""\bsecrets\s*(?:\.\s*GITHUB_TOKEN|\[\s*['"]GITHUB_TOKEN['"]\s*\])"""
+)
+# Permissions d'un job qui publie : pousser une image, obtenir un jeton OIDC.
+PUBLISHING_SCOPES = frozenset({"packages", "id-token"})
+_PYPI_UPLOAD = re.compile(r"^pypa/gh-action-pypi-publish@", re.IGNORECASE)
 # Emplacements de l'hôte qui portent des identifiants.
 _CREDENTIAL_LOCATIONS = (
     ".ssh",
@@ -239,6 +249,7 @@ def check_workflow(path: str, workflow: object) -> list[Violation]:
             violations.extend(_step_violations(path, f"{where}, étape {index}", step))
     violations.extend(_gate_violations(path, _mapping(workflow.get("jobs"))))
     violations.extend(_agent_violations(path, workflow))
+    violations.extend(_publication_violations(path, workflow))
     return violations
 
 
@@ -285,6 +296,48 @@ def _agent_violations(path: str, workflow: Mapping[Any, Any]) -> Iterator[Violat
                 "agent-sur-entree-non-fiable",
                 f"un agent de code s'exécute avec {reason} sur une entrée non fiable "
                 f"({', '.join(untrusted)})",
+            )
+
+
+def _reads_secret(value: object) -> bool:
+    """Une valeur cite un secret, hors du jeton éphémère du workflow."""
+    text = _WORKFLOW_TOKEN.sub("", yaml.safe_dump(value))
+    return _SECRET_REFERENCE.search(text) is not None
+
+
+def _uploads_to_pypi_with_a_token(job: Mapping[str, Any]) -> tuple[bool, bool]:
+    """Le job envoie-t-il sur PyPI, et avec un mot de passe plutôt que par OIDC ?"""
+    uploads = token = False
+    for _, step in _steps(job):
+        uses = step.get("uses")
+        if isinstance(uses, str) and _PYPI_UPLOAD.search(uses.strip()):
+            uploads = True
+            token = token or "password" in _mapping(step.get("with"))
+    return uploads, token
+
+
+def _publication_violations(path: str, workflow: Mapping[Any, Any]) -> Iterator[Violation]:
+    """Un job qui publie ne reçoit aucun secret.
+
+    Un jeton de longue durée volé publie à la place du projet, sans limite de
+    temps : images et paquets se publient par l'identité OIDC du workflow, que
+    le registre vérifie à chaque fois, ou par son jeton éphémère.
+    """
+    shared = _reads_secret(workflow.get("env"))
+    for job_id, job in _mapping(workflow.get("jobs")).items():
+        job = _mapping(job)
+        permissions = _mapping(job.get("permissions"))
+        uploads, token = _uploads_to_pypi_with_a_token(job)
+        publishes = uploads or any(permissions.get(scope) == "write" for scope in PUBLISHING_SCOPES)
+        if not publishes:
+            continue
+        if token or shared or "secrets" in job or _reads_secret(dict(job)):
+            yield Violation(
+                path,
+                f"job {job_id}",
+                "publication-sans-secret",
+                "un job qui publie ne reçoit aucun secret ni mot de passe : il publie par "
+                "l'identité OIDC du workflow ou par son jeton éphémère (github.token)",
             )
 
 

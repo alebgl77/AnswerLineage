@@ -2,8 +2,14 @@ name: release
 
 # Publier est l'acte du mainteneur : il pose l'étiquette de version (v1.2.3).
 # Ce workflow ne tourne jamais sur une merge request et ne lit aucun secret : il
-# signe et atteste par l'identité OIDC du workflow, et pousse avec son jeton
-# éphémère.
+# publie sur PyPI, signe et atteste par l'identité OIDC du workflow, et pousse
+# avec son jeton éphémère.
+#
+# L'ordre : rien n'est publié tant que l'étiquette, les paquets et les notes ne
+# sont pas contrôlés (prepare). Puis l'image (image), les paquets (pypi), et
+# enfin la version GitHub (github-release), qui n'apparaît qu'une fois tout le
+# reste publié. Le bilan (report) dit dans tous les cas ce qui est publié et ce
+# qui ne l'est pas.
 on:
   push:
     tags: ["v*"]
@@ -25,11 +31,61 @@ env:
   UV_VERSION: "0.11.32"
 
 jobs:
+  prepare:
+    name: Vérifie l'étiquette, construit les paquets et les notes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      image-version: ${{ steps.tag.outputs.image-version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Les notes partent de l'étiquette précédente : tout l'historique, étiquettes comprises.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Vérifie que l'étiquette est la version déclarée des paquets
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 -m scripts.check_release tag "$TAG" --github-output "$GITHUB_OUTPUT"
+      - name: Construit les paquets de chaque composant
+        # Sans les sources de l'espace de travail : chaque paquet se construit
+        # comme il le serait depuis PyPI.
+        run: uv build --all-packages --no-sources --out-dir dist
+      - name: Contrôle leurs métadonnées
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 -m scripts.check_release dist dist --tag "$TAG"
+      - name: Rédige les notes de version, d'après les commits depuis la version précédente
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 -m scripts.release_notes "$TAG" | tee release-notes.md
+      - name: Garde les paquets avec l'exécution
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: paquets
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+      - name: Garde les notes avec l'exécution
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: notes
+          path: release-notes.md
+          if-no-files-found: error
+
   # Construit, inventorie et analyse avec les mêmes sous-commandes que le job
   # image de ci.yml ; une vulnérabilité haute ou critique sans exception
   # valable arrête la publication avant que l'image soit poussée.
-  publish:
+  image:
     name: Publie l'image, signée, avec son SBOM et sa provenance
+    needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -39,26 +95,22 @@ jobs:
       # Signe l'image et ses attestations avec des certificats Sigstore éphémères, puis les enregistre.
       id-token: write
       attestations: write
+    outputs:
+      reference: ${{ steps.push.outputs.reference }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Lit la version dans l'étiquette
+      - name: Nomme l'image
         id: version
         env:
-          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.prepare.outputs.image-version }}
         run: |
-          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)$ ]]; then
-            echo "Étiquette refusée : une version s'écrit v1.2.3 ou v1.2.3-rc.1."
-            exit 1
-          fi
-          version=${BASH_REMATCH[1]}
           name="$REGISTRY/${GITHUB_REPOSITORY,,}"
-          echo "Version $version, image $name:$version."
+          echo "Image $name:$VERSION."
           {
-            echo "version=$version"
             echo "name=$name"
-            echo "image=$name:$version"
+            echo "image=$name:$VERSION"
           } >>"$GITHUB_OUTPUT"
       - name: Vérifie les exceptions déclarées (motif, date de revue)
         run: python3 -m scripts.check_vulnerabilities exceptions
@@ -68,7 +120,7 @@ jobs:
         run: scripts/image.sh build
       - name: Inventorie ses composants (Syft, SBOM CycloneDX)
         env:
-          IMAGE_VERSION: ${{ steps.version.outputs.version }}
+          IMAGE_VERSION: ${{ needs.prepare.outputs.image-version }}
         run: scripts/image.sh sbom
       - name: Vérifie que l'analyse bloque une vulnérabilité critique connue
         run: scripts/image.sh selftest
@@ -77,7 +129,7 @@ jobs:
       - name: Garde le SBOM avec l'exécution
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: sbom-answerlineage-${{ steps.version.outputs.version }}
+          name: sbom
           path: build/image/sbom.cdx.json
           if-no-files-found: error
       - name: Pousse l'image analysée
@@ -89,13 +141,16 @@ jobs:
           printf '%s' "$TOKEN" | docker login "$REGISTRY" --username "$GITHUB_ACTOR" --password-stdin
           digest=$(scripts/image.sh push "$IMAGE")
           echo "Image poussée : ${IMAGE%:*}@$digest"
-          echo "digest=$digest" >>"$GITHUB_OUTPUT"
+          {
+            echo "digest=$digest"
+            echo "reference=${IMAGE%:*}@$digest"
+          } >>"$GITHUB_OUTPUT"
       # Signature sans clé, par l'empreinte : l'identité du certificat est ce
       # workflow à cette étiquette, et la signature entre au journal de
       # transparence public. La sous-commande la vérifie aussitôt publiée.
       - name: Signe l'image par son empreinte (cosign, sans clé)
         env:
-          SUBJECT: ${{ steps.version.outputs.name }}@${{ steps.push.outputs.digest }}
+          SUBJECT: ${{ steps.push.outputs.reference }}
         run: scripts/image.sh sign "$SUBJECT"
       # Les attestations lient le SBOM et la provenance à l'empreinte de l'image
       # et se rangent à côté d'elle dans le registre : qui tire l'image les retrouve.
@@ -119,37 +174,116 @@ jobs:
         if: ${{ always() }}
         run: docker logout "$REGISTRY"
 
-  packages:
-    name: Construit les paquets Python et atteste leur provenance
+  # Publication de confiance : PyPI reconnaît l'identité OIDC de ce workflow,
+  # dans l'environnement pypi, et n'accepte rien d'autre. Aucun jeton n'existe.
+  pypi:
+    name: Publie les paquets sur PyPI, avec leurs attestations
+    needs: [prepare, image]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment: pypi
     permissions:
-      contents: read
-      # Signe l'attestation de provenance avec un certificat Sigstore éphémère, puis l'enregistre.
+      # Obtient le jeton OIDC que PyPI échange contre un droit de publier de quelques minutes,
+      # et signe les attestations de provenance.
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Reprend les paquets contrôlés
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: ${{ env.UV_VERSION }}
-      - name: Construit les paquets de chaque composant
-        # Sans les sources de l'espace de travail : chaque paquet se construit
-        # comme il le serait depuis PyPI.
-        run: uv build --all-packages --no-sources --out-dir dist
+          name: paquets
+          path: dist
       - name: Atteste leur provenance (SLSA)
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
             dist/*.whl
             dist/*.tar.gz
-      - name: Garde les paquets avec l'exécution
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      # Chaque fichier part avec son attestation de publication (PEP 740),
+      # signée par la même identité et affichée par PyPI.
+      - name: Publie sur PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
-          name: paquets-${{ github.ref_name }}
-          path: |
-            dist/*.whl
-            dist/*.tar.gz
-          if-no-files-found: error
+          packages-dir: dist/
+
+  # La version GitHub n'apparaît qu'une fois l'image et les paquets publiés :
+  # créée en brouillon, elle reçoit ses fichiers, puis elle est publiée.
+  github-release:
+    name: Crée la version GitHub, ses notes et ses fichiers
+    needs: [prepare, image, pypi]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      # Crée la version et y joint ses fichiers, avec le jeton éphémère du workflow.
+      contents: write
+    steps:
+      - name: Reprend les paquets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: paquets
+          path: fichiers
+      - name: Reprend le SBOM
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sbom
+          path: sbom
+      - name: Reprend les notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: notes
+          path: notes
+      - name: Joint le SBOM et l'empreinte de chaque fichier
+        env:
+          VERSION: ${{ needs.prepare.outputs.image-version }}
+        run: |
+          mv sbom/sbom.cdx.json "fichiers/answerlineage-$VERSION.sbom.cdx.json"
+          (cd fichiers && sha256sum -- * >SHA256SUMS)
+          cat fichiers/SHA256SUMS
+      - name: Crée la version en brouillon, y joint ses fichiers, puis la publie
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.prepare.outputs.image-version }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          IMAGE: ${{ needs.image.outputs.reference }}
+        run: |
+          guide="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$TAG/docs/publication.md"
+          {
+            cat notes/release-notes.md
+            printf '\n## Image\n\n`%s`\n' "$IMAGE"
+            printf "\n## Vérifier\n\nLa signature de l'image, les attestations et les empreintes des fichiers se vérifient comme le dit [la documentation de publication](%s).\n" "$guide"
+          } >notes.md
+          # Un brouillon laissé par une tentative précédente est remplacé ; une version publiée, jamais.
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || true)" = "true" ]; then
+            gh release delete "$TAG" --yes
+          fi
+          flags=()
+          if [ "$PRERELEASE" = "true" ]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" --verify-tag --draft --title "AnswerLineage $VERSION" \
+            --notes-file notes.md "${flags[@]}" fichiers/*
+          gh release edit "$TAG" --draft=false
+
+  report:
+    name: Bilan de la publication
+    if: ${{ always() }}
+    needs: [prepare, image, pypi, github-release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dit ce qui est publié et ce qui ne l'est pas
+        env:
+          RESULT_PREPARE: ${{ needs.prepare.result }}
+          RESULT_IMAGE: ${{ needs.image.result }}
+          RESULT_PYPI: ${{ needs.pypi.result }}
+          RESULT_RELEASE: ${{ needs.github-release.result }}
+          IMAGE: ${{ needs.image.outputs.reference }}
+          TAG: ${{ github.ref_name }}
+        run: python3 -m scripts.check_release report

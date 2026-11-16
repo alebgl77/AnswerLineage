@@ -4,7 +4,7 @@ Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque me
 
 | Job | Ce qu'il vérifie | Commande locale |
 | --- | --- | --- |
-| `static` | Politique du dépôt, compatibilité de l'API et des schémas de facettes avec ceux publiés, format, lint (ruff), typage strict (mypy) | `make policy contract format-check lint typecheck` |
+| `static` | Politique du dépôt, compatibilité de l'API et des schémas de facettes avec ceux publiés, format, lint (ruff), typage strict (mypy) ; publication d'une version éprouvée sans rien publier : paquets de chaque composant et leurs métadonnées, étiquette fictive de la version déclarée, notes de version | `make policy contract format-check lint typecheck packages` |
 | `tests` | Tests et couverture de branches, sur la matrice Python 3.13 et 3.14, PostgreSQL 17 et 18 | `make test` |
 | `tests` | Porte de couverture : 85 % par composant, en branches et en lignes et branches | `make coverage-gate` |
 | `tests` | Porte de qualité du moteur d'impact : sur le [corpus de vérité](corpus.md#mesure-du-moteur-dimpact), un rappel au niveau table d'au moins 0,99 et aucune réponse hors d'atteinte ; un échec nomme les réponses manquées | `make measure` |
@@ -111,15 +111,16 @@ python3 -m scripts.check_vulnerabilities exceptions   # vérifie les exceptions 
 
 Le mainteneur publie une version en posant une étiquette `v1.2.3` (ou `v1.2.3-rc.1`). Le workflow `release` :
 
-1. construit l'image, produit son SBOM, joue le canari et l'analyse, comme le job `image` : une vulnérabilité haute ou critique sans exception valable arrête la publication avant que l'image soit poussée ;
-2. pousse l'image analysée dans le registre de conteneurs de GitHub, `ghcr.io/alebgl77/answerlineage:1.2.3` ;
-3. la signe sans clé par son empreinte (cosign, identité OIDC du workflow, journal de transparence public), puis vérifie la signature publiée avec l'identité exacte du workflow ;
-4. lui attache son SBOM et sa provenance (SLSA) : deux attestations de GitHub (`actions/attest`) liées à l'empreinte de l'image et rangées à côté d'elle dans le registre ;
-5. construit les paquets Python de chaque composant et atteste leur provenance ; ils sont gardés avec l'exécution du workflow.
+1. vérifie que l'étiquette est la version déclarée par chaque composant publiable, construit leurs paquets, contrôle leurs métadonnées et rédige les notes de version, avant de rien publier ;
+2. construit l'image, produit son SBOM, joue le canari et l'analyse, comme le job `image` : une vulnérabilité haute ou critique sans exception valable arrête la publication avant que l'image soit poussée ;
+3. pousse l'image analysée dans le registre de conteneurs de GitHub, `ghcr.io/alebgl77/answerlineage:1.2.3`, la signe sans clé par son empreinte (cosign, identité OIDC du workflow, journal de transparence public), vérifie la signature publiée, et lui attache son SBOM et sa provenance (SLSA) ;
+4. atteste la provenance des paquets et les publie sur PyPI par publication de confiance, avec leurs attestations de publication ;
+5. crée la version GitHub, avec ses notes, les paquets, le SBOM et l'empreinte de chaque fichier ;
+6. dit dans tous les cas, dans le résumé de l'exécution, ce qui est publié et ce qui ne l'est pas.
 
-Il ne tourne jamais sur une merge request et ne lit aucun secret : il se sert du jeton du workflow, avec les seules permissions de chaque job (`packages: write` pour pousser, `id-token: write` et `attestations: write` pour signer et enregistrer les attestations).
+Il ne tourne jamais sur une merge request et ne lit aucun secret : il publie par l'identité OIDC du workflow ou par son jeton éphémère, avec les seules permissions de chaque job.
 
-Vérifier une image ou un paquet publiés, lire le SBOM d'une image, et savoir ce que la vérification prouve : voir [Publication](publication.md).
+Comment sort une version, comment se reprend une publication interrompue, ce que le mainteneur règle une fois, et comment vérifier une image ou un paquet publiés : voir [Publication](publication.md).
 
 ## Seuil de couverture
 
@@ -140,6 +141,7 @@ Le contrôle `make policy` (`scripts/check_policy.py`) échoue dès que :
 - un workflow ne déclare pas de permissions, ou accorde une écriture à tout le workflow ;
 - un workflow se déclenche sur `pull_request_target` ;
 - `actions/checkout` conserve le jeton du pipeline ;
+- un job qui publie (permission `packages` ou `id-token` en écriture, envoi sur PyPI) reçoit un secret ou un mot de passe : il publie par l'identité OIDC du workflow ou par son jeton éphémère, jamais par un jeton de longue durée ;
 - un fichier compose publie un port ailleurs que sur la boucle locale, branche un service sur le réseau de l'hôte (directement ou par un réseau externe), tire une image sans empreinte, ou inclut ou étend un fichier absent du dépôt. Tout fichier YAML qui décrit des services compose est contrôlé, quel que soit son nom, fichiers de surcharge compris ;
 - le job `ci-ok` ne dépend pas de tous les autres jobs.
 
@@ -175,6 +177,7 @@ Ces réglages ne se versionnent pas. Ils reviennent à un administrateur du dép
 - ne pas activer la configuration par défaut de l'analyse de code, qui refuserait les résultats du job `codeql` ;
 - installer l'application Renovate, sans quoi `renovate.json` reste sans effet ;
 - protéger les étiquettes `v*`, pour que seul un mainteneur publie une version ;
-- après la première publication, rendre public le paquet `answerlineage` du registre de conteneurs (Packages, Package settings), pour que l'image et son SBOM se tirent sans authentification.
+- après la première publication, rendre public le paquet `answerlineage` du registre de conteneurs (Packages, Package settings), pour que l'image et son SBOM se tirent sans authentification ;
+- réserver les noms de distribution, créer l'environnement `pypi` et déclarer les éditeurs de confiance de PyPI : voir [Ce que le mainteneur règle une fois](publication.md#ce-que-le-mainteneur-règle-une-fois).
 
 `ci-ok` est le seul contrôle à exiger : il échoue dès qu'un autre job échoue, est annulé ou est sauté, y compris une case de la matrice.

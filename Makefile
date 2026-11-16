@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check policy contract openapi format format-check lint typecheck test coverage-gate measure abuse bench secrets image ui e2e demo
+.PHONY: help setup check policy contract openapi format format-check lint typecheck packages test coverage-gate measure abuse bench secrets image ui e2e demo
 
 help: ## Liste les cibles
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -8,7 +8,7 @@ setup: ## Installe l'environnement (uv) et les hooks pre-commit
 	uv sync --all-packages --locked
 	uv run pre-commit install
 
-check: policy contract format-check lint typecheck test coverage-gate ## Porte de toute contribution : politique, contrat de l'API, format, lint, typage strict, tests, couverture
+check: policy contract format-check lint typecheck packages test coverage-gate ## Porte de toute contribution : politique, contrat de l'API, format, lint, typage strict, paquets, tests, couverture
 
 policy: ## Politique du dépôt (actions et images épinglées, permissions minimales, agents de code)
 	uv run python -m scripts.check_policy
@@ -32,6 +32,14 @@ lint:
 
 typecheck:
 	uv run mypy
+
+packages: ## Construit les paquets publiables et éprouve la publication d'une version, sans rien publier
+	rm -rf build/dist
+	uv build --all-packages --no-sources --out-dir build/dist
+	uv run python -m scripts.check_release rehearse build/dist
+	uv run python -m scripts.release_notes > build/release-notes.md
+	@echo "Notes de la prochaine version (build/release-notes.md) :"
+	@cat build/release-notes.md
 
 test: ## Lance les tests avec la couverture de branches
 	uv run pytest $(PYTEST_ARGS) --cov --cov-report=term-missing --cov-report=json

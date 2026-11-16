@@ -26,7 +26,7 @@ Le dépôt fournit aussi un conteneur de développement (`.devcontainer/`), sans
 make check
 ```
 
-Toute contribution passe `make check` : politique du dépôt, compatibilité de l'API, format, lint, typage strict, tests et couverture. Le pipeline rejoue la même porte sur Python 3.13 et 3.14, avec PostgreSQL 17 et 18. [`docs/ci.md`](docs/ci.md) décrit chaque contrôle.
+Toute contribution passe `make check` : politique du dépôt, compatibilité de l'API, format, lint, typage strict, paquets publiables, tests et couverture. Le pipeline rejoue la même porte sur Python 3.13 et 3.14, avec PostgreSQL 17 et 18. [`docs/ci.md`](docs/ci.md) décrit chaque contrôle.
 
 | Commande | Usage |
 | --- | --- |
@@ -39,6 +39,7 @@ Toute contribution passe `make check` : politique du dépôt, compatibilité de 
 | `make e2e` | Tests de l'explorateur dans Chromium, après `make ui` et `uv run playwright install chromium` |
 | `make abuse` | Rejoue le corpus d'abus seul : chaque attaque doit être bloquée, un échec nomme le cas |
 | `make image` | Construit l'image, produit son SBOM et l'analyse : une vulnérabilité haute ou critique bloque |
+| `make packages` | Construit les paquets publiables et éprouve la publication d'une version, sans rien publier ([Publication](docs/publication.md)) |
 
 ## Ce qui est attendu d'un changement
 
