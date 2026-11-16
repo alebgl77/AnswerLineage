@@ -12,6 +12,7 @@ import gzip
 import json
 import logging
 import socket
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -25,6 +26,7 @@ import httpx
 import pytest
 
 from answerlineage_proxy import cli
+from answerlineage_proxy import outbox as outbox_module
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import ProxyConfigurationError, ProxySettings
 from answerlineage_proxy.fingerprint import FingerprintKey
@@ -731,15 +733,29 @@ def test_an_environment_bound_must_be_a_number(name: str, value: str) -> None:
         cli.outbox_settings_from_args(UPSTREAM, {cli.ENV_API_URL: API, name: value})
 
 
-async def test_an_event_evicted_while_it_is_serialized_is_counted_once() -> None:
+async def test_an_event_evicted_while_it_is_serialized_is_counted_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # La sérialisation des deux premiers est retenue dans son fil, le temps que deux
+    # autres arrivent : sans cette retenue, le test dépendrait de l'ordonnanceur.
+    started, release = threading.Event(), threading.Event()
+    encode = outbox_module._encode
+
+    def held(events: Any) -> Any:
+        started.set()
+        release.wait(timeout=10)
+        return encode(events)
+
+    monkeypatch.setattr(outbox_module, "_encode", held)
     async with outbox(start=False, box_settings=settings(max_events=2)) as (box, api, outcomes):
         box.emit(event(0))
         box.emit(event(1))
         await box.start()
-        # La sérialisation des deux premiers a commencé, dans son fil ; deux autres arrivent.
-        await asyncio.sleep(0)
+        await until(started.is_set)
         box.emit(event(2))
         box.emit(event(3))
+        monkeypatch.setattr(outbox_module, "_encode", encode)
+        release.set()
         await until(lambda: len(outcomes.seen) == 4)
     assert outcomes.lost == [receipt(event(0)), receipt(event(1))]
     assert times(api.delivered) == [receipt(event(2)), receipt(event(3))]
