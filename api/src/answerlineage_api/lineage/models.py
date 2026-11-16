@@ -82,6 +82,19 @@ class Sources(BaseModel):
     agents: list[AgentName]
     tools: list[ToolUse]
     datasets: list[DatasetSource]
+    period: Window = Field(
+        description=(
+            "Période du run de la réponse : de son premier instant connu à son dernier, à la"
+            " seconde, réponse comprise. C'est sur elle que se mesure la couverture."
+        )
+    )
+    coverage: Coverage = Field(
+        description=(
+            "Couverture du lignage sur cette période, par les émetteurs qui ont vu le run de la"
+            " réponse ou l'un de ses runs enfants : une lecture dont l'appel n'a pas été capté"
+            " manque aux sources."
+        )
+    )
     truncated: bool = Field(
         description=(
             "Vrai quand l'arbre des runs ou ses lectures dépassent leur borne :"
@@ -166,7 +179,7 @@ class DatasetName(BaseModel):
 
 
 class Window(BaseModel):
-    """Fenêtre de l'incident : début inclus, fin exclue."""
+    """Fenêtre de temps : début inclus, fin exclue."""
 
     start: AwareDatetime = Field(serialization_alias="from")
     end: AwareDatetime = Field(serialization_alias="to")

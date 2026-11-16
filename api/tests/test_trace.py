@@ -37,6 +37,17 @@ RATES = DatasetRef("bigquery", "finance.ref.taux_change", version="2026-11-02")
 ORDERS = DatasetRef("bigquery", "ventes.suivi.commandes")
 ACCOUNTS = DatasetRef("postgres://crm:5432", "crm.public.comptes")
 FINGERPRINT = "sha256:" + "ab" * 32
+# Aucun émetteur n'a publié de relevé : la couverture de la remontée n'est pas mesurée.
+NOT_MEASURED: dict[str, Any] = {
+    "status": "unknown",
+    "rate": None,
+    "calls_seen": 0,
+    "events_in_graph": 0,
+    "events_lost": 0,
+    "uninspected": 0,
+    "holes": [],
+    "truncated": False,
+}
 
 
 @pytest.fixture
@@ -201,6 +212,9 @@ async def test_sources_of_an_answer_are_its_datasets_versions_tools_and_agents(
                 "last_read_at": "2026-11-02T09:00:20Z",
             },
         ],
+        # De la première lecture à la seconde de la réponse, comprise.
+        "period": {"from": "2026-11-02T09:00:05Z", "to": "2026-11-02T09:00:31Z"},
+        "coverage": NOT_MEASURED,
         "truncated": False,
     }
 
@@ -318,6 +332,8 @@ async def test_an_answer_without_captured_read_has_no_source(
         "agents": [],
         "tools": [],
         "datasets": [],
+        "period": {"from": "2026-11-02T09:00:30Z", "to": "2026-11-02T09:00:31Z"},
+        "coverage": NOT_MEASURED,
         "truncated": False,
     }
 

@@ -2,17 +2,22 @@
 
 Les sources d'une réponse sont les lectures de son run et de tous ses runs
 enfants : appels d'outils, sous-agents. Le run parent n'en fait pas partie.
+
+La remontée dit aussi ce qu'elle n'a pas pu voir : la couverture du lignage sur
+la période du run, par les émetteurs qui l'ont vu (``coverage.py``). Une lecture
+dont l'appel n'a pas été capté manque aux sources.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import Row, text
 
+from answerlineage_api.lineage import coverage
 from answerlineage_api.lineage.models import (
     AgentName,
     AnswerSummary,
@@ -20,6 +25,7 @@ from answerlineage_api.lineage.models import (
     Precision,
     Sources,
     ToolUse,
+    Window,
 )
 from answerlineage_api.lineage.paging import ANSWER_DIGEST, digest
 from answerlineage_api.lineage.reading import Reader, known
@@ -79,7 +85,8 @@ _RUN_TREE = text(
 _ACTORS = text(
     """
     SELECT g.namespace AS agent_namespace, g.name AS agent_name,
-           t.server AS tool_server, t.name AS tool_name
+           t.server AS tool_server, t.name AS tool_name,
+           r.started_at, r.ended_at, r.state_time
     FROM run r
     LEFT JOIN agent g ON g.id = r.agent_id
     LEFT JOIN tool t ON t.id = r.tool_id
@@ -199,12 +206,35 @@ def _datasets(rows: Sequence[Row[Any]]) -> list[DatasetSource]:
     ]
 
 
+def _period(answer: AnswerSummary, runs: Sequence[Row[Any]], reads: Sequence[Row[Any]]) -> Window:
+    """La période du run : de son premier instant connu à son dernier, à la seconde.
+
+    Elle réunit la réponse, les heures des runs de l'arbre et l'intervalle de
+    leurs lectures. La fin est exclue : la seconde du dernier instant est comprise.
+    """
+    moments: list[datetime] = [answer.produced_at]
+    for row in runs:
+        moments.extend(
+            moment
+            for moment in (row.started_at, row.ended_at, row.state_time)
+            if moment is not None
+        )
+    for row in reads:
+        moments.extend((row.event_time, row.last_event_time))
+    return Window(
+        start=min(moments).replace(microsecond=0),
+        end=max(moments).replace(microsecond=0) + timedelta(seconds=1),
+    )
+
+
 async def sources(
-    reader: Reader, answer: AnswerSummary, known_at: datetime | None = None
+    reader: Reader, answer: AnswerSummary, known_at: datetime | None = None, *, now: datetime
 ) -> Sources:
     """Jeux de données, versions, outils et agents intervenus dans la réponse.
 
-    Avec ``known_at``, ce que le graphe en connaissait à cette date.
+    Avec ``known_at``, ce que le graphe en connaissait à cette date. Le résultat
+    porte la couverture du lignage sur la période du run, par les émetteurs qui
+    l'ont vu. ``now`` borne la partie de la période qui peut être mesurée.
     """
     children = await reader.fetch(
         _RUN_TREE, {"root": answer.run_id, "known_at": known_at}, limit=MAX_RUNS - 1
@@ -221,6 +251,7 @@ async def sources(
             tool = (row.tool_server, row.tool_name)
             calls[tool] = calls.get(tool, 0) + 1
     reads = await reader.fetch(_READS, {"run_ids": run_ids, "known_at": known_at}, limit=MAX_READS)
+    period = _period(answer, actors.rows, reads.rows)
 
     return Sources(
         answer=answer,
@@ -230,6 +261,10 @@ async def sources(
             for (server, name), count in sorted(calls.items())
         ],
         datasets=_datasets(reads.rows),
+        period=period,
+        coverage=await coverage.over_runs(
+            reader, run_ids, start=period.start, end=period.end, now=now
+        ),
         truncated=children.truncated or actors.truncated or reads.truncated,
         known_at=known_at,
     )

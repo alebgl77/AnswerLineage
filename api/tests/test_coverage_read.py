@@ -18,7 +18,16 @@ from answerlineage_api.ingest.models import validate_event
 from answerlineage_api.ingest.store import AcceptedEvent, event_identifier, store_events
 from answerlineage_api.lineage import coverage
 from answerlineage_api.lineage.coverage import Report
-from answerlineage_api.store.graph import DatasetRef, Read, RunRecord, ToolRef, record_run
+from answerlineage_api.lineage.trace import answer_key
+from answerlineage_api.store.graph import (
+    AgentRef,
+    Answer,
+    DatasetRef,
+    Read,
+    RunRecord,
+    ToolRef,
+    record_run,
+)
 from api.tests.events import run_event
 
 T0 = datetime(2026, 11, 3, 6, 0, tzinfo=UTC)
@@ -447,3 +456,124 @@ async def test_an_impact_partly_covered_says_partial_and_what_is_missing(
     measure = await incident(client, 10, 20)
     assert measure["status"] == "unknown"
     assert [hole[:2] for hole in holes(measure)] == [(CRM, "silence"), (WAREHOUSE, "silence")]
+
+
+# La couverture dans la remontée d'une réponse.
+
+FINGERPRINT = "sha256:" + "ab" * 32
+
+
+async def answered(engine: AsyncEngine, *calls: tuple[str, float]) -> str:
+    """Une réponse rendue à la minute 1, et ses appels d'outils : l'émetteur et la minute de chacun.
+
+    Le graphe et l'archive des événements s'accordent : chaque appel a son run,
+    enfant du run de la réponse, et son événement d'appel d'outil.
+    """
+    run_id = uuid4()
+    records = [
+        RunRecord(
+            run_id=run_id,
+            kind="agent",
+            state="COMPLETE",
+            event_time=minutes(1),
+            agent=AgentRef("agent://ventes", "assistant-commercial"),
+            answers=(Answer(FINGERPRINT),),
+        )
+    ]
+    events = []
+    for rank, (emitter, at) in enumerate(calls):
+        call = uuid4()
+        records.append(
+            RunRecord(
+                run_id=call,
+                kind="tool",
+                state="COMPLETE",
+                event_time=minutes(at),
+                tool=ToolRef(emitter.removeprefix("mcp://"), "outil"),
+                parent_run_id=run_id,
+                reads=(Read(RATES),),
+            )
+        )
+        event = call_event(emitter, minutes(at), rank)
+        event["run"]["runId"] = str(call)
+        events.append(event)
+    async with engine.begin() as conn:
+        for record in records:
+            await record_run(conn, record)
+    await receive(engine, events)
+    return answer_key(run_id, FINGERPRINT)
+
+
+async def traced(client: httpx.AsyncClient, answer_id: str) -> dict[str, Any]:
+    response = await client.get(f"/api/v1/answers/{answer_id}/sources")
+    assert response.status_code == 200, response.text
+    body: dict[str, Any] = response.json()
+    return body
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_the_trace_of_an_answer_gives_the_period_of_its_run_and_its_coverage(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    answer_id = await answered(engine, (WAREHOUSE, 0.5))
+    await publish(client, WAREHOUSE, 0, 2, seen=1)
+
+    found = await traced(client, answer_id)
+    # Du premier instant de son arbre de runs à la seconde de la réponse, comprise.
+    assert found["period"] == {"from": "2026-11-03T06:00:30Z", "to": "2026-11-03T06:01:01Z"}
+    assert found["coverage"] == {
+        "status": "measured",
+        "rate": 1.0,
+        "calls_seen": 1,
+        "events_in_graph": 1,
+        "events_lost": 0,
+        "uninspected": 0,
+        "holes": [],
+        "truncated": False,
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_the_trace_counts_only_the_emitters_that_saw_its_runs(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alone = await answered(engine, (WAREHOUSE, 0.5))
+    both = await answered(engine, (CRM, 0.2), (WAREHOUSE, 0.5))
+    await publish(client, WAREHOUSE, 0, 2, seen=2)
+    # Le CRM se tait de 06:00:36 à 06:05 : un trou pour qui l'a appelé, et pour lui seul.
+    await publish(client, CRM, 0, 0.6, seen=1)
+    await publish(client, CRM, 5, 6)
+
+    measure = (await traced(client, alone))["coverage"]
+    assert (measure["status"], measure["rate"], measure["holes"]) == ("measured", 1.0, [])
+
+    found = await traced(client, both)
+    assert found["period"] == {"from": "2026-11-03T06:00:12Z", "to": "2026-11-03T06:01:01Z"}
+    measure = found["coverage"]
+    assert (measure["status"], measure["rate"], measure["calls_seen"]) == ("partial", 1.0, 3)
+    assert holes(measure) == [
+        (CRM, "silence", "2026-11-03T06:00:36Z", "2026-11-03T06:01:01Z", None)
+    ]
+
+    # Plus d'émetteurs que la borne : la mesure n'est jamais donnée pour complète.
+    monkeypatch.setattr(coverage, "MAX_EMITTERS", 1)
+    measure = (await traced(client, alone))["coverage"]
+    assert (measure["status"], measure["truncated"]) == ("measured", False)
+    measure = (await traced(client, both))["coverage"]
+    assert (measure["status"], measure["truncated"]) == ("partial", True)
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_a_trace_without_report_from_the_emitters_of_its_runs_is_not_measured(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    answer_id = await answered(engine, (WAREHOUSE, 0.5))
+    assert (await traced(client, answer_id))["coverage"]["status"] == "unknown"
+
+    # Les relevés d'un émetteur qui n'a rien vu de ce run n'y comptent pas.
+    await publish(client, CRM, 0, 2)
+    measure = (await traced(client, answer_id))["coverage"]
+    assert (measure["status"], measure["rate"], measure["holes"]) == ("unknown", None, [])

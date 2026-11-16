@@ -127,12 +127,15 @@ async def find_answers(
 async def answer_sources(
     request: Request, answer_id: AnswerId, known_at: KnownAt = None
 ) -> Sources | JSONResponse:
-    """Jeux de données et versions lus, outils appelés et agents intervenus, sans contenu."""
+    """Jeux de données et versions lus, outils appelés et agents intervenus, sans contenu.
+
+    Avec la couverture du lignage sur la période du run, et ses trous connus.
+    """
     async with reading(request) as reader:
         answer = await trace.find_answer(reader, answer_id, known_at)
         if answer is None:
             return refused(404, "unknown_answer")
-        return await trace.sources(reader, answer, known_at)
+        return await trace.sources(reader, answer, known_at, now=datetime.now(UTC))
 
 
 GraphLimit = Annotated[

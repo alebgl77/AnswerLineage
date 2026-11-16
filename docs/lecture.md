@@ -5,7 +5,7 @@ L'API de lecture interroge le graphe de lignage. Elle est versionnée sous `/api
 | Route | Réponse |
 | --- | --- |
 | `GET /api/v1/answers?channel=…&message_ref=…` | Les réponses d'agents diffusées par un message |
-| `GET /api/v1/answers/{id}/sources` | Les sources d'une réponse : jeux de données, versions, outils, agents |
+| `GET /api/v1/answers/{id}/sources` | Les sources d'une réponse : jeux de données, versions, outils, agents, et la couverture du lignage sur la période de son run |
 | `GET /api/v1/impact?namespace=…&name=…&from=…&to=…` | Les réponses et les destinataires touchés par un jeu de données faux pendant une fenêtre |
 | `GET /api/v1/graph` | Le graphe en cinq colonnes des réponses les plus récentes, ou d'une réponse |
 | `GET /api/v1/datasets` | Les jeux de données connus du graphe |
@@ -64,11 +64,13 @@ curl http://127.0.0.1:8000/api/v1/answers/01a1c9e63a187c5cb8b5fce292591000424d79
     { "namespace": "postgres://crm:5432", "name": "crm.public.comptes", "…": "…" },
     { "namespace": "postgres://crm:5432", "name": "crm.public.opportunites", "…": "…" }
   ],
+  "period": { "from": "2026-11-11T09:17:51Z", "to": "2026-11-11T09:18:37Z" },
+  "coverage": { "status": "measured", "rate": 1.0, "holes": [], "…": "…" },
   "truncated": false
 }
 ```
 
-Ces exemples viennent de l'[entreprise synthétique](corpus.md) fournie avec le dépôt, avec sa graine par défaut.
+Ces exemples viennent de l'[entreprise synthétique](corpus.md) fournie avec le dépôt, avec sa graine par défaut, chargée avec ses relevés de couverture.
 
 ### Ce qui compte comme source
 
@@ -80,6 +82,17 @@ Un jeu de données lu plusieurs fois n'apparaît qu'une fois :
 - `precision` garde la lecture la moins précise. Un jeu lu en entier une seule fois est une source en entier : `precision` vaut `table` et `columns` est vide ;
 - `columns` réunit les colonnes lues quand toutes les lectures les donnent ;
 - `first_read_at` et `last_read_at` sont la première et la dernière heure d'événement de ces lectures.
+
+### Ce que la remontée peut manquer
+
+Une lecture dont l'appel n'a pas été capté n'apparaît pas dans les sources. La remontée dit donc sa [couverture du lignage](#couverture-du-lignage), sous la même forme et du même calcul que la propagation :
+
+| Champ | Contenu |
+| --- | --- |
+| `period` | La période du run de la réponse : de son premier instant connu à son dernier, à la seconde. Elle réunit les heures de son run et de ses runs enfants, de leurs lectures, et celle de la réponse ; la fin est exclue, la dernière seconde est donc comprise |
+| `coverage` | La couverture sur cette période, par les émetteurs qui ont vu le run ou l'un de ses runs enfants : son état, son taux, les appels vus et les trous connus qui recoupent la période |
+
+Un émetteur a vu le run quand il a émis l'un de ses événements. Les relevés des autres n'y comptent pas : le silence d'un serveur que la réponse n'a pas appelé ne la concerne pas. Quand aucun des émetteurs qui l'ont vue n'a publié de relevé, la couverture n'est pas mesurée (`unknown`).
 
 ### Identifiant d'une réponse
 
@@ -208,7 +221,7 @@ Pour chaque fenêtre d'un relevé, on compte les événements d'appel d'outil de
 | `partial` | Des relevés ne couvrent qu'une part de la période : les trous `silence` et `before_first_report` disent laquelle manque |
 | `unknown` | Aucun relevé ne recoupe la période : la couverture n'est pas mesurée. Le résultat peut ignorer des réponses dont l'appel n'a pas été capté |
 
-Une période sans relevé n'est jamais présentée comme couverte. La partie d'une période qui n'est pas encore passée n'est pas mesurable : elle n'est ni couverte ni un trou. Pour le résultat d'impact, les émetteurs pris en compte sont ceux qui ont publié un relevé commençant avant la fin de la fenêtre : un émetteur apparu après l'incident n'y compte pas, un émetteur muet pendant l'incident le rend partiel.
+Une période sans relevé n'est jamais présentée comme couverte. La partie d'une période qui n'est pas encore passée n'est pas mesurable : elle n'est ni couverte ni un trou. Pour le résultat d'impact, les émetteurs pris en compte sont ceux qui ont publié un relevé commençant avant la fin de la fenêtre : un émetteur apparu après l'incident n'y compte pas, un émetteur muet pendant l'incident le rend partiel. Pour la remontée d'une réponse, ce sont, parmi eux, ceux qui ont vu son run ([ce que la remontée peut manquer](#ce-que-la-remontée-peut-manquer)).
 
 ### Lire un trou
 
@@ -232,7 +245,7 @@ Une réponse qui s'appuie sur une lecture faite pendant un trou peut manquer au 
 | --- | --- |
 | `last_report_at` | Réception du dernier relevé qui a changé quelque chose |
 | `muted_since` | Quand le [contrôle des émetteurs muets](workers.md#émetteurs-muets) l'a signalé : l'heure de son dernier relevé. Nul dès qu'il republie |
-| `coverage` | Sa couverture sur la période, sous la même forme que dans le résultat d'impact |
+| `coverage` | Sa couverture sur la période, sous la même forme que dans le résultat d'impact et dans les sources d'une réponse |
 
 | Paramètre | Rôle | Défaut |
 | --- | --- | --- |
@@ -324,7 +337,7 @@ Toute requête porte une borne sur les lignes qu'elle lit. Un dépassement se di
 | Graphe en cinq colonnes | 200 réponses par page ; pour leurs chaînes, 20 000 runs, 50 000 couples run et jeu de données lu, 50 000 liens de diffusion |
 | Propagation | 20 000 lectures du jeu de données dans la fenêtre, 20 000 runs parents, 100 000 réponses et 200 000 liens de diffusion comptés |
 | Jeux de données connus | 500 par page |
-| Couverture | 1 000 émetteurs pour un résultat d'impact, 500 par page ; 50 000 relevés lus ; 1 000 trous rendus ; dans chaque fenêtre, les événements comptés au plus jusqu'aux appels vus |
+| Couverture | 1 000 émetteurs pour un résultat d'impact ou une remontée, 500 par page ; 50 000 relevés lus ; 1 000 trous rendus ; dans chaque fenêtre, les événements comptés au plus jusqu'aux appels vus |
 
 Une couverture tronquée (`coverage.truncated`) n'est jamais donnée pour `measured` : ses trous peuvent être incomplets. Réduire la période la rend complète.
 
@@ -349,6 +362,7 @@ Les réponses vont des plus récentes aux plus anciennes. Plusieurs réponses pe
 - La propagation s'arrête au niveau table : elle renvoie tout lecteur de la fenêtre, y compris ceux qui n'ont lu que des colonnes, des lignes ou une version saines.
 - Elle ne suit pas encore ce qu'un run touché a écrit : une réponse fondée sur une note ou une table dérivée de la donnée fausse n'est pas renvoyée.
 - La couverture du lignage ne voit que ce que voient les émetteurs qui publient des relevés : un appel qui ne passe par aucun d'eux n'est compté nulle part. Elle compte les appels d'outils, pas les runs d'agents.
+- La couverture d'une remontée ne regarde que les émetteurs qui ont vu le run : si un émetteur a perdu le seul événement de ce run qu'il ait porté, rien ne le relie à la réponse, et son trou n'apparaît pas dans sa couverture. La couverture de chaque émetteur sur la période (`GET /api/v1/coverage`) le montre.
 - Un émetteur retiré pour de bon reste connu : rien ne permet encore de le déclarer retiré, et son silence rend partielle la couverture de toute période qui suit son dernier relevé.
 - Les relevés de couverture et les événements bruts sont purgés au-delà de leur [conservation](workers.md#partitions-mensuelles), 13 mois par défaut : la couverture d'une période plus ancienne n'est plus mesurée (`unknown`), alors que le graphe, lui, garde ses réponses.
 - Sur un très grand graphe, une vue d'ensemble demandée à une date lointaine parcourt les réponses plus récentes pour les écarter : elle peut dépasser le délai maximal (`503`).

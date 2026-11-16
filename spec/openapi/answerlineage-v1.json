@@ -1254,6 +1254,10 @@
           "answer": {
             "$ref": "#/components/schemas/AnswerSummary"
           },
+          "coverage": {
+            "$ref": "#/components/schemas/Coverage",
+            "description": "Couverture du lignage sur cette période, par les émetteurs qui ont vu le run de la réponse ou l'un de ses runs enfants : une lecture dont l'appel n'a pas été capté manque aux sources."
+          },
           "datasets": {
             "items": {
               "$ref": "#/components/schemas/DatasetSource"
@@ -1274,6 +1278,10 @@
             "description": "Date à laquelle le graphe est lu, telle que demandée : ce qui a été enregistré après en est exclu. Absente quand la lecture porte sur le graphe tel qu'il est.",
             "title": "Known At"
           },
+          "period": {
+            "$ref": "#/components/schemas/Window",
+            "description": "Période du run de la réponse : de son premier instant connu à son dernier, à la seconde, réponse comprise. C'est sur elle que se mesure la couverture."
+          },
           "tools": {
             "items": {
               "$ref": "#/components/schemas/ToolUse"
@@ -1292,6 +1300,8 @@
           "agents",
           "tools",
           "datasets",
+          "period",
+          "coverage",
           "truncated"
         ],
         "title": "Sources",
@@ -1346,7 +1356,7 @@
         "type": "object"
       },
       "Window": {
-        "description": "Fenêtre de l'incident : début inclus, fin exclue.",
+        "description": "Fenêtre de temps : début inclus, fin exclue.",
         "properties": {
           "from": {
             "format": "date-time",
@@ -1482,7 +1492,7 @@
     },
     "/api/v1/answers/{answer_id}/sources": {
       "get": {
-        "description": "Jeux de données et versions lus, outils appelés et agents intervenus, sans contenu.",
+        "description": "Jeux de données et versions lus, outils appelés et agents intervenus, sans contenu.\n\nAvec la couverture du lignage sur la période du run, et ses trous connus.",
         "operationId": "answer_sources_api_v1_answers__answer_id__sources_get",
         "parameters": [
           {

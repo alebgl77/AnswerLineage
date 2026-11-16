@@ -22,6 +22,11 @@ Une période sans relevé n'est jamais présentée comme couverte : la mesure es
 n'en couvrent qu'une part, « unknown » quand aucun ne la touche. La partie de
 la période qui n'est pas encore passée n'est pas mesurable : elle n'est ni
 couverte ni un trou. Un relevé qui déborde de la période compte en entier.
+
+Chaque analyse dit sa couverture, du même calcul : la propagation d'un incident
+sur sa fenêtre, par tous les émetteurs connus (``over_period``) ; la remontée
+d'une réponse sur la période de son run, par les émetteurs qui l'ont vu
+(``over_runs``).
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import text
 
@@ -41,7 +47,7 @@ from answerlineage_api.lineage.models import (
     HoleKind,
     Window,
 )
-from answerlineage_api.lineage.reading import Reader
+from answerlineage_api.lineage.reading import Bounded, Reader
 
 # Émetteurs pris en compte pour une période, relevés lus, trous rendus.
 MAX_EMITTERS = 1_000
@@ -63,6 +69,19 @@ _KNOWN_BY = text(
     WHERE EXISTS (
         SELECT 1 FROM coverage_report r WHERE r.emitter = e.emitter AND r.window_start < :end
     )
+    ORDER BY e.emitter
+    LIMIT :limit
+    """
+)
+
+# Parmi ceux-là, les émetteurs qui ont vu des runs : ils ont émis un de leurs événements.
+_SEEN_BY = text(
+    """
+    SELECT e.emitter, e.last_report_at, e.silent_since FROM coverage_emitter e
+    WHERE e.emitter IN (SELECT v.emitter FROM event_raw v WHERE v.run_id = ANY(:run_ids))
+      AND EXISTS (
+        SELECT 1 FROM coverage_report r WHERE r.emitter = e.emitter AND r.window_start < :end
+      )
     ORDER BY e.emitter
     LIMIT :limit
     """
@@ -290,6 +309,25 @@ async def by_emitter(
 async def over_period(reader: Reader, *, start: datetime, end: datetime, now: datetime) -> Coverage:
     """La couverture de tous les émetteurs connus avant la fin de la période, réunis."""
     page = await reader.fetch(_KNOWN_BY, {"end": end}, limit=MAX_EMITTERS)
+    return await _combined(reader, page, start=start, end=end, now=now)
+
+
+async def over_runs(
+    reader: Reader, run_ids: Sequence[UUID], *, start: datetime, end: datetime, now: datetime
+) -> Coverage:
+    """La couverture des seuls émetteurs qui ont vu ces runs, connus avant la fin de la période.
+
+    Un émetteur a vu un run quand il a émis l'un de ses événements. Les autres
+    n'y comptent pas, même muets pendant la période.
+    """
+    page = await reader.fetch(_SEEN_BY, {"end": end, "run_ids": list(run_ids)}, limit=MAX_EMITTERS)
+    return await _combined(reader, page, start=start, end=end, now=now)
+
+
+async def _combined(
+    reader: Reader, page: Bounded, *, start: datetime, end: datetime, now: datetime
+) -> Coverage:
+    """La couverture de ces émetteurs, réunis : leurs taux, leurs trous, l'état d'ensemble."""
     emitters = [row.emitter for row in page.rows]
     read = await _read(reader, emitters, start, end)
     total = _Tally()
