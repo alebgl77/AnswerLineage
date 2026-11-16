@@ -295,4 +295,7 @@ def test_an_unreachable_address_is_named_in_its_message(monkeypatch: pytest.Monk
         httpx.MockTransport(unreachable),
         monkeypatch,
     )
-    assert "http://lignage.exemple.fr:8000" in result.err
+    assert result.err == (
+        "L'API ne répond pas à http://lignage.exemple.fr:8000, ou pas dans le délai : "
+        "vérifier qu'elle tourne, et l'adresse (--url ou ANSWERLINEAGE_API_URL).\n"
+    )
