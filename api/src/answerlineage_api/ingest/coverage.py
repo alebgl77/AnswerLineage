@@ -21,7 +21,7 @@ from typing import Annotated, Any, Final
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
-from sqlalchemy import func, or_, select
+from sqlalchemy import BigInteger, DateTime, and_, exists, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -179,27 +179,61 @@ async def store_report(conn: AsyncConnection, report: CoverageReport) -> Coverag
     Un relevé qui fait grandir un compteur, ou qui ouvre une fenêtre, fait de
     son émetteur un émetteur connu et date son dernier relevé : c'est ce que
     le contrôle des émetteurs muets surveille. Un rejeu ne change rien.
+
+    La table est partitionnée par mois de première réception : la fenêtre est
+    d'abord cherchée dans toutes les partitions et fusionnée sur place. Une
+    fenêtre nouvelle est insérée dans le mois courant, et deux premières
+    réceptions simultanées s'y fusionnent par la clé primaire.
     """
     table = schema.coverage_report
-    statement = insert(table).values(
-        emitter=report.emitter,
-        window_start=report.window.start,
-        window_end=report.window.end,
-        **{counter: getattr(report, counter) for counter in COUNTERS},
+    window = and_(
+        table.c.emitter == report.emitter,
+        table.c.window_start == report.window.start,
+        table.c.window_end == report.window.end,
     )
-    excluded = statement.excluded
+    counters = {counter: getattr(report, counter) for counter in COUNTERS}
+    grown = or_(*(table.c[counter] < value for counter, value in counters.items()))
     changed = (
         await conn.execute(
-            statement.on_conflict_do_update(
-                index_elements=[table.c.emitter, table.c.window_start, table.c.window_end],
-                set_={
-                    counter: func.greatest(table.c[counter], excluded[counter])
-                    for counter in COUNTERS
-                },
-                where=or_(*(excluded[counter] > table.c[counter] for counter in COUNTERS)),
-            ).returning(table.c.emitter)
+            table.update()
+            .where(window, grown)
+            .values(
+                {
+                    counter: func.greatest(table.c[counter], value)
+                    for counter, value in counters.items()
+                }
+            )
+            .returning(table.c.emitter)
         )
     ).first()
+    if changed is None:
+        statement = insert(table).from_select(
+            ["emitter", "window_start", "window_end", *COUNTERS],
+            select(
+                literal(report.emitter),
+                literal(report.window.start, DateTime(timezone=True)),
+                literal(report.window.end, DateTime(timezone=True)),
+                *(literal(value, BigInteger) for value in counters.values()),
+            ).where(~exists().where(window)),
+        )
+        excluded = statement.excluded
+        changed = (
+            await conn.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[
+                        table.c.emitter,
+                        table.c.window_start,
+                        table.c.window_end,
+                        table.c.recorded_month,
+                    ],
+                    set_={
+                        counter: func.greatest(table.c[counter], excluded[counter])
+                        for counter in COUNTERS
+                    },
+                    where=or_(*(excluded[counter] > table.c[counter] for counter in COUNTERS)),
+                ).returning(table.c.emitter)
+            )
+        ).first()
     if changed is not None:
         emitters = schema.coverage_emitter
         known = insert(emitters).values(emitter=report.emitter, last_report_at=func.now())
@@ -215,10 +249,8 @@ async def store_report(conn: AsyncConnection, report: CoverageReport) -> Coverag
         )
     merged = (
         await conn.execute(
-            select(*(table.c[counter] for counter in COUNTERS)).where(
-                table.c.emitter == report.emitter,
-                table.c.window_start == report.window.start,
-                table.c.window_end == report.window.end,
+            select(*(func.max(table.c[counter]).label(counter) for counter in COUNTERS)).where(
+                window
             )
         )
     ).one()

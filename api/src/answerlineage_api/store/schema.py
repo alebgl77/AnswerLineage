@@ -8,8 +8,13 @@ graphe, l'heure d'enregistrement d'une ligne est la réception, par AnswerLineag
 du premier événement qui l'a fait connaître (``event_raw.recorded_at``) : ni
 l'heure de passage du worker, ni celle d'un rejeu.
 
+Les événements bruts, les relevés de couverture et le compteur de doublons
+sont partitionnés par mois de réception (``partitions.py``) ; le graphe ne
+l'est pas.
+
 Les migrations d'Alembic font foi pour la base ; un test vérifie qu'elles
-produisent exactement ce schéma.
+produisent exactement ce schéma, partitions du mois courant et des deux
+suivants comprises.
 """
 
 from __future__ import annotations
@@ -31,9 +36,13 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    event,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+
+from answerlineage_api.store.partitions import RECEPTION_MONTH, create_partitions_ahead
 
 NAMING_CONVENTION = {
     "ix": "ix_%(table_name)s_%(column_0_N_name)s",
@@ -61,6 +70,22 @@ def _in(column: str, values: tuple[str, ...]) -> str:
 
 def _recorded_at() -> Column[object]:
     return Column("recorded_at", DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+def _recorded_month() -> Column[object]:
+    """Clé de partition : le mois UTC de réception, posé par la base avec ``recorded_at``."""
+    return Column(
+        "recorded_month",
+        Date,
+        nullable=False,
+        server_default=text(RECEPTION_MONTH.format(column="now()")),
+    )
+
+
+def _follows_reception() -> CheckConstraint:
+    return CheckConstraint(
+        f"recorded_month = {RECEPTION_MONTH.format(column='recorded_at')}", name="recorded_month"
+    )
 
 
 agent = Table(
@@ -228,11 +253,13 @@ delivery_recipient = Table(
 )
 
 # Événement reçu tel quel, rejouable. Son identifiant est l'empreinte de sa
-# forme canonique : un événement rejoué ne s'enregistre qu'une fois.
+# forme canonique : un événement rejoué ne s'enregistre qu'une fois. La table
+# est partitionnée par mois de réception ; la clé primaire contient donc ce
+# mois, et l'ingestion cherche un événement déjà reçu dans toutes les partitions.
 event_raw = Table(
     "event_raw",
     metadata,
-    Column("event_id", Text, primary_key=True),
+    Column("event_id", Text, nullable=False),
     Column("run_id", Uuid, nullable=False),
     Column("event_type", Text, nullable=False),
     Column("event_time", DateTime(timezone=True), nullable=False),
@@ -243,8 +270,12 @@ event_raw = Table(
     # Vrai pour l'événement d'un appel d'outil (facette ``answerlineage_toolCall``).
     Column("tool_call", Boolean, nullable=False),
     _recorded_at(),
+    _recorded_month(),
+    PrimaryKeyConstraint("event_id", "recorded_month"),
+    _follows_reception(),
     Index(None, "run_id"),
     Index(None, "recorded_at"),
+    postgresql_partition_by="RANGE (recorded_month)",
 )
 # Les appels d'un émetteur par heure, comptés pour mesurer la couverture du lignage.
 Index(
@@ -257,11 +288,15 @@ Index(
 # File de traitement : une ligne par événement à projeter dans le graphe. Elle
 # est écrite dans la transaction qui enregistre l'événement et retirée dans
 # celle qui le projette : aucun événement n'est perdu ni traité deux fois.
+# L'événement est désigné par son identifiant et son mois de réception, sans
+# clé étrangère : elle empêcherait de supprimer une partition purgée. La purge
+# retire de la file les événements du mois qu'elle supprime.
 ingest_queue = Table(
     "ingest_queue",
     metadata,
     Column("id", BigInteger, Identity(always=True), primary_key=True),
-    Column("event_id", Text, ForeignKey("event_raw.event_id"), nullable=False),
+    Column("event_id", Text, nullable=False),
+    Column("recorded_month", Date, nullable=False),
     Column("enqueued_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("available_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("attempts", Integer, nullable=False, server_default="0"),
@@ -273,6 +308,7 @@ ingest_queue = Table(
 
 # Doublons reçus, par émetteur et par jour (date UTC de réception). Une ligne
 # n'existe qu'à partir du premier doublon : un envoi sans doublon n'y touche pas.
+# Partitionnée par mois du jour de réception, qui est dans sa clé.
 ingest_duplicate = Table(
     "ingest_duplicate",
     metadata,
@@ -281,13 +317,16 @@ ingest_duplicate = Table(
     Column("duplicates", BigInteger, nullable=False),
     PrimaryKeyConstraint("emitter", "day"),
     CheckConstraint("duplicates > 0", name="positive"),
+    postgresql_partition_by="RANGE (day)",
 )
 # Les jours les plus récents d'abord, pour la route de lecture.
 Index("ix_ingest_duplicate_day_emitter", ingest_duplicate.c.day.desc(), ingest_duplicate.c.emitter)
 
 # Relevés de couverture : ce qu'un émetteur a vu pendant une fenêtre. Deux
 # relevés de la même fenêtre se fusionnent compteur par compteur, au plus grand :
-# l'écriture est idempotente et commutative.
+# l'écriture est idempotente et commutative. La table est partitionnée par mois
+# de première réception de la fenêtre : un relevé republié un autre mois se
+# fusionne dans la ligne existante, sans changer de partition.
 coverage_report = Table(
     "coverage_report",
     metadata,
@@ -300,12 +339,15 @@ coverage_report = Table(
     # Requêtes relayées sans pouvoir être inspectées : elles cachent peut-être des appels.
     Column("uninspected", BigInteger, nullable=False),
     _recorded_at(),
-    PrimaryKeyConstraint("emitter", "window_start", "window_end"),
+    _recorded_month(),
+    PrimaryKeyConstraint("emitter", "window_start", "window_end", "recorded_month"),
     CheckConstraint("window_start < window_end", name="window"),
     CheckConstraint(
         "calls_seen >= 0 AND events_emitted >= 0 AND events_lost >= 0 AND uninspected >= 0",
         name="counts",
     ),
+    _follows_reception(),
+    postgresql_partition_by="RANGE (recorded_month)",
 )
 
 # Émetteurs connus : ceux qui ont publié au moins un relevé. ``last_report_at``
@@ -320,3 +362,18 @@ coverage_emitter = Table(
     Column("silent_since", DateTime(timezone=True)),
     Column("signalled_at", DateTime(timezone=True)),
 )
+
+# Partitions manquantes signalées par le contrôle des workers : une ligne par
+# table et par mois, tant que la partition manque. Un épisode se signale une fois.
+partition_alert = Table(
+    "partition_alert",
+    metadata,
+    Column("table_name", Text, nullable=False),
+    Column("month", Date, nullable=False),
+    Column("signalled_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("table_name", "month"),
+)
+
+# Une table partitionnée naît avec la partition du mois courant et des mois à venir.
+for _partitioned in (event_raw, coverage_report, ingest_duplicate):
+    event.listen(_partitioned, "after_create", create_partitions_ahead)

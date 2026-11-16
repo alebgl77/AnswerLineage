@@ -11,8 +11,10 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -54,10 +56,20 @@ async def store_events(conn: AsyncConnection, events: Sequence[AcceptedEvent]) -
 
     Chaque événement nouveau entre dans la file de traitement dans la même
     transaction : il sera projeté dans le graphe, une fois et une seule.
+
+    La table des événements est partitionnée par mois de réception : un
+    événement déjà reçu est cherché dans toutes ses partitions, et la clé
+    primaire (identifiant et mois) départage deux réceptions simultanées.
     """
     if not events:
         return 0
+    table = schema.event_raw
     distinct = {accepted.event_id: accepted for accepted in events}
+    known = set(
+        (await conn.execute(select(table.c.event_id).where(table.c.event_id.in_(list(distinct)))))
+        .scalars()
+        .all()
+    )
     rows = [
         {
             "event_id": accepted.event_id,
@@ -70,19 +82,26 @@ async def store_events(conn: AsyncConnection, events: Sequence[AcceptedEvent]) -
             "tool_call": TOOL_CALL_FACET in accepted.event.run.facets,
         }
         for accepted in distinct.values()
+        if accepted.event_id not in known
     ]
-    statement = (
-        insert(schema.event_raw)
-        .values(rows)
-        .on_conflict_do_nothing(index_elements=[schema.event_raw.c.event_id])
-        .returning(schema.event_raw.c.event_id)
-    )
-    stored = {row.event_id for row in (await conn.execute(statement)).all()}
+    stored: dict[str, date] = {}
+    if rows:
+        statement = (
+            insert(table)
+            .values(rows)
+            .on_conflict_do_nothing(index_elements=[table.c.event_id, table.c.recorded_month])
+            .returning(table.c.event_id, table.c.recorded_month)
+        )
+        stored = {row.event_id: row.recorded_month for row in await conn.execute(statement)}
     if stored:
         await conn.execute(
             # Dans l'ordre de réception : la file se traite dans cet ordre.
             insert(schema.ingest_queue).values(
-                [{"event_id": event_id} for event_id in distinct if event_id in stored]
+                [
+                    {"event_id": event_id, "recorded_month": stored[event_id]}
+                    for event_id in distinct
+                    if event_id in stored
+                ]
             )
         )
     # La première réception d'un événement nouveau n'est pas un doublon.

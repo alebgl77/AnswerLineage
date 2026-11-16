@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import URL
+from sqlalchemy.exc import IntegrityError
 
 from answerlineage_api.store import schema
 from answerlineage_api.store.engine import (
@@ -72,13 +73,50 @@ def snapshot(url: URL) -> dict[str, list[tuple[Any, ...]]]:
         engine.dispose()
 
 
+# Les tables déclarées, partitionnées ou non, sans leurs partitions.
+_TABLES = text(
+    """
+    SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+      AND c.relname <> 'alembic_version'
+    """
+)
+_PARTITIONS = text(
+    """
+    SELECT p.relname, c.relname FROM pg_inherits i
+    JOIN pg_class c ON c.oid = i.inhrelid JOIN pg_class p ON p.oid = i.inhparent
+    WHERE p.relkind = 'p'
+    ORDER BY 1, 2
+    """
+)
+
+
+def tables_and_partitions(url: URL) -> tuple[set[str], dict[str, list[str]]]:
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection:
+            tables = set(connection.execute(_TABLES).scalars())
+            partitions: dict[str, list[str]] = {}
+            for parent, partition in connection.execute(_PARTITIONS):
+                partitions.setdefault(parent, []).append(partition)
+            month = connection.execute(text("SELECT timezone('UTC', now())")).scalar_one()
+    finally:
+        engine.dispose()
+    return tables, {"current": [f"{month:%Y_%m}"], **partitions}
+
+
 def test_upgrade_creates_the_schema_and_downgrade_removes_it(empty_database: URL) -> None:
     assert snapshot(empty_database)["objects"] == []
 
     upgrade(empty_database)
-    tables = {name for kind, name in snapshot(empty_database)["objects"] if kind == "r"}
+    tables, partitions = tables_and_partitions(empty_database)
     assert tables == set(schema.metadata.tables)
     assert {"run", "dataset", "read_edge", "write_edge", "answer", "delivery"} <= tables
+    # Le mois courant et les deux suivants, pour chaque table partitionnée.
+    (current,) = partitions.pop("current")
+    assert set(partitions) == {"coverage_report", "event_raw", "ingest_duplicate"}
+    for parent, found in partitions.items():
+        assert len(found) == 3 and found[0] == f"{parent}_{current}", parent
 
     downgrade(empty_database, "base")
     assert snapshot(empty_database)["objects"] == []
@@ -339,6 +377,93 @@ def test_rows_recorded_before_the_reception_time_get_it_from_their_events(
     assert found["dataset_version"] == [(R2,)]
     assert found["recipient"] == [("p-1", R3), ("p-2", R3)]
     assert (found["agent"], found["tool"]) == ([(R1,)], [(R2,)])
+
+
+_RECEIVED_BEFORE_0008 = """
+    INSERT INTO event_raw (event_id, run_id, event_type, event_time, producer, payload,
+                           emitter, tool_call, recorded_at)
+    VALUES ('ancien', :run, 'COMPLETE', :old, 'https://exemple.fr', '{}', 'mcp://e', true, :old),
+           ('recent', :run, 'COMPLETE', now(), 'https://exemple.fr', '{}', 'mcp://e', true,
+            now());
+    INSERT INTO ingest_queue (event_id) VALUES ('ancien');
+    INSERT INTO coverage_report (emitter, window_start, window_end, calls_seen, events_emitted,
+                                 events_lost, uninspected, recorded_at)
+    VALUES ('mcp://e', :old, :old + interval '1 minute', 3, 3, 0, 0, :old);
+    INSERT INTO ingest_duplicate (emitter, day, duplicates) VALUES ('mcp://e', :old_day, 2)
+"""
+_KEPT = {
+    "event_raw": "SELECT event_id, recorded_at FROM event_raw ORDER BY 1",
+    "ingest_queue": "SELECT event_id FROM ingest_queue",
+    "coverage_report": "SELECT emitter, calls_seen, recorded_at FROM coverage_report",
+    "ingest_duplicate": "SELECT emitter, day, duplicates FROM ingest_duplicate",
+}
+
+
+def test_rows_received_before_the_partitions_keep_their_place(empty_database: URL) -> None:
+    """Événements, file, relevés, doublons : rien ne se perd à la montée ni à la descente."""
+    old = datetime(2025, 6, 10, 8, 30, tzinfo=UTC)
+    upgrade(empty_database, "0007")
+    engine = create_engine(empty_database)
+    try:
+        with engine.begin() as connection:
+            for statement in _RECEIVED_BEFORE_0008.split(";"):
+                connection.execute(
+                    text(statement), {"run": AGENT_RUN, "old": old, "old_day": old.date()}
+                )
+        with engine.connect() as connection:
+            before = {
+                table: [tuple(row) for row in connection.execute(text(sql))]
+                for table, sql in _KEPT.items()
+            }
+
+        upgrade(empty_database, "0008")
+        _, partitions = tables_and_partitions(empty_database)
+        with engine.connect() as connection:
+            after = {
+                table: [tuple(row) for row in connection.execute(text(sql))]
+                for table, sql in _KEPT.items()
+            }
+            queued = connection.execute(text("SELECT recorded_month FROM ingest_queue")).all()
+        assert after == before
+        # Le mois des lignes reçues a sa partition, en plus des mois à venir.
+        for parent in ("coverage_report", "event_raw", "ingest_duplicate"):
+            assert f"{parent}_2025_06" in partitions[parent]
+        assert queued == [(date(2025, 6, 1),)]
+
+        downgrade(empty_database, "0007")
+        with engine.connect() as connection:
+            assert {
+                table: [tuple(row) for row in connection.execute(text(sql))]
+                for table, sql in _KEPT.items()
+            } == before
+    finally:
+        engine.dispose()
+    assert tables_and_partitions(empty_database)[1].keys() == {"current"}
+    # La file retrouve sa clé étrangère vers les événements.
+    constraints = {name for _, name, *_ in snapshot(empty_database)["constraints"]}
+    assert "fk_ingest_queue_event_id_event_raw" in constraints
+
+
+def test_the_partition_key_follows_the_reception(database: URL) -> None:
+    """Le mois de partition est celui de la réception : un autre est refusé."""
+    engine = create_engine(database)
+    try:
+        with (
+            pytest.raises(IntegrityError, match="ck_event_raw_recorded_month"),
+            engine.begin() as c,
+        ):
+            c.execute(
+                text(
+                    """
+                    INSERT INTO event_raw (event_id, run_id, event_type, event_time, producer,
+                                           payload, emitter, tool_call, recorded_month)
+                    VALUES ('x', gen_random_uuid(), 'COMPLETE', now(), 'p', '{}', 'e', true,
+                            CAST(date_trunc('month', now() + interval '1 month') AS date))
+                    """
+                )
+            )
+    finally:
+        engine.dispose()
 
 
 def test_only_postgresql_is_accepted() -> None:

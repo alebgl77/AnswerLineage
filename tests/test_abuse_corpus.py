@@ -217,10 +217,17 @@ async def in_chunks(body: bytes) -> AsyncIterator[bytes]:
 
 
 async def tables(engine: AsyncEngine) -> dict[str, list[str]]:
-    """Toute la base : chaque table, ligne par ligne, sous forme de texte."""
+    """Toute la base : chaque table, ligne par ligne, sous forme de texte.
+
+    Une table partitionnée se lit en entier : ses partitions n'en sont pas d'autres.
+    """
     async with engine.connect() as conn:
         names = await conn.execute(
-            text("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename")
+            text(
+                "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+                " WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition"
+                " ORDER BY c.relname"
+            )
         )
         return {
             name: list(

@@ -71,6 +71,35 @@ async def test_an_event_known_before_counts_every_time_it_is_sent_again(
     assert (emitter, duplicates) == ("mcp://entrepot", 3)
 
 
+# Range l'événement déjà reçu dans la partition du mois suivant, comme s'il datait d'un autre mois.
+_RECEIVED_ANOTHER_MONTH = text(
+    """
+    UPDATE event_raw SET recorded_at = recorded_at + interval '1 month',
+                         recorded_month = CAST(date_trunc('month', timezone('UTC',
+                             recorded_at + interval '1 month')) AS date)
+    """
+)
+
+
+async def test_an_event_received_in_another_month_is_still_a_duplicate(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    """L'événement est cherché dans toutes les partitions, pas seulement dans celle du mois."""
+    event = event_of("mcp://entrepot")
+    assert (await client.post(SINGLE, json=event)).json()["duplicate"] is False
+    async with engine.begin() as conn:
+        await conn.execute(_RECEIVED_ANOTHER_MONTH)
+        await conn.execute(text("DELETE FROM ingest_queue"))
+
+    assert (await client.post(SINGLE, json=event)).json()["duplicate"] is True
+    assert (await client.post(BATCH, json=[event, event_of("mcp://entrepot", 1)])).json()[
+        "duplicates"
+    ] == 1
+    async with engine.connect() as conn:
+        assert (await conn.execute(text("SELECT count(*) FROM event_raw"))).scalar_one() == 2
+        assert (await conn.execute(text("SELECT count(*) FROM ingest_queue"))).scalar_one() == 1
+
+
 async def test_an_unknown_event_present_n_times_in_a_batch_counts_n_minus_one(
     client: httpx.AsyncClient, engine: AsyncEngine
 ) -> None:
@@ -148,7 +177,8 @@ async def test_each_day_has_its_own_line_and_the_most_recent_comes_first(
     await client.post(SINGLE, json=event)
     await client.post(SINGLE, json=event)
     async with engine.begin() as conn:
-        await conn.execute(text("UPDATE ingest_duplicate SET day = day - 2"))
+        # Un autre jour, dans le mois suivant : sa partition est créée d'avance.
+        await conn.execute(text("UPDATE ingest_duplicate SET day = day + 31"))
     await client.post(BATCH, json=[event, event, event])
     other = event_of("agent://ventes", 1)
     await client.post(SINGLE, json=other)
@@ -156,13 +186,13 @@ async def test_each_day_has_its_own_line_and_the_most_recent_comes_first(
 
     rows = await counted(client)
     assert [(row["emitter"], row["count"]) for row in rows] == [
+        ("mcp://entrepot", 1),
         ("agent://ventes", 1),
         ("mcp://entrepot", 3),
-        ("mcp://entrepot", 1),
     ]
     days = [row["day"] for row in rows]
     assert days == sorted(days, reverse=True)
-    assert days[0] == days[1] != days[2]
+    assert days[0] != days[1] == days[2]
 
     assert [row["count"] for row in await counted(client, limit=1)] == [1]
     assert len(await counted(client, limit=2)) == 2

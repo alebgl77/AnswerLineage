@@ -6,7 +6,7 @@ Un worker lit la file de traitement et projette chaque événement reçu dans le
 ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run answerlineage-worker
 ```
 
-Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours.
+Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Il contrôle aussi les [émetteurs muets](#émetteurs-muets) et entretient les [partitions mensuelles](#partitions-mensuelles).
 
 ## Garanties
 
@@ -61,7 +61,47 @@ Plusieurs workers contrôlent en même temps sans signaler deux fois le même é
 
 L'horloge du contrôle est celle du worker, comparée à l'heure de réception posée par la base : des horloges très décalées avancent ou retardent le signalement d'autant. Un contrôle en échec, base injoignable par exemple, est journalisé par la classe de l'erreur et repris au passage suivant ; la file n'attend pas.
 
+## Partitions mensuelles
+
+Les événements bruts, les relevés de couverture et le compteur de doublons sont [partitionnés par mois de réception](schema.md#partitions-et-conservation). Au démarrage, puis toutes les heures, la boucle du worker les entretient, sans intervention :
+
+1. **Création à l'avance.** Le mois courant et les deux suivants ont leur partition, pour chaque table. Une écriture trouve toujours la sienne : une partition manque au plus tôt deux mois après le dernier passage réussi.
+2. **Purge.** Une partition entièrement plus ancienne que la conservation est supprimée : avec 13 mois, la maintenance du 15 mars 2026 supprime janvier 2025, qui finit avant le 15 février 2025, et garde février 2025. Les événements d'un mois purgé encore dans la file, jamais projetés après tant de mois, en sont retirés, et la ligne de journal le dit.
+3. **Contrôle.** Une partition qui manque pour un mois qui commence dans les sept jours, ou pour le mois courant, est signalée :
+
+   - une ligne de journal qui nomme la table et le mois, jamais un contenu :
+
+     ```text
+     ERROR answerlineage_workers Partition manquante : event_raw, mois 2026-04, à créer avant le 2026-04-01.
+     ```
+
+   - une ligne de `partition_alert`, qui reste tant que la partition manque ([lire l'état](schema.md#létat-du-contrôle)).
+
+   Un épisode est signalé une fois, pas à chaque passage. Il se clôt quand la partition existe, et sa ligne disparaît.
+
+La création, la purge et le contrôle sont journalisés : `Partition créée : event_raw_2026_04.`, `Partition supprimée : event_raw_2025_01, hors de la conservation de 13 mois.`
+
+| Réglage | Option | Défaut |
+| --- | --- | --- |
+| Conservation, en mois | `--retention-months` | 13 (1 à 1 200) |
+| Mois créés d'avance après le mois courant | `--partitions-ahead` | 2 (2 à 24) |
+
+Une conservation absurde empêche le worker de démarrer : nulle, négative, ou plus courte que l'avance. La plus courte admise, deux mois, garde toujours le mois courant et le précédent.
+
+### Ce que la purge ne touche jamais
+
+- **Le mois courant.** La limite de la purge est la plus prudente de deux horloges : celle du worker et celle de la base, qui pose la clé de partition. Une horloge de worker très en avance ne fait tomber aucun mois que la base tient encore pour conservé.
+- **Une partition partiellement dans la conservation.** Seule une partition qui finit avant la limite est supprimée.
+- **Une partition par défaut**, ou de bornes que la maintenance ne lit pas, créée à la main : elle ne couvre aucun mois et n'est jamais supprimée.
+- **Le graphe**, hors de la conservation ([pourquoi](schema.md#le-graphe-nest-pas-partitionné)).
+
+### Plusieurs workers, aucune attente
+
+Plusieurs workers entretiennent en même temps sans double travail : la maintenance prend un verrou consultatif de PostgreSQL sans l'attendre, et un worker qui le trouve pris passe son tour. Créer ou supprimer une partition verrouille sa table un instant ; la maintenance n'attend pas ce verrou plus d'une seconde (`lock_timeout`), pour ne jamais faire attendre l'ingestion derrière elle : derrière une longue lecture, elle renonce pour cette table, le journalise par la classe de l'erreur (`Partition event_raw_2026_04 non créée (LockNotAvailable).`), et réessaie au passage suivant. Une maintenance en échec, base injoignable par exemple, est journalisée de même ; la file n'attend pas.
+
+L'horloge de la maintenance est celle du worker, injectée dans les tests : les mois y passent sans attendre.
+
 ## Limites connues
 
-- Un événement toujours fautif reste dans la file, de plus en plus espacé : il n'y a pas encore de file de rebut à consulter et à rejouer.
+- Un événement toujours fautif reste dans la file, de plus en plus espacé : il n'y a pas encore de file de rebut à consulter et à rejouer. Il en sort quand son mois est purgé.
 - Un émetteur retiré pour de bon est signalé muet une fois, puis le reste : rien ne permet encore de le déclarer retiré, ni de l'oublier. Sa dernière couverture reste lisible, et son silence rend partielle la couverture des périodes qui suivent.

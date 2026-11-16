@@ -350,4 +350,5 @@ Les réponses vont des plus récentes aux plus anciennes. Plusieurs réponses pe
 - Elle ne suit pas encore ce qu'un run touché a écrit : une réponse fondée sur une note ou une table dérivée de la donnée fausse n'est pas renvoyée.
 - La couverture du lignage ne voit que ce que voient les émetteurs qui publient des relevés : un appel qui ne passe par aucun d'eux n'est compté nulle part. Elle compte les appels d'outils, pas les runs d'agents.
 - Un émetteur retiré pour de bon reste connu : rien ne permet encore de le déclarer retiré, et son silence rend partielle la couverture de toute période qui suit son dernier relevé.
+- Les relevés de couverture et les événements bruts sont purgés au-delà de leur [conservation](workers.md#partitions-mensuelles), 13 mois par défaut : la couverture d'une période plus ancienne n'est plus mesurée (`unknown`), alors que le graphe, lui, garde ses réponses.
 - Sur un très grand graphe, une vue d'ensemble demandée à une date lointaine parcourt les réponses plus récentes pour les écarter : elle peut dépasser le délai maximal (`503`).

@@ -28,6 +28,7 @@ write_edge   agent, tool
 | `ingest_duplicate` | émetteur et jour | Nombre d'événements reçus en double, par émetteur et par jour UTC |
 | `coverage_report` | émetteur, début et fin de fenêtre | Relevé de couverture : appels vus, événements émis et perdus, requêtes non inspectées |
 | `coverage_emitter` | émetteur | Émetteur connu : réception de son dernier relevé, silence signalé |
+| `partition_alert` | table et mois | Partition manquante signalée par le contrôle des workers |
 
 ## Deux heures
 
@@ -63,17 +64,69 @@ Une ligne qu'aucun événement reçu ne rattache garde l'heure qu'elle portait, 
 
 ## Compteur de doublons
 
-`ingest_duplicate` compte les événements reçus alors qu'ils étaient déjà connus. Sa clé est l'émetteur (l'espace de noms du job, sous sa forme normalisée) et le jour UTC de réception ; `duplicates` est strictement positif : une ligne n'existe qu'à partir du premier doublon. L'API l'écrit dans la transaction qui reçoit l'événement, par un ajout atomique (`INSERT … ON CONFLICT DO UPDATE`), et le lit par `GET /api/v1/ingestion/duplicates` (voir [API d'ingestion](ingestion.md)). Un index range les jours du plus récent au plus ancien. La table n'est pas purgée.
+`ingest_duplicate` compte les événements reçus alors qu'ils étaient déjà connus. Sa clé est l'émetteur (l'espace de noms du job, sous sa forme normalisée) et le jour UTC de réception ; `duplicates` est strictement positif : une ligne n'existe qu'à partir du premier doublon. L'API l'écrit dans la transaction qui reçoit l'événement, par un ajout atomique (`INSERT … ON CONFLICT DO UPDATE`), et le lit par `GET /api/v1/ingestion/duplicates` (voir [API d'ingestion](ingestion.md)). Un index range les jours du plus récent au plus ancien. La table est partitionnée par mois du jour de réception et purgée avec la conservation ([partitions](#partitions-et-conservation)).
 
 ## Couverture du lignage
 
-Les [relevés de couverture](ingestion.md#relevés-de-couverture) des émetteurs se rangent dans `coverage_report`, un par émetteur (sous sa forme normalisée) et par fenêtre. Deux relevés de la même fenêtre se fusionnent par un ajout atomique (`INSERT … ON CONFLICT DO UPDATE`), compteur par compteur, au plus grand : l'écriture est idempotente et commutative. Les compteurs sont positifs et la fenêtre non vide, contraintes nommées comprises.
+Les [relevés de couverture](ingestion.md#relevés-de-couverture) des émetteurs se rangent dans `coverage_report`, un par émetteur (sous sa forme normalisée) et par fenêtre. Deux relevés de la même fenêtre se fusionnent compteur par compteur, au plus grand : l'écriture est idempotente et commutative. La table est partitionnée par mois de première réception de la fenêtre (`recorded_month`) : un relevé republié est d'abord fusionné dans la ligne existante, quelle que soit sa partition, par une mise à jour qui ne la déplace pas ; une fenêtre nouvelle est insérée dans le mois courant, et deux premières réceptions simultanées s'y fusionnent par la clé primaire (`INSERT … ON CONFLICT DO UPDATE`). Les compteurs sont positifs et la fenêtre non vide, contraintes nommées comprises.
 
 `coverage_emitter` tient un émetteur par ligne, dès son premier relevé : `last_report_at`, la réception de son dernier relevé qui a changé quelque chose, et, posés par le [contrôle des émetteurs muets](workers.md#émetteurs-muets), `silent_since` (l'heure de ce dernier relevé quand le silence a été signalé) et `signalled_at`. Un émetteur est muet tant que `silent_since` égale `last_report_at`.
 
 Pour comparer ces relevés au graphe, `event_raw` porte l'émetteur de chaque événement (`emitter`, l'espace de noms de son job sous sa forme NFC) et `tool_call`, vrai pour l'événement d'un appel d'outil. Un index partiel range les appels par émetteur et par heure. La migration `0006` remplit ces colonnes pour les événements reçus avant elle. Un événement est dans le graphe quand il n'est plus dans `ingest_queue`.
 
-Ces tables ne sont pas purgées : un relevé par minute et par émetteur fait 1 440 lignes par jour.
+Un relevé par minute et par émetteur fait 1 440 lignes par jour : `coverage_report` et `event_raw` sont purgés avec la conservation, au même rythme, pour que la couverture d'une période purgée soit inconnue plutôt que fausse. `coverage_emitter`, une ligne par émetteur, n'est pas purgée.
+
+## Partitions et conservation
+
+Les tables qui grossissent avec le trafic sont partitionnées par mois, créées à l'avance et purgées selon une durée de conservation, sans intervention : la [maintenance des workers](workers.md#partitions-mensuelles) s'en charge.
+
+| Table | Clé de partition | Clé primaire |
+| --- | --- | --- |
+| `event_raw` | `recorded_month`, mois UTC de réception | empreinte de l'événement, mois |
+| `coverage_report` | `recorded_month`, mois UTC de première réception de la fenêtre | émetteur, fenêtre, mois |
+| `ingest_duplicate` | `day`, jour UTC de réception | émetteur, jour |
+
+Une partition couvre un mois UTC, du premier jour inclus au premier jour du mois suivant exclu, et porte le nom de sa table et de son mois : `event_raw_2026_11`. Les index et les contraintes de la table valent pour chaque partition.
+
+- **La clé de partition suit la réception, jamais l'heure de l'événement.** Elle est posée par la base à l'insertion, avec `recorded_at`, et une contrainte nommée (`ck_event_raw_recorded_month`, `ck_coverage_report_recorded_month`) la tient égale au mois UTC de `recorded_at`. Un émetteur peut dater un événement de 1970 : il est rangé dans le mois où il a été reçu.
+- **Aucune mise à jour ne déplace une ligne.** La clé n'est jamais réécrite : une fusion de relevés ou un doublon compté modifient la ligne dans sa partition.
+- **Les écritures restent idempotentes.** PostgreSQL exige que la clé primaire d'une table partitionnée contienne sa clé de partition : un événement déjà reçu est donc cherché dans toutes les partitions avant d'être enregistré, et la clé primaire départage deux réceptions simultanées du même mois. Une fenêtre de relevé se cherche de même.
+- **Aucune écriture n'échoue faute de partition.** Les migrations créent le mois courant et les deux suivants ; la maintenance garde ensuite ces mois d'avance, et son contrôle signale, sept jours avant, un mois qui commence sans partition (`partition_alert`).
+- **La file de traitement n'a pas de clé étrangère vers `event_raw`** : une clé étrangère vers une table partitionnée empêcherait d'en supprimer une partition. `ingest_queue` désigne l'événement par son identifiant et son mois de réception (`recorded_month`) ; la purge retire de la file les événements du mois qu'elle supprime, jamais projetés.
+
+### Le graphe n'est pas partitionné
+
+Les tables du graphe gardent toutes leurs lignes : elles sont hors de la conservation. Leurs écritures fusionnent les événements d'un run sur des clés naturelles (run, jeu de données, version ; run et empreinte ; diffusion et destinataire) qui ne contiennent aucune heure de réception. Partitionner par heure d'enregistrement obligerait à l'ajouter à ces clés : deux événements d'une même lecture, reçus deux mois différents, donneraient deux arêtes au lieu d'une, et la fusion cesserait d'être idempotente et commutative. Partitionner par heure d'événement est exclu : elle vient de l'émetteur.
+
+Une purge ligne à ligne du graphe demanderait de dire quand une réponse est trop ancienne pour être rappelée, alors que ses lectures, ses diffusions et ses jeux de données sont partagés avec d'autres : c'est une décision du produit, pas de l'exploitation. Le graphe ne garde que des noms, des empreintes et des heures, bien moins volumineux que les événements bruts. Son heure d'enregistrement, la réception de l'événement qui a fait connaître chaque ligne, permettra de le purger le jour où cette règle sera fixée. En attendant, il se reconstruit à partir des événements conservés.
+
+### L'état du contrôle
+
+`partition_alert` tient une ligne par partition manquante signalée : sa table, son mois, et l'heure du signalement. La ligne disparaît quand la partition existe, ou quand le mois est passé.
+
+```sql
+SELECT table_name, month, signalled_at FROM partition_alert ORDER BY month, table_name;
+```
+
+Les partitions existantes se lisent dans le catalogue :
+
+```sql
+SELECT p.relname AS table_name, c.relname AS partition, pg_get_expr(c.relpartbound, c.oid) AS bounds
+FROM pg_inherits i
+JOIN pg_class c ON c.oid = i.inhrelid
+JOIN pg_class p ON p.oid = i.inhparent
+WHERE p.relname IN ('event_raw', 'coverage_report', 'ingest_duplicate')
+ORDER BY 1, 2;
+```
+
+### Reprise des tables existantes
+
+La migration `0008` recrée chaque table partitionnée : ses lignes sont mises de côté dans une copie temporaire, la table est recréée, une partition est créée pour chaque mois où une ligne a été reçue jusqu'aux deux mois suivant le mois courant, puis les lignes sont recopiées avec leur mois de réception. La file reçoit le mois de chaque événement. La descente recrée les tables sans partition et la clé étrangère de la file ; deux lignes d'une même clé reçues à cheval sur deux mois s'y réunissent.
+
+### Limites connues
+
+- Deux réceptions simultanées d'un même événement, à cheval sur deux mois à quelques millisecondes près, ne se voient pas l'une l'autre : l'événement est enregistré deux fois, une fois dans chaque partition. Le graphe n'en est pas changé (la projection est idempotente) ; le doublon n'est pas compté, et la couverture de sa fenêtre compte l'appel deux fois, au plus jusqu'aux appels vus. Il en va de même pour une fenêtre de relevé, dont les compteurs sont alors lus deux fois.
+- Un relevé reçu juste après un changement de mois survit un mois de plus que les événements de sa fenêtre : pendant ce mois, la couverture de cette fenêtre, la plus ancienne de la conservation, compte ses appels comme manquants.
 
 ## Migrations
 
@@ -85,4 +138,4 @@ ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run 
 ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run python -m answerlineage_api.store.migrate downgrade base
 ```
 
-Une migration nomme ses contraintes explicitement et fournit sa descente. Les tables ne sont pas encore partitionnées ni purgées.
+Une migration nomme ses contraintes explicitement et fournit sa descente.

@@ -222,7 +222,10 @@ async def test_the_graph_records_the_reception_of_each_event_not_its_projection(
     # Projeté de nouveau plus tard, l'événement garde la réception d'origine.
     async with engine.begin() as conn:
         await conn.execute(
-            text("INSERT INTO ingest_queue (event_id) SELECT event_id FROM event_raw")
+            text(
+                "INSERT INTO ingest_queue (event_id, recorded_month)"
+                " SELECT event_id, recorded_month FROM event_raw"
+            )
         )
     assert await process_batch(engine) == BatchResult(processed=2)
     async with engine.connect() as conn:

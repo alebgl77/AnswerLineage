@@ -182,7 +182,7 @@ async def test_a_failed_check_does_not_stop_the_worker(
 def test_the_command_line_sets_the_threshold_in_minutes(monkeypatch: pytest.MonkeyPatch) -> None:
     received: list[timedelta] = []
 
-    async def serve(batch_size: int, silence_threshold: timedelta) -> None:
+    async def serve(batch_size: int, silence_threshold: timedelta, **_: object) -> None:
         received.append(silence_threshold)
 
     monkeypatch.setattr(cli, "serve", serve)

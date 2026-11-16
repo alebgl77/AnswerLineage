@@ -271,6 +271,41 @@ async def test_two_reports_of_one_window_give_the_same_state_in_either_order(
 
 @pytest.mark.integration
 @pytest.mark.anyio
+async def test_a_window_first_received_in_another_month_merges_into_its_line(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    """La fenêtre est cherchée dans toutes les partitions : elle garde une seule ligne."""
+    await client.post(COVERAGE, json=recent(calls_seen=10, events_emitted=10, events_lost=0))
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                UPDATE coverage_report
+                SET recorded_at = recorded_at + interval '1 month',
+                    recorded_month = CAST(date_trunc('month', timezone('UTC',
+                        recorded_at + interval '1 month')) AS date)
+                """
+            )
+        )
+    emitters = await table(engine, "coverage_emitter")
+
+    replayed = await client.post(
+        COVERAGE, json=recent(calls_seen=10, events_emitted=10, events_lost=0)
+    )
+    assert replayed.json()["calls_seen"] == 10
+    # Un rejeu ne ranime pas l'émetteur, même reçu un autre mois.
+    assert await table(engine, "coverage_emitter") == emitters
+    grown = await client.post(
+        COVERAGE, json=recent(calls_seen=12, events_emitted=11, events_lost=1)
+    )
+    assert (grown.json()["calls_seen"], grown.json()["events_lost"]) == (12, 1)
+    [stored] = await table(engine, "coverage_report")
+    assert stored[3:6] == (12, 11, 1)
+    assert await table(engine, "coverage_emitter") != emitters
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
 async def test_reports_sent_together_do_not_lose_one_another(engine: AsyncEngine) -> None:
     bodies = [recent(calls_seen=count, events_emitted=count, events_lost=0) for count in range(20)]
     transport = httpx.ASGITransport(app=create_app(engine))

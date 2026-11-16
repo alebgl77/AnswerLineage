@@ -26,6 +26,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from answerlineage_api.store.graph import record_run
+from answerlineage_workers.partitions import (
+    DEFAULT_MAINTENANCE_EVERY,
+    DEFAULT_RETENTION,
+    Retention,
+    maintain_partitions,
+)
 from answerlineage_workers.projection import project
 from answerlineage_workers.silence import DEFAULT_SILENCE, check_silent_emitters
 
@@ -45,7 +51,7 @@ _CLAIM = text(
     """
     SELECT q.id, e.payload, e.recorded_at
     FROM ingest_queue AS q
-    JOIN event_raw AS e ON e.event_id = q.event_id
+    JOIN event_raw AS e ON e.event_id = q.event_id AND e.recorded_month = q.recorded_month
     WHERE q.available_at <= now()
     ORDER BY q.id
     LIMIT :limit
@@ -131,14 +137,20 @@ async def run_worker(
     handler: Handler = record_event,
     silence_threshold: timedelta = DEFAULT_SILENCE,
     silence_every: timedelta = DEFAULT_SILENCE_CHECK_EVERY,
+    retention: Retention = DEFAULT_RETENTION,
+    maintenance_every: timedelta = DEFAULT_MAINTENANCE_EVERY,
     clock: Callable[[], datetime] = _now,
 ) -> None:
     """Traite la file jusqu'à ce que ``stop`` soit levé.
 
     Au démarrage, puis toutes les ``silence_every`` sur l'horloge ``clock``, le
     worker contrôle les émetteurs muets depuis plus que ``silence_threshold``.
+    Au démarrage, puis toutes les ``maintenance_every``, il entretient les
+    partitions mensuelles selon ``retention`` : création à l'avance, purge,
+    contrôle.
     """
     next_check: datetime | None = None
+    next_maintenance: datetime | None = None
     while not stop.is_set():
         now = clock()
         if next_check is None or now >= next_check:
@@ -148,6 +160,13 @@ async def run_worker(
             except Exception as error:
                 # Le contrôle reprendra au prochain passage ; la file n'attend pas.
                 logger.error("Contrôle des émetteurs muets en échec (%s).", type(error).__name__)
+        if next_maintenance is None or now >= next_maintenance:
+            next_maintenance = now + maintenance_every
+            try:
+                await maintain_partitions(engine, now=now, retention=retention)
+            except Exception as error:
+                # Reprise au prochain passage ; les partitions sont créées des mois à l'avance.
+                logger.error("Maintenance des partitions en échec (%s).", type(error).__name__)
         delay = 0.0
         try:
             result = await process_batch(engine, batch_size=batch_size, handler=handler)
