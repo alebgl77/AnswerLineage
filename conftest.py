@@ -8,6 +8,7 @@ test reçoit sa propre base, clonée d'un modèle déjà migré.
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -26,6 +27,10 @@ os.environ.setdefault(
     "testcontainers/ryuk:0.8.1@sha256:bf3f74a47dee0acda89aba4b2fc9c7fdcf994a084db02a2d06566f07baae022e",
 )
 _TEMPLATE = "answerlineage_template"
+# Un registre public limite parfois le débit des tirages anonymes : le démarrage du
+# serveur est retenté après ces pauses, en secondes, avant d'être tenu pour un échec.
+REGISTRY_RETRY_DELAYS = (30.0, 60.0)
+_RATE_LIMITED = ("toomanyrequests", "429 too many requests")
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -51,6 +56,23 @@ def _admin_execute(server: URL, statement: str) -> None:
         engine.dispose()
 
 
+def start_despite_rate_limits(
+    start: Callable[[], object], sleep: Callable[[float], None] = time.sleep
+) -> None:
+    """Lance ``start`` ; un refus du registre pour excès de débit est retenté après une pause.
+
+    Toute autre erreur, et le dernier refus, remontent tels quels.
+    """
+    for delay in (*REGISTRY_RETRY_DELAYS, None):
+        try:
+            start()
+            return
+        except Exception as error:
+            if delay is None or not any(mark in str(error).lower() for mark in _RATE_LIMITED):
+                raise
+            sleep(delay)
+
+
 @pytest.fixture(scope="session")
 def postgres_image() -> str:
     """L'image PostgreSQL des tests : celle que fixe l'environnement, sinon l'image épinglée."""
@@ -70,7 +92,7 @@ def postgres_server(postgres_image: str) -> Iterator[URL]:
         from testcontainers.community.postgres import PostgresContainer
 
         container = PostgresContainer(image, driver="psycopg")
-        container.start()
+        start_despite_rate_limits(container.start)
     except Exception as error:
         # En CI, un test d'intégration sauté serait un faux vert.
         if os.environ.get("CI"):
