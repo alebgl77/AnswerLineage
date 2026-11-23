@@ -140,7 +140,7 @@ Un booléen n'est pas un nombre, ni `null` une valeur. Les versions 1-0-0 et 1-1
 
 ### Assertions de qualité
 
-La facette standard `dataQualityAssertions` d'une entrée, qu'émettent dbt et d'autres outils de tests de données, n'est pas contrôlée à l'ingestion : un événement n'est jamais rejeté pour elle, et son texte libre (nom, description, corps SQL d'un test, valeurs attendue et observée) reste dans l'événement reçu. Les workers la lisent ensuite avec tolérance, quatre champs seulement, chacun recontrôlé, pour [proposer un incident](incidents.md#incidents-proposés-par-un-test-de-qualité) ; une facette mal formée est ignorée.
+La facette standard `dataQualityAssertions` d'une entrée, qu'émettent dbt et d'autres outils de tests de données, et celle de Great Expectations, `greatExpectations_assertions`, ne sont pas contrôlées à l'ingestion : un événement n'est jamais rejeté pour elle, et son texte libre (nom, description, corps SQL d'un test, valeurs attendue et observée) reste dans l'événement reçu. Les workers la lisent ensuite avec tolérance, quatre champs seulement, chacun recontrôlé, pour [proposer un incident](incidents.md#incidents-proposés-par-un-test-de-qualité) ; une facette mal formée est ignorée.
 
 ## Contrat
 

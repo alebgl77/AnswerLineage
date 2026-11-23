@@ -134,7 +134,7 @@ Le détail de chaque menace, son scénario, ses parades avec leur code et leur t
 | `workers/webhook-secret-divulgue` | Le secret des webhooks, ou ce que tient un incident, sort par le réglage, le journal, la base ou le message | Divulgation | 4 parades |
 | `workers/webhook-file-epuisante` | Un récepteur en panne ou un afflux d'incidents fait grossir la file des webhooks ou retarde les workers | Déni de service | 5 parades |
 | `workers/webhook-detourne` | L'adresse du récepteur des webhooks est détournée vers une autre adresse | Élévation de privilège | 3 parades, acceptation à signer |
-| `workers/assertion-texte-libre` | Le texte libre d'une assertion de qualité gagne la base, l'API, le journal ou un message | Divulgation | 2 parades |
+| `workers/assertion-texte-libre` | Le texte libre d'une assertion de qualité gagne la base, l'API, le journal ou un message | Divulgation | 3 parades |
 | `workers/propositions-inondees` | Un émetteur inonde les workers de tests en échec et masque les vraies propositions | Déni de service | 4 parades, acceptation à signer |
 
 ### Ligne de commande

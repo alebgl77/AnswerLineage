@@ -23,6 +23,12 @@ base, le journal ni les compteurs. La facette est lue dans ``inputFacets``,
 sinon dans ``facets`` (dbt écrit les deux) ; mal formée, elle est ignorée, et
 l'événement est projeté comme les autres.
 
+**Great Expectations** n'émet pas la facette standard, mais la sienne,
+``greatExpectations_assertions`` : de chaque assertion, ``expectationType``,
+ramené à la même liste fermée par une table écrite d'avance, ``success`` et
+``column``, lus de même. Elle ne dit pas de gravité (``unspecified``). Une même
+colonne en échec dans les deux facettes ne fait qu'un signal.
+
 **Bornée.** ``MAX_ASSERTIONS_PER_DATASET`` assertions lues par jeu d'entrée,
 ``MAX_ASSERTIONS_PER_EVENT`` par événement, ``MAX_KEYS_PER_EVENT`` colonnes
 relevées par événement, ``MAX_PENDING_SIGNALS`` signaux en attente,
@@ -68,6 +74,8 @@ logger = logging.getLogger("answerlineage_workers")
 
 # La facette standard d'OpenLineage, et les conteneurs où la chercher, dans l'ordre.
 ASSERTIONS_FACET: Final = "dataQualityAssertions"
+# La facette propre de l'action OpenLineage de Great Expectations.
+GREAT_EXPECTATIONS_FACET: Final = "greatExpectations_assertions"
 CONTAINERS: Final = ("inputFacets", "facets")
 # La table entière : un nom de colonne n'est jamais vide.
 TABLE: Final = ""
@@ -230,8 +238,48 @@ def read_standard(item: Mapping[str, Any]) -> Reading | None:
     )
 
 
+# Les attentes de Great Expectations qui ont une classe ; toute autre est « other ».
+EXPECTATIONS: Final[Mapping[str, AssertionClass]] = {
+    "expect_column_values_to_not_be_null": "not_null",
+    "expect_column_values_to_be_unique": "unique",
+    "expect_compound_columns_to_be_unique": "unique",
+    "expect_select_column_values_to_be_unique_within_record": "unique",
+    "expect_column_values_to_be_in_set": "accepted_values",
+    "expect_column_distinct_values_to_be_in_set": "accepted_values",
+    "expect_column_distinct_values_to_equal_set": "accepted_values",
+    "expect_table_row_count_to_be_between": "row_count",
+    "expect_table_row_count_to_equal": "row_count",
+    "expect_table_row_count_to_equal_other_table": "row_count",
+    "unexpected_rows_expectation": "custom_sql",
+}
+
+
+def expectation_class(value: object) -> AssertionClass:
+    """La classe d'une attente de Great Expectations, de la table écrite d'avance."""
+    if isinstance(value, str) and len(value) <= 2 * _MAX_CODE:
+        return EXPECTATIONS.get(value.lower(), "other")
+    return "other"
+
+
+def read_great_expectations(item: Mapping[str, Any]) -> Reading | None:
+    """Une assertion de ``greatExpectations_assertions`` ; ``None`` si sa réussite n'est pas
+    un booléen."""
+    success = item.get("success")
+    if not isinstance(success, bool):
+        return None
+    return Reading(
+        success=success,
+        assertion=expectation_class(item.get("expectationType")),
+        severity="unspecified",
+        column=item.get("column"),
+    )
+
+
 # Les facettes lues, et comment lire une de leurs assertions.
-READERS: Final = ((ASSERTIONS_FACET, read_standard),)
+READERS: Final = (
+    (ASSERTIONS_FACET, read_standard),
+    (GREAT_EXPECTATIONS_FACET, read_great_expectations),
+)
 
 
 def assess(payload: Mapping[str, Any]) -> Assessment | None:
@@ -254,13 +302,16 @@ def assess(payload: Mapping[str, Any]) -> Assessment | None:
         name = _identifier(entry.get("name"), identifiers.DATASET_NAME_MAX)
         if namespace is None or name is None:
             continue
+        # Les facettes d'un jeu partagent sa borne.
+        remaining = MAX_ASSERTIONS_PER_DATASET
         for facet, read in READERS:
             assertions = _assertions(entry, facet)
             if assertions is None:
                 continue
             found = True
-            allowed = min(MAX_ASSERTIONS_PER_DATASET, budget)
+            allowed = min(remaining, budget)
             truncated += max(0, len(assertions) - allowed)
+            remaining -= min(len(assertions), allowed)
             budget -= min(len(assertions), allowed)
             for item in assertions[:allowed]:
                 reading = read(_mapping(item)) if isinstance(item, Mapping) else None

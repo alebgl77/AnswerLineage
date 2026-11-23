@@ -30,7 +30,7 @@ Les événements bruts restent dans `event_raw` : le graphe peut être [reconstr
 | `inputs` | Lectures ; les champs de la facette `schema` sont les colonnes lues, la facette `version` donne la version |
 | `outputs` avec la facette `answerlineage_delivery` | Réponse (son empreinte) et sa diffusion : canal, référence du message, destinataires pseudonymisés |
 | Autres `outputs` | Écritures |
-| Facette standard `dataQualityAssertions` d'un `input` | Hors du graphe : les signaux d'échec des tests de qualité (`quality_signal`), la dernière réussite et le dernier échec de chaque colonne testée (`quality_column`), d'où naissent les [propositions d'incident](#propositions-dincident) |
+| Facette standard `dataQualityAssertions` d'un `input`, ou celle de Great Expectations, `greatExpectations_assertions` | Hors du graphe : les signaux d'échec des tests de qualité (`quality_signal`), la dernière réussite et le dernier échec de chaque colonne testée (`quality_column`), d'où naissent les [propositions d'incident](#propositions-dincident) |
 
 La facette `dataQualityAssertions` est lue avec tolérance, comme les facettes propres, et fermée : de chaque assertion, sa réussite, sa classe, sa gravité et sa colonne, jamais son texte libre ([ce qui est lu](incidents.md#ce-qui-est-lu)). Ses signaux s'écrivent dans la transaction du lot, sous leur propre point de reprise : un interblocage fait reprendre le lot, comme pour le graphe ; toute autre erreur est comptée (`quality_stats`) et dite au journal par sa classe, sans faire échouer l'événement. La qualité n'envoie jamais un événement au rebut, ni ne prive le graphe de ses lectures.
 

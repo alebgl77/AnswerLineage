@@ -1253,7 +1253,7 @@ name = "Le texte libre d'une assertion de qualité gagne la base, l'API, le jour
 category = "information-disclosure"
 boundary = "emetteur-ingestion"
 assets = ["contenus", "destinataires"]
-description = "Une assertion de la facette dataQualityAssertions porte du texte libre : son nom, sa description, son corps SQL avec ses littéraux, les valeurs attendue et observée, qui peuvent citer une donnée d'un client, ses paramètres. Recopié, il entrerait dans la base, les réponses de l'API, le journal des workers, et de là dans un message ou un modèle. L'événement brut, archivé tel qu'il a été reçu comme tout événement, le garde."
+description = "Une assertion de la facette dataQualityAssertions, ou de celle de Great Expectations, porte du texte libre : son nom, sa description, son corps SQL avec ses littéraux, les valeurs attendue et observée, qui peuvent citer une donnée d'un client, ses paramètres. Recopié, il entrerait dans la base, les réponses de l'API, le journal des workers, et de là dans un message ou un modèle. L'événement brut, archivé tel qu'il a été reçu comme tout événement, le garde."
 abuse_cases = ["champs/assertion-nom-texte-libre", "champs/assertion-description-texte-libre", "champs/assertion-corps-sql", "champs/assertion-type-de-corps", "champs/assertion-valeur-attendue", "champs/assertion-valeur-observee", "champs/assertion-parametres", "identifiants/assertion-colonne-piegee", "identifiants/assertion-classe-piegee", "identifiants/assertion-gravite-piegee"]
 
 [[threat.mitigation]]
@@ -1265,6 +1265,11 @@ test = "workers/tests/test_quality.py::test_no_free_text_of_an_assertion_is_ever
 description = "Un canari dans chaque champ libre, la colonne, la classe ou la gravité d'une assertion ne se retrouve ni dans la base hors de l'archive des événements, ni dans la réponse, ni au journal."
 code = "workers/src/answerlineage_workers/quality.py::record"
 test = "tests/test_abuse_corpus.py::test_every_case_of_the_abuse_corpus_is_blocked"
+
+[[threat.mitigation]]
+description = "La facette de Great Expectations est lue de même : son type d'attente est ramené à la liste fermée par une table écrite d'avance, sa colonne contrôlée comme un nom ; rien d'autre n'est lu."
+code = "workers/src/answerlineage_workers/quality.py::read_great_expectations"
+test = "workers/tests/test_great_expectations.py::test_a_failed_checkpoint_proposes_an_incident_and_keeps_no_text"
 
 [[threat]]
 id = "workers/propositions-inondees"
