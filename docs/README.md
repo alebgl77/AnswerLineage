@@ -20,6 +20,7 @@
 - [Authentification et rôles](securite/authentification.md) : fournisseur OIDC, rôles, matrice des droits, jetons des clients, explorateur et démonstration
 - [Pseudonymes des destinataires](securite/pseudonymes.md) : calcul, clé et rotation, révélation tracée, journal en ajout seul, limites
 - [Incidents](incidents.md) : déclaration, analyse d'impact, états
+- [Rappel](rappel.md) : liste de rappel par incident, validation humaine, remontée
 - [Workers](workers.md)
 - [Schéma du graphe](schema.md)
 - [Ligne de commande](cli.md)

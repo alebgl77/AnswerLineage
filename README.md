@@ -83,13 +83,14 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Couverture du lignage : part des appels captés, trous connus, émetteurs muets, instances additionnées | Disponible |
 | Signaux de qualité de service de chaque appel (latence, latence ajoutée, issue, reprises) et banc de latence du proxy, chaque nuit | Disponible |
 | Kit de conformité des émetteurs, avec preuve de non-fuite par canari | Disponible |
-| Corpus d'abus rejoué à chaque merge request : 175 attaques, par famille, contre le proxy, l'API et l'explorateur | Disponible |
+| Corpus d'abus rejoué à chaque merge request : 181 attaques, par famille, contre le proxy, l'API et l'explorateur | Disponible |
 | Image analysée à chaque merge request : SBOM, vulnérabilités hautes et critiques bloquantes | Disponible |
 | Chaîne de publication d'une version : image et paquets signés sans clé et attestés, éprouvée à chaque merge request sans rien publier | Disponible |
 | Modèle de menaces tenu à jour et contrôlé : une version ne sort pas tant qu'une acceptation reste à signer | Disponible |
 | Pipeline GitHub Actions et son équivalent GitLab CI, tenus d'accord par un test | Disponible |
 | Propagation fine (colonnes, lignes, versions) et transitive (mémoire, tables dérivées) | À venir |
-| Rappel des destinataires après validation humaine | À venir |
+| Liste de rappel par incident : un message par destinataire, toutes ses réponses touchées, rangée par exposition ; validation humaine journalisée, remontée au responsable de données sans décision au bout de 48 h | Disponible |
+| Envoi des rappels aux destinataires, que la base refuse tant que leur liste n'est pas validée | À venir |
 
 ## Essayer
 
@@ -255,6 +256,7 @@ Chaque composant :
 - [API d'ingestion](docs/ingestion.md) : routes, lots, validation, rejeu, relevés de couverture
 - [API de lecture](docs/lecture.md) : retrouver une réponse, remonter à ses sources, propager un incident, exposition, couverture, graphe à une date
 - [Incidents](docs/incidents.md) : déclarer un incident, son analyse d'impact, ses états
+- [Rappel](docs/rappel.md) : la liste de rappel d'un incident, son ordre, la validation humaine, la remontée, ce que la base refuse
 - [Webhooks signés](docs/webhooks.md) : les changements d'état des incidents annoncés à un récepteur, et la vérification de leur signature
 - [Réémission](docs/reemission.md) : les événements renvoyés vers un catalogue OpenLineage en place
 - [Extension A2A](docs/a2a.md) : le lignage entre agents qui s'appellent

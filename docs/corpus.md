@@ -274,6 +274,7 @@ Les recettes forment une liste fermée :
 | 4 | Les assertions de qualité : texte libre, colonne piégée, rafale |
 | 5 | La confirmation d'un incident proposé, et les tests en échec qui le font naître |
 | 6 | La famille `jetons` et la recette `forger-jeton` ; chaque requête porte désormais le jeton d'un appelant qui a tous les rôles, y compris celui d'émetteur, et les cas ouverts des émetteurs se jouent ainsi |
+| 7 | Les destinataires pseudonymisés : un destinataire en clair refusé à l'ingestion, une identité candidate ou un pseudonyme en clair refusés à la révélation sans être recopiés, et la révélation refusée au lecteur |
 | 8 | La décision sur une liste de rappel : refusée au lecteur, sans texte libre, sans auteur dans le corps, sans valeur hors de ses listes ; une décision qui demande l'envoi lui-même. Une base peut faire analyser ses incidents (`analysed`) |
 
 Un cas qui révèle une attaque que le produit laisse passer ne se retire pas et ne se corrige pas en passant : il devient un cas ouvert.
