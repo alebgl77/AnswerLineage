@@ -474,6 +474,31 @@ async def test_a_run_tree_beyond_the_bound_is_reported_as_truncated(
     assert sum(tool["calls"] for tool in bounded["tools"]) <= 3
 
 
+async def test_beyond_the_bound_on_runs_the_sources_keep_the_first_calls_by_identifier(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = uuid4()
+    datasets = [DatasetRef("bigquery", f"ventes.suivi.table_{rank}") for rank in range(4)]
+    # Les appels arrivent dans l'ordre inverse de leurs identifiants.
+    await record(
+        engine,
+        answering(run_id),
+        *(
+            replace(calling(run_id, SQL, 5 + rank, Read(dataset)), run_id=UUID(int=rank + 1))
+            for rank, dataset in reversed(list(enumerate(datasets)))
+        ),
+    )
+
+    # Le run de la réponse, puis ses deux appels de plus petit identifiant.
+    monkeypatch.setattr(trace, "MAX_RUNS", 3)
+    bounded = await sources(client, run_id)
+    assert bounded["truncated"] is True
+    assert [dataset["name"] for dataset in bounded["datasets"]] == [
+        datasets[0].name,
+        datasets[1].name,
+    ]
+
+
 async def test_reads_beyond_the_bound_are_reported_as_truncated(
     client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:

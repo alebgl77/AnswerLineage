@@ -112,7 +112,7 @@ L'identifiant d'une réponse se déduit de son run et de son empreinte. Il reste
 | `422` | Un paramètre est absent, trop long ou mal formé |
 | `503` | La lecture a dépassé son délai maximal (`query_timeout`) : voir [Bornes et délais](#bornes-et-délais) |
 
-Une recherche renvoie 20 réponses au plus, 100 avec `limit`. L'arbre des runs parcouru pour une réponse est borné à 10 000 runs, et ses lectures à 50 000 : au-delà, `truncated` vaut `true` et les sources sont partielles.
+Une recherche renvoie 20 réponses au plus, 100 avec `limit`. L'arbre des runs parcouru pour une réponse est borné à 10 000 runs, et ses lectures à 50 000 : au-delà, `truncated` vaut `true` et les sources sont partielles ; l'arbre garde alors toujours les mêmes runs ([arbres de runs](#arbres-de-runs-au-delà-de-leur-borne)).
 
 Une erreur `422` donne le chemin du paramètre fautif, un code et un motif, jamais la valeur reçue :
 
@@ -467,6 +467,20 @@ Toute requête porte une borne sur les lignes qu'elle lit. Un dépassement se di
 
 Une couverture tronquée (`coverage.truncated`) n'est jamais donnée pour `measured` : ses trous peuvent être incomplets. Réduire la période la rend complète.
 
+Une remontée, une propagation, une vue en cinq colonnes ou un score d'exposition tronqués gardent toujours les mêmes lignes : deux lectures du même graphe rendent le même résultat, quel que soit le plan d'exécution que PostgreSQL choisit.
+
+### Arbres de runs au-delà de leur borne
+
+Les sources d'une réponse, le graphe en cinq colonnes et le score d'exposition parcourent l'arbre de chaque réponse, de son run vers ses runs enfants ; la propagation remonte des lectures vers leurs runs parents. Au-delà de sa borne, un arbre garde :
+
+- **ses niveaux complets**, du run de la réponse, ou des runs parents des lectures, jusqu'au dernier niveau qui tient en entier dans la borne ;
+- **puis les premiers runs du niveau suivant**, jusqu'à la borne. Vers les enfants, ceux des réponses dans l'ordre de la route : les plus récentes d'abord pour le graphe en cinq colonnes et le score d'exposition, qui pèsent le plus ; puis, pour chaque réponse, par identifiant de run. Vers les parents, par identifiant de run ;
+- **rien de ce niveau** quand, vers les enfants, il compte plus de quatre fois la borne : ses premiers runs ne se choisiraient qu'en les lisant tous, et un run peut avoir des enfants sans limite.
+
+Le travail reste borné. PostgreSQL ne déroule la récursion que jusqu'à la borne, niveau par niveau, puis relit au plus le niveau coupé ; trier l'arbre entier avant de le couper l'obligerait à le dérouler tout entier. Sur un arbre d'un million de runs, la remontée des sources, bornée à 10 000 runs, lit 10 001 runs de la récursion et 40 001 du niveau coupé, en quelques dizaines de millisecondes ; trier l'arbre entier en demanderait trois secondes.
+
+Les décomptes d'impact au-delà de leur borne suivent la même règle : ce sont ceux des premières réponses touchées, par run puis par empreinte, et de leurs premiers liens de diffusion, par canal, message, puis pseudonyme.
+
 ### Lire un résultat d'impact tronqué
 
 Quand `truncated` vaut `true`, la propagation n'a pas tout parcouru :
@@ -475,7 +489,7 @@ Quand `truncated` vaut `true`, la propagation n'a pas tout parcouru :
 - `counts.lower_bound` vaut `true` : les décomptes sont des **minimums** ;
 - une liste vide ne veut **pas** dire qu'aucune réponse n'est touchée. Un rappel ne peut pas s'appuyer sur ce résultat pour conclure qu'il n'y a rien à rappeler : réduire la fenêtre de l'incident et relancer la propagation.
 
-L'ordre du parcours fait passer d'abord ce qui mène aux réponses : les lectures les plus récentes de la fenêtre d'abord, par leur première heure, sans compter celles faites par un run sans parent ni réponse, qui ne touchent rien ; la remontée aux runs parents a sa propre borne, que les lecteurs ne peuvent pas épuiser, et va d'abord aux runs les plus proches des lectures.
+L'ordre du parcours fait passer d'abord ce qui mène aux réponses : les lectures les plus récentes de la fenêtre d'abord, par leur première heure, sans compter celles faites par un run sans parent ni réponse, qui ne touchent rien ; la remontée aux runs parents a sa propre borne, que les lecteurs ne peuvent pas épuiser, et va d'abord aux runs les plus proches des lectures, puis aux premiers identifiants ([arbres de runs](#arbres-de-runs-au-delà-de-leur-borne)).
 
 ### Pagination
 

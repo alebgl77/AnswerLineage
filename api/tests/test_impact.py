@@ -448,6 +448,56 @@ async def test_a_delegation_deeper_than_the_bound_is_reported_as_truncated(
     assert bounded["counts"]["lower_bound"] is True
 
 
+async def test_beyond_the_bound_on_runs_the_nearest_then_the_first_identifiers_are_kept(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_top, second_top = UUID(int=10), UUID(int=20)
+    # Le run de plus grand identifiant arrive le premier.
+    for rank, top in ((3, second_top), (1, first_top)):
+        delegated = uuid4()
+        await record(
+            engine,
+            answering(top, rank, 5, agent=FINANCE),
+            answering(delegated, rank + 1, 4, parent=top),
+            reading(delegated, 3, RATES),
+        )
+
+    # Les deux runs délégués, puis le run du dessus de plus petit identifiant.
+    monkeypatch.setattr(impact, "MAX_RUNS", 3)
+    bounded = await propagate(client)
+    assert bounded["truncated"] is True
+    assert touched(bounded) == [fingerprint(1), fingerprint(2), fingerprint(4)]
+
+
+async def test_counts_beyond_their_bound_count_the_first_answers_and_links(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Les réponses arrivent dans l'ordre inverse de leurs runs.
+    for rank, recipients in ((3, ("p-c", "p-d")), (2, ("p-a", "p-b")), (1, ("p-a", "p-b"))):
+        run_id = UUID(int=rank)
+        await record(
+            engine,
+            answering(run_id, rank, rank + 0.5, recipients=recipients),
+            reading(run_id, rank, RATES),
+        )
+
+    # Les deux premières réponses, par run : leurs destinataires sont les mêmes.
+    monkeypatch.setattr(impact, "MAX_ANSWERS", 1)
+    assert (await propagate(client))["counts"] == {
+        "answers": 2,
+        "recipients": 2,
+        "lower_bound": True,
+    }
+    # Les trois premiers liens : ceux de la première réponse, puis un de la deuxième.
+    monkeypatch.setattr(impact, "MAX_ANSWERS", 3)
+    monkeypatch.setattr(impact, "MAX_LINKS", 2)
+    assert (await propagate(client))["counts"] == {
+        "answers": 3,
+        "recipients": 2,
+        "lower_bound": True,
+    }
+
+
 async def test_counts_beyond_their_bound_are_minimums(
     client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:

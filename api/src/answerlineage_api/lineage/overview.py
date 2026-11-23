@@ -15,6 +15,7 @@ from uuid import UUID
 
 from sqlalchemy import Row, TextClause, text
 
+from answerlineage_api.lineage import trees
 from answerlineage_api.lineage.models import (
     AgentNode,
     AnswerNode,
@@ -81,20 +82,6 @@ def _recent_answers(cursor: Cursor | None) -> TextClause:
         """  # noqa: S608 — seuls des fragments constants sont interpolés.
     )
 
-
-# UNION, et non UNION ALL : des runs qui se désignent l'un l'autre comme parent
-# ne font pas tourner la recherche sans fin.
-RUN_TREES = text(
-    f"""
-    WITH RECURSIVE tree(root, run_id) AS (
-        SELECT root, root FROM unnest(CAST(:roots AS uuid[])) AS root
-        UNION
-        SELECT tree.root, child.run_id FROM run child JOIN tree ON child.parent_run_id = tree.run_id
-        WHERE {known("child")}
-    )
-    SELECT root, run_id FROM tree LIMIT :limit
-    """  # noqa: S608 — seul un fragment constant est interpolé.
-)
 
 # Une ligne par run demandé au plus : la borne est celle des arbres.
 _TOOLS = text(
@@ -179,12 +166,13 @@ async def view_of(
     vrai, la vue donne le curseur qui suit la dernière réponse. Avec
     ``known_at``, chaque chaîne est celle que le graphe connaissait à cette date.
     """
-    roots: list[UUID] = sorted({row.run_id for row in picked}, key=lambda run_id: run_id.hex)
+    # Les réponses dans l'ordre de la vue : au-delà de la borne, les premières gardent leur chaîne.
+    roots: list[UUID] = list(dict.fromkeys(row.run_id for row in picked))
 
-    trees = await reader.fetch(RUN_TREES, {"roots": roots, "known_at": known_at}, limit=MAX_RUNS)
+    tree = await trees.descendants(reader, roots, limit=MAX_RUNS, known_at=known_at)
     roots_of: dict[UUID, set[UUID]] = {}
-    for row in trees.rows:
-        roots_of.setdefault(row.run_id, set()).add(row.root)
+    for root, run_id in tree.pairs:
+        roots_of.setdefault(run_id, set()).add(root)
     run_ids = list(roots_of)
 
     # Par run racine : les outils appelés et les lectures, avec l'outil qui les a faites.
@@ -276,6 +264,6 @@ async def view_of(
         ],
         more=more,
         next_cursor=Cursor.after(picked[-1]).encode() if more and picked else None,
-        truncated=trees.truncated or tools.truncated or reads.truncated or deliveries.truncated,
+        truncated=tree.truncated or tools.truncated or reads.truncated or deliveries.truncated,
         known_at=known_at,
     )

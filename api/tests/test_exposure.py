@@ -401,6 +401,24 @@ async def test_without_reference_time_the_score_is_taken_at_the_time_of_the_base
     assert "known_at" not in found
 
 
+async def test_beyond_the_bound_on_runs_the_most_recent_answers_keep_their_reads(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # La réponse la plus récente arrive la dernière.
+    await record(
+        engine,
+        *answering(uuid4(), T0 - timedelta(days=2), Read(ACCOUNTS)),
+        *answering(uuid4(), T0 - timedelta(days=1), Read(ORDERS)),
+        *answering(uuid4(), T0, Read(RATES)),
+    )
+
+    # Les trois runs des réponses, puis un appel : celui de la plus récente.
+    monkeypatch.setattr(exposure, "MAX_RUNS", 4)
+    bounded = await ranking(client, at=AT)
+    assert bounded["truncated"] is True
+    assert scores(bounded) == [("finance.ref.taux_change", 2.0)]
+
+
 @pytest.mark.parametrize(
     ("bound", "allowed"),
     [

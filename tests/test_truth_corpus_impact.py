@@ -23,7 +23,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from answerlineage_api.lineage import impact
+from answerlineage_api.lineage import trees
 from answerlineage_corpus.measure import CorpusMeasure, as_json, gate, measure, render
 from answerlineage_corpus.scenarios import Scenario, load_corpus
 from tests.test_corpus_to_graph import api, ingest
@@ -39,8 +39,8 @@ EngineFactory = Callable[[], AbstractAsyncContextManager[AsyncEngine]]
 # l'agent qui a délégué.
 _PARENT_ONLY = text(
     """
-    SELECT r.parent_run_id AS run_id FROM run r
-    WHERE r.run_id = ANY(:readers) AND r.parent_run_id IS NOT NULL
+    SELECT first.run_id, CAST(NULL AS uuid) AS parent_run_id
+    FROM unnest(CAST(:firsts AS uuid[])) AS first(run_id)
     LIMIT :limit
     """
 )
@@ -119,7 +119,7 @@ async def test_the_impact_engine_passes_its_quality_gate_on_the_truth_corpus(
 async def test_a_weakened_engine_fails_the_gate_which_names_the_missed_answers(
     fresh_engine: EngineFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(impact, "_ANCESTORS", _PARENT_ONLY)
+    monkeypatch.setattr(trees, "ANCESTORS", _PARENT_ONLY)
     result = await measured(fresh_engine)
 
     with pytest.raises(pytest.fail.Exception) as failure:

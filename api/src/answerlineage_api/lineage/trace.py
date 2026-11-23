@@ -17,7 +17,7 @@ from uuid import UUID
 
 from sqlalchemy import Row, text
 
-from answerlineage_api.lineage import coverage
+from answerlineage_api.lineage import coverage, trees
 from answerlineage_api.lineage.models import (
     AgentName,
     AnswerSummary,
@@ -62,20 +62,6 @@ _BY_KEY = text(
     ORDER BY a.fingerprint
     LIMIT :limit
     """
-)
-
-# UNION, et non UNION ALL : deux runs qui se désignent l'un l'autre comme
-# parent ne font pas tourner la recherche sans fin.
-_RUN_TREE = text(
-    f"""
-    WITH RECURSIVE tree(run_id) AS (
-        SELECT CAST(:root AS uuid)
-        UNION
-        SELECT child.run_id FROM run child JOIN tree ON child.parent_run_id = tree.run_id
-        WHERE {known("child")}
-    )
-    SELECT run_id FROM tree WHERE run_id <> :root LIMIT :limit
-    """  # noqa: S608 — seul un fragment constant est interpolé.
 )
 
 # Une ligne par run demandé au plus : la borne est celle de l'arbre.
@@ -232,10 +218,8 @@ async def sources(
     porte la couverture du lignage sur la période du run, par les émetteurs qui
     l'ont vu. ``now`` borne la partie de la période qui peut être mesurée.
     """
-    children = await reader.fetch(
-        _RUN_TREE, {"root": answer.run_id, "known_at": known_at}, limit=MAX_RUNS - 1
-    )
-    run_ids = [answer.run_id, *(row.run_id for row in children.rows)]
+    tree = await trees.descendants(reader, [answer.run_id], limit=MAX_RUNS, known_at=known_at)
+    run_ids = [run_id for _, run_id in tree.pairs]
 
     agents: set[tuple[str, str]] = set()
     calls: dict[tuple[str, str], int] = {}
@@ -261,6 +245,6 @@ async def sources(
         coverage=await coverage.over_runs(
             reader, run_ids, start=period.start, end=period.end, now=now
         ),
-        truncated=children.truncated or actors.truncated or reads.truncated,
+        truncated=tree.truncated or actors.truncated or reads.truncated,
         known_at=known_at,
     )

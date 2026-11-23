@@ -291,6 +291,31 @@ async def test_run_trees_beyond_the_bound_are_reported_as_truncated(
     assert (await graph(client))["truncated"] is True
 
 
+async def test_beyond_the_bound_on_runs_the_most_recent_answers_keep_their_chain(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    older, newer = uuid4(), uuid4()
+    # Les appels de la réponse la plus récente arrivent après ceux de l'autre.
+    await record(
+        engine,
+        answering(older, 1),
+        *(calling(older, SQL, Read(RATES)) for _ in range(3)),
+        answering(newer, 2),
+        *(calling(newer, ACCOUNTS_TOOL, Read(ACCOUNTS)) for _ in range(3)),
+    )
+
+    # Les deux runs des réponses, puis trois appels : ceux de la réponse la plus récente.
+    monkeypatch.setattr(overview, "MAX_RUNS", 5)
+    found = await graph(client)
+    assert found["truncated"] is True
+    assert [answer["fingerprint"] for answer in found["answers"]] == [
+        fingerprint(2),
+        fingerprint(1),
+    ]
+    assert [len(answer["reads"]) for answer in found["answers"]] == [1, 0]
+    assert [dataset["name"] for dataset in found["datasets"]] == [ACCOUNTS.name]
+
+
 async def test_reads_beyond_the_bound_are_reported_as_truncated(
     client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:

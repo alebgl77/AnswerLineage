@@ -19,7 +19,9 @@ ce qui mène aux réponses passe d'abord :
 - les lectures de la fenêtre ont leur propre borne, et une lecture qui ne mène
   à rien (ni réponse, ni run parent) n'y compte pas ;
 - la remontée aux runs parents a la sienne : les lecteurs ne l'épuisent jamais
-  avant elle. Elle va d'abord aux runs les plus proches des lectures.
+  avant elle. Elle va d'abord aux runs les plus proches des lectures, puis, à
+  distance égale, aux premiers identifiants (``trees.py``) : la coupe ne dépend
+  pas du plan d'exécution.
 
 Le résultat dit aussi ce que la propagation n'a pas pu voir : la couverture du
 lignage sur la fenêtre de l'incident et ses trous connus (``coverage.py``).
@@ -37,7 +39,7 @@ from uuid import UUID
 
 from sqlalchemy import TextClause, text
 
-from answerlineage_api.lineage import coverage
+from answerlineage_api.lineage import coverage, trees
 from answerlineage_api.lineage.models import (
     DatasetName,
     ImpactCounts,
@@ -71,7 +73,7 @@ _DATASET = text(
 # touche aucune réponse.
 _READERS = text(
     f"""
-    SELECT e.run_id
+    SELECT e.run_id, r.parent_run_id
     FROM (
         SELECT e.id, e.run_id, e.event_time FROM read_edge e
         WHERE e.dataset_id = :dataset_id AND e.event_time >= :start AND e.event_time < :end
@@ -90,33 +92,23 @@ _READERS = text(
     """  # noqa: S608 — seuls des fragments constants sont interpolés.
 )
 
-# Des lecteurs vers leurs runs parents, niveau par niveau. UNION, et non
-# UNION ALL : des runs qui se désignent l'un l'autre comme parent ne font pas
-# tourner la recherche sans fin.
-_ANCESTORS = text(
-    f"""
-    WITH RECURSIVE up(run_id) AS (
-        SELECT r.parent_run_id FROM run r
-        WHERE r.run_id = ANY(:readers) AND r.parent_run_id IS NOT NULL
-        UNION
-        SELECT r.parent_run_id FROM run r JOIN up ON r.run_id = up.run_id
-        WHERE r.parent_run_id IS NOT NULL AND {known("r")}
-    )
-    SELECT run_id FROM up LIMIT :limit
-    """  # noqa: S608 — seul un fragment constant est interpolé.
-)
-
-# Chaque décompte lit au plus une ligne de plus que sa borne.
+# Chaque décompte lit au plus une ligne de plus que sa borne. Au-delà, il compte
+# les premières réponses par run et empreinte, et leurs premiers liens par
+# diffusion et pseudonyme : deux lectures du même graphe comptent les mêmes.
 _COUNTS = text(
     f"""
     WITH touched AS (
-        SELECT a.id FROM answer a WHERE a.run_id = ANY(:run_ids) AND {known("a")}
+        SELECT a.id, a.run_id, a.fingerprint FROM answer a
+        WHERE a.run_id = ANY(:run_ids) AND {known("a")}
+        ORDER BY a.run_id, a.fingerprint
         LIMIT :answers_limit
     ), links AS (
         SELECT l.recipient_id
         FROM touched t
         JOIN delivery d ON d.answer_id = t.id AND {known("d")}
         JOIN delivery_recipient l ON l.delivery_id = d.id AND {known("l")}
+        JOIN recipient c ON c.id = l.recipient_id
+        ORDER BY t.run_id, t.fingerprint, d.channel, d.message_ref, c.pseudonym
         LIMIT :links_limit
     )
     SELECT (SELECT count(*) FROM touched) AS answers,
@@ -177,11 +169,12 @@ async def touched_runs(
         limit=MAX_READS,
     )
     reader_ids = list(dict.fromkeys(row.run_id for row in readers.rows))
-    ancestors = await reader.fetch(_ANCESTORS, {"readers": reader_ids, **as_of}, limit=MAX_RUNS)
+    parents = [row.parent_run_id for row in readers.rows if row.parent_run_id is not None]
+    ancestors, cut = await trees.ancestors(reader, parents, limit=MAX_RUNS, known_at=known_at)
     return Touched(
         kind=dataset.kind,
-        run_ids=list(dict.fromkeys([*reader_ids, *(row.run_id for row in ancestors.rows)])),
-        truncated=readers.truncated or ancestors.truncated,
+        run_ids=list(dict.fromkeys([*reader_ids, *ancestors])),
+        truncated=readers.truncated or cut,
     )
 
 

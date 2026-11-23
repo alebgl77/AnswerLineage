@@ -43,7 +43,7 @@ from uuid import UUID
 
 from sqlalchemy import Row, text
 
-from answerlineage_api.lineage.overview import RUN_TREES
+from answerlineage_api.lineage import trees
 from answerlineage_api.lineage.paging import CursorError, decode_instant, encode_instant
 from answerlineage_api.lineage.reading import EARLIEST, LATEST, Reader, known
 
@@ -317,12 +317,12 @@ async def rank(
         recipients.setdefault(row.answer_id, set()).add(row.recipient_id)
     roots = _roots(answers.rows, at, recipients)
 
-    trees = await reader.fetch(
-        RUN_TREES, {"roots": sorted(roots, key=lambda run_id: run_id.hex), **as_of}, limit=MAX_RUNS
-    )
+    # Les runs des réponses les plus récentes d'abord : au-delà de la borne, ce sont les
+    # plus anciennes, qui pèsent le moins, qui perdent leurs lectures.
+    tree = await trees.descendants(reader, list(roots), limit=MAX_RUNS, known_at=known_at)
     pairs = {
-        "roots": [row.root for row in trees.rows],
-        "run_ids": [row.run_id for row in trees.rows],
+        "roots": [root for root, _ in tree.pairs],
+        "run_ids": [run_id for _, run_id in tree.pairs],
         **as_of,
     }
     reads = await reader.fetch(_DATASETS_READ, pairs, limit=MAX_READS)
@@ -369,6 +369,6 @@ async def rank(
     return Ranking(
         at=at,
         datasets=tuple(ranked),
-        truncated=any(found.truncated for found in (answers, links, trees, reads, named)),
+        truncated=any(found.truncated for found in (answers, links, tree, reads, named)),
         recipients_of_root={run_id: frozenset(root.recipients) for run_id, root in roots.items()},
     )
