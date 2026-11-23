@@ -11,17 +11,19 @@
 
 - [Proxy MCP](proxy.md)
 - [API d'ingestion](ingestion.md)
-- [API de lecture](lecture.md)
+- [API de lecture](lecture.md) : remonter d'une réponse à ses sources, propager un incident, classer les données par exposition
 - [Facettes OpenLineage d'AnswerLineage](facettes.md)
 - [Kit de conformité des émetteurs](conformite.md)
 - [Extension A2A de lignage](a2a.md)
 - [Modèle de menaces](securite/modele-de-menaces.md) : frontières de confiance, actifs, menaces de chaque composant, parades et acceptations, revu à chaque version
+- [Incidents](incidents.md) : déclaration, analyse d'impact, états
 - [Workers](workers.md)
 - [Schéma du graphe](schema.md)
 - [Ligne de commande](cli.md)
 - [Explorateur](explorateur.md)
 - [Entreprise synthétique, corpus de vérité et corpus d'abus](corpus.md)
 - [Réémission vers un catalogue OpenLineage](reemission.md)
+- [Webhooks signés](webhooks.md) : les changements d'état des incidents annoncés à un récepteur, format publié et vérification de la signature
 
 ## Faire tourner et publier
 

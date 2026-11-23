@@ -57,11 +57,18 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Partitions mensuelles des tables qui grossissent avec le trafic, créées et purgées par les workers selon une conservation réglable | Disponible |
 | Remontée d'une réponse à ses sources : jeux de données, versions, outils, agents, avec la couverture de la période de son run | Disponible |
 | Propagation d'un incident : réponses et destinataires touchés par une table fausse sur une période | Disponible |
+| Déclaration d'un incident (périmètre, fenêtre, gravité) et analyse d'impact par les workers, sur le graphe tel qu'il était connu | Disponible |
+| Score d'exposition des jeux de données et des colonnes, selon les réponses et les destinataires qui en dépendent | Disponible |
+| Webhooks signés à chaque changement d'état d'un incident, format publié et fonction de vérification de référence | Disponible |
+| Réémission des événements vers un catalogue par le protocole HTTP d'OpenLineage, éprouvée sur Marquez | Disponible |
+| Étiquetage des requêtes de l'entrepôt par l'identifiant du run, pour rejoindre ses journaux | Disponible |
+| File de rebut des événements que la projection n'intègre pas, et reconstruction du graphe depuis les événements reçus | Disponible |
+| Extension A2A de lignage, pour les agents qui en appellent d'autres | Disponible |
 | Entreprise synthétique et corpus de vérité, pour essayer et mesurer sans donnée réelle | Disponible |
 | Porte de qualité du moteur d'impact : rappel d'au moins 0,99 au niveau table sur le corpus de vérité, à chaque merge request | Disponible |
 | Explorateur visuel : graphe en cinq colonnes, modes Remonter et Propager, adresses partageables | Disponible |
 | Démonstration en une commande, sur une entreprise synthétique | Disponible |
-| Ligne de commande `answerlineage` : `impact`, `doctor`, `demo`, `proxy`, et route de santé de l'API | Disponible |
+| Ligne de commande `answerlineage` : `impact`, `exposure`, `incident`, `doctor`, `demo`, `proxy`, `dead-letters`, et route de santé de l'API | Disponible |
 | Contrôle de toute entrée : identifiants, taille, compression, profondeur, délai des lectures | Disponible |
 | Ingestion idempotente, avec un compteur de doublons par émetteur | Disponible |
 | Schémas JSON versionnés des facettes propres, pour écrire un émetteur sans lire le code | Disponible |
@@ -70,9 +77,11 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Couverture du lignage : part des appels captés, trous connus, émetteurs muets, instances additionnées | Disponible |
 | Signaux de qualité de service de chaque appel (latence, latence ajoutée, issue, reprises) et banc de latence du proxy, chaque nuit | Disponible |
 | Kit de conformité des émetteurs, avec preuve de non-fuite par canari | Disponible |
-| Corpus d'abus rejoué à chaque merge request : 94 attaques, par famille, contre le proxy, l'API et l'explorateur | Disponible |
+| Corpus d'abus rejoué à chaque merge request : 140 attaques, par famille, contre le proxy, l'API et l'explorateur | Disponible |
 | Image analysée à chaque merge request : SBOM, vulnérabilités hautes et critiques bloquantes | Disponible |
 | Chaîne de publication d'une version : image et paquets signés sans clé et attestés, éprouvée à chaque merge request sans rien publier | Disponible |
+| Modèle de menaces tenu à jour et contrôlé : une version ne sort pas tant qu'une acceptation reste à signer | Disponible |
+| Pipeline GitHub Actions et son équivalent GitLab CI, tenus d'accord par un test | Disponible |
 | Propagation fine (colonnes, lignes, versions) et transitive (mémoire, tables dérivées) | À venir |
 | Rappel des destinataires après validation humaine | À venir |
 
@@ -237,12 +246,17 @@ Chaque composant :
 
 - [Proxy MCP](docs/proxy.md) : ce qui est relayé, ce qui est lu, analyse du SQL, boîte d'envoi, mode stdio, limites connues
 - [API d'ingestion](docs/ingestion.md) : routes, lots, validation, rejeu, relevés de couverture
-- [API de lecture](docs/lecture.md) : retrouver une réponse, remonter à ses sources, propager un incident, couverture, graphe à une date
+- [API de lecture](docs/lecture.md) : retrouver une réponse, remonter à ses sources, propager un incident, exposition, couverture, graphe à une date
+- [Incidents](docs/incidents.md) : déclarer un incident, son analyse d'impact, ses états
+- [Webhooks signés](docs/webhooks.md) : les changements d'état des incidents annoncés à un récepteur, et la vérification de leur signature
+- [Réémission](docs/reemission.md) : les événements renvoyés vers un catalogue OpenLineage en place
+- [Extension A2A](docs/a2a.md) : le lignage entre agents qui s'appellent
+- [Modèle de menaces](docs/securite/modele-de-menaces.md) : frontières de confiance, menaces, parades et acceptations
 - [Facettes](docs/facettes.md) : les schémas JSON versionnés des facettes propres à AnswerLineage
 - [Kit de conformité](docs/conformite.md) : vérifier un émetteur, lire son rapport
 - [Workers](docs/workers.md) : file de traitement, garanties, projection dans le graphe, émetteurs muets, partitions
 - [Schéma du graphe](docs/schema.md) : tables, deux heures, partitions et conservation, migrations
-- [Ligne de commande](docs/cli.md) : `answerlineage impact`, `doctor`, `demo`, `proxy`
+- [Ligne de commande](docs/cli.md) : `answerlineage impact`, `exposure`, `incident`, `doctor`, `demo`, `proxy`, `dead-letters`
 - [Explorateur](docs/explorateur.md) : le graphe en cinq colonnes, les modes Remonter et Propager, les adresses partageables
 - [Entreprise synthétique, corpus de vérité et corpus d'abus](docs/corpus.md) : ce qu'ils contiennent, la vérité des incidents, la mesure du moteur, les attaques rejouées et celles qui restent ouvertes
 
