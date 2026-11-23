@@ -214,6 +214,7 @@ def incident(
             "truncated": truncated if done else None,
         },
         "quarantine": None,
+        "proposal_id": None,
     }
 
 

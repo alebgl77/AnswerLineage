@@ -1793,6 +1793,19 @@
             "title": "Id",
             "type": "string"
           },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "La proposition née d'un test de qualité en échec dont la confirmation a déclaré l'incident ; nulle pour un incident déclaré à la main.",
+            "title": "Proposal Id"
+          },
           "quarantine": {
             "anyOf": [
               {
@@ -1838,7 +1851,8 @@
           "window",
           "declared_at",
           "analysis",
-          "quarantine"
+          "quarantine",
+          "proposal_id"
         ],
         "title": "Incident",
         "type": "object"
@@ -1909,6 +1923,19 @@
             "title": "Id",
             "type": "string"
           },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "La proposition née d'un test de qualité en échec dont la confirmation a déclaré l'incident ; nulle pour un incident déclaré à la main.",
+            "title": "Proposal Id"
+          },
           "quarantine": {
             "anyOf": [
               {
@@ -1966,6 +1993,7 @@
           "declared_at",
           "analysis",
           "quarantine",
+          "proposal_id",
           "result"
         ],
         "title": "IncidentDetail",
@@ -2507,6 +2535,40 @@
         "title": "PartitionHealth",
         "type": "object"
       },
+      "ProposalConfirmation": {
+        "additionalProperties": false,
+        "description": "Ce que demande la confirmation d'une proposition : la gravité de l'incident, et sa\nfenêtre quand la fenêtre déduite ne convient pas. Aucun texte libre.",
+        "properties": {
+          "severity": {
+            "description": "Gravité de l'incident, de « low » à « critical » : l'appréciation de l'humain qui confirme, pas celle du test.",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeclaredWindow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Fenêtre de validité de l'incident, aux règles de la déclaration. Par défaut, la fenêtre déduite : de son début à la fin de l'échec, ou à la confirmation."
+          }
+        },
+        "required": [
+          "severity"
+        ],
+        "title": "ProposalConfirmation",
+        "type": "object"
+      },
       "ProposalCounts": {
         "description": "Décomptes d'une proposition, lus sur ses signaux.",
         "properties": {
@@ -2526,6 +2588,31 @@
           "lower_bound"
         ],
         "title": "ProposalCounts",
+        "type": "object"
+      },
+      "ProposalDecision": {
+        "description": "L'issue d'une confirmation ou d'un écartement : la proposition telle qu'elle est\ndésormais.",
+        "properties": {
+          "changed": {
+            "description": "Vrai quand cette demande a décidé de la proposition ; faux quand elle l'était déjà ainsi, et elle est alors rendue telle quelle.",
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "proposal": {
+            "$ref": "#/components/schemas/IncidentProposal"
+          },
+          "proposal_id": {
+            "format": "uuid",
+            "title": "Proposal Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "changed",
+          "proposal"
+        ],
+        "title": "ProposalDecision",
         "type": "object"
       },
       "ProposedWindow": {
@@ -4340,6 +4427,178 @@
           }
         },
         "summary": "Donne un incident proposé par un test de qualité en échec",
+        "tags": [
+          "incidents"
+        ]
+      }
+    },
+    "/api/v1/incident-proposals/{proposal_id}/confirm": {
+      "post": {
+        "description": "L'incident est déclaré sur la table de la proposition, avec la gravité donnée et la\nfenêtre donnée ou déduite, à l'état « qualified » ; son analyse est demandée et sa\ndéclaration annoncée par webhook, dans la transaction qui confirme. Idempotent : une\nproposition déjà confirmée est rendue telle quelle (``changed`` faux), sans nouvel\nincident ni nouvelle annonce.",
+        "operationId": "confirm_proposal_api_v1_incident_proposals__proposal_id__confirm_post",
+        "parameters": [
+          {
+            "description": "Identifiant de la proposition, tel que l'API le donne.",
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "description": "Identifiant de la proposition, tel que l'API le donne.",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProposalConfirmation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalDecision"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Aucune proposition ne porte cet identifiant."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La proposition est déjà écartée (« proposal_dismissed ») ou expirée (« proposal_expired ») : elle ne se confirme plus."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`)."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "La confirmation est invalide."
+          }
+        },
+        "summary": "Confirme un incident proposé : il est déclaré, son analyse demandée et annoncée",
+        "tags": [
+          "incidents"
+        ]
+      }
+    },
+    "/api/v1/incident-proposals/{proposal_id}/dismiss": {
+      "post": {
+        "description": "La proposition passe écartée, définitivement ; rien n'est annoncé. Pendant un jour, les\néchecs suivants du même jeu s'y rattachent sans rien proposer. Idempotent : une\nproposition déjà écartée est rendue telle quelle (``changed`` faux).",
+        "operationId": "dismiss_proposal_api_v1_incident_proposals__proposal_id__dismiss_post",
+        "parameters": [
+          {
+            "description": "Identifiant de la proposition, tel que l'API le donne.",
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "description": "Identifiant de la proposition, tel que l'API le donne.",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalDecision"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Aucune proposition ne porte cet identifiant."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La proposition est déjà confirmée (« proposal_confirmed ») ou expirée (« proposal_expired ») : elle ne s'écarte plus."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          }
+        },
+        "summary": "Écarte un incident proposé : rien n'est déclaré ni annoncé",
         "tags": [
           "incidents"
         ]

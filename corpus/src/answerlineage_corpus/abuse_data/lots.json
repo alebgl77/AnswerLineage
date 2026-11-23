@@ -237,6 +237,15 @@
         "count": 5000
       },
       "expect": {"verdict": "sans_effet"}
+    },
+    {
+      "name": "confirmation-fenetre-demesuree",
+      "title": "La confirmation d'un incident proposé sur une fenêtre de plus d'un mois",
+      "surface": "ingestion",
+      "base": "ingestion/confirmation-d-une-proposition",
+      "canary": "2026-09-01T00:00:00Z",
+      "alter": {"field": "/body/window", "value": {"from": "2026-09-01T00:00:00Z", "to": "2026-11-01T00:00:00Z"}},
+      "expect": {"verdict": "rejete", "path": "/window", "code": "window_too_long"}
     }
   ]
 }

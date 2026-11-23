@@ -14,6 +14,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -27,7 +28,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from answerlineage_api.app import create_app
 from answerlineage_api.store.engine import create_engine
 from answerlineage_corpus.abuse import Base, Case, healthy_play, load_abuse_corpus, play_of
-from answerlineage_corpus.abuse_requests import INCIDENT, Play
+from answerlineage_corpus.abuse_requests import INCIDENT, PROPOSAL, Play
 from answerlineage_corpus.abuse_verdict import (
     RAW_EVENTS,
     Conclusion,
@@ -40,6 +41,7 @@ from answerlineage_proxy import app as proxy_app
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import ProxySettings, SqlTool
 from answerlineage_proxy.sink import MemorySink
+from answerlineage_workers.proposals import process_signals
 from answerlineage_workers.queue import process_batch
 from proxy.tests.conftest import exchange, running
 
@@ -288,11 +290,17 @@ async def observe_api(
                 (await client.post("/api/v1/incidents", json=incident)).json().get("id")
                 for incident in play.incidents
             ]
+            path = play.path.replace(INCIDENT, str(declared[0])) if declared else play.path
+            if play.proposals:
+                path = path.replace(PROPOSAL, await proposed(client, engine, play.proposals))
+            # Ce que la requête fait entrer se compte à partir de là : rien de ce qui précède.
+            baseline = await tables(engine)
             app.consumed = 0
             request = client.build_request(
                 play.method,
-                # L'API tire l'identifiant d'un incident : le chemin le reçoit à la déclaration.
-                play.path.replace(INCIDENT, str(declared[0])) if declared else play.path,
+                # L'API tire l'identifiant d'un incident, la base celui d'une proposition : le
+                # chemin les reçoit à leur naissance.
+                path,
                 headers=list(play.headers),
                 content=play.body if play.announced else in_chunks(play.body),
             )
@@ -321,11 +329,29 @@ async def observe_api(
         },
         sent=len(play.body),
         consumed=app.consumed,
-        stored=len(after[ARCHIVE]),
-        queued=len(before[QUEUE]),
+        stored=len(after[ARCHIVE]) - len(baseline[ARCHIVE]),
+        queued=len(before[QUEUE]) - len(baseline[QUEUE]),
         pending=len(after[QUEUE]),
-        graph={name: len(rows) for name, rows in after.items() if rows and name not in BOOKKEEPING},
+        graph={
+            name: added
+            for name, rows in after.items()
+            if name not in BOOKKEEPING and (added := len(rows) - len(baseline[name]))
+        },
     )
+
+
+async def proposed(client: httpx.AsyncClient, engine: AsyncEngine, events: tuple[Any, ...]) -> str:
+    """Fait naître une proposition des tests en échec, datés de l'heure du jeu, et rend son
+    identifiant : une proposition ne naît que d'un échec récent."""
+    recent = (datetime.now(UTC) - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    await client.post(
+        "/api/v1/lineage/batch", json=[{**event, "eventTime": recent} for event in events]
+    )
+    await drain(engine)
+    while await process_signals(engine):
+        pass
+    found: str = (await client.get("/api/v1/incident-proposals")).json()["proposals"][0]["id"]
+    return found
 
 
 @pytest.fixture

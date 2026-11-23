@@ -563,6 +563,53 @@
         "graph": {"run": 1, "dataset": 1, "read_edge": 1, "quality_signal": 1, "quality_column": 1}
       }
     },
+    "ingestion/confirmation-d-une-proposition": {
+      "title": "La confirmation, avec sa gravité, d'un incident proposé par un test dbt en échec",
+      "surface": "ingestion",
+      "proposals": [
+        {
+          "eventType": "COMPLETE",
+          "producer": "https://github.com/OpenLineage/OpenLineage/tree/1.55.0/integration/dbt",
+          "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
+          "run": {"runId": "019a4d1e-6f00-7c3e-9d5e-2f1b6c8a0020", "facets": {}},
+          "job": {"namespace": "dbt", "name": "analytique.public.clients.test"},
+          "inputs": [
+            {
+              "namespace": "postgres://entrepot:5432",
+              "name": "analytique.public.clients",
+              "inputFacets": {
+                "dataQualityAssertions": {
+                  "_producer": "https://github.com/OpenLineage/OpenLineage/tree/1.55.0/integration/dbt",
+                  "_schemaURL": "https://openlineage.io/spec/facets/1-1-0/DataQualityAssertionsDatasetFacet.json#/$defs/DataQualityAssertionsDatasetFacet",
+                  "assertions": [{"assertion": "unique", "success": false, "column": "email", "severity": "error"}]
+                }
+              }
+            }
+          ],
+          "outputs": []
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/incident-proposals/{proposal}/confirm",
+        "headers": {"content-type": "application/json"},
+        "body": {"severity": "high"}
+      },
+      "healthy": {
+        "status": 200,
+        "body": {
+          "changed": true,
+          "proposal": {
+            "state": "confirmed",
+            "dataset": {"namespace": "postgres://entrepot:5432", "name": "analytique.public.clients"},
+            "columns": ["email"],
+            "assertions": ["unique"]
+          }
+        },
+        "events": 0,
+        "graph": {"incident": 1, "incident_dataset": 1, "incident_analysis": 1}
+      }
+    },
     "lecture/incidents": {
       "title": "La liste des incidents déclarés, les plus récents d'abord",
       "surface": "lecture",

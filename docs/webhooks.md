@@ -44,13 +44,13 @@ Un message par changement d'état, d'une liste fermée : celle des états qui ex
 
 | `type` | Quand | `incident.analysis.state` | `incident.quarantine.state` |
 | --- | --- | --- | --- |
-| `incident.declared` | L'incident est déclaré, par l'API ou la ligne de commande | `pending` | nul |
+| `incident.declared` | L'incident est déclaré, par l'API ou la ligne de commande, ou à la confirmation d'une proposition | `pending` | nul |
 | `incident.analysed` | Son analyse d'impact est faite : les décomptes se lisent | `done` | celui de l'heure |
 | `incident.analysis_failed` | Son analyse est en échec pour de bon, après ses essais : le code dit pourquoi | `failed` | celui de l'heure |
 | `incident.quarantined` | Il est [mis en quarantaine](incidents.md#quarantaine) : les proxys reçoivent son périmètre | celui de l'heure | `active` |
 | `incident.quarantine_lifted` | Sa quarantaine est levée | celui de l'heure | `lifted` |
 
-Une analyse remise à plus tard après un échec ne change pas d'état et n'annonce rien. Une analyse [rejouée](incidents.md#rejouer-une-analyse) annonce de nouveau sa fin, sous un nouvel identifiant de livraison. Une activation ou une levée qui ne change rien, parce que l'incident était déjà dans l'état demandé, n'annonce rien.
+Un [incident proposé](incidents.md#incidents-proposés-par-un-test-de-qualité) par un test de qualité en échec n'annonce rien : ni sa proposition, ni son écartement. Sa confirmation déclare l'incident, et annonce `incident.declared` comme toute déclaration, à l'heure de la confirmation, qui est celle de la déclaration ; le format ne change pas. Une analyse remise à plus tard après un échec ne change pas d'état et n'annonce rien. Une analyse [rejouée](incidents.md#rejouer-une-analyse) annonce de nouveau sa fin, sous un nouvel identifiant de livraison. Une activation ou une levée qui ne change rien, parce que l'incident était déjà dans l'état demandé, n'annonce rien.
 
 ```http
 POST /answerlineage HTTP/1.1

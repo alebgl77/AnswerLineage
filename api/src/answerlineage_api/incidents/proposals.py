@@ -1,8 +1,17 @@
-"""Les propositions d'incident nées des tests de qualité en échec : les lire.
+"""Les propositions d'incident nées des tests de qualité en échec : les lire, en décider.
 
 Les workers relèvent les échecs dans les événements et en font des propositions
 (``answerlineage_workers.proposals``). Une proposition attend un humain : rien
 n'en part, ni analyse, ni annonce, ni quarantaine.
+
+**Confirmer** déclare l'incident, dans une seule transaction : la proposition est
+verrouillée, l'incident déclaré sur sa table avec la gravité que donne l'humain
+et la fenêtre qu'il donne ou la fenêtre déduite (``store.declare`` : son
+périmètre, sa demande d'analyse et l'annonce ``incident.declared``), puis la
+proposition passe confirmée, avec son incident. **Écarter** n'annonce rien. Les
+deux sont idempotents, et prennent un verrou sur la table des propositions,
+comme les workers qui les créent : une décision ne croise ni une création ni une
+autre décision.
 
 Chaque lecture est bornée : une page de propositions, les colonnes de chacune
 (``MAX_PROPOSAL_COLUMNS``), et les runs en échec d'une proposition, comptés
@@ -16,18 +25,27 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Final
 from uuid import UUID
 
 from sqlalchemy import Row, TextClause, text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
+from answerlineage_api.incidents import store
 from answerlineage_api.incidents.models import (
+    MAX_WINDOW,
+    DeclaredDataset,
+    DeclaredScope,
+    DeclaredWindow,
     IncidentDataset,
+    IncidentDeclaration,
     IncidentProposal,
     IncidentProposalDetail,
     IncidentProposalList,
+    ProposalConfirmation,
     ProposalCounts,
+    ProposalDecision,
     ProposedWindow,
     in_utc,
 )
@@ -40,6 +58,8 @@ from answerlineage_api.store.schema import MAX_PROPOSAL_COLUMNS, ProposalState
 PROPOSAL_CURSOR_PATTERN: Final = r"^[0-9]{1,18}\.[0-9a-f]{32}$"
 # Runs en échec comptés pour une proposition : au-delà, le décompte est un minimum.
 MAX_COUNTED_RUNS: Final = 10_000
+# Une fenêtre déduite finit au plus tôt juste après le dernier échec : elle le comprend.
+_AFTER_LAST_FAILURE: Final = timedelta(seconds=1)
 
 # La proposition, et la fin de son échec, déduite de ses colonnes : nulle tant que l'une
 # échoue, qu'une n'est pas suivie, ou que la borne des colonnes nommées est atteinte sur
@@ -195,4 +215,129 @@ async def proposal(reader: Reader, proposal_id: UUID) -> IncidentProposalDetail 
         counts=ProposalCounts(
             failed_runs=min(counted, MAX_COUNTED_RUNS), lower_bound=counted > MAX_COUNTED_RUNS
         ),
+    )
+
+
+# Décider d'une proposition.
+
+
+class ProposalDecidedError(Exception):
+    """La proposition est déjà décidée autrement : ``code`` dit comment."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class DerivedWindowTooLongError(Exception):
+    """La fenêtre déduite dure plus que la fenêtre d'un incident : le confirmeur la donne."""
+
+
+_LOCK = text("LOCK TABLE incident_proposal IN SHARE ROW EXCLUSIVE MODE")
+_STATE = text("SELECT state FROM incident_proposal WHERE id = :id FOR UPDATE")
+_NOW = text("SELECT now()")
+_CONFIRM = text(
+    """
+    UPDATE incident_proposal
+    SET state = 'confirmed', incident_id = :incident,
+        decided_at = GREATEST(clock_timestamp(), proposed_at)
+    WHERE id = :id
+    """
+)
+_DISMISS = text(
+    """
+    UPDATE incident_proposal
+    SET state = 'dismissed', decided_at = GREATEST(clock_timestamp(), proposed_at)
+    WHERE id = :id
+    """
+)
+# Ce qu'une décision demandée à une proposition déjà décidée autrement répond.
+_REFUSALS: Final = {
+    "confirmed": "proposal_confirmed",
+    "dismissed": "proposal_dismissed",
+    "expired": "proposal_expired",
+}
+
+
+async def _current(conn: AsyncConnection, proposal_id: UUID) -> IncidentProposal:
+    row = (
+        await conn.execute(
+            _ONE, {"id": proposal_id, "max_columns": MAX_PROPOSAL_COLUMNS, "limit": 1}
+        )
+    ).one()
+    named = (
+        await conn.execute(_NAMED, {"ids": [proposal_id], "limit": MAX_PROPOSAL_COLUMNS})
+    ).all()
+    return proposal_of(row, [found.column_name for found in named])
+
+
+async def _locked(conn: AsyncConnection, proposal_id: UUID) -> str | None:
+    """Verrouille la table des propositions, puis la proposition ; rend son état."""
+    await conn.execute(_LOCK)
+    state: str | None = (await conn.execute(_STATE, {"id": proposal_id})).scalar_one_or_none()
+    return state
+
+
+def _window(found: IncidentProposal, now: datetime) -> DeclaredWindow:
+    """La fenêtre déduite : de son début à la fin de l'échec, ou à maintenant ; elle comprend
+    toujours le dernier échec."""
+    end = found.resolved_at or max(now, found.last_failed_at + _AFTER_LAST_FAILURE)
+    if end - found.window.start > MAX_WINDOW:
+        raise DerivedWindowTooLongError
+    return DeclaredWindow.model_construct(start=found.window.start, end=end)
+
+
+async def confirm(
+    conn: AsyncConnection, proposal_id: UUID, confirmation: ProposalConfirmation
+) -> ProposalDecision | None:
+    """Confirme la proposition dans la transaction de ``conn`` : l'incident est déclaré sur sa
+    table, avec la gravité donnée et la fenêtre donnée ou déduite, son analyse demandée et
+    sa déclaration annoncée ; ``None`` si la proposition est inconnue.
+
+    Idempotent : une proposition déjà confirmée est rendue telle quelle. Lève
+    ``ProposalDecidedError`` pour une proposition écartée ou expirée, et
+    ``DerivedWindowTooLongError`` quand la fenêtre déduite dure plus de 31 jours.
+    """
+    state = await _locked(conn, proposal_id)
+    if state is None:
+        return None
+    found = await _current(conn, proposal_id)
+    if state == "confirmed":
+        return ProposalDecision(proposal_id=proposal_id, changed=False, proposal=found)
+    if state != "signaled":
+        raise ProposalDecidedError(_REFUSALS[state])
+    now: datetime = (await conn.execute(_NOW)).scalar_one()
+    window = confirmation.window or _window(found, now)
+    declaration = IncidentDeclaration(
+        scope=DeclaredScope(
+            datasets=[DeclaredDataset(namespace=found.dataset.namespace, name=found.dataset.name)]
+        ),
+        window=window,
+        severity=confirmation.severity,
+    )
+    incident = await store.declare(conn, declaration)
+    await conn.execute(_CONFIRM, {"id": proposal_id, "incident": incident.id})
+    return ProposalDecision(
+        proposal_id=proposal_id, changed=True, proposal=await _current(conn, proposal_id)
+    )
+
+
+async def dismiss(conn: AsyncConnection, proposal_id: UUID) -> ProposalDecision | None:
+    """Écarte la proposition dans la transaction de ``conn`` ; ``None`` si elle est inconnue.
+
+    Rien n'est annoncé. Idempotent : une proposition déjà écartée est rendue telle quelle.
+    Lève ``ProposalDecidedError`` pour une proposition confirmée ou expirée.
+    """
+    state = await _locked(conn, proposal_id)
+    if state is None:
+        return None
+    if state == "dismissed":
+        return ProposalDecision(
+            proposal_id=proposal_id, changed=False, proposal=await _current(conn, proposal_id)
+        )
+    if state != "signaled":
+        raise ProposalDecidedError(_REFUSALS[state])
+    await conn.execute(_DISMISS, {"id": proposal_id})
+    return ProposalDecision(
+        proposal_id=proposal_id, changed=True, proposal=await _current(conn, proposal_id)
     )

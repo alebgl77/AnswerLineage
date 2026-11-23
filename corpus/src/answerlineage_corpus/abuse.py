@@ -44,6 +44,7 @@ from typing import Any, Final
 
 from answerlineage_corpus.abuse_requests import (
     INCIDENT,
+    PROPOSAL,
     AlterationError,
     Play,
     build,
@@ -55,7 +56,7 @@ from answerlineage_corpus.scenarios import CorpusError
 
 # Change dès qu'un cas, une base ou une exception change : affaiblir le corpus
 # sans le dire échoue au contrôle.
-ABUSE_VERSION = "4"
+ABUSE_VERSION = "5"
 _DIGESTS = {
     "1": "a6e3bdbb6724874d86cde209f8549640b68bce9d76e097da185ea54284a05619",
     # La lecture antidatée est bloquée : son exception est retirée.
@@ -64,6 +65,8 @@ _DIGESTS = {
     "3": "feeb955f996d665683a30ecc02987288744a689548c0e1f42fd0be76f7b92864",
     # Les assertions de qualité : texte libre, colonne piégée, rafale.
     "4": "ec1645fa0933f776efa965e554e6f14ee5bfeb403d7b0bc6f625fe737120665a",
+    # La confirmation d'un incident proposé, et les tests en échec qui le font naître.
+    "5": "e0fb2e4f92a7e12debc394cd943d9c5bdcd5e3dbf5cdd9f13c416d4b539a2a54",
 }
 
 # Marque que porte toute valeur hostile, cherchée ensuite partout : réponses,
@@ -125,6 +128,9 @@ class Base:
     seed: tuple[Mapping[str, Any], ...] = field(default=(), hash=False)
     reports: tuple[Mapping[str, Any], ...] = field(default=(), hash=False)
     incidents: tuple[Mapping[str, Any], ...] = field(default=(), hash=False)
+    # Tests de qualité en échec, envoyés après les incidents : la première proposition
+    # d'incident qu'ils font naître donne son identifiant au chemin (``PROPOSAL``).
+    proposals: tuple[Mapping[str, Any], ...] = field(default=(), hash=False)
     settings: Mapping[str, Any] = field(default_factory=dict, hash=False)
 
 
@@ -176,6 +182,7 @@ def _play(base: Base, alter: Mapping[str, Any] | None) -> Play:
         alter,
         reports=base.reports,
         incidents=base.incidents,
+        proposals=base.proposals,
         fragment=base.surface == "explorateur",
     )
 
@@ -390,6 +397,11 @@ def _base(name: str, raw: Any, seeds: Mapping[str, Any]) -> Base:
         raise TypeError("les incidents préalables sont un tableau d'objets JSON")
     if INCIDENT in str(request["path"]) and not incidents:
         raise ValueError("le chemin désigne un incident que la base ne déclare pas")
+    proposals = raw.get("proposals", [])
+    if not isinstance(proposals, list) or not all(isinstance(item, dict) for item in proposals):
+        raise TypeError("les tests en échec préalables sont un tableau d'objets JSON")
+    if PROPOSAL in str(request["path"]) and not proposals:
+        raise ValueError("le chemin désigne une proposition que la base ne fait pas naître")
     if not isinstance(settings, dict):
         raise TypeError("les réglages sont un objet JSON")
     unknown = set(raw) - {
@@ -400,6 +412,7 @@ def _base(name: str, raw: Any, seeds: Mapping[str, Any]) -> Base:
         "seed",
         "reports",
         "incidents",
+        "proposals",
         "settings",
     }
     if unknown:
@@ -413,6 +426,7 @@ def _base(name: str, raw: Any, seeds: Mapping[str, Any]) -> Base:
         seed=tuple(seed),
         reports=tuple(reports),
         incidents=tuple(incidents),
+        proposals=tuple(proposals),
         settings=settings,
     )
 
@@ -489,6 +503,7 @@ def check_case(family: str, raw: object, bases: Mapping[str, Base]) -> list[str]
                     alter,
                     reports=base.reports,
                     incidents=base.incidents,
+                    proposals=base.proposals,
                 )
         except AlterationError as error:
             problems.append(f"altération inapplicable ({error})")

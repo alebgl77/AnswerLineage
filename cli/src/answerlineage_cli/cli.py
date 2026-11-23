@@ -3,7 +3,8 @@
 ``impact`` propage un incident de données jusqu'aux réponses et aux
 destinataires touchés ; ``exposure`` classe les jeux de données et leurs
 colonnes selon les réponses qui en dépendent ; ``incident`` déclare un
-incident, lit son analyse, le met en quarantaine et la lève ;
+incident, lit son analyse, le met en quarantaine et la lève, lit les incidents
+proposés par des tests de qualité en échec, les confirme ou les écarte ;
 ``dead-letters`` consulte et rejoue la file de rebut des événements que la
 projection n'a pas pu intégrer ; ``doctor`` vérifie chaque composant d'une
 installation ; ``demo`` lance la
@@ -126,6 +127,29 @@ def _incident_id(value: str) -> str:
             "l'identifiant d'un incident, tel que le rend answerlineage incident declare"
         )
     return identifier
+
+
+def _proposal_id(value: str) -> str:
+    identifier = value.lower()
+    if not incident.INCIDENT_ID.fullmatch(identifier):
+        raise argparse.ArgumentTypeError(
+            "l'identifiant d'une proposition, tel que le rend answerlineage incident proposals"
+        )
+    return identifier
+
+
+def _proposal_state(value: str) -> str:
+    if value not in incident.PROPOSAL_STATES:
+        raise argparse.ArgumentTypeError(
+            "un état de la liste : " + ", ".join(incident.PROPOSAL_STATES)
+        )
+    return value
+
+
+def _proposal_cursor(value: str) -> str:
+    if not incident.PROPOSAL_CURSOR.fullmatch(value):
+        raise argparse.ArgumentTypeError("la valeur de next_cursor d'une page précédente")
+    return value
 
 
 def _reason(value: str) -> str:
@@ -278,7 +302,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="déclarer un incident de données et lire son analyse d'impact",
         description=(
             "Déclare un incident de données (declare) et lit l'analyse d'impact que les "
-            "workers en font (show)."
+            "workers en font (show) ; lit les incidents proposés par des tests de qualité en "
+            "échec (proposals), les confirme (confirm) ou les écarte (dismiss)."
         ),
     )
     actions = incidents.add_subparsers(dest="action", required=True)
@@ -384,6 +409,87 @@ def build_parser() -> argparse.ArgumentParser:
     chosen.add_argument("--lift", action="store_true", help="lève la quarantaine de l'incident")
     quarantine.add_argument("--format", choices=("text", "json"), default="text")
     _common(quarantine)
+    proposed = actions.add_parser(
+        "proposals",
+        help="les incidents proposés par des tests de qualité en échec",
+        description=(
+            "Liste les incidents proposés par des tests de qualité en échec, les plus récents "
+            "d'abord : leur table, leurs colonnes, leurs assertions et leur fenêtre déduite. "
+            "Codes de sortie : 0 liste lue ; 2 usage ; 4 API injoignable ; 5 refus de l'API."
+        ),
+    )
+    proposed.add_argument(
+        "--state",
+        type=_proposal_state,
+        help="seulement les propositions dans cet état : " + ", ".join(incident.PROPOSAL_STATES),
+    )
+    proposed.add_argument(
+        "--limit",
+        type=_bounded(1, incident.MAX_PROPOSALS, "de propositions"),
+        help=f"propositions par page, de 1 à {incident.MAX_PROPOSALS}, 20 par défaut",
+    )
+    proposed.add_argument(
+        "--cursor", type=_proposal_cursor, help="page suivante : la valeur de next_cursor"
+    )
+    proposed.add_argument("--format", choices=("text", "json"), default="text")
+    _common(proposed)
+    confirmed = actions.add_parser(
+        "confirm",
+        help="confirme un incident proposé : il est déclaré, son analyse demandée",
+        description=(
+            "Confirme un incident proposé par un test de qualité en échec : l'incident est "
+            "déclaré sur sa table, avec la gravité donnée et la fenêtre déduite, ou celle de "
+            "--from et --to. Idempotent. Codes de sortie : 0 proposition confirmée, par cette "
+            "commande ou avant elle ; 2 usage, ou confirmation refusée par l'API ; 4 API "
+            "injoignable ; 5 refus de l'API (proposition inconnue, écartée ou expirée)."
+        ),
+    )
+    confirmed.add_argument(
+        "proposal_id",
+        metavar="IDENTIFIANT",
+        type=_proposal_id,
+        help="l'identifiant de la proposition, tel que le rend answerlineage incident proposals",
+    )
+    confirmed.add_argument(
+        "--severity",
+        required=True,
+        type=_severity,
+        help="gravité de l'incident : " + ", ".join(incident.SEVERITIES),
+    )
+    confirmed.add_argument(
+        "--from",
+        dest="start",
+        type=instant,
+        help="début de la fenêtre de validité, inclus, au lieu du début déduit (avec --to)",
+    )
+    confirmed.add_argument(
+        "--to",
+        dest="end",
+        type=instant,
+        help=(
+            "fin de la fenêtre de validité, exclue, au lieu de la fin déduite (avec --from) ; "
+            f"{incident.MAX_WINDOW_DAYS} jours au plus après --from"
+        ),
+    )
+    confirmed.add_argument("--format", choices=("text", "json"), default="text")
+    _common(confirmed)
+    dismissed = actions.add_parser(
+        "dismiss",
+        help="écarte un incident proposé : rien n'est déclaré ni annoncé",
+        description=(
+            "Écarte un incident proposé par un test de qualité en échec. Idempotent. Codes de "
+            "sortie : 0 proposition écartée, par cette commande ou avant elle ; 2 usage ; "
+            "4 API injoignable ; 5 refus de l'API (proposition inconnue, confirmée ou expirée)."
+        ),
+    )
+    dismissed.add_argument(
+        "proposal_id",
+        metavar="IDENTIFIANT",
+        type=_proposal_id,
+        help="l'identifiant de la proposition, tel que le rend answerlineage incident proposals",
+    )
+    dismissed.add_argument("--format", choices=("text", "json"), default="text")
+    _common(dismissed)
 
     rejected = commands.add_parser(
         "dead-letters",
@@ -608,6 +714,19 @@ def _incident(api: Api, args: argparse.Namespace) -> Exit:
                 output=args.format,
                 write=out,
             )
+        if args.action == "proposals":
+            return incident.run_proposals(
+                api,
+                state=args.state,
+                limit=args.limit,
+                cursor=args.cursor,
+                output=args.format,
+                write=out,
+            )
+        if args.action == "dismiss":
+            return incident.run_dismiss(api, args.proposal_id, output=args.format, write=out)
+        if args.action == "confirm":
+            return _confirm(api, args)
         fault = incident.declaration_fault(args.datasets, args.start, args.end)
         if fault is not None:
             err(f"Usage fautif : {fault}")
@@ -623,6 +742,34 @@ def _incident(api: Api, args: argparse.Namespace) -> Exit:
         code, message = incident.refusal_message(refused)
         err(message)
         return code
+
+
+def _confirm(api: Api, args: argparse.Namespace) -> Exit:
+    """Confirme une proposition, la fenêtre donnée par --from et --to ensemble, ou déduite."""
+    if (args.start is None) != (args.end is None):
+        err("Usage fautif : --from et --to se donnent ensemble, ou pas du tout.")
+        return Exit.USAGE
+    window = None
+    if args.start is not None:
+        begin, finish = datetime.fromisoformat(args.start), datetime.fromisoformat(args.end)
+        if finish <= begin:
+            err("Usage fautif : --to doit suivre --from.")
+            return Exit.USAGE
+        if (finish - begin).total_seconds() > incident.MAX_WINDOW_DAYS * 86_400:
+            err(
+                "Usage fautif : une fenêtre de validité dure au plus "
+                f"{incident.MAX_WINDOW_DAYS} jours."
+            )
+            return Exit.USAGE
+        window = (args.start, args.end)
+    return incident.run_confirm(
+        api,
+        args.proposal_id,
+        severity=args.severity,
+        window=window,
+        output=args.format,
+        write=out,
+    )
 
 
 def _dead_letters(api: Api, args: argparse.Namespace) -> Exit:

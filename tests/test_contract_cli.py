@@ -171,3 +171,36 @@ def test_the_dead_letter_reasons_and_bounds_of_the_command_are_those_of_the_api(
         f"^{dead_letters.EVENT_ID.pattern}$"
     )
     assert replay["emitter"]["maxLength"] == dead_letters.MAX_EMITTER
+
+
+def test_the_proposal_lists_and_bounds_of_the_command_are_those_of_the_api(
+    contract: dict[str, Any],
+) -> None:
+    schemas = contract["components"]["schemas"]
+    proposal = schemas["IncidentProposal"]["properties"]
+    assert enum(proposal["state"]) == list(incident.PROPOSAL_STATES)
+    assert enum(proposal["severity"]) == list(incident.QUALITY_SEVERITIES)
+    assert enum(proposal["assertions"]["items"]) == list(incident.ASSERTION_CLASSES)
+    assert proposal["assertions"]["maxItems"] == len(incident.ASSERTION_CLASSES)
+    assert proposal["columns"]["maxItems"] == incident.MAX_PROPOSAL_COLUMNS
+    assert enum(schemas["ProposedWindow"]["properties"]["basis"]) == list(incident.WINDOW_BASES)
+    assert set(incident.PROPOSAL_STATE_LABELS) == set(incident.PROPOSAL_STATES)
+    assert set(incident.BASIS_LABELS) == set(incident.WINDOW_BASES)
+    assert enum(schemas["ProposalConfirmation"]["properties"]["severity"]) == list(
+        incident.SEVERITIES
+    )
+
+    route = contract["paths"]["/api/v1/incident-proposals"]["get"]
+    parameters = {parameter["name"]: parameter["schema"] for parameter in route["parameters"]}
+    assert set(parameters) == {"state", "limit", "cursor"}
+    assert enum(parameters["state"]) == list(incident.PROPOSAL_STATES)
+    assert parameters["limit"]["maximum"] == incident.MAX_PROPOSALS
+    assert parameters["cursor"]["anyOf"][0]["pattern"] == f"^{incident.PROPOSAL_CURSOR.pattern}$"
+    for path in (
+        "/api/v1/incident-proposals/{proposal_id}",
+        "/api/v1/incident-proposals/{proposal_id}/confirm",
+        "/api/v1/incident-proposals/{proposal_id}/dismiss",
+    ):
+        operation = next(iter(contract["paths"][path].values()))
+        (parameter,) = operation["parameters"]
+        assert parameter["schema"]["pattern"] == f"^{incident.INCIDENT_ID.pattern}$"

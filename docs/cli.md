@@ -316,6 +316,70 @@ Met l'incident en [quarantaine](incidents.md#quarantaine) (`POST /api/v1/inciden
 
 La réponse est validée en entier : l'incident est celui demandé, la quarantaine est dans l'état demandé, active ou levée, avec ses heures, et son mode appartient à sa liste.
 
+### `answerlineage incident proposals`
+
+```bash
+answerlineage incident proposals --state signaled
+```
+
+```text
+Incidents proposés par des tests de qualité en échec, les plus récents d'abord (1 sur cette page) :
+  5b0f6a52-2c1e-4f0e-9d7b-8b4ea1d0c3f2  signalée  analytique.public.clients (espace de noms postgres://entrepot:5432)
+    colonnes : email
+    assertions en échec : not_null ; gravité réglée : error ; émetteur : dbt
+    échecs : du 2026-11-20T09:00:00Z au 2026-11-20T11:00:00Z ; échec en cours
+    fenêtre déduite : depuis le 2026-11-20T07:00:00Z, la dernière réussite connue avant le premier échec
+
+Confirmer : answerlineage incident confirm <identifiant> --severity <gravité>
+Écarter : answerlineage incident dismiss <identifiant>
+```
+
+Lit les [incidents proposés](incidents.md#incidents-proposés-par-un-test-de-qualité) par des tests de qualité en échec (`GET /api/v1/incident-proposals`), les plus récents d'abord : leur table, leurs colonnes en échec, les classes et la gravité réglée de leurs assertions, leurs échecs et leur fenêtre déduite.
+
+| Option | Rôle | Défaut |
+| --- | --- | --- |
+| `--state` | Seulement les propositions dans cet état : `signaled`, `confirmed`, `dismissed`, `expired` | toutes |
+| `--limit` | Propositions par page, de 1 à 100 | 20 |
+| `--cursor` | La page suivante : la valeur de `next_cursor` | |
+| `--format` | `text` ou `json` ; en JSON, la page validée | `text` |
+
+### `answerlineage incident confirm`
+
+```bash
+answerlineage incident confirm 5b0f6a52-2c1e-4f0e-9d7b-8b4ea1d0c3f2 --severity high
+```
+
+```text
+Proposition 5b0f6a52-2c1e-4f0e-9d7b-8b4ea1d0c3f2 confirmée le 2026-11-21T08:00:00.654321Z : incident 974e7c80-6643-4065-a541-e4c029abbdab déclaré, son analyse demandée.
+Suivre l'analyse : answerlineage incident show 974e7c80-6643-4065-a541-e4c029abbdab
+```
+
+Confirme la proposition (`POST /api/v1/incident-proposals/{id}/confirm`) : l'incident est déclaré sur sa table, avec la gravité donnée et la fenêtre déduite, ou celle de `--from` et `--to`, contrôlée avant tout envoi. Idempotent : une proposition déjà confirmée est rendue telle quelle, et la commande dit que rien n'a changé. `incident show` dit ensuite de quelle proposition l'incident est né.
+
+| Option | Rôle | Défaut |
+| --- | --- | --- |
+| `IDENTIFIANT` | L'identifiant de la proposition, tel que le rend `proposals` | obligatoire |
+| `--severity` | La gravité de l'incident : `low`, `medium`, `high`, `critical` | obligatoire |
+| `--from`, `--to` | La fenêtre de validité, ensemble, au lieu de la fenêtre déduite ; 31 jours au plus | la fenêtre déduite |
+| `--format` | `text` ou `json` ; en JSON, la réponse de l'API : `changed` et la proposition | `text` |
+
+### `answerlineage incident dismiss`
+
+```bash
+answerlineage incident dismiss 5b0f6a52-2c1e-4f0e-9d7b-8b4ea1d0c3f2
+```
+
+Écarte la proposition (`POST /api/v1/incident-proposals/{id}/dismiss`) : rien n'est déclaré ni annoncé. Idempotent, comme `confirm`.
+
+| Code | `proposals` | `confirm` | `dismiss` |
+| --- | --- | --- | --- |
+| `0` | Liste lue | Proposition confirmée, par cette commande ou avant elle | Proposition écartée, par cette commande ou avant elle |
+| `2` | Usage fautif : état, borne ou curseur hors de forme | Usage fautif : identifiant mal formé, gravité hors de la liste, `--from` sans `--to`, fenêtre fautive ; ou confirmation refusée par l'API (`422`) | Usage fautif : identifiant mal formé |
+| `4` | L'API ne répond pas | L'API ne répond pas | L'API ne répond pas |
+| `5` | Refus de l'API ou réponse invalide | Proposition inconnue, écartée ou expirée, ou réponse invalide | Proposition inconnue, confirmée ou expirée, ou réponse invalide |
+
+Chaque réponse est validée en entier : un état, une classe d'assertion, une gravité ou la base d'une fenêtre n'est lu que dans sa liste fermée, une colonne et un nom ne sont affichés que s'ils ont la forme d'un nom, et un état va avec ce qu'il porte : une proposition décidée a son heure de décision, une proposition confirmée son incident.
+
 ## `answerlineage dead-letters`
 
 Un événement que les workers ne parviennent pas à intégrer au graphe va à la [file de rebut](workers.md#file-de-rebut), avec son émetteur et le motif de l'échec. `list` la consulte, `replay` la remet en file, une fois le correctif déployé. Ce sont les routes `GET` et `POST` de la file de rebut ([API d'ingestion](ingestion.md#file-de-rebut)).
@@ -598,9 +662,9 @@ Le paquet `answerlineage-cli` ne dépend pas du proxy. Sans le paquet `answerlin
 
 ## Tous les codes de sortie
 
-| Code | `impact` | `exposure` | `incident declare` | `incident show` | `incident quarantine` | `dead-letters list` | `dead-letters replay` | `doctor` | `demo` |
+| Code | `impact` | `exposure` | `incident declare` | `incident show` | `incident quarantine`, `proposals`, `confirm`, `dismiss` | `dead-letters list` | `dead-letters replay` | `doctor` | `demo` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `0` | Réponses touchées, liste complète | Classement complet | Incident déclaré | Réponses touchées, liste complète | Quarantaine active, ou levée | Rebut vide | Tout est remis en file | Aucune anomalie | La démonstration répond |
+| `0` | Réponses touchées, liste complète | Classement complet | Incident déclaré | Réponses touchées, liste complète | Quarantaine active, ou levée ; liste lue ; proposition confirmée, ou écartée | Rebut vide | Tout est remis en file | Aucune anomalie | La démonstration répond |
 | `1` | Aucune réponse touchée, résultat complet | | | Aucune réponse touchée, résultat complet | | Des événements attendent | Rien à rejouer | Au moins une anomalie | Docker absent ou en échec |
 | `2` | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif, hors d'un clone |
 | `3` | Résultat incomplet | Classement incomplet | | Résultat incomplet | | | D'autres restent, relancer | | |

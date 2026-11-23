@@ -2,7 +2,7 @@
 
 Un responsable de données constate qu'une donnée est fausse : une table mal chargée, une référence périmée. Il déclare l'incident : quels jeux de données, pendant quelle fenêtre, avec quelle gravité. AnswerLineage enregistre l'incident et lance aussitôt son analyse d'impact : les réponses d'agents qui s'appuient sur ces données pendant la fenêtre, et leurs destinataires.
 
-Un test de données en échec, émis en OpenLineage par dbt ou un autre outil, [propose un incident](#incidents-proposés-par-un-test-de-qualité) sur la table et la colonne qu'il accuse : la proposition attend un humain, rien n'en part.
+Un test de données en échec, émis en OpenLineage par dbt ou un autre outil, [propose un incident](#incidents-proposés-par-un-test-de-qualité) sur la table et la colonne qu'il accuse : la proposition attend un humain, rien n'en part avant qu'il la confirme.
 
 La déclaration se fait par l'API (`POST /api/v1/incidents`) ou par la [ligne de commande](cli.md#answerlineage-incident) (`answerlineage incident declare`). Les [workers](workers.md#analyse-des-incidents) font l'analyse ; elle se lit sur l'incident (`GET /api/v1/incidents/{id}`, `answerlineage incident show`).
 
@@ -22,6 +22,7 @@ Chaque changement d'état, la déclaration, l'analyse faite, l'analyse en échec
 | `declared_at` | L'heure de la déclaration, posée par la base |
 | `analysis` | L'état de l'analyse d'impact et ses décomptes ([plus bas](#lanalyse)) |
 | `quarantine` | La dernière quarantaine de l'incident, active ou levée, ou `null` ([plus bas](#quarantaine)) |
+| `proposal_id` | La [proposition](#incidents-proposés-par-un-test-de-qualité) dont la confirmation a déclaré l'incident, ou `null` pour un incident déclaré à la main |
 
 Un incident ne porte aucun texte libre : ni titre, ni description, ni commentaire. Ce qu'écrirait un déclarant pourrait finir dans un message de rappel ; AnswerLineage ne produit que des textes écrits d'avance. Le périmètre se dit par des noms, que la déclaration contrôle comme l'[ingestion](ingestion.md#identifiants) : lettres, chiffres et ponctuation des noms de données, sans espace, sans caractère de contrôle ou invisible, sans balise ni mot de passe ; un espace de noms compte au plus 512 caractères, un nom 1 024. Ils sont gardés sous leur forme normalisée NFC : deux écritures d'une même table n'en font qu'une.
 
@@ -327,7 +328,7 @@ Plusieurs proxys l'interrogent chacun de leur côté, sans s'accorder : la route
 
 ## Incidents proposés par un test de qualité
 
-Une donnée fausse se voit souvent d'abord dans les tests de données : un `not_null` qui échoue sur la colonne `email` des clients, un `unique` sur un identifiant. Quand l'outil de tests émet ses résultats en OpenLineage, dbt par exemple (dbt-ol), AnswerLineage en fait une **proposition d'incident** : un incident signalé, sur la table et la colonne en échec, qu'un humain examine. Rien ne part d'une proposition : ni analyse, ni annonce, ni quarantaine.
+Une donnée fausse se voit souvent d'abord dans les tests de données : un `not_null` qui échoue sur la colonne `email` des clients, un `unique` sur un identifiant. Quand l'outil de tests émet ses résultats en OpenLineage, dbt par exemple (dbt-ol), AnswerLineage en fait une **proposition d'incident** : un incident signalé, sur la table et la colonne en échec, qu'un humain examine. Rien ne part d'une proposition : ni analyse, ni annonce, ni quarantaine. L'humain la [confirme](#confirmer-ou-écarter), et l'incident est déclaré comme à la main, ou l'écarte.
 
 ### Ce qui est lu
 
@@ -354,7 +355,7 @@ Le nom du test, sa description, son corps SQL, les valeurs attendue et observée
 | Champ | Contenu |
 | --- | --- |
 | `id` | Identifiant de la proposition, tiré par la base |
-| `state` | `signaled` : signalée, elle attend un humain et s'enrichit des échecs suivants |
+| `state` | `signaled` : signalée, elle attend un humain et s'enrichit des échecs suivants ; `confirmed` : confirmée, l'incident est déclaré ; `dismissed` : écartée. Une décision est définitive |
 | `dataset` | Le jeu de données, par son espace de noms et son nom |
 | `columns`, `whole_table` | Les colonnes en échec, nommées, 100 au plus ; `whole_table` vaut `true` quand un échec porte sur la table entière, ou au-delà de 100 colonnes |
 | `assertions`, `severity` | Les classes des assertions en échec, et leur plus forte gravité. Ce n'est pas la gravité d'un incident, que seul un humain donne |
@@ -362,7 +363,7 @@ Le nom du test, sa description, son corps SQL, les valeurs attendue et observée
 | `first_failed_at`, `last_failed_at` | Le premier et le dernier échec, à l'heure des événements |
 | `resolved_at` | Quand toutes les colonnes en échec réussissent de nouveau : la plus récente de leurs réussites. Nulle tant que l'une échoue encore, ou au-delà de 100 colonnes, quand toutes ne sont pas connues |
 | `window` | Le début de la fenêtre déduite (`from`) et ce qui le fonde (`basis`, plus bas) |
-| `proposed_at`, `decided_at`, `incident_id` | L'heure de la proposition, posée par la base ; les deux autres sont nuls tant qu'elle est signalée |
+| `proposed_at`, `decided_at`, `incident_id` | L'heure de la proposition et celle de sa décision, posées par la base ; l'incident déclaré à la confirmation. Les deux derniers sont nuls tant qu'elle est signalée |
 | `counts` | Sur `GET /api/v1/incident-proposals/{id}` seulement : les runs de test en échec qui s'y rattachent (`failed_runs`), comptés jusqu'à 10 000 (`lower_bound`) |
 
 **La fenêtre déduite** commence à la dernière réussite connue des assertions de la colonne avant le premier échec (`basis` vaut `last_pass`) : la donnée était juste alors. Elle remonte au plus 31 jours avant le premier échec. Sans réussite connue avant lui, ou quand la seule connue le suit (des événements reçus dans le désordre), elle commence 7 jours avant le premier échec (`lookback`) : ce repli peut être trop court ou trop long, et `basis` le dit. Elle finit à la fin de l'échec, `resolved_at`, quand elle est connue. Ni la dernière écriture du jeu, lue dans le graphe, ni la valeur observée d'une assertion ne la fondent : la première manquerait des écritures faites sans test, la seconde est du texte libre.
@@ -383,6 +384,37 @@ curl http://127.0.0.1:8000/api/v1/incident-proposals/5b0f6a52-2c1e-4f0e-9d7b-8b4
 | `cursor` | La page suivante : la valeur de `next_cursor`, rendue telle quelle | aucun |
 
 La liste rend les plus récentes d'abord ; comme toute lecture du graphe, ces routes s'exécutent sous le [délai maximal des lectures](lecture.md#délai-maximal). Un identifiant inconnu répond `404` (`unknown_proposal`), un identifiant, un état ou un curseur mal formés `422`, sans être recopiés.
+
+### Confirmer ou écarter
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/incident-proposals/5b0f6a52-2c1e-4f0e-9d7b-8b4ea1d0c3f2/confirm \
+  -H 'content-type: application/json' -d '{"severity": "high"}'
+curl -X POST http://127.0.0.1:8000/api/v1/incident-proposals/5b0f6a52-2c1e-4f0e-9d7b-8b4ea1d0c3f2/dismiss
+```
+
+**Confirmer** déclare l'incident, dans une seule transaction : la proposition est verrouillée ; l'incident est déclaré sur sa table, à l'état `qualified`, avec la gravité que donne l'humain, une appréciation que le test n'a pas ; son périmètre, sa demande d'analyse et l'annonce `incident.declared`, quand un [webhook](webhooks.md) est en service, s'écrivent comme pour une [déclaration](#déclarer) ; la proposition passe `confirmed`, avec son incident (`incident_id`), et l'incident désigne sa proposition (`proposal_id`). La fenêtre est la fenêtre déduite, de son début à la fin de l'échec, ou à la confirmation si l'échec dure ; le confirmeur peut donner la sienne (`window`), aux règles de la déclaration. Une fenêtre déduite de plus de 31 jours est refusée : la donner.
+
+| Champ | Contenu |
+| --- | --- |
+| `severity` | La gravité de l'incident, d'une [liste fermée](#gravité) ; obligatoire |
+| `window` | Facultative : `from` inclus, `to` exclu, en RFC 3339 avec fuseau, 31 jours au plus |
+
+**Écarter** ne déclare ni n'annonce rien : la proposition passe `dismissed`. Ni l'une ni l'autre ne porte de texte libre, ni motif ni commentaire.
+
+La réponse `200` est la proposition telle qu'elle est désormais, et `changed` : faux quand la proposition était déjà dans l'état demandé. Confirmer deux fois ne déclare qu'un incident ; écarter deux fois ne change rien. Les heures sont celles de la base.
+
+**Après une décision**, les échecs du même jeu pendant 24 heures se rattachent à la proposition décidée, en sourdine, sans en ouvrir une nouvelle : le test qui échoue encore pendant qu'on corrige la donnée ne redemande pas une décision déjà prise. Au-delà, un échec qui dure ouvre une nouvelle proposition : c'est une information.
+
+| Statut | Code | Cas |
+| --- | --- | --- |
+| `404` | `unknown_proposal` | Aucune proposition ne porte cet identifiant ; il n'est pas recopié |
+| `409` | `proposal_dismissed`, `proposal_confirmed`, `proposal_expired` | La proposition est déjà décidée autrement : écartée, elle ne se confirme plus ; confirmée, elle ne s'écarte plus ; expirée, elle ne se décide plus |
+| `422` | `literal_error` (`/severity`), `missing`, `unknown_field`, `not_an_object` | Une gravité hors de la liste, absente, un champ inconnu ; la valeur reçue n'est jamais recopiée. Un identifiant mal formé est refusé de même |
+| `422` | `window_inverted`, `window_too_long`, `window_out_of_range`, `value_error` (`/window`…) | Une fenêtre donnée fautive, aux codes de la [déclaration](#refus) ; ou une fenêtre déduite de plus de 31 jours (`window_too_long`) |
+| `400`, `413`, `415` | `invalid_json`, `body_too_large`, … | Le corps n'est pas du JSON, ou dépasse 4 Kio |
+
+Rien n'est enregistré ni annoncé pour une demande refusée. Une décision prend un verrou sur la table des propositions le temps de sa transaction, comme les workers qui les créent : une décision ne croise ni une création ni une autre décision. Par la ligne de commande : [`answerlineage incident proposals`, `confirm` et `dismiss`](cli.md#answerlineage-incident-proposals).
 
 ### Bornes
 
@@ -405,6 +437,6 @@ Un émetteur n'est pas authentifié : il peut envoyer des échecs en nombre. Cha
 - **L'interface.** L'explorateur ne déclare pas encore d'incident ; l'API et la ligne de commande le font.
 - **La suite du cycle de vie.** Un incident reste `qualified` : ni modification, ni clôture, ni liste de rappel pour l'instant. Une déclaration fautive ne se corrige pas, elle se refait. Sa quarantaine se lève à la main.
 - **Les colonnes.** Le périmètre s'arrête aux tables, comme la propagation. Une [proposition](#incidents-proposés-par-un-test-de-qualité) nomme ses colonnes en échec, sans que la propagation s'en serve.
-- **Décider d'une proposition.** Une proposition se lit, elle ne se confirme ni ne s'écarte encore : un incident se déclare à la main, sur la table qu'elle désigne.
+- **Le motif d'un écartement**, d'une liste fermée, et l'écartement en masse des propositions d'un émetteur : une proposition s'écarte une à une, sans motif.
 - **Ce qu'un run touché a écrit.** Comme la propagation, l'analyse ne suit pas une table ou une note dérivée de la donnée fausse.
 - **Relancer une analyse par l'API**, par exemple quand des événements arrivent après elle : seule la base le permet ([plus haut](#rejouer-une-analyse)).

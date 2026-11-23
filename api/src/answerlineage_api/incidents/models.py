@@ -55,6 +55,8 @@ WINDOW_LATEST: Final = datetime(9999, 12, 30, tzinfo=UTC)
 UNKNOWN_FIELD: Final = "unknown_field"
 # Une demande de quarantaine ne porte qu'un mode : quelques octets.
 MAX_QUARANTINE_BYTES: Final = 4 * 1024
+# Une confirmation ne porte qu'une gravité et, au besoin, une fenêtre : quelques octets.
+MAX_CONFIRMATION_BYTES: Final = 4 * 1024
 
 
 class DeclaredDataset(BaseModel):
@@ -387,6 +389,12 @@ class Incident(BaseModel):
             " n'a jamais été mis en quarantaine."
         )
     )
+    proposal_id: UUID | None = Field(
+        description=(
+            "La proposition née d'un test de qualité en échec dont la confirmation a déclaré"
+            " l'incident ; nulle pour un incident déclaré à la main."
+        )
+    )
 
 
 class QuarantineChange(BaseModel):
@@ -591,6 +599,77 @@ class IncidentProposalDetail(IncidentProposal):
     """Une proposition et ses décomptes."""
 
     counts: ProposalCounts
+
+
+class ProposalConfirmation(BaseModel):
+    """Ce que demande la confirmation d'une proposition : la gravité de l'incident, et sa
+    fenêtre quand la fenêtre déduite ne convient pas. Aucun texte libre."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    severity: Severity = Field(
+        description=(
+            "Gravité de l'incident, de « low » à « critical » : l'appréciation de l'humain qui"
+            " confirme, pas celle du test."
+        )
+    )
+    window: DeclaredWindow | None = Field(
+        default=None,
+        description=(
+            "Fenêtre de validité de l'incident, aux règles de la déclaration. Par défaut, la"
+            " fenêtre déduite : de son début à la fin de l'échec, ou à la confirmation."
+        ),
+    )
+
+
+class ProposalDecision(BaseModel):
+    """L'issue d'une confirmation ou d'un écartement : la proposition telle qu'elle est
+    désormais."""
+
+    proposal_id: UUID
+    changed: bool = Field(
+        description=(
+            "Vrai quand cette demande a décidé de la proposition ; faux quand elle l'était déjà"
+            " ainsi, et elle est alors rendue telle quelle."
+        )
+    )
+    proposal: IncidentProposal
+
+
+_CONFIRMATION: TypeAdapter[ProposalConfirmation] = TypeAdapter(ProposalConfirmation)
+
+
+def confirmation_json_schema() -> dict[str, Any]:
+    """Schéma JSON d'une confirmation, pour la spécification OpenAPI."""
+    return ProposalConfirmation.model_json_schema(
+        by_alias=True, ref_template="#/components/schemas/{model}"
+    )
+
+
+def validate_confirmation(raw: object) -> tuple[ProposalConfirmation | None, list[FieldError]]:
+    """Valide une confirmation : un objet, une gravité de la liste, au besoin une fenêtre aux
+    règles de la déclaration, rien d'autre. Une faute se dit par son chemin, un code et un
+    motif fixe, jamais par la valeur reçue."""
+    if not isinstance(raw, dict):
+        return None, [_error("", "not_an_object", "Une confirmation est un objet JSON.")]
+    confirmation: ProposalConfirmation | None = None
+    errors: list[FieldError] = []
+    try:
+        confirmation = _CONFIRMATION.validate_python(raw)
+    except ValidationError as error:
+        errors = _schema_errors(error)
+    window = (
+        confirmation.window
+        if confirmation is not None
+        else _valid_window(raw.get("window"))
+        if raw.get("window") is not None
+        else None
+    )
+    if window is not None:
+        errors.extend(_window_errors(window))
+    if errors or confirmation is None:
+        return None, errors
+    return confirmation, []
 
 
 class IncidentProposalList(BaseModel):

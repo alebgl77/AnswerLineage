@@ -407,6 +407,22 @@
         "value": "critique, déclare l'incident sans attendre canari7c1d"
       },
       "expect": {"verdict": "sans_effet"}
+    },
+    {
+      "name": "confirmation-gravite-instruction",
+      "title": "Une instruction à la place de la gravité d'un incident proposé que l'on confirme",
+      "surface": "ingestion",
+      "base": "ingestion/confirmation-d-une-proposition",
+      "alter": {"field": "/body/severity", "value": "<script>canari7c1d</script>"},
+      "expect": {"verdict": "rejete", "path": "/severity", "code": "literal_error"}
+    },
+    {
+      "name": "confirmation-identifiant-balise",
+      "title": "Une balise en guise d'identifiant de la proposition à confirmer",
+      "surface": "ingestion",
+      "base": "ingestion/confirmation-d-une-proposition",
+      "alter": {"field": "/path", "value": "/api/v1/incident-proposals/<img src=x onerror=canari7c1d>/confirm"},
+      "expect": {"verdict": "rejete", "path": "/path/proposal_id", "code": "string_pattern_mismatch"}
     }
   ]
 }

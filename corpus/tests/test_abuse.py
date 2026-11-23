@@ -36,7 +36,13 @@ from answerlineage_corpus.abuse import (
     play_of,
     recorded_abuse_digest,
 )
-from answerlineage_corpus.abuse_requests import INCIDENT, RECIPES, AlterationError, build
+from answerlineage_corpus.abuse_requests import (
+    INCIDENT,
+    PROPOSAL,
+    RECIPES,
+    AlterationError,
+    build,
+)
 from answerlineage_corpus.scenarios import CorpusError
 
 Raw = dict[str, Any]
@@ -579,6 +585,17 @@ def read_an_incident_the_base_does_not_declare(content: Any) -> None:
     del content["bases"]["lecture/incident"]["incidents"]
 
 
+CONFIRMATION = "ingestion/confirmation-d-une-proposition"
+
+
+def describe_the_failing_tests_as_an_object(content: Any) -> None:
+    content["bases"][CONFIRMATION]["proposals"] = {"eventType": "COMPLETE"}
+
+
+def confirm_a_proposal_the_base_does_not_make(content: Any) -> None:
+    del content["bases"][CONFIRMATION]["proposals"]
+
+
 @pytest.mark.parametrize(
     ("mutate", "problem"),
     [
@@ -596,6 +613,12 @@ def read_an_incident_the_base_does_not_declare(content: Any) -> None:
             read_an_incident_the_base_does_not_declare,
             "base « lecture/incident » invalide (ValueError : le chemin désigne un incident que "
             "la base ne déclare pas)",
+        ),
+        (describe_the_failing_tests_as_an_object, f"base « {CONFIRMATION} » invalide (TypeError"),
+        (
+            confirm_a_proposal_the_base_does_not_make,
+            f"base « {CONFIRMATION} » invalide (ValueError : le chemin désigne une proposition"
+            " que la base ne fait pas naître)",
         ),
         (lambda content: [], f"{BASES_FILE} : un objet JSON qui porte « bases » est attendu"),
     ],
@@ -659,6 +682,27 @@ def test_a_read_follows_the_incidents_its_base_declares() -> None:
     )
     assert severe.incidents[0]["severity"] == "critical"
     assert DECLARATION["severity"] == "low"
+
+
+def test_a_request_follows_the_proposal_its_failing_tests_make() -> None:
+    """La base tire l'identifiant d'une proposition : le chemin la désigne par une marque, que
+    remplace l'identifiant de la première proposition née des tests en échec envoyés avant."""
+    confirm = {
+        "method": "POST",
+        "path": f"/api/v1/incident-proposals/{PROPOSAL}/confirm",
+        "body": {"severity": "high"},
+    }
+    failing: Raw = {"eventType": "COMPLETE", "run": {"runId": "a"}}
+    play = build(confirm, proposals=(failing,))
+    assert play.proposals == (failing,)
+    assert play.path == "/api/v1/incident-proposals/{proposal}/confirm"
+    assert build(confirm).proposals == ()
+    # Un test en échec s'altère comme un événement envoyé avant la requête.
+    renamed = build(
+        confirm, alter={"field": "/proposals/0/eventType", "value": "FAIL"}, proposals=(failing,)
+    )
+    assert renamed.proposals[0]["eventType"] == "FAIL"
+    assert failing["eventType"] == "COMPLETE"
 
 
 def test_altering_a_field_or_a_header_changes_nothing_else() -> None:

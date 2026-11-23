@@ -22,6 +22,7 @@ from answerlineage_api.guard import HostOriginMiddleware, guard_from_settings
 from answerlineage_api.headers import SecurityHeadersMiddleware
 from answerlineage_api.health import router as health_router
 from answerlineage_api.incidents.models import (
+    confirmation_json_schema,
     declaration_json_schema,
     quarantine_request_json_schema,
 )
@@ -142,6 +143,9 @@ def create_app(
             schemas.update(declaration.pop("$defs", {}))
             schemas["IncidentDeclaration"] = declaration
             schemas["QuarantineRequest"] = quarantine_request_json_schema()
+            confirmation = confirmation_json_schema()
+            schemas.update(confirmation.pop("$defs", {}))
+            schemas["ProposalConfirmation"] = confirmation
             schemas["DeadLetterReplay"] = replay_json_schema()
             app.openapi_schema = document
         return app.openapi_schema

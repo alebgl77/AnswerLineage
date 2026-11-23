@@ -59,13 +59,16 @@ _COLUMNS = """i.id, i.state, i.severity, i.window_start, i.window_end, i.declare
            s.state AS analysis_state, s.requested_at, s.attempts, s.error, s.known_at,
            s.finished_at, s.answers, s.recipients, s.truncated,
            q.state AS quarantine_state, q.mode AS quarantine_mode,
-           q.activated_at AS quarantine_activated_at, q.lifted_at AS quarantine_lifted_at"""
-# L'incident, son analyse et sa dernière quarantaine, s'il en a une.
+           q.activated_at AS quarantine_activated_at, q.lifted_at AS quarantine_lifted_at,
+           pr.id AS proposal_id"""
+# L'incident, son analyse, sa dernière quarantaine, s'il en a une, et la proposition dont la
+# confirmation l'a déclaré, s'il en vient une.
 _FROM = """incident i JOIN incident_analysis s ON s.incident_id = i.id
     LEFT JOIN LATERAL (
         SELECT state, mode, activated_at, lifted_at FROM incident_quarantine
         WHERE incident_id = i.id ORDER BY id DESC LIMIT 1
-    ) q ON true"""
+    ) q ON true
+    LEFT JOIN incident_proposal pr ON pr.incident_id = i.id"""
 
 _ONE = text(
     f"""
@@ -198,6 +201,7 @@ async def declare(conn: AsyncConnection, declaration: IncidentDeclaration) -> In
             truncated=None,
         ),
         quarantine=None,
+        proposal_id=None,
     )
 
 
@@ -240,6 +244,7 @@ def _incident(row: Row[Any], datasets: Sequence[IncidentDataset]) -> Incident:
             truncated=row.truncated if done else None,
         ),
         quarantine=_quarantine(row),
+        proposal_id=row.proposal_id,
     )
 
 

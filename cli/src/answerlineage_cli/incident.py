@@ -11,6 +11,12 @@ destinataires, la couverture du lignage et ses trous. Son code de sortie dit ce
 que l'analyse permet de conclure, comme celui de ``impact`` ; une analyse en
 attente ou en échec a le sien.
 
+``proposals`` lit ``GET /api/v1/incident-proposals`` : les incidents proposés
+par des tests de qualité en échec. ``confirm`` en confirme un
+(``POST …/{id}/confirm``) : l'incident est déclaré sur sa table, avec la gravité
+donnée et la fenêtre donnée ou déduite ; ``dismiss`` l'écarte
+(``POST …/{id}/dismiss``). Les deux sont idempotents.
+
 ``quarantine`` met l'incident en quarantaine
 (``POST /api/v1/incidents/{id}/quarantine``), ou la lève avec ``--lift``
 (``POST …/quarantine/lift``) : les proxys reçoivent son périmètre, ou cessent de
@@ -36,6 +42,7 @@ from answerlineage_cli import impact, shape
 from answerlineage_cli.client import Api, InvalidResponseError, Received
 from answerlineage_cli.exits import Exit
 from answerlineage_cli.names import (
+    COLUMN_MAX,
     DATASET_NAME_MAX,
     FINGERPRINT_MAX,
     NAMESPACE_MAX,
@@ -208,7 +215,7 @@ _INCIDENT_FIELDS: Final = ("id", "state", "severity", "scope", "window", "declar
 
 def validate_incident(document: Any, where: str = "") -> dict[str, Any]:
     """Un incident rendu par l'API, validé, réduit aux champs de son contrat."""
-    incident = shape.obj(document, where, _INCIDENT_FIELDS, ("quarantine",))
+    incident = shape.obj(document, where, _INCIDENT_FIELDS, ("quarantine", "proposal_id"))
     scope = shape.obj(incident["scope"], f"{where}/scope", ("datasets",))
     return {
         "id": shape.pattern(incident["id"], f"{where}/id", INCIDENT_ID),
@@ -219,6 +226,9 @@ def validate_incident(document: Any, where: str = "") -> dict[str, Any]:
         "declared_at": shape.instant(incident["declared_at"], f"{where}/declared_at"),
         "analysis": _analysis(incident["analysis"], f"{where}/analysis"),
         "quarantine": _quarantine(incident.get("quarantine"), f"{where}/quarantine"),
+        "proposal_id": None
+        if incident.get("proposal_id") is None
+        else shape.pattern(incident["proposal_id"], f"{where}/proposal_id", INCIDENT_ID),
     }
 
 
@@ -299,6 +309,10 @@ class RefusedError(Exception):
 REFUSALS: Final = frozenset(
     {
         "unknown_incident",
+        "unknown_proposal",
+        "proposal_confirmed",
+        "proposal_dismissed",
+        "proposal_expired",
         "too_many_quarantines",
         "not_quarantined",
         "query_timeout",
@@ -315,6 +329,8 @@ OPTIONS_BY_PATH: Final = (
     ("/window", "--from et --to"),
     ("/severity", "--severity"),
     ("/mode", "--mode"),
+    ("/query/state", "--state"),
+    ("/path/proposal_id", "l'identifiant de la proposition"),
     ("/query/limit", "--limit"),
     ("/query/cursor", "--cursor"),
     ("/path/incident_id", "l'identifiant de l'incident"),
@@ -407,6 +423,21 @@ def refusal_message(refused: RefusedError) -> tuple[Exit, str]:
             "d'abord, avec answerlineage incident quarantine <identifiant> --lift."
         ),
         "not_quarantined": "Cet incident n'a jamais été mis en quarantaine : rien n'est à lever.",
+        "unknown_proposal": (
+            "Aucune proposition ne porte cet identifiant : reprendre celui que rend "
+            "answerlineage incident proposals."
+        ),
+        "proposal_confirmed": (
+            "Cette proposition est déjà confirmée : l'incident est déclaré, elle ne s'écarte plus."
+        ),
+        "proposal_dismissed": (
+            "Cette proposition est déjà écartée : elle ne se confirme plus. Déclarer l'incident "
+            "avec answerlineage incident declare."
+        ),
+        "proposal_expired": (
+            "Cette proposition a expiré sans nouvel échec : elle ne se décide plus. Déclarer "
+            "l'incident avec answerlineage incident declare."
+        ),
         "query_timeout": "La lecture a dépassé son délai maximal dans l'API : réessayer.",
         "host_not_allowed": (
             "L'API refuse le nom d'hôte de cette adresse : l'ajouter à "
@@ -448,6 +479,10 @@ def _summary(incident: Mapping[str, Any]) -> list[str]:
         f"  fenêtre : du {window['from']} au {window['to']}, fin exclue",
         f"  déclaré le {incident['declared_at']}",
     ]
+    if incident.get("proposal_id") is not None:
+        lines.append(
+            f"  proposé par un test de qualité en échec : proposition {incident['proposal_id']}"
+        )
     return lines
 
 
@@ -661,4 +696,288 @@ def run_quarantine(
     ``RefusedError``."""
     change = quarantine(api, incident_id, mode)
     write(render_json(change) if output == "json" else render_change(change))
+    return Exit.OK
+
+
+# Les incidents proposés par des tests de qualité en échec.
+
+PROPOSALS_PATH: Final = "/api/v1/incident-proposals"
+PROPOSAL_STATES: Final = ("signaled", "confirmed", "dismissed", "expired")
+ASSERTION_CLASSES: Final = (
+    "not_null",
+    "unique",
+    "accepted_values",
+    "relationships",
+    "row_count",
+    "freshness",
+    "custom_sql",
+    "other",
+)
+QUALITY_SEVERITIES: Final = ("unspecified", "warn", "error")
+WINDOW_BASES: Final = ("last_pass", "lookback")
+MAX_PROPOSALS: Final = 100
+MAX_PROPOSAL_COLUMNS: Final = 100
+MAX_COUNTED_RUNS: Final = 10_000
+PROPOSAL_CURSOR: Final = re.compile(r"[0-9]{1,18}\.[0-9a-f]{32}")
+# Une page de 100 propositions de 100 colonnes aux noms les plus longs.
+MAX_PROPOSALS_BYTES: Final = 8 * 1024 * 1024
+
+PROPOSAL_STATE_LABELS: Final = {
+    "signaled": "signalée",
+    "confirmed": "confirmée",
+    "dismissed": "écartée",
+    "expired": "expirée",
+}
+BASIS_LABELS: Final = {
+    "last_pass": "la dernière réussite connue avant le premier échec",
+    "lookback": "7 jours avant le premier échec, faute de réussite connue avant lui",
+}
+
+_PROPOSAL_FIELDS: Final = (
+    "id",
+    "state",
+    "dataset",
+    "whole_table",
+    "columns",
+    "assertions",
+    "severity",
+    "emitter",
+    "first_failed_at",
+    "last_failed_at",
+    "resolved_at",
+    "window",
+    "proposed_at",
+    "decided_at",
+    "incident_id",
+)
+
+
+def validate_proposal(value: Any, where: str) -> dict[str, Any]:
+    """Une proposition rendue par l'API, validée, réduite aux champs de son contrat."""
+    found = shape.obj(value, where, _PROPOSAL_FIELDS, ("counts",))
+    state = shape.choice(found["state"], f"{where}/state", PROPOSAL_STATES)
+    columns = shape.items(found["columns"], f"{where}/columns", MAX_PROPOSAL_COLUMNS)
+    assertions = shape.items(found["assertions"], f"{where}/assertions", len(ASSERTION_CLASSES))
+    window = shape.obj(found["window"], f"{where}/window", ("from", "basis"))
+    decided_at = _optional_instant(found["decided_at"], f"{where}/decided_at")
+    incident_id = found["incident_id"]
+    validated: dict[str, Any] = {
+        "id": shape.pattern(found["id"], f"{where}/id", INCIDENT_ID),
+        "state": state,
+        "dataset": _dataset(found["dataset"], f"{where}/dataset"),
+        "whole_table": shape.flag(found["whole_table"], f"{where}/whole_table"),
+        "columns": [
+            shape.identifier(item, f"{where}/columns/{rank}", COLUMN_MAX)
+            for rank, item in enumerate(columns)
+        ],
+        "assertions": [
+            shape.choice(item, f"{where}/assertions/{rank}", ASSERTION_CLASSES)
+            for rank, item in enumerate(assertions)
+        ],
+        "severity": shape.choice(found["severity"], f"{where}/severity", QUALITY_SEVERITIES),
+        "emitter": shape.identifier(found["emitter"], f"{where}/emitter", NAMESPACE_MAX),
+        "first_failed_at": shape.instant(found["first_failed_at"], f"{where}/first_failed_at"),
+        "last_failed_at": shape.instant(found["last_failed_at"], f"{where}/last_failed_at"),
+        "resolved_at": _optional_instant(found["resolved_at"], f"{where}/resolved_at"),
+        "window": {
+            "from": shape.instant(window["from"], f"{where}/window/from"),
+            "basis": shape.choice(window["basis"], f"{where}/window/basis", WINDOW_BASES),
+        },
+        "proposed_at": shape.instant(found["proposed_at"], f"{where}/proposed_at"),
+        "decided_at": decided_at,
+        "incident_id": None
+        if incident_id is None
+        else shape.pattern(incident_id, f"{where}/incident_id", INCIDENT_ID),
+    }
+    # Un état et ce qu'il porte vont ensemble : une réponse qui les mêle n'est pas lue.
+    if not validated["assertions"]:
+        raise shape.fault(f"{where}/assertions")
+    if (state == "signaled") != (decided_at is None):
+        raise shape.fault(f"{where}/decided_at")
+    if (state == "confirmed") != (validated["incident_id"] is not None):
+        raise shape.fault(f"{where}/incident_id")
+    return validated
+
+
+def validate_proposals(document: Any) -> dict[str, Any]:
+    """Une page de propositions, validée."""
+    page = shape.obj(document, "", ("proposals", "more", "next_cursor"))
+    listed = shape.items(page["proposals"], "/proposals", MAX_PROPOSALS)
+    cursor = page["next_cursor"]
+    return {
+        "proposals": [
+            validate_proposal(item, f"/proposals/{rank}") for rank, item in enumerate(listed)
+        ],
+        "more": shape.flag(page["more"], "/more"),
+        "next_cursor": None
+        if cursor is None
+        else shape.pattern(cursor, "/next_cursor", PROPOSAL_CURSOR),
+    }
+
+
+def validate_decision(document: Any, proposal_id: str, state: str) -> dict[str, Any]:
+    """L'issue d'une confirmation ou d'un écartement : la proposition demandée, dans l'état
+    demandé."""
+    decision = shape.obj(document, "", ("proposal_id", "changed", "proposal"))
+    if shape.pattern(decision["proposal_id"], "/proposal_id", INCIDENT_ID) != proposal_id:
+        raise shape.fault("/proposal_id")
+    proposal = validate_proposal(decision["proposal"], "/proposal")
+    if proposal["id"] != proposal_id:
+        raise shape.fault("/proposal/id")
+    if proposal["state"] != state:
+        raise shape.fault("/proposal/state")
+    return {
+        "proposal_id": proposal_id,
+        "changed": shape.flag(decision["changed"], "/changed"),
+        "proposal": proposal,
+    }
+
+
+def list_proposals(
+    api: Api, state: str | None, limit: int | None, cursor: str | None
+) -> dict[str, Any]:
+    """Une page de propositions ; ``RefusedError`` quand l'API refuse la requête."""
+    params: dict[str, str] = {}
+    if state is not None:
+        params["state"] = state
+    if limit is not None:
+        params["limit"] = str(limit)
+    if cursor is not None:
+        params["cursor"] = cursor
+    received = api.get(PROPOSALS_PATH, params=params, max_bytes=MAX_PROPOSALS_BYTES)
+    if received.status != 200:
+        raise _refusal(received)
+    return validate_proposals(received.json())
+
+
+def confirm(
+    api: Api, proposal_id: str, severity: str, window: tuple[str, str] | None
+) -> dict[str, Any]:
+    """Confirme la proposition ; ``RefusedError`` quand l'API refuse."""
+    document: dict[str, Any] = {"severity": severity}
+    if window is not None:
+        document["window"] = {"from": window[0], "to": window[1]}
+    received = api.post(
+        f"{PROPOSALS_PATH}/{proposal_id}/confirm", document=document, max_bytes=MAX_CHANGE_BYTES
+    )
+    if received.status != 200:
+        raise _refusal(received)
+    return validate_decision(received.json(), proposal_id, "confirmed")
+
+
+def dismiss(api: Api, proposal_id: str) -> dict[str, Any]:
+    """Écarte la proposition ; ``RefusedError`` quand l'API refuse."""
+    received = api.post(
+        f"{PROPOSALS_PATH}/{proposal_id}/dismiss", document=None, max_bytes=MAX_CHANGE_BYTES
+    )
+    if received.status != 200:
+        raise _refusal(received)
+    return validate_decision(received.json(), proposal_id, "dismissed")
+
+
+def _columns_line(proposal: Mapping[str, Any]) -> str:
+    named = ", ".join(proposal["columns"])
+    if proposal["whole_table"]:
+        return f"    colonnes : {named} ; et la table entière" if named else "    la table entière"
+    return f"    colonnes : {named}"
+
+
+def _proposal_lines(proposal: Mapping[str, Any]) -> list[str]:
+    resolved = proposal["resolved_at"]
+    lines = [
+        f"  {proposal['id']}  {PROPOSAL_STATE_LABELS[proposal['state']]}  "
+        f"{_named(proposal['dataset'])}",
+        _columns_line(proposal),
+        f"    assertions en échec : {', '.join(proposal['assertions'])} ; "
+        f"gravité réglée : {proposal['severity']} ; émetteur : {proposal['emitter']}",
+        f"    échecs : du {proposal['first_failed_at']} au {proposal['last_failed_at']} ; "
+        + (f"réussite retrouvée le {resolved}" if resolved else "échec en cours"),
+        f"    fenêtre déduite : depuis le {proposal['window']['from']}, "
+        f"{BASIS_LABELS[proposal['window']['basis']]}",
+    ]
+    if proposal["incident_id"] is not None:
+        lines.append(f"    incident : {proposal['incident_id']}")
+    elif proposal["decided_at"] is not None:
+        lines.append(f"    décidée le {proposal['decided_at']}")
+    return lines
+
+
+def render_proposals(page: Mapping[str, Any]) -> str:
+    proposals = page["proposals"]
+    if not proposals:
+        return "Aucun incident proposé.\n"
+    lines = [
+        "Incidents proposés par des tests de qualité en échec, les plus récents d'abord "
+        f"({len(proposals)} sur cette page) :",
+    ]
+    for proposal in proposals:
+        lines += _proposal_lines(proposal)
+    if any(proposal["state"] == "signaled" for proposal in proposals):
+        lines += [
+            "",
+            "Confirmer : answerlineage incident confirm <identifiant> --severity <gravité>",
+            "Écarter : answerlineage incident dismiss <identifiant>",
+        ]
+    if page["next_cursor"] is not None:
+        lines += ["", f"Propositions plus anciennes : relancer avec --cursor {page['next_cursor']}"]
+    return "\n".join(lines) + "\n"
+
+
+def render_decision(decision: Mapping[str, Any]) -> str:
+    """Ce qu'une confirmation ou un écartement a fait, ou que rien n'a changé."""
+    proposal = decision["proposal"]
+    identifier, decided_at = proposal["id"], proposal["decided_at"]
+    if proposal["state"] == "confirmed":
+        incident_id = proposal["incident_id"]
+        lines = [
+            f"Proposition {identifier} confirmée le {decided_at} : incident {incident_id} "
+            "déclaré, son analyse demandée."
+            if decision["changed"]
+            else f"Proposition {identifier} déjà confirmée le {decided_at} : incident "
+            f"{incident_id}, rien n'a changé.",
+            f"Suivre l'analyse : answerlineage incident show {incident_id}",
+        ]
+    else:
+        lines = [
+            f"Proposition {identifier} écartée le {decided_at} : rien n'est déclaré ni annoncé."
+            if decision["changed"]
+            else f"Proposition {identifier} déjà écartée le {decided_at} : rien n'a changé."
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def run_proposals(
+    api: Api,
+    *,
+    state: str | None,
+    limit: int | None,
+    cursor: str | None,
+    output: str,
+    write: Callable[[str], None],
+) -> Exit:
+    """Liste les propositions ; un refus remonte en ``RefusedError``."""
+    page = list_proposals(api, state, limit, cursor)
+    write(render_json(page) if output == "json" else render_proposals(page))
+    return Exit.OK
+
+
+def run_confirm(
+    api: Api,
+    proposal_id: str,
+    *,
+    severity: str,
+    window: tuple[str, str] | None,
+    output: str,
+    write: Callable[[str], None],
+) -> Exit:
+    """Confirme la proposition ; un refus remonte en ``RefusedError``."""
+    decision = confirm(api, proposal_id, severity, window)
+    write(render_json(decision) if output == "json" else render_decision(decision))
+    return Exit.OK
+
+
+def run_dismiss(api: Api, proposal_id: str, *, output: str, write: Callable[[str], None]) -> Exit:
+    """Écarte la proposition ; un refus remonte en ``RefusedError``."""
+    decision = dismiss(api, proposal_id)
+    write(render_json(decision) if output == "json" else render_decision(decision))
     return Exit.OK

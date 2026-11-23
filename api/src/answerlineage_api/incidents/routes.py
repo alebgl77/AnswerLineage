@@ -1,6 +1,7 @@
 """Routes des incidents : déclarer, lire un incident, lister les incidents, mettre un
 incident en quarantaine et la lever, diffuser les périmètres en quarantaine, lire
-les incidents proposés par des tests de qualité en échec.
+les incidents proposés par des tests de qualité en échec, les confirmer ou les
+écarter.
 
 La déclaration lit son corps borné, comme l'ingestion, et le valide champ par
 champ ; l'incident et sa demande d'analyse s'enregistrent dans une seule
@@ -30,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.incidents import proposals, quarantine, store
 from answerlineage_api.incidents.models import (
+    MAX_CONFIRMATION_BYTES,
     MAX_DECLARATION_BYTES,
     MAX_QUARANTINE_BYTES,
     ActiveQuarantines,
@@ -37,7 +39,9 @@ from answerlineage_api.incidents.models import (
     IncidentList,
     IncidentProposalDetail,
     IncidentProposalList,
+    ProposalDecision,
     QuarantineChange,
+    validate_confirmation,
     validate_declaration,
     validate_quarantine,
 )
@@ -48,7 +52,7 @@ from answerlineage_api.ingest.routes import REFUSED_400, REFUSED_413, REFUSED_41
 from answerlineage_api.lineage.paging import CURSOR_PATTERN, Cursor, CursorError
 from answerlineage_api.lineage.reading import TIMED_OUT, reading
 from answerlineage_api.responses import RequestRefused, RequestRejected, refused
-from answerlineage_api.store.schema import ProposalState
+from answerlineage_api.store.schema import INCIDENT_WINDOW_DAYS, ProposalState
 
 router = APIRouter(prefix="/api/v1", tags=["incidents"])
 
@@ -335,6 +339,96 @@ async def incident_proposal(
     async with reading(request) as reader:
         found = await proposals.proposal(reader, UUID(proposal_id))
     return found if found is not None else refused(404, "unknown_proposal")
+
+
+def _decided(decision: ProposalDecision) -> JSONResponse:
+    return JSONResponse(status_code=200, content=decision.model_dump(mode="json", by_alias=True))
+
+
+@router.post(
+    "/incident-proposals/{proposal_id}/confirm",
+    response_model=ProposalDecision,
+    summary="Confirme un incident proposé : il est déclaré, son analyse demandée et annoncée",
+    responses={
+        400: {"model": RequestRefused, "description": REFUSED_400},
+        409: {
+            "model": RequestRefused,
+            "description": (
+                "La proposition est déjà écartée (« proposal_dismissed ») ou expirée"
+                " (« proposal_expired ») : elle ne se confirme plus."
+            ),
+        },
+        413: {"model": RequestRefused, "description": REFUSED_413},
+        415: {"model": RequestRefused, "description": REFUSED_415},
+        422: {"model": RequestRejected, "description": "La confirmation est invalide."},
+        **_UNKNOWN_PROPOSAL,
+    },
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ProposalConfirmation"}
+                }
+            },
+        }
+    },
+)
+async def confirm_proposal(request: Request, proposal_id: ProposalId) -> JSONResponse:
+    """L'incident est déclaré sur la table de la proposition, avec la gravité donnée et la
+    fenêtre donnée ou déduite, à l'état « qualified » ; son analyse est demandée et sa
+    déclaration annoncée par webhook, dans la transaction qui confirme. Idempotent : une
+    proposition déjà confirmée est rendue telle quelle (``changed`` faux), sans nouvel
+    incident ni nouvelle annonce."""
+    body, refusal = await read_json(request, max_bytes=MAX_CONFIRMATION_BYTES)
+    if refusal is not None:
+        return refusal
+    asked, errors = validate_confirmation(body)
+    if asked is None:
+        return JSONResponse(status_code=422, content=RequestRejected(errors=errors).model_dump())
+    engine: AsyncEngine = request.app.state.engine
+    try:
+        async with engine.begin() as conn:
+            decision = await proposals.confirm(conn, UUID(proposal_id), asked)
+    except proposals.ProposalDecidedError as decided:
+        return refused(409, decided.code)
+    except proposals.DerivedWindowTooLongError:
+        return _rejected(
+            "/window",
+            "window_too_long",
+            f"La fenêtre déduite dure plus de {INCIDENT_WINDOW_DAYS} jours : donner la fenêtre"
+            " de l'incident.",
+        )
+    return _decided(decision) if decision is not None else refused(404, "unknown_proposal")
+
+
+@router.post(
+    "/incident-proposals/{proposal_id}/dismiss",
+    response_model=ProposalDecision,
+    summary="Écarte un incident proposé : rien n'est déclaré ni annoncé",
+    responses={
+        409: {
+            "model": RequestRefused,
+            "description": (
+                "La proposition est déjà confirmée (« proposal_confirmed ») ou expirée"
+                " (« proposal_expired ») : elle ne s'écarte plus."
+            ),
+        },
+        **_INVALID,
+        **_UNKNOWN_PROPOSAL,
+    },
+)
+async def dismiss_proposal(request: Request, proposal_id: ProposalId) -> JSONResponse:
+    """La proposition passe écartée, définitivement ; rien n'est annoncé. Pendant un jour, les
+    échecs suivants du même jeu s'y rattachent sans rien proposer. Idempotent : une
+    proposition déjà écartée est rendue telle quelle (``changed`` faux)."""
+    engine: AsyncEngine = request.app.state.engine
+    try:
+        async with engine.begin() as conn:
+            decision = await proposals.dismiss(conn, UUID(proposal_id))
+    except proposals.ProposalDecidedError as decided:
+        return refused(409, decided.code)
+    return _decided(decision) if decision is not None else refused(404, "unknown_proposal")
 
 
 IfNoneMatch = Annotated[

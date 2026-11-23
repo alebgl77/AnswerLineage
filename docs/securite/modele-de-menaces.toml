@@ -614,7 +614,7 @@ name = "Un appelant qui joint l'API lit le lignage et déclare des incidents"
 category = "information-disclosure"
 boundary = "lecteur-lecture"
 assets = ["lignage", "destinataires"]
-description = "L'API de lecture, la déclaration d'incidents, leur quarantaine et l'explorateur n'authentifient pas leurs appelants : qui les joint lit les noms des jeux de données, des agents et des outils, les empreintes des réponses et les pseudonymes des destinataires, met un incident en quarantaine ou la lève."
+description = "L'API de lecture, la déclaration d'incidents, leur quarantaine, la décision des incidents proposés et l'explorateur n'authentifient pas leurs appelants : qui les joint lit les noms des jeux de données, des agents et des outils, les empreintes des réponses et les pseudonymes des destinataires, met un incident en quarantaine ou la lève, confirme ou écarte un incident proposé."
 
 [[threat.mitigation]]
 description = "La démonstration ne publie son seul port que sur la boucle locale."
@@ -623,7 +623,7 @@ test = "tests/test_policy.py::test_a_port_published_beyond_the_loopback_fails"
 
 [threat.acceptance]
 reason = "L'API n'authentifie pas encore ses appelants : elle est faite pour la boucle locale ou derrière un contrôle d'accès."
-consequence = "Exposée sans contrôle d'accès, elle livre le lignage à qui la joint et le laisse déclarer des incidents, donc lancer des analyses, et mettre un incident en quarantaine ou la lever."
+consequence = "Exposée sans contrôle d'accès, elle livre le lignage à qui la joint et le laisse déclarer des incidents, ou confirmer ceux qu'un test propose, donc lancer des analyses et des annonces, écarter un incident proposé, et mettre un incident en quarantaine ou la lever."
 
 [[threat]]
 id = "api/rejeu-non-authentifie"

@@ -82,6 +82,14 @@
       "expect": {"verdict": "refuse", "status": 403, "code": "origin_not_allowed"}
     },
     {
+      "name": "origine-etrangere-confirmation",
+      "title": "Une page d'une autre origine qui confirme un incident proposé, pour lancer analyse et annonce",
+      "surface": "ingestion",
+      "base": "ingestion/confirmation-d-une-proposition",
+      "alter": {"header": "origin", "value": "https://canari7c1d.example"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "origin_not_allowed"}
+    },
+    {
       "name": "origine-etrangere-rejeu",
       "title": "Une page d'une autre origine qui rejoue la file de rebut",
       "surface": "ingestion",
