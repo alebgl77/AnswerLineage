@@ -176,7 +176,7 @@
             "subset",
             "keys"
           ],
-          "description": "Ce que l'on sait de la lecture, la moins précise de ses lectures : table (le jeu entier, ou rien de plus précis), columns (certaines colonnes), subset (certaines lignes), keys (les lignes de clés désignées)."
+          "description": "Ce que l'on sait de la lecture : table (le jeu entier, ou rien de plus précis), columns (certaines colonnes), subset (certaines lignes), keys (les lignes de clés désignées). Un jeu lu plusieurs fois a la précision de la fusion de ses lectures : la plus étroite des lectures qui les couvrent toutes, lignes et colonnes."
         }
       },
       "required": [

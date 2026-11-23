@@ -2,10 +2,11 @@
 
 Rien n'y vient d'AnswerLineage : ni la suite de conformité, ni le proxy, ni
 l'API. La dérivation de l'identifiant de run est refaite d'après la page du
-proxy, les schémas sont lus dans ``spec/a2a/v1/`` et appliqués avec
-``jsonschema``, comme le ferait une équipe qui ne lit pas le code. Leurs
-échanges doivent passer la suite de l'extension : c'est la preuve qu'elle
-s'implémente à partir de sa spécification.
+proxy, la fusion des lectures d'un jeu d'après celle du schéma du graphe, les
+schémas sont lus dans ``spec/a2a/v1/`` et appliqués avec ``jsonschema``, comme
+le ferait une équipe qui ne lit pas le code. Leurs échanges doivent passer la
+suite de l'extension : c'est la preuve qu'elle s'implémente à partir de sa
+spécification.
 
 Les deux agents parlent A2A 1.0 sous sa forme JSON : une requête capturée est
 ``{"serviceParameters": …, "params": SendMessageRequest}``, une réponse
@@ -30,8 +31,8 @@ URI = "https://github.com/alebgl77/AnswerLineage/tree/main/spec/a2a/v1"
 SPEC = Path(__file__).resolve().parents[2] / "spec" / "a2a" / "v1"
 EXTENSIONS = "A2A-Extensions"
 MAX_DATASETS = 100
-# Plus précise vers la fin : un jeu lu plusieurs fois garde la moins précise.
-PRECISIONS = ("table", "columns", "subset", "keys")
+# Les précisions qui ne lisent que certaines lignes, sans dire lesquelles.
+ROW_RESTRICTIONS = ("subset", "keys")
 PRODUCER = "https://exemple.org/agents-jouets"
 RUN_EVENT = "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent"
 PARENT = "https://openlineage.io/spec/facets/1-2-0/ParentRunFacet.json#/$defs/ParentRunFacet"
@@ -79,12 +80,48 @@ def is_name(value: object) -> bool:
 
 @dataclass(frozen=True)
 class Read:
-    """Ce que l'appelé a lu : un jeu de données, sa version, la précision de la lecture."""
+    """Ce que l'appelé a lu : un jeu de données, sa version, la précision et les colonnes lues.
+
+    Les colonnes ne passent pas dans le résumé : elles décident de la précision d'un jeu lu
+    plusieurs fois.
+    """
 
     namespace: str
     name: str
     version: str | None = None
     precision: str = "table"
+    columns: tuple[str, ...] = ()
+
+
+# Ce qu'une lecture couvre : ses lignes (``all``, ``subset`` ou ``keys``) et ses colonnes,
+# ``None`` pour toutes. Une lecture ``table``, ou qui ne nomme aucune colonne, les a toutes lues.
+type Coverage = tuple[str, frozenset[str] | None]
+
+
+def coverage(read: Read) -> Coverage:
+    rows = read.precision if read.precision in ROW_RESTRICTIONS else "all"
+    if read.precision == "table" or not read.columns:
+        return rows, None
+    return rows, frozenset(read.columns)
+
+
+def merged(first: Coverage, second: Coverage) -> Coverage:
+    """La plus étroite des lectures qui couvrent l'une et l'autre, d'après ``docs/schema.md``.
+
+    Une même restriction des lignes se garde, toute autre paire couvre toutes les lignes ;
+    toutes les colonnes dès que l'une des deux les a toutes lues, sinon leur union.
+    """
+    rows = first[0] if first[0] == second[0] else "all"
+    if first[1] is None or second[1] is None:
+        return rows, None
+    return rows, first[1] | second[1]
+
+
+def precision_of(read: Coverage) -> str:
+    rows, columns = read
+    if rows != "all":
+        return rows
+    return "table" if columns is None else "columns"
 
 
 @dataclass
@@ -135,16 +172,17 @@ class ToyCallee:
         return {"attachment": "attached", "parentRunId": context["runId"]}
 
     def _datasets(self) -> list[dict[str, str]]:
-        merged: dict[tuple[str, str, str | None], str] = {}
+        # Un jeu lu plusieurs fois a la précision de la fusion de ses lectures.
+        covered: dict[tuple[str, str, str | None], Coverage] = {}
         for read in self.reads:
             key = (read.namespace, read.name, read.version)
-            known = merged.get(key, read.precision)
-            merged[key] = min(known, read.precision, key=PRECISIONS.index)
+            known = covered.get(key)
+            covered[key] = coverage(read) if known is None else merged(known, coverage(read))
         listed = []
-        for (namespace, name, version), precision in sorted(
-            merged.items(), key=lambda item: (item[0][0], item[0][1], item[0][2] or "")
+        for (namespace, name, version), covers in sorted(
+            covered.items(), key=lambda item: (item[0][0], item[0][1], item[0][2] or "")
         ):
-            entry = {"namespace": namespace, "name": name, "precision": precision}
+            entry = {"namespace": namespace, "name": name, "precision": precision_of(covers)}
             if version is not None:
                 entry["version"] = version
             listed.append(entry)

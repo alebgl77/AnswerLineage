@@ -5,6 +5,10 @@ mutations sont celles qu'une implémentation fautive ferait : un paramètre qui
 manque, un résumé trop long, un contenu dans le résumé, l'URI d'une autre
 version, une extension non déclarée. La suite nomme chacune par son code et la
 situe par un pointeur JSON, sans jamais recopier la valeur reçue.
+
+Le jouet appelé refait la fusion des lectures d'après la documentation du
+graphe ; ces tests la tiennent d'accord avec celle du graphe (``merge_reads``),
+que le kit peut importer et le jouet non.
 """
 
 from __future__ import annotations
@@ -13,11 +17,13 @@ import ast
 import copy
 import json
 from collections.abc import Callable
+from itertools import product
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from answerlineage_api.store.graph import ReadShape, merge_reads
 from answerlineage_conformance.a2a import CONTROLS, URI, Judgement, judge
 from answerlineage_conformance.judgement import judge as judge_events
 from conformance.tests import a2a_toys
@@ -35,7 +41,7 @@ OTHER = URI.replace("/v1", "/v2")
 CALLEE_RUN = "0193a9c5-7a10-7c3e-9d5e-2f1b6c8a0b01"
 AGENT_RUN = "0193a9c5-7a10-7c3e-9d5e-2f1b6c8a0b02"
 TOOL_RUN = "0193a9c5-7a10-7c3e-9d5e-2f1b6c8a0b03"
-RATES = Read("bigquery", "finance.ref.taux_change", "2026-11-01", "columns")
+RATES = Read("bigquery", "finance.ref.taux_change", "2026-11-01", "columns", ("taux",))
 SALES = Read("postgres://crm:5432", "ventes.public.commandes")
 
 Problem = tuple[str, str | None, str | None]
@@ -162,6 +168,72 @@ def test_the_callee_run_attached_to_the_call_closes_the_chain_in_the_graph() -> 
     events = lineage_events(caller, unattached, agent_run=AGENT_RUN, tool_run=TOOL_RUN)
     judgement = judge_events(events, profile="adapter", received_at=RECEIVED_AT)
     assert {problem.code for problem in judgement.problems} == {"no_complete_chain"}
+
+
+# Un jeu lu plusieurs fois : le résumé dit la précision de la fusion de ses lectures.
+
+# Chaque précision, sans colonne et avec des colonnes qui se recoupent ou non :
+# les colonnes ne passent pas dans le résumé, mais elles décident de sa précision.
+READ_SHAPES: tuple[ReadShape, ...] = tuple(
+    (precision, columns)
+    for precision in ("table", "columns", "subset", "keys")
+    for columns in ((), ("taux",), ("devise",))
+)
+
+
+def shown(shape: ReadShape) -> str:
+    precision, columns = shape
+    return f"{precision}({','.join(columns)})"
+
+
+def read_as(shape: ReadShape) -> Read:
+    """Une lecture du jeu des taux, sous cette forme."""
+    precision, columns = shape
+    return Read(RATES.namespace, RATES.name, RATES.version, precision, columns)
+
+
+def summarized(*shapes: ReadShape) -> str:
+    """La précision que le résumé donne au jeu des taux, lu sous ces formes dans cet ordre."""
+    datasets = callee(reads=[read_as(shape) for shape in shapes]).summary(None)["datasets"]
+    assert len(datasets) == 1
+    precision: str = datasets[0]["precision"]
+    return precision
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        pytest.param(first, second, id=f"{shown(first)}+{shown(second)}")
+        for first, second in product(READ_SHAPES, repeat=2)
+    ],
+)
+def test_a_dataset_read_twice_has_the_precision_of_the_merge_of_its_reads(
+    first: ReadShape, second: ReadShape
+) -> None:
+    card, captured_exchange = captured(reads=[read_as(first), read_as(second)])
+    summary = summary_of(captured_exchange)
+    assert [dataset["precision"] for dataset in summary["datasets"]] == [
+        merge_reads(first, second)[0]
+    ]
+    assert summary["datasetCount"] == 1
+    assert judged(card, captured_exchange) == set()
+
+
+def test_a_subset_and_keys_of_a_dataset_cover_every_row() -> None:
+    """Deux restrictions différentes des lignes ne se décrivent par aucune des deux : dire
+    ``subset`` ferait croire que seules certaines lignes ont été lues."""
+    assert summarized(("subset", ()), ("keys", ())) == "table"
+    assert summarized(("keys", ()), ("subset", ())) == "table"
+    assert summarized(("subset", ("taux",)), ("keys", ("devise",))) == "columns"
+    assert summarized(("subset", ("taux",)), ("keys", ())) == "table"
+
+
+def test_the_order_of_the_reads_does_not_change_the_summary() -> None:
+    """Un même run donne le même résumé, quel que soit l'ordre dans lequel l'appelé a lu."""
+    for first, second, third in product(READ_SHAPES, repeat=3):
+        merged = merge_reads(merge_reads(first, second), third)[0]
+        assert summarized(first, second, third) == merged
+        assert summarized(third, second, first) == merged
 
 
 # Les mutations que la suite nomme.

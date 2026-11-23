@@ -189,7 +189,7 @@ Il dit ce que le run de l'appelé a lu jusque-là ; une tâche terminée porte l
 
 Le schéma est [`LineageSummary.json`](../spec/a2a/v1/LineageSummary.json). Il faut aussi :
 
-- **un jeu de données par entrée** : une entrée par triplet espace de noms, nom et version ; un jeu lu sans version déclarée a son entrée à lui. Lu plusieurs fois, il garde la précision la moins précise de ses lectures, celle qui ne fait écarter aucune réponse, comme la [remontée](lecture.md#ce-qui-compte-comme-source) ;
+- **un jeu de données par entrée** : une entrée par triplet espace de noms, nom et version ; un jeu lu sans version déclarée a son entrée à lui. Lu plusieurs fois, il a la précision de la [fusion](schema.md#fusion-de-deux-lectures) de ses lectures, comme dans le graphe et la [remontée](lecture.md#ce-qui-compte-comme-source) : la plus étroite des lectures qui les couvrent toutes, lignes et colonnes, celle qui ne fait écarter aucune réponse. L'appelé la calcule sur les colonnes lues, même s'il ne les transmet pas, et une lecture qui ne nomme pas ses colonnes les a toutes lues. Ainsi un sous-ensemble puis des clés, deux restrictions différentes des lignes, couvrent toutes les lignes : `columns` quand les deux lectures nomment leurs colonnes, `table` sinon ;
 - **des noms qui ont la forme d'un nom** : `namespace`, `name` et `version` suivent la règle des [identifiants](ingestion.md#identifiants) de l'ingestion, comme `callJob` ;
 - **une liste bornée** : au-delà de 100 jeux, l'appelé en liste 100, compte le reste dans `datasetCount` et dit `truncated`. Il devrait les ranger par espace de noms, nom puis version, pour qu'un même run donne le même résumé. Il peut en lister moins qu'il n'en connaît, aucun s'il ne veut pas révéler ses noms : la troncature est dite, et le compte reste juste.
 
@@ -449,11 +449,11 @@ Fichiers fouillés
 - **Les événements.** Elle juge ce que les agents se sont dit, pas ce qu'ils ont émis vers AnswerLineage. Le rattachement par la facette `parent` se vérifie avec `check`, sous le profil `adapter`, sur la capture réunie des événements des deux agents : sans lui, la chaîne de la table lue à la réponse diffusée reste incomplète (`no_complete_chain`).
 - **Un échange, pas tous.** Un appelé qui ne se trompe que sur un contexte invalide n'est vu que si l'échange en porte un. Jouer aussi un appel sans contexte et un appel au contexte fautif, et juger chaque échange.
 - **Un contenu transformé.** Seule la copie exacte d'un texte échangé est cherchée ; un extrait, une traduction ou un encodage passeraient. La forme des noms et la fermeture des objets restent la vraie garde.
-- **La vérité du résumé.** Que l'appelé ait lu ce qu'il dit, et rien d'autre, ne se voit pas dans l'échange.
+- **La vérité du résumé.** Que l'appelé ait lu ce qu'il dit, et rien d'autre, ne se voit pas dans l'échange. Ni que la précision d'un jeu lu plusieurs fois soit la fusion de ses lectures : l'échange n'en porte que le résultat, et la suite n'en vérifie que la valeur admise et l'unicité de l'entrée (`dataset_repeated`).
 
 ### La preuve par deux implémentations
 
-Les tests du kit écrivent un appelant et un appelé jouets à partir de cette seule page et des schémas publiés, sans rien importer d'AnswerLineage (un test le vérifie) : la dérivation y est refaite d'après la page du proxy, les schémas appliqués avec `jsonschema`. Leurs échanges passent la suite, et les événements qu'ils émettent passent `check` avec une chaîne complète, à travers l'appel. Des mutations (un paramètre manquant, un résumé trop long, un contenu dans le résumé, l'URI d'une autre version, une extension non déclarée) sont chacune nommées par la suite.
+Les tests du kit écrivent un appelant et un appelé jouets à partir de cette seule page et des schémas publiés, sans rien importer d'AnswerLineage (un test le vérifie) : la dérivation y est refaite d'après la page du proxy, la fusion des lectures d'après celle du [schéma du graphe](schema.md#fusion-de-deux-lectures), les schémas appliqués avec `jsonschema`. Un test tient cette fusion d'accord avec celle du graphe (`merge_reads`), sur toutes les paires de précisions, avec et sans colonnes, et sur des triplets. Leurs échanges passent la suite, et les événements qu'ils émettent passent `check` avec une chaîne complète, à travers l'appel. Des mutations (un paramètre manquant, un résumé trop long, un contenu dans le résumé, l'URI d'une autre version, une extension non déclarée) sont chacune nommées par la suite.
 
 ## Versions
 
@@ -465,6 +465,6 @@ Toute évolution, même l'ajout d'un champ facultatif, publie une nouvelle versi
 
 - Les flux (`SendStreamingMessage`, `SubscribeToTask`) ne sont pas couverts : le résumé n'est défini que sur la tâche ou le message rendu.
 - Le résumé n'est pas signé.
-- L'appelé ne transmet pas les colonnes lues : `columns` dit qu'une partie seulement des colonnes l'a été, pas lesquelles.
+- L'appelé ne transmet pas les colonnes lues : `columns` dit qu'une partie seulement des colonnes l'a été, pas lesquelles, et `subset` ou `keys` ne disent pas si toutes l'ont été.
 - La version 1 ne connaît qu'un appel direct : un appelé qui en appelle un autre compte les lectures de ce dernier dans les siennes s'il les connaît (par son propre résumé reçu), sans dire par qui elles ont été faites.
 - Aucun adaptateur A2A n'est encore fourni par AnswerLineage : cette page et la suite sont le contrat qu'un adaptateur devra remplir.

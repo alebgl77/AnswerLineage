@@ -65,7 +65,7 @@ def test_the_documented_card_and_exchange_pass_the_suite() -> None:
 def test_the_documented_exchange_is_what_the_toys_exchange() -> None:
     toy = ToyCallee(
         run_id="0193a9c5-7a10-7c3e-9d5e-2f1b6c8a0d01",
-        reads=(Read("bigquery", "finance.ref.taux_change", "2026-11-01", "columns"),),
+        reads=(Read("bigquery", "finance.ref.taux_change", "2026-11-01", "columns", ("taux",)),),
     )
     assert exchange(ToyCaller(), toy)[1] == captured()
 
