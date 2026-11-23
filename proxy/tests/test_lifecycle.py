@@ -109,11 +109,15 @@ async def call(url: str, path: str = "/mcp") -> httpx.Response:
 
 async def refused(url: str) -> bool:
     """Vrai quand plus rien n'écoute à cette adresse. La requête n'est pas un appel d'outil :
-    relayée, elle n'émet aucun événement."""
+    relayée, elle n'émet aucun événement.
+
+    Une connexion acceptée à l'instant où l'écoute se ferme est refermée sans réponse : elle
+    n'est pas servie non plus.
+    """
     try:
         async with httpx.AsyncClient(trust_env=False, timeout=10) as client:
             await client.delete(url + "/mcp")
-    except httpx.ConnectError:
+    except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError):
         return True
     return False
 
