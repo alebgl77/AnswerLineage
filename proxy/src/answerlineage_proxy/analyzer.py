@@ -112,6 +112,8 @@ class _Job:
     dialect: str = ""
     catalog: str | None = None
     db: str | None = None
+    # Préchauffage : démarrer le processus, sans rien analyser.
+    warm: bool = False
 
 
 _Outcome = tuple[SqlAnalysis, Origin]
@@ -266,6 +268,18 @@ class SqlAnalyzer:
         analysis, origin = await asyncio.shield(future)
         return AnalyzerResult(analysis, origin)
 
+    async def warm(self) -> None:
+        """Démarre le processus d'analyse s'il ne tourne pas, et le laisse se préchauffer (il
+        charge chaque dialecte à son démarrage) : la première requête n'attend pas ce temps-là.
+        Passe par la file, comme une analyse ; pleine, rien n'est fait. Ne lève pas."""
+        queue = self._running_queue()
+        future: asyncio.Future[_Outcome] = asyncio.get_running_loop().create_future()
+        try:
+            queue.put_nowait((_Job(b"", warm=True), future))
+        except asyncio.QueueFull:
+            return
+        await asyncio.shield(future)
+
     async def aclose(self) -> None:
         """Arrête le processus d'analyse. Les analyses en attente sont « non résolues »."""
         supervisor, self._supervisor = self._supervisor, None
@@ -315,6 +329,13 @@ class SqlAnalyzer:
         """Traite la file, une requête à la fois."""
         while True:
             job, future = await queue.get()
+            if job.warm:
+                origin: Origin = "failed"
+                try:
+                    origin = "analyzed" if await self._ready() is not None else "failed"
+                finally:
+                    self._settle(job, future, _unresolved("analyzer_warm"), origin)
+                continue
             try:
                 analysis, origin, cacheable = await self._compute(job)
             except asyncio.CancelledError:

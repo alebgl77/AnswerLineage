@@ -12,14 +12,18 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import hashlib
+import hmac
 import json
 import logging
+import secrets
 import socket
 import statistics
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, MutableMapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from itertools import cycle
 from pathlib import Path
 from random import Random
@@ -47,6 +51,7 @@ from answerlineage_proxy.quarantine import (
     ResponseRefusedError,
     parse,
 )
+from answerlineage_proxy.quarantine_signature import HEADER
 from answerlineage_proxy.sink import MemorySink
 from proxy.tests.conftest import FakeMcpServer, exchange, running, stdio_session, tool_call, until
 
@@ -177,14 +182,16 @@ def test_a_response_gives_each_perimeter_its_incident_mode_and_datasets_in_norma
             )
         )
     )
+    activated = datetime(2026, 11, 16, 8, 55, 1, 204517, tzinfo=UTC)
     assert known.version == "b" * 64
     assert known.scopes == (
         QuarantineScope(
             INCIDENT,
             "warn",
             frozenset({("bigquery", ORDERS["name"]), ("bigquery", RATES["name"])}),
+            activated,
         ),
-        QuarantineScope(OTHER, "warn", frozenset({("bigquery", "société")})),
+        QuarantineScope(OTHER, "warn", frozenset({("bigquery", "société")}), activated),
     )
     assert (known.datasets, known.unsupported) == (3, 0)
     # Un champ que le proxy ne lit pas est ignoré.
@@ -236,6 +243,26 @@ HOSTILE: dict[str, tuple[bytes, str]] = {
     "incident-invalide": (body(document(scope(CANARY))), "invalid_incident"),
     "incident-en-double": (body(document(scope(), scope())), "duplicate_incident"),
     "mode-invalide": (body(document(scope(mode=f"Ignore {CANARY}"))), "invalid_mode"),
+    "activation-absente": (
+        body(document({key: value for key, value in scope().items() if key != "activated_at"})),
+        "invalid_activation",
+    ),
+    "activation-hors-utc": (
+        body(document({**scope(), "activated_at": "2026-11-16T09:55:01+01:00"})),
+        "invalid_activation",
+    ),
+    "activation-en-phrase": (
+        body(document({**scope(), "activated_at": f"2026-11-16T08:55:01Z {CANARY}"})),
+        "invalid_activation",
+    ),
+    "activation-impossible": (
+        body(document({**scope(), "activated_at": "2026-02-30T08:55:01Z"})),
+        "invalid_activation",
+    ),
+    "activation-en-nombre": (
+        body(document({**scope(), "activated_at": 1794819310})),
+        "invalid_activation",
+    ),
     "perimetre-vide": (body(document(scope(datasets=[]))), "invalid_datasets"),
     "perimetre-trop-long": (
         body(
@@ -541,6 +568,8 @@ class HostileApi:
         self.hostile = False
         self.black_hole = False
         self.served = 0
+        # Avec un secret, la réponse valide est signée et datée, comme l'API le fait.
+        self.secret: str | None = None
         self._kinds: Iterator[str] = cycle(
             [
                 "lente",
@@ -560,7 +589,7 @@ class HostileApi:
             # Accepte et ne répond jamais.
             await asyncio.sleep(3600)
         if not self.hostile:
-            await self._send(send, body(document(scope_of(INCIDENT))))
+            await self._send(send, body(document(scope_of(INCIDENT))), self.secret)
             return
         kind = next(self._kinds)
         if kind == "lente":
@@ -583,17 +612,17 @@ class HostileApi:
             await self._send(send, HOSTILE[kind][0])
 
     @staticmethod
-    async def _send(send: Send, content: bytes) -> None:
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 200,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(content)).encode()),
-                ],
-            }
-        )
+    async def _send(send: Send, content: bytes, secret: str | None = None) -> None:
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(content)).encode()),
+        ]
+        if secret is not None:
+            at = str(int(time.time())).encode()
+            message = b"answerlineage/quarantine/v1\x00" + at + b"." + content
+            signed = hmac.new(secret.encode(), message, hashlib.sha256).hexdigest().encode()
+            headers.append((HEADER.lower().encode(), b"t=" + at + b",v1=" + signed))
+        await send({"type": "http.response.start", "status": 200, "headers": headers})
         await send({"type": "http.response.body", "body": content})
 
 
@@ -675,19 +704,23 @@ async def test_a_redirect_of_the_api_is_not_followed() -> None:
     assert sync.status().mode == "observe"
 
 
-async def test_a_known_perimeter_changes_nothing_of_the_call_nor_of_its_event() -> None:
-    """Le proxy connaît le périmètre, il ne s'en sert pas encore : l'appel et son événement
-    sont ceux d'un proxy qui ne le connaît pas."""
+async def test_a_known_perimeter_changes_nothing_of_a_call_outside_its_zone() -> None:
+    """Le proxy connaît une zone vérifiée qui ne vise pas l'outil appelé : l'appel et son
+    événement sont ceux d'un proxy qui ne connaît aucun périmètre."""
     upstream, api = FakeMcpServer(), HostileApi()
+    api.secret = "partage-" + secrets.token_urlsafe(32)
     seen: list[tuple[int, bytes, bytes, list[str]]] = []
     async with running(upstream) as upstream_url, running(api) as api_url:
         url = QuarantineSettings.create(httpx.URL(api_url)).url
-        for sync in (None, QuarantineSync(QuarantineSettings(url, interval=0.05))):
+        for sync in (
+            None,
+            QuarantineSync(QuarantineSettings(url, interval=0.05, secret=api.secret)),
+        ):
             sink = MemorySink()
             proxy = McpProxy(ProxySettings.create(upstream_url, "meteo"), sink, quarantine=sync)
             async with running(proxy, transparent=True) as proxy_url:
                 if sync is not None:
-                    await until(lambda proxy=proxy: proxy.quarantine_status().scopes == 1)
+                    await until(lambda proxy=proxy: proxy.quarantine_status().annotating)
                 response = await exchange("POST", proxy_url + "/mcp", content=tool_call())
                 await proxy.drain()
             (event,) = sink.events

@@ -10,10 +10,11 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Final, Literal, get_args
+from typing import Annotated, Any, Final, Literal, NotRequired, TypedDict, get_args
 from uuid import UUID
 
 from pydantic import (
+    AfterValidator,
     AnyUrl,
     AwareDatetime,
     BaseModel,
@@ -24,6 +25,7 @@ from pydantic import (
     ValidationError,
     ValidationInfo,
     field_validator,
+    with_config,
 )
 from pydantic_core import PydanticCustomError
 
@@ -58,6 +60,20 @@ ReadKeys = Literal[
     "too_many_keys",
 ]
 READ_KEYS: Final[tuple[str, ...]] = get_args(ReadKeys)
+# Ce que la facette d'appel d'outil dit d'un appel retenu par une quarantaine en mode avertir
+# (version 1-3-0) : des listes fermées, des identifiants d'incident, une attente bornée.
+QuarantineDecision = Literal["certain", "uncertain", "outside"]
+QUARANTINE_DECISIONS: Final[tuple[str, ...]] = get_args(QuarantineDecision)
+UncertainReason = Literal["unresolved_read", "decision_timeout"]
+UNCERTAIN_REASONS: Final[tuple[str, ...]] = get_args(UncertainReason)
+NotAnnotatedReason = Literal[
+    "encoded", "body_bound", "no_content", "error_response", "client_gone", "not_whole"
+]
+NOT_ANNOTATED_REASONS: Final[tuple[str, ...]] = get_args(NotAnnotatedReason)
+# Les incidents en cause : ceux des quarantaines actives, cent au plus.
+QUARANTINE_INCIDENTS_MAX: Final = 100
+# L'attente de la décision, en millisecondes : le proxy la borne à 50.
+QUARANTINE_WAIT_MAX_MS: Final = 50
 
 # Plage admise pour l'heure d'un événement, ramenée en UTC. Aucun événement de
 # lignage ne précède 1970, et un jour d'avance couvre tout décalage d'horloge
@@ -413,8 +429,43 @@ def facet_name_errors(raw: Mapping[str, Any]) -> list[FieldError]:
 _Duration = Annotated[float, Field(strict=True, ge=0, le=SIGNAL_MAX, allow_inf_nan=False)]
 _Count = Annotated[int, Field(strict=True, ge=0, le=SIGNAL_MAX)]
 _ErrorCode = Annotated[int, Field(strict=True, ge=ERROR_CODE_MIN, le=ERROR_CODE_MAX)]
+_IncidentId = Annotated[
+    str,
+    Field(
+        strict=True,
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    ),
+]
+
+
+def _distinct(values: list[str]) -> list[str]:
+    if len(set(values)) != len(values):
+        raise PydanticCustomError("unique_items", "Chaque incident n'est cité qu'une fois.")
+    return values
+
+
+@with_config(ConfigDict(strict=True, extra="ignore"))
+class QuarantineSignal(TypedDict):
+    """Ce que le point de capture dit d'un appel retenu par une quarantaine : la décision, les
+    incidents en cause, si le résultat porte l'avertissement, et l'attente de la décision."""
+
+    decision: QuarantineDecision
+    incidents: Annotated[
+        list[_IncidentId],
+        Field(strict=True, min_length=1, max_length=QUARANTINE_INCIDENTS_MAX),
+        AfterValidator(_distinct),
+    ]
+    uncertainReason: NotRequired[UncertainReason]
+    annotated: Annotated[bool, Field(strict=True)]
+    notAnnotatedReason: NotRequired[NotAnnotatedReason]
+    waitMs: Annotated[
+        float, Field(strict=True, ge=0, le=QUARANTINE_WAIT_MAX_MS, allow_inf_nan=False)
+    ]
+
+
 # Chaque signal présent dans une facette de run, et ce qu'il admet : ceux de la facette
-# de qualité de service, et ce que la facette d'appel d'outil dit de la clé lue.
+# de qualité de service, et ce que la facette d'appel d'outil dit de la clé lue et d'un
+# appel retenu par une quarantaine.
 _SIGNALS: Final[Mapping[tuple[str, str], TypeAdapter[Any]]] = {
     (QOS_FACET, "latencyMs"): TypeAdapter(_Duration),
     (QOS_FACET, "addedLatencyMs"): TypeAdapter(_Duration),
@@ -423,6 +474,7 @@ _SIGNALS: Final[Mapping[tuple[str, str], TypeAdapter[Any]]] = {
     (QOS_FACET, "errorCount"): TypeAdapter(_Count),
     (QOS_FACET, "retryCount"): TypeAdapter(_Count),
     (TOOL_CALL_FACET, "readKeys"): TypeAdapter(ReadKeys),
+    (TOOL_CALL_FACET, "quarantine"): TypeAdapter(QuarantineSignal),
 }
 
 
@@ -431,8 +483,11 @@ def signal_errors(raw: Mapping[str, Any]) -> list[FieldError]:
 
     Durées et compteurs sont des nombres bornés, l'issue et le sort de la clé
     lue viennent de listes fermées, le code d'erreur est un entier sur 32 bits.
-    Un signal absent n'est pas exigé ; ``null`` n'en est pas un. Les autres
-    champs de ces facettes ne sont pas contrôlés ici.
+    Un appel retenu par une quarantaine est un objet dont chaque champ connu est
+    contrôlé de même ; ses champs inconnus sont ignorés. Un signal absent n'est
+    pas exigé ; ``null`` n'en est pas un. Les autres champs de ces facettes ne
+    sont pas contrôlés ici. Une erreur désigne le champ fautif par son chemin,
+    fait des seuls noms que le modèle connaît, jamais par sa valeur.
     """
     facets = _mapping(_mapping(raw.get("run")).get("facets"))
     errors: list[FieldError] = []
@@ -443,9 +498,14 @@ def signal_errors(raw: Mapping[str, Any]) -> list[FieldError]:
         try:
             adapter.validate_python(facet[name])
         except ValidationError as error:
-            path = json_pointer(("run", "facets", key, name))
+            # Les champs inconnus étant ignorés, un emplacement ne nomme que des champs du
+            # modèle et des rangs : il ne recopie rien de ce que l'émetteur a choisi.
             errors.extend(
-                FieldError(path=path, type=item["type"], message=item["msg"])
+                FieldError(
+                    path=json_pointer(("run", "facets", key, name, *item["loc"])),
+                    type=item["type"],
+                    message=item["msg"],
+                )
                 for item in error.errors(
                     include_url=False, include_input=False, include_context=False
                 )

@@ -248,6 +248,42 @@ async def test_full_queue_refuses_with_its_own_reason() -> None:
         await analyzer.aclose()
 
 
+async def test_warming_starts_the_process_without_analyzing_anything() -> None:
+    analyzer = SqlAnalyzer(command=scripted())
+    try:
+        await analyzer.warm()
+        pid = analyzer.process_id
+        assert pid is not None
+        # Le préchauffage n'a rien analysé ni rien mis en cache : la première analyse est la
+        # première du processus, qui n'a pas été relancé.
+        first = await analyzer.analyze("SELECT a FROM s.t", "postgres")
+        assert (first.origin, names(first.analysis)) == ("analyzed", ["s.analyse1"])
+        assert analyzer.process_id == pid
+        await analyzer.warm()
+        assert analyzer.process_id == pid
+    finally:
+        await analyzer.aclose()
+
+
+async def test_warming_a_full_queue_or_a_process_that_does_not_start_does_nothing() -> None:
+    busy = SqlAnalyzer(queue_size=1, budget=5, command=scripted())
+    try:
+        running = asyncio.ensure_future(busy.analyze("dors 0.3", "postgres"))
+        await until(lambda: busy.analyzing)
+        waiting = asyncio.ensure_future(busy.analyze("dors 0", "postgres"))
+        await asyncio.sleep(0)
+        await asyncio.wait_for(busy.warm(), timeout=0.2)
+        assert (await running).origin == (await waiting).origin == "analyzed"
+    finally:
+        await busy.aclose()
+    absent = SqlAnalyzer(start_timeout=1.0, command=["/chemin/inexistant"])
+    try:
+        await asyncio.wait_for(absent.warm(), timeout=5)
+        assert absent.process_id is None
+    finally:
+        await absent.aclose()
+
+
 async def test_query_over_the_size_limit_is_never_sent_to_the_process() -> None:
     analyzer = SqlAnalyzer(command=["/chemin/inexistant"])
     result = await analyzer.analyze("x" * (MAX_SQL_BYTES + 1), "postgres")

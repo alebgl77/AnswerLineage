@@ -1,8 +1,10 @@
 name: bench
 
 # Banc de latence du proxy MCP, chaque nuit et à la demande : 100 000 appels
-# d'outil, directement et à travers le proxy. Il échoue quand le p99 de la
-# latence ajoutée dépasse 5 ms, mesuré par comparaison ou par le proxy lui-même.
+# d'outil, directement et à travers le proxy, sans quarantaine, puis pendant une
+# quarantaine qui ne vise pas l'outil, puis pendant une quarantaine qui le vise et
+# en annote chaque résultat. Il échoue quand le p99 de la latence ajoutée dépasse
+# 5 ms, mesuré par comparaison ou par le proxy lui-même.
 on:
   schedule:
     - cron: "41 2 * * *"
@@ -23,7 +25,8 @@ jobs:
   latency:
     name: Latence ajoutée par le proxy
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Trois bancs de 100 000 appels, de six à dix minutes chacun.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,3 +38,7 @@ jobs:
         run: uv sync --all-packages --locked
       - name: 100 000 appels, p99 de la latence ajoutée au plus 5 ms
         run: make bench
+      - name: Quarantaine hors de l'outil, p99 de la latence ajoutée au plus 5 ms
+        run: make bench BENCH_ARGS="--quarantine outside"
+      - name: Quarantaine sur l'outil, résultat annoté, p99 au plus 5 ms
+        run: make bench BENCH_ARGS="--quarantine retained"

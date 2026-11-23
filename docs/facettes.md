@@ -29,7 +29,7 @@ Aucune facette ne ferme ses objets : un champ inconnu est admis, comme dans Open
 | Facette | Versions | Clé | Portée | Où la placer | Obligatoires |
 | --- | --- | --- | --- | --- | --- |
 | `AgentRunFacet` | [1-0-0](../spec/facets/1-0-0/AgentRunFacet.json) | `answerlineage_agent` | Run | `run.facets` | aucun |
-| `ToolCallRunFacet` | [1-0-0](../spec/facets/1-0-0/ToolCallRunFacet.json), [1-1-0](../spec/facets/1-1-0/ToolCallRunFacet.json), [1-2-0](../spec/facets/1-2-0/ToolCallRunFacet.json) | `answerlineage_toolCall` | Run | `run.facets` | `server` |
+| `ToolCallRunFacet` | [1-0-0](../spec/facets/1-0-0/ToolCallRunFacet.json), [1-1-0](../spec/facets/1-1-0/ToolCallRunFacet.json), [1-2-0](../spec/facets/1-2-0/ToolCallRunFacet.json), [1-3-0](../spec/facets/1-3-0/ToolCallRunFacet.json) | `answerlineage_toolCall` | Run | `run.facets` | `server` |
 | `QosRunFacet` | [1-0-0](../spec/facets/1-0-0/QosRunFacet.json), [1-1-0](../spec/facets/1-1-0/QosRunFacet.json) | `answerlineage_qos` | Run | `run.facets` | aucun |
 | `DeliveryOutputDatasetFacet` | [1-0-0](../spec/facets/1-0-0/DeliveryOutputDatasetFacet.json), [1-1-0](../spec/facets/1-1-0/DeliveryOutputDatasetFacet.json) | `answerlineage_delivery` | Jeu de données de sortie | `outputs[].outputFacets` | `fingerprint`, `channel`, `messageRef` |
 | `KeysInputDatasetFacet` | [1-0-0](../spec/facets/1-0-0/KeysInputDatasetFacet.json) | `answerlineage_keys` | Jeu de données d'entrée | `inputs[].inputFacets` | `hmacs` ou `bloomFilter` |
@@ -50,6 +50,19 @@ La version 1-1-0 ajoute un champ facultatif, `readKeys` : ce qu'est devenue la c
 
 La version 1-2-0 ajoute un champ facultatif, `taggedWithRunId`, un booléen : pour un outil SQL dont la requête relayée doit commencer par le commentaire qui porte l'identifiant de run ([étiquetage, sur option](proxy.md#étiquetage-des-requêtes-de-lentrepôt)), vrai quand elle l'a reçu, faux quand elle est partie telle quelle. Il est absent pour tout autre outil. C'est un indicateur : ni la requête ni le commentaire n'entrent dans l'événement. Le proxy ne se réclame de cette version que pour une facette qui porte `taggedWithRunId`.
 
+La version 1-3-0 ajoute un champ facultatif, `quarantine`, un objet : pour un appel retenu par une quarantaine en mode avertir ([le proxy](proxy.md#avertir--lavertissement-dans-le-résultat)), la décision sur sa lecture et ce que le relais en a fait. Il est absent pour tout autre appel. Le proxy ne se réclame de cette version que pour une facette qui le porte.
+
+| Champ | Obligatoire | Contenu |
+| --- | --- | --- |
+| `decision` | oui | `certain` (la lecture établie touche la zone), `uncertain` (elle n'a pas été établie, ou pas avant l'échéance) ou `outside` (elle est établie hors de la zone : rien n'est annoté) |
+| `incidents` | oui | Identifiants des incidents en cause, des UUID en minuscules, triés, sans doublon, de 1 à 100 |
+| `uncertainReason` | non | Pour une décision incertaine : `unresolved_read` (le motif est dans `unresolvedReason`) ou `decision_timeout` |
+| `annotated` | oui | Vrai quand le résultat relayé porte l'avertissement en tête de son contenu |
+| `notAnnotatedReason` | non | Pour une décision certaine ou incertaine dont le résultat n'a pas reçu l'avertissement : `encoded`, `body_bound`, `no_content`, `error_response`, `client_gone` ou `not_whole` ([les motifs](proxy.md#rien-nest-inséré-et-lévénement-dit-pourquoi)) |
+| `waitMs` | oui | Ce que la réponse a attendu la décision, en millisecondes, de 0 à 50 ; ce temps compte aussi dans `addedLatencyMs` |
+
+Ce sont des codes, des identifiants d'incident et une durée : l'avertissement lui-même n'entre pas dans l'événement. L'ingestion contrôle chaque champ connu (listes fermées, forme des identifiants, bornes) et refuse l'événement sans recopier la valeur reçue ; un champ inconnu de cet objet est admis, comme ailleurs. Le graphe ne le projette pas encore.
+
 Le contexte de trace W3C de l'appel, d'où dérive l'identifiant de run (voir [le proxy](proxy.md#identifiant-de-run-et-contexte-de-trace)), pour passer du lignage à la trace dans un outil d'observabilité :
 
 - `traceId` : le `trace-id`, 32 hexadécimaux minuscules, jamais tous nuls ;
@@ -59,7 +72,7 @@ Le contexte de trace W3C de l'appel, d'où dérive l'identifiant de run (voir [l
 Les empreintes à clé de l'appel et la taille de son résultat (voir [le proxy](proxy.md#empreintes-à-clé) pour la clé et le calcul à l'octet près) :
 
 - `argumentsFingerprint` : empreinte des arguments, `hmac-sha256:` suivi de 64 hexadécimaux minuscules. HMAC-SHA-256, avec la clé du locataire, de l'étiquette `answerlineage/fingerprint/arguments/v1`, d'un octet nul et de la forme canonique JSON (RFC 8785) de `params.arguments` ; `{}` pour un appel sans arguments ;
-- `resultFingerprint` : empreinte du résultat, de même forme, sur l'étiquette `answerlineage/fingerprint/result/v1` et les octets du corps de la réponse tels que relayés (en stdio, ceux du message de réponse, sans sa fin de ligne) ;
+- `resultFingerprint` : empreinte du résultat, de même forme, sur l'étiquette `answerlineage/fingerprint/result/v1` et les octets du corps de la réponse tels que le serveur les a rendus, sans l'avertissement de quarantaine que le proxy y insère (en stdio, ceux du message de réponse, sans sa fin de ligne) ;
 - `resultSize` : taille de ces octets.
 
 Sans clé, les deux empreintes sont absentes : un émetteur n'écrit jamais un hachage sans clé, qu'une énumération inverserait, et le schéma refuse toute autre forme que `hmac-sha256:`. Quand le corps de la réponse n'a pas été relayé en entier, ni `resultFingerprint` ni `resultSize` ne sont émis. Les vecteurs de test sont dans [`spec/fingerprint/vectors-v1.json`](../spec/fingerprint/vectors-v1.json).

@@ -1147,6 +1147,7 @@ def main(arguments: Sequence[str], environment: Mapping[str, str]) -> int:
         event_sink,
         log_instance,
         log_run_comments,
+        log_warnings,
         outbox_settings_from_args,
         quarantine_settings_from_args,
         quarantine_sync,
@@ -1177,6 +1178,7 @@ def main(arguments: Sequence[str], environment: Mapping[str, str]) -> int:
             tool,
         )
     log_run_comments(settings.sql_tools)
+    log_warnings(quarantine)
     tokens = token_source(credentials)
     proxy = StdioProxy(
         settings,

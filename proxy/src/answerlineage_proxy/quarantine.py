@@ -1,18 +1,19 @@
-"""Périmètres en quarantaine : le proxy les apprend de l'API, sans encore s'en servir.
+"""Périmètres en quarantaine : le proxy les apprend de l'API.
 
 Un responsable de données met un incident en quarantaine par l'API ; chaque
 proxy apprend le périmètre des quarantaines actives en interrogeant l'API qu'il
 connaît déjà pour sa boîte d'envoi (``GET /api/v1/quarantine``), à intervalle
-réglable : 10 s par défaut, 30 s au plus. Il ne fait encore rien des lectures
-de ce périmètre : il le connaît, et le dit.
+réglable : 10 s par défaut, 30 s au plus. Le relais HTTP en tire, à chaque
+version, la zone dont il avertit les lectures (``annotation.py``) : ce module
+lui dit quand le périmètre change (``watch``).
 
 Avec le secret qu'il partage avec l'API, le proxy n'accorde foi qu'à une
 diffusion signée et datée par elle (``quarantine_signature.py``) : chaque
 réponse, ``200`` comme ``304``, est vérifiée avant que son contenu soit lu, et
 une réponse non signée, mal signée, trop ancienne ou venue du futur est écartée
-comme une réponse hostile. Seul un proxy qui vérifie la diffusion pourra agir
-sur les lectures du périmètre (``annotating``) ; sans secret, il l'apprend sans
-la vérifier, et ne sera jamais autorisé à annoter.
+comme une réponse hostile. Seul un proxy qui vérifie la diffusion agit sur les
+lectures du périmètre (``annotating``) ; sans secret, il l'apprend sans la
+vérifier, et n'annote jamais.
 
 Les invariants de la capture tiennent :
 
@@ -22,9 +23,10 @@ Les invariants de la capture tiennent :
   un premier passage qui borne ce que l'analyseur JSON aura à lire ;
 - **la réponse est hostile.** Elle est lue au plus sur 2 Mio, sans
   décompression ; elle doit être du JSON strict, sans clé répétée ni
-  échappement ; les identifiants d'incident ont la forme d'un UUID, les noms de
-  jeux de données celle que l'ingestion admet (``names.py``), et le nombre de
-  quarantaines et de jeux est borné. Une réponse qui s'en écarte est écartée en
+  échappement ; les identifiants d'incident ont la forme d'un UUID, l'heure
+  d'activation celle d'une heure RFC 3339 en UTC, les noms de jeux de données
+  celle que l'ingestion admet (``names.py``), et le nombre de quarantaines et de
+  jeux est borné. Une réponse qui s'en écarte est écartée en
   entier : le proxy garde son dernier état, et le journal ne dit que le code du
   motif, jamais la réponse ;
 - **une panne garde le dernier état connu**, une heure au plus après la
@@ -58,7 +60,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from random import Random
 from typing import Any, Final, Literal
 
@@ -109,6 +111,10 @@ _PATH: Final = b"/api/v1/quarantine"
 _VERSION: Final = re.compile(r"[0-9a-f]{64}")
 _INCIDENT_ID: Final = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _MODE: Final = re.compile(r"[a-z][a-z_]{0,31}")
+# Une heure RFC 3339 en UTC, telle que l'API l'écrit : à la seconde, ou à la microseconde.
+_INSTANT: Final = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z"
+)
 # Un élément JSON : une chaîne, un délimiteur ouvrant, ou une valeur littérale.
 _TOKEN: Final = re.compile(rb'"[^"]*"|[{\[]|[^\s"{}\[\],:]+')
 _CLIENT_LOGGERS: Final = ("httpx", "httpcore")
@@ -159,6 +165,8 @@ class QuarantineScope:
     mode: str
     # Espace de noms et nom, sous leur forme NFC.
     datasets: frozenset[tuple[str, str]]
+    # L'heure de l'activation, en UTC : l'avertissement d'une lecture la cite.
+    activated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -214,6 +222,16 @@ def _tokens_within_bounds(body: bytes) -> bool:
     ne lit ensuite qu'une réponse bornée.
     """
     return all(count <= MAX_TOKENS for count, _ in enumerate(_TOKEN.finditer(body), start=1))
+
+
+def _activation(value: object) -> datetime:
+    """L'heure d'activation, lue strictement : RFC 3339 en UTC, sinon la réponse est écartée."""
+    if not isinstance(value, str) or not _INSTANT.fullmatch(value):
+        raise ResponseRefusedError("invalid_activation")
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        raise ResponseRefusedError("invalid_activation") from None
 
 
 def _dataset(value: object) -> tuple[str, str]:
@@ -276,13 +294,14 @@ def parse(body: bytes) -> KnownQuarantines:
         seen.add(incident_id)
         if not isinstance(mode, str) or not _MODE.fullmatch(mode):
             raise ResponseRefusedError("invalid_mode")
+        activated_at = _activation(item.get("activated_at"))
         if not isinstance(datasets, list) or not 1 <= len(datasets) <= MAX_DATASETS:
             raise ResponseRefusedError("invalid_datasets")
         names = frozenset(_dataset(dataset) for dataset in datasets)
         if mode not in MODES:
             unsupported += 1
             continue
-        scopes.append(QuarantineScope(incident_id, mode, names))
+        scopes.append(QuarantineScope(incident_id, mode, names, activated_at))
     return KnownQuarantines(version, tuple(scopes), unsupported)
 
 
@@ -335,6 +354,7 @@ class QuarantineSync:
         self._synced_at: float | None = None
         self._failing = False
         self._task: asyncio.Task[None] | None = None
+        self._listeners: list[Callable[[], None]] = []
         self.polls = 0
 
     @property
@@ -342,6 +362,18 @@ class QuarantineSync:
         """Vrai quand le périmètre connu vient d'une diffusion vérifiée : avec un secret, le
         proxy n'en adopte pas d'autre ; sans secret, jamais."""
         return self.known is not None and self.settings.secret is not None
+
+    def watch(self, listener: Callable[[], None]) -> None:
+        """``listener`` est appelé quand le périmètre connu change : une nouvelle version, ou
+        son oubli. Un échec du destinataire n'atteint pas la synchronisation."""
+        self._listeners.append(listener)
+
+    def _changed(self) -> None:
+        for listener in self._listeners:
+            try:
+                listener()
+            except Exception as error:
+                logger.error("Changement de périmètre non transmis (%s).", type(error).__name__)
 
     def status(self) -> QuarantineStatus:
         known = self.known
@@ -500,6 +532,8 @@ class QuarantineSync:
         self._failing = False
         if recovered:
             logger.info("Quarantaine : API de nouveau joignable.")
+        if changed:
+            self._changed()
         if changed or recovered:
             logger.info(
                 "Quarantaine synchronisée : %d périmètre(s) en quarantaine, %d jeu(x) de données.",
@@ -538,6 +572,7 @@ class QuarantineSync:
                 _duration(self._stale_after),
             )
             self.known = None
+            self._changed()
 
     def _age(self) -> float:
         return 0.0 if self._synced_at is None else self._clock() - self._synced_at

@@ -60,6 +60,9 @@ class Inspection:
     # est demandée : jamais affichés, comparés ni conservés.
     arguments: object = field(default=None, repr=False, compare=False)
     has_arguments: bool = field(default=False, repr=False, compare=False)
+    # Identifiant JSON-RPC de l'appel, quand c'est une chaîne ou un entier : la réponse qui
+    # reçoit un avertissement de quarantaine doit porter le même. Jamais affiché ni conservé.
+    identifier: str | int | None = field(default=None, repr=False, compare=False)
 
 
 def decode_header_value(value: str) -> str | None:
@@ -183,6 +186,9 @@ def inspect_message(
         arguments = params.get("arguments")
         candidate = arguments.get(sql_arguments[tool]) if isinstance(arguments, dict) else None
         sql = candidate if isinstance(candidate, str) else None
+    identifier = message.get("id")
+    if isinstance(identifier, bool) or not isinstance(identifier, str | int):
+        identifier = None
     return Inspection(
         is_tool_call=True,
         tool=tool,
@@ -193,6 +199,7 @@ def inspect_message(
         trace_context=parse_traceparent(meta.get(TRACEPARENT)),
         arguments=params.get("arguments", {}) if keep_arguments else None,
         has_arguments=keep_arguments,
+        identifier=identifier,
     )
 
 

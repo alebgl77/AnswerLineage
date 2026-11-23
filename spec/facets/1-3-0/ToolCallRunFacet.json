@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-3-0/ToolCallRunFacet.json",
+  "type": "object",
+  "$defs": {
+    "ToolCallRunFacet": {
+      "description": "Décrit un appel d'outil MCP. Facette de run, posée sur le run de l'appel. Elle ne porte ni argument ni résultat, seulement des noms, des empreintes et des tailles. La version 1-1-0 dit ce qu'est devenue la clé lue d'après une règle de lecture. La version 1-2-0 dit si la requête SQL relayée a reçu le commentaire qui porte l'identifiant de run. La version 1-3-0 dit, pour un appel retenu par une quarantaine en mode avertir, la décision et si le résultat relayé porte l'avertissement.",
+      "allOf": [
+        {
+          "$ref": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunFacet"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "description": "Nom du serveur MCP dans le lignage."
+            },
+            "tool": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "description": "Nom de l'outil appelé. Absent quand le nom reçu n'a pas une forme admise."
+            },
+            "transport": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Transport utilisé : « http », ou « stdio » pour un serveur MCP que le proxy lance lui-même."
+            },
+            "protocolVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Révision du protocole MCP annoncée par l'appel."
+            },
+            "httpStatus": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599,
+              "description": "Statut HTTP de la réponse du serveur MCP."
+            },
+            "proxyError": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Code fixe de l'erreur propre au proxy, par exemple upstream_unreachable."
+            },
+            "headerMismatch": {
+              "type": "array",
+              "maxItems": 16,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "Nom d'un en-tête MCP contredit par le corps de la requête."
+              },
+              "description": "En-têtes MCP qui contredisent le corps de la requête. Le proxy décide sur le corps."
+            },
+            "invalidToolName": {
+              "type": "boolean",
+              "description": "Vrai quand le nom d'outil reçu n'a pas une forme admise."
+            },
+            "readResolution": {
+              "type": "string",
+              "enum": [
+                "resolved",
+                "unresolved"
+              ],
+              "description": "Les lectures de l'appel sont-elles connues ? Une lecture non résolue n'est pas listée dans les jeux de données d'entrée."
+            },
+            "unresolvedReason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Code fixe du motif d'une lecture non résolue, par exemple too_large, ou undescribed_tool pour un outil qui n'a ni règle de lecture ni SQL déclaré."
+            },
+            "readKeys": {
+              "type": "string",
+              "enum": [
+                "fingerprinted",
+                "no_fingerprint_key",
+                "request_too_large",
+                "missing_argument",
+                "unsupported_argument",
+                "too_many_keys"
+              ],
+              "description": "Ce qu'est devenue la clé lue, quand une règle de lecture nomme l'argument qui la porte : empreinte à clé dans la facette answerlineage_keys de chaque jeu de données lu (fingerprinted) ; sinon lecture déclarée au niveau du jeu de données, sans clé, faute de clé de locataire (no_fingerprint_key), d'arguments lus (request_too_large), de valeur (missing_argument), d'une valeur qui soit un scalaire ou une liste de scalaires (unsupported_argument), ou parce qu'il y en a trop (too_many_keys). Absent quand la règle ne nomme pas d'argument de clé."
+            },
+            "taggedWithRunId": {
+              "type": "boolean",
+              "description": "Pour un outil SQL dont la requête relayée doit commencer par un commentaire qui porte l'identifiant de run (option du point de capture) : vrai quand elle l'a reçu, faux quand elle est partie telle quelle (corps qui ne se lit pas sans ambiguïté, trop grand ou lié par un en-tête, argument absent, requête vide ou qui commence par une directive). Absent pour tout autre outil. Un indicateur, jamais la requête."
+            },
+            "quarantine": {
+              "type": "object",
+              "description": "Pour un appel retenu par une quarantaine active en mode avertir, dont la diffusion est vérifiée (un outil SQL dont l'espace de noms porte un jeu de la zone, ou un outil dont la règle de lecture en déclare un) : la décision sur sa lecture, et si le résultat relayé porte l'avertissement. Absent pour tout autre appel. Des codes, des identifiants d'incident et une durée : jamais l'avertissement lui-même.",
+              "properties": {
+                "decision": {
+                  "type": "string",
+                  "enum": [
+                    "certain",
+                    "uncertain",
+                    "outside"
+                  ],
+                  "description": "certain : la lecture établie touche la zone ; uncertain : elle n'a pas pu être établie, ou pas avant l'échéance de la décision ; outside : elle est établie hors de la zone, et rien n'est annoté."
+                },
+                "incidents": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 100,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Identifiant d'un incident en quarantaine, en minuscules."
+                  },
+                  "description": "Les incidents en cause, triés : ceux dont la zone porte un jeu lu, pour une décision certaine ; ceux qui ont un jeu dans l'espace de noms de l'outil, sinon."
+                },
+                "uncertainReason": {
+                  "type": "string",
+                  "enum": [
+                    "unresolved_read",
+                    "decision_timeout"
+                  ],
+                  "description": "Pour une décision incertaine : la lecture n'a pas été établie (son motif est dans unresolvedReason), ou l'analyse n'avait pas abouti à l'échéance de la décision. Absent sinon."
+                },
+                "annotated": {
+                  "type": "boolean",
+                  "description": "Vrai quand le résultat relayé porte l'avertissement, en tête de son contenu."
+                },
+                "notAnnotatedReason": {
+                  "type": "string",
+                  "enum": [
+                    "encoded",
+                    "body_bound",
+                    "no_content",
+                    "error_response",
+                    "client_gone",
+                    "not_whole"
+                  ],
+                  "description": "Pour une décision certaine ou incertaine dont le résultat ne porte pas l'avertissement : réponse compressée (encoded) ; corps lié par une empreinte, une signature ou une longueur que le proxy ne réécrit pas (body_bound) ; résultat sans tableau content, ou réponse ni JSON ni flux SSE (no_content) ; erreur HTTP ou JSON-RPC, ou serveur injoignable (error_response) ; client parti avant (client_gone) ; début de la réponse qui ne se lit pas entier et sans ambiguïté (not_whole). Absent sinon."
+                },
+                "waitMs": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 50,
+                  "description": "Temps que la réponse a attendu la décision, en millisecondes, au plus l'attente réglée : il compte dans la latence ajoutée."
+                }
+              },
+              "required": [
+                "decision",
+                "incidents",
+                "annotated",
+                "waitMs"
+              ]
+            },
+            "argumentsFingerprint": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+              "description": "Empreinte à clé des arguments de l'appel : « hmac-sha256: » suivi de HMAC-SHA-256(clé du locataire, « answerlineage/fingerprint/arguments/v1 » || 0x00 || forme canonique JSON RFC 8785 de params.arguments) en hexadécimal minuscule ; un appel sans arguments est empreint comme {}. Absente sans clé. Jamais le contenu."
+            },
+            "readOnly": {
+              "type": "boolean",
+              "description": "Vrai quand l'outil ne modifie rien."
+            },
+            "resultFingerprint": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+              "description": "Empreinte à clé du résultat de l'appel : « hmac-sha256: » suivi de HMAC-SHA-256(clé du locataire, « answerlineage/fingerprint/result/v1 » || 0x00 || octets du corps de la réponse tels que le serveur MCP les a rendus, avertissement de quarantaine exclu) en hexadécimal minuscule. Absente sans clé, et quand le corps n'a pas été relayé en entier. Jamais le contenu."
+            },
+            "resultSize": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Taille du résultat : octets du corps de la réponse tels que le serveur MCP les a rendus, avertissement de quarantaine exclu. Absente quand le corps n'a pas été relayé en entier."
+            },
+            "definitionFingerprint": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Empreinte de la définition de l'outil. Jamais le contenu."
+            },
+            "traceId": {
+              "type": "string",
+              "minLength": 32,
+              "maxLength": 32,
+              "pattern": "^(?!0{32}$)[0-9a-f]{32}$",
+              "description": "trace-id du contexte de trace W3C de l'appel, en hexadécimal minuscule. L'identifiant de run en dérive."
+            },
+            "spanId": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 16,
+              "pattern": "^(?!0{16}$)[0-9a-f]{16}$",
+              "description": "parent-id du contexte de trace W3C de l'appel, en hexadécimal minuscule : le span qui a fait l'appel. L'identifiant de run en dérive."
+            },
+            "traceOrigin": {
+              "type": "string",
+              "enum": [
+                "meta",
+                "header",
+                "proxy"
+              ],
+              "description": "D'où vient le contexte de trace : params._meta.traceparent de l'appel (meta), l'en-tête HTTP traceparent (header), ou créé par le proxy faute de contexte reçu (proxy)."
+            }
+          },
+          "required": [
+            "server"
+          ]
+        }
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "answerlineage_toolCall": {
+      "$ref": "#/$defs/ToolCallRunFacet"
+    }
+  }
+}

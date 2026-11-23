@@ -4,7 +4,9 @@ Un corps trop grand pour être lu en entier est relayé en flux ; le proxy n'en
 garde que le début. Ce module y cherche la méthode (``method``, au premier
 niveau) et le nom de l'outil (``params.name``), qui précèdent d'ordinaire les
 arguments volumineux. Dans le début d'une réponse, il cherche de même une
-erreur (``error``, au premier niveau) et son code (``error.code``).
+erreur (``error``, au premier niveau) et son code (``error.code``), ou la place
+où un bloc s'insère en tête du contenu d'un résultat d'outil
+(``result.content``).
 
 Le lecteur est strict : il ne rend une valeur que s'il en est certain. Il saute
 les autres valeurs (chaînes, nombres, objets et tableaux imbriqués) sans les
@@ -23,6 +25,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Literal
 
 # Début gardé d'un message trop grand pour être lu en entier : les clients et les
 # serveurs MCP y écrivent d'ordinaire la méthode, le nom de l'outil et l'identifiant.
@@ -41,6 +44,8 @@ _QUOTE = ord('"')
 _OPENER_OF = {ord("]"): ord("["), ord("}"): ord("{")}
 # Un entier JSON : le code d'une erreur JSON-RPC.
 _INTEGER = re.compile(rb"-?(?:0|[1-9][0-9]{0,18})")
+# Ce qui peut suivre le « [ » d'un tableau JSON : le début d'une valeur, ou sa fin.
+_ARRAY_STARTS = frozenset(b'{["-0123456789tfn]')
 
 # Reçoit une clé et la position de sa valeur ; rend la position qui suit la valeur.
 _OnMember = Callable[[str, int], int | None]
@@ -75,6 +80,39 @@ class MessagePrefix:
     # notification, ``result`` ou ``error`` une réponse.
     method: bool = False
     reply: bool = False
+
+
+# Pourquoi rien ne s'insère dans un résultat : une erreur JSON-RPC ; un résultat sans tableau
+# ``content`` (absent, autre chose qu'un tableau, résultat d'un autre type que ``complete``) ;
+# un début qui ne se lit pas entier et sans ambiguïté (syntaxe, clé répétée, autre identifiant).
+Refusal = Literal["error_response", "no_content", "not_whole"]
+
+
+@dataclass(frozen=True)
+class ResultPrefix:
+    """Ce que le début d'une réponse dit de la place d'un bloc en tête de ``result.content``.
+
+    ``found`` : la place est ``position``, juste après le ``[`` du tableau, vide ou non.
+    ``refused`` : rien ne s'insère, pour ``reason``. ``not_reply`` : le message est une
+    requête ou une notification. ``pending`` : le début s'achève avant de conclure.
+    """
+
+    state: Literal["found", "refused", "not_reply", "pending"]
+    position: int | None = None
+    empty: bool = False
+    reason: Refusal | None = None
+
+
+class _Concluded(Exception):  # noqa: N818 — un arrêt de la lecture, pas une erreur.
+    """La lecture conclut avant la fin du document : elle s'arrête là."""
+
+    def __init__(self, prefix: ResultPrefix) -> None:
+        super().__init__(prefix.state)
+        self.prefix = prefix
+
+
+def _refused(reason: Refusal) -> _Concluded:
+    return _Concluded(ResultPrefix("refused", reason=reason))
 
 
 class _MalformedError(Exception):
@@ -307,3 +345,100 @@ def read_message_prefix(data: bytes) -> MessagePrefix:
         method=seen["method"],
         reply=seen["reply"],
     )
+
+
+def _same_identifier(data: bytes, pos: int, expected: str | int) -> int | None:
+    """Saute l'identifiant en ``pos`` ; refuse la réponse s'il diffère de ``expected``, de
+    valeur ou de type, ou s'il n'est ni une chaîne ni un entier écrit en entier."""
+    if data[pos : pos + 1] == b'"':
+        value, end = _string(data, pos)
+        if end is not None and (not isinstance(expected, str) or value != expected):
+            raise _refused("not_whole")
+        return end
+    end = _skip(data, pos)
+    if end is None:
+        return None
+    number = _INTEGER.fullmatch(data, pos, end)
+    if number is None or isinstance(expected, str) or int(number.group()) != expected:
+        raise _refused("not_whole")
+    return end
+
+
+def read_result_prefix(data: bytes, identifier: str | int | None = None) -> ResultPrefix:
+    """Cherche, au début d'une réponse JSON-RPC, la place d'un bloc en tête de ``result.content``.
+
+    Le lecteur est strict. Il refuse un début qui s'écarte de la syntaxe JSON, une clé
+    répétée au premier niveau ou dans ``result`` avant ``content``, une erreur, un
+    ``resultType`` autre que ``complete`` vu avant ``content``, et, quand
+    ``identifier`` est donné, un ``id`` qui en diffère. Seul ``content`` au premier
+    niveau de ``result`` compte : un ``content`` imbriqué, dans ``structuredContent``
+    par exemple, est sauté sans être lu. Ce qui suit la place trouvée n'est pas lu :
+    une clé répétée au-delà ne peut pas être vue.
+    """
+    top: set[str] = set()
+    inner: set[str] = set()
+
+    def on_content(pos: int) -> int | None:
+        if pos >= len(data):
+            return None
+        if data[pos] != ord("["):
+            raise _refused("no_content")
+        after = _blank(data, pos + 1)
+        if after >= len(data):
+            return None
+        if data[after] not in _ARRAY_STARTS:
+            raise _MalformedError
+        empty = data[after] == ord("]")
+        raise _Concluded(ResultPrefix("found", position=pos + 1, empty=empty))
+
+    def on_result(key: str, pos: int) -> int | None:
+        if key in inner:
+            raise _refused("not_whole")
+        inner.add(key)
+        if key == "content":
+            return on_content(pos)
+        if key == "resultType":
+            value, end = _text(data, pos)
+            if end is not None and value != "complete":
+                raise _refused("no_content")
+            return end
+        return _skip(data, pos)
+
+    def on_member(key: str, pos: int) -> int | None:
+        if key in top:
+            raise _refused("not_whole")
+        top.add(key)
+        if key == "method":
+            raise _Concluded(ResultPrefix("not_reply"))
+        if key == "id" and identifier is not None:
+            return _same_identifier(data, pos, identifier)
+        if key == "error":
+            end = _skip(data, pos)
+            if end is not None and data[pos:end] != b"null":
+                raise _refused("error_response")
+            return end
+        if key == "result":
+            if pos >= len(data):
+                return None
+            if data[pos] != ord("{"):
+                raise _refused("no_content")
+            if _object(data, pos, on_result) is not None:
+                # Le résultat s'est refermé sans tableau ``content``.
+                raise _refused("no_content")
+            return None
+        return _skip(data, pos)
+
+    start = _blank(data, 0)
+    if start >= len(data):
+        return ResultPrefix("pending")
+    if data[start] != ord("{"):
+        # Un lot, ou autre chose qu'un objet : pas une réponse unique.
+        return ResultPrefix("refused", reason="not_whole")
+    try:
+        end = _object(data, start, on_member)
+    except _Concluded as concluded:
+        return concluded.prefix
+    except _MalformedError:
+        return ResultPrefix("refused", reason="not_whole")
+    # Le message lu en entier n'a ni résultat, ni erreur, ni méthode.
+    return ResultPrefix("pending") if end is None else ResultPrefix("not_reply")

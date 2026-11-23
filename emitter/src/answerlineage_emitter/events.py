@@ -25,7 +25,8 @@ _STANDARD: Final = "https://openlineage.io/spec/facets/"
 TOOL_CALL_FACET: Final = "answerlineage_toolCall"
 # Schéma publié de la facette (spec/facets/1-0-0/). La version 1-1-0 ajoute ce qu'est
 # devenue la clé lue d'après une règle de lecture, la version 1-2-0 si la requête SQL
-# relayée a reçu le commentaire qui porte l'identifiant de run : une facette ne s'en
+# relayée a reçu le commentaire qui porte l'identifiant de run, la version 1-3-0 la décision
+# de quarantaine sur un appel retenu et si son résultat a été annoté : une facette ne s'en
 # réclame que lorsqu'elle le dit.
 TOOL_CALL_FACET_SCHEMA: Final = _OWN + "1-0-0/ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
 TOOL_CALL_FACET_SCHEMA_READ_KEYS: Final = (
@@ -33,6 +34,9 @@ TOOL_CALL_FACET_SCHEMA_READ_KEYS: Final = (
 )
 TOOL_CALL_FACET_SCHEMA_RUN_ID_TAG: Final = (
     _OWN + "1-2-0/ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
+)
+TOOL_CALL_FACET_SCHEMA_QUARANTINE: Final = (
+    _OWN + "1-3-0/ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
 )
 # Clés lues dans un jeu de données d'entrée, sous leurs empreintes à clé (spec/facets/1-0-0/).
 KEYS_FACET: Final = "answerlineage_keys"

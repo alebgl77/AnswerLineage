@@ -10,6 +10,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 from answerlineage_api.ingest.models import validate_event
 from answerlineage_api.ingest.store import event_identifier
+from answerlineage_proxy.annotation import QuarantineNote
 from answerlineage_proxy.events import UNDESCRIBED_TOOL, build_tool_call_event
 from answerlineage_proxy.fingerprint import RESULT_LABEL, FingerprintKey, arguments_fingerprint
 from answerlineage_proxy.inspection import Inspection
@@ -222,3 +223,44 @@ def test_proxy_event_that_says_whether_the_query_carried_its_run_is_accepted(
     assert errors == []
     assert accepted is not None
     assert accepted.run.run_id == trace.run_id
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        QuarantineNote(
+            "certain", ("974e7c80-6643-4065-a541-e4c029abbdab",), annotated=True, wait_ms=4.2
+        ),
+        QuarantineNote(
+            "uncertain",
+            ("974e7c80-6643-4065-a541-e4c029abbdab",),
+            annotated=False,
+            wait_ms=50.0,
+            uncertain_reason="decision_timeout",
+            not_annotated_reason="client_gone",
+        ),
+    ],
+    ids=["annote", "non-annote"],
+)
+def test_proxy_event_of_a_call_retained_by_a_quarantine_is_accepted(note: QuarantineNote) -> None:
+    trace = resolve_trace(None, [])
+    event = build_tool_call_event(
+        run_id=trace.run_id,
+        event_time=datetime.now(UTC),
+        outcome="COMPLETE",
+        server="entrepot",
+        inspection=Inspection(is_tool_call=True, tool="execute_sql"),
+        http_status=200,
+        reads=analyze_sql("SELECT c.nom FROM crm.clients c", "bigquery"),
+        namespace="bigquery",
+        trace=trace,
+        tagged_with_run_id=True,
+        quarantine=note,
+    )
+    described = event["run"]["facets"]["answerlineage_toolCall"]
+    assert described["quarantine"] == note.fields()
+    assert described["_schemaURL"].endswith("/1-3-0/ToolCallRunFacet.json#/$defs/ToolCallRunFacet")
+    assert list(OFFICIAL.iter_errors(event)) == []
+    accepted, errors = validate_event(event)
+    assert errors == []
+    assert accepted is not None

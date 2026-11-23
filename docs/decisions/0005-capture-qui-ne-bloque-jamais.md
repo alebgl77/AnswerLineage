@@ -10,7 +10,7 @@ Mais une capture qui ne bloque jamais peut perdre : un événement que l'API ne 
 
 ## Décision
 
-**Rien ne retarde un appel.** Le relais rend la réponse au fil de l'eau, octet pour octet. L'événement est construit après l'échange, l'analyse du SQL tourne ensuite à part, et les empreintes de la réponse se calculent morceau par morceau, après l'envoi de chacun au client.
+**Rien ne retarde un appel.** Le relais rend la réponse au fil de l'eau, octet pour octet. L'événement est construit après l'échange, l'analyse du SQL tourne ensuite à part, et les empreintes de la réponse se calculent morceau par morceau, après l'envoi de chacun au client. Une seule exception, bornée : pendant une quarantaine active en mode avertir, la réponse d'un appel d'un outil visé attend sa décision au plus 50 ms après l'arrivée de la requête, réglable jusqu'à 0, puis passe ; un appel hors de la zone n'attend jamais ([Proxy MCP](../proxy.md#avertir--lavertissement-dans-le-résultat)).
 
 **Une boîte d'envoi en mémoire.** Avec `--api-url`, les événements et les relevés de couverture partent vers l'API par une boîte locale, bornée (10 000 événements et 32 Mio par défaut), hors du chemin des appels : prendre un événement en charge est un ajout en mémoire, sans entrée-sortie. L'envoi est fait par lots compressés ; livraison au moins une fois, que l'ingestion idempotente ramène à une seule. Une panne de l'API est reprise avec une attente croissante (de 0,5 s à 30 s, tirée au hasard) ; pleine, la boîte abandonne le plus ancien. À l'arrêt, elle se vide pendant 5 s au plus.
 

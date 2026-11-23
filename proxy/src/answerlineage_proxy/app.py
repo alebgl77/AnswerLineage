@@ -25,12 +25,25 @@ trace W3C reçoit celui que le proxy crée, dans un en-tête ``traceparent`` ajo
 Le corps n'est modifié que sur option, pour un outil SQL déclaré
 (``--sql-run-comment``) : sa requête commence alors par un commentaire qui porte
 l'identifiant de run (``tagging.py``), et rien d'autre du corps ne change.
+
+Seconde exception, pendant une quarantaine active en mode avertir dont la
+diffusion est vérifiée : le résultat d'un appel d'un outil qui lit la zone
+reçoit en tête de son contenu un avertissement à gabarit fixe
+(``annotation.py``). La rétention se décide à l'arrivée de la requête, par une
+recherche dans la zone : un appel qui n'y touche pas est relayé comme toujours,
+sans attendre. Pour un outil SQL, l'analyse de la requête part dès son arrivée,
+dans un processus d'analyse dédié, à côté de l'exécution par le serveur ; la
+réponse attend la décision au plus jusqu'à l'arrivée plus l'attente réglée
+(50 ms par défaut, 0 pour n'attendre jamais), puis passe, annotée comme
+incertaine si la décision manque.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, MutableMapping
 from dataclasses import dataclass, field, replace
@@ -40,7 +53,21 @@ from urllib.parse import unquote_to_bytes
 
 import httpx
 
-from answerlineage_proxy.analyzer import Origin, SqlAnalyzer
+from answerlineage_proxy.analyzer import AnalyzerResult, Origin, SqlAnalyzer
+from answerlineage_proxy.annotation import (
+    ANALYSIS_BUDGET_MS,
+    JsonInsertion,
+    NotAnnotatedReason,
+    QuarantineNote,
+    Retention,
+    SseInsertion,
+    Verdict,
+    Zone,
+    content_block,
+    retention,
+    sql_verdict,
+    warning_text,
+)
 from answerlineage_proxy.config import CaptureSettings, ProxySettings, SqlTool
 from answerlineage_proxy.coverage import (
     DEFAULT_WINDOW,
@@ -64,8 +91,8 @@ from answerlineage_proxy.inspection import (
     inspect_prefix,
     inspect_request,
 )
-from answerlineage_proxy.prefix import PREFIX_BYTES
-from answerlineage_proxy.quarantine import QuarantineStatus, QuarantineSync
+from answerlineage_proxy.prefix import PREFIX_BYTES, read_message_prefix
+from answerlineage_proxy.quarantine import KnownQuarantines, QuarantineStatus, QuarantineSync
 from answerlineage_proxy.rules import DeclaredReads, declared_reads
 from answerlineage_proxy.signals import (
     CallOutcome,
@@ -129,6 +156,11 @@ _BODY_BOUND = frozenset(
 )
 # En-têtes qui recopient des arguments d'outil, que le serveur peut comparer au corps.
 _PARAM_HEADERS = b"mcp-param-"
+# Une longueur de corps annoncée que le proxy sait relire, puis augmenter.
+_LENGTH = re.compile(r"[0-9]{1,15}")
+_JSON = "application/json"
+_EVENT_STREAM = "text/event-stream"
+_NS_PER_MS = 1_000_000
 _BAD_GATEWAY_BODY = b'{"error":"upstream_unreachable"}'
 _BAD_REQUEST_BODY = b'{"error":"invalid_request_target"}'
 _FORBIDDEN_BODIES = {
@@ -157,6 +189,8 @@ _ORIGIN_COUNTERS: dict[Origin, str] = {
     "refused": "sql_refused",
     "failed": "sql_analyzer_failures",
 }
+_MISSING_ARGUMENT = SqlAnalysis(resolved=False, reason="missing_argument")
+_TOO_LARGE = SqlAnalysis(resolved=False, reason="request_too_large")
 
 
 def _has_dot_segment(raw_path: bytes) -> bool:
@@ -223,6 +257,59 @@ class ProxyStats:
     untagged_queries: int = 0
     # Transport HTTP : appels coupés à l'arrêt du proxy, au-delà du délai de grâce.
     cut_at_shutdown: int = 0
+    # Quarantaine en mode avertir, en HTTP : appels retenus ; résultats qui ont reçu
+    # l'avertissement ; résultats qui devaient le recevoir et ne l'ont pas reçu, le motif dit
+    # par l'événement de l'appel.
+    retained_calls: int = 0
+    annotated_results: int = 0
+    unannotated_results: int = 0
+
+
+@dataclass
+class _Retained:
+    """Un appel retenu par une quarantaine : ce qui le retient, la zone à son arrivée, la
+    décision, et ce que le relais en a fait."""
+
+    retention: Retention
+    zone: Zone
+    # Échéance de la décision, sur l'horloge monotone en nanosecondes : l'arrivée de la
+    # requête plus l'attente réglée, ``budget_ms``.
+    deadline: int
+    budget_ms: int
+    identifier: str | int | None = field(default=None, repr=False)
+    # Outil SQL : l'analyse de sa requête, lancée dès l'arrivée, à côté de l'appel.
+    analysis: asyncio.Task[AnalyzerResult] | None = None
+    # Statique pour une règle de lecture ; prise par le relais pour un outil SQL, ou, s'il
+    # n'a rien eu à annoter, une fois l'échange fini.
+    verdict: Verdict | None = None
+    # Temps passé à attendre la décision, en nanosecondes.
+    waited: int = 0
+    settled: bool = False
+    annotated: bool = False
+    reason: NotAnnotatedReason | None = None
+
+    def settle(self, *, added: int = 0, reason: NotAnnotatedReason | None = None) -> None:
+        """Le relais a conclu : le bloc est inséré, ou rien, pour ``reason``. Seule la
+        première conclusion compte."""
+        if not self.settled:
+            self.settled = True
+            self.annotated = added > 0
+            self.reason = None if self.annotated else reason
+
+    def note(self, verdict: Verdict) -> QuarantineNote:
+        """Ce que l'événement dit de l'appel : la décision, et ce que le relais en a fait."""
+        reason = None
+        if verdict.warns and not self.annotated:
+            reason = self.reason if self.reason is not None else "not_whole"
+        wait_ms = min(milliseconds(self.waited), float(self.budget_ms))
+        return QuarantineNote(
+            verdict.decision,
+            verdict.incidents,
+            annotated=self.annotated,
+            wait_ms=wait_ms,
+            uncertain_reason=verdict.uncertain_reason,
+            not_annotated_reason=reason,
+        )
 
 
 @dataclass
@@ -254,6 +341,8 @@ class _Exchange:
     reply_error: tuple[bool, int | None] = (False, None)
     # Outil dont la requête relayée porte l'identifiant de run en commentaire : l'a-t-elle reçu ?
     query_tagged: bool | None = None
+    # Appel retenu par une quarantaine, en HTTP : son résultat attend la décision.
+    retained: _Retained | None = None
 
 
 def _now() -> datetime:
@@ -303,6 +392,60 @@ async def _settle(task: asyncio.Task[Any]) -> None:
     await asyncio.gather(task, return_exceptions=True)
 
 
+def _account(exchange: _Exchange, chunk: bytes) -> None:
+    """Un morceau du corps rendu par le serveur : sa taille, son empreinte, son échantillon."""
+    exchange.size += len(chunk)
+    if exchange.digest is not None:
+        exchange.digest.update(chunk)
+    if exchange.sample is not None:
+        exchange.sample.add(chunk)
+
+
+def _insertion(
+    retained: _Retained, response: httpx.Response
+) -> JsonInsertion | SseInsertion | None:
+    """De quoi insérer l'avertissement dans cette réponse ; ``None``, le motif dit à l'appel
+    retenu, quand ses en-têtes l'excluent : une erreur, une réponse sans contenu, un corps
+    compressé ou lié par une empreinte ou une signature, que le proxy ne réécrit pas."""
+    status, headers = response.status_code, response.headers
+    reason: NotAnnotatedReason
+    media = headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    lengths = headers.get_list("content-length")
+    if status >= 400:
+        reason = "error_response"
+    elif not 200 <= status < 300:
+        reason = "no_content"
+    elif headers.get("content-encoding", "identity").strip().lower() != "identity":
+        reason = "encoded"
+    elif any(name.lower() in _BODY_BOUND for name, _ in headers.raw):
+        reason = "body_bound"
+    elif media == _JSON:
+        # Une longueur annoncée grandit de la taille du bloc : seule une longueur lisible.
+        if len(lengths) <= 1 and all(_LENGTH.fullmatch(value.strip()) for value in lengths):
+            return JsonInsertion(retained.identifier)
+        reason = "body_bound"
+    elif media == _EVENT_STREAM:
+        # Un flux part avant la place du bloc : une longueur annoncée ne se corrigerait pas.
+        if not lengths:
+            return SseInsertion(retained.identifier)
+        reason = "body_bound"
+    else:
+        reason = "no_content"
+    retained.settle(reason=reason)
+    return None
+
+
+def _lengthened(start: Message, added: int) -> Message:
+    """Les en-têtes d'une réponse dont le corps a grandi de ``added`` octets."""
+    if not added:
+        return start
+    headers = [
+        (name, str(int(value) + added).encode("ascii") if name == _CONTENT_LENGTH else value)
+        for name, value in start["headers"]
+    ]
+    return {**start, "headers": headers}
+
+
 class CallCapture[SettingsT: CaptureSettings](ABC):
     """Ce que les deux transports partagent : décrire un appel d'outil terminé, émettre son
     événement, compter, et remettre les relevés de couverture."""
@@ -320,11 +463,13 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
         coverage_window: timedelta = DEFAULT_WINDOW,
         retries: RetryMemory | None = None,
         quarantine: QuarantineSync | None = None,
+        quarantine_analyzer: SqlAnalyzer | None = None,
     ) -> None:
         self.settings = settings
         self.stats = ProxyStats()
-        # Les périmètres en quarantaine, appris de l'API hors du chemin des appels. Le proxy
-        # ne s'en sert pas encore ; sans adresse d'API, il reste en mode observer.
+        # Les périmètres en quarantaine, appris de l'API hors du chemin des appels ; le relais
+        # HTTP annote les lectures de leur zone. Sans adresse d'API, le proxy reste en mode
+        # observer.
         self.quarantine = quarantine
         # Compteurs par fenêtre, remis à la destination des événements comme relevés de
         # couverture. L'émetteur est l'espace de noms des jobs du proxy ; l'instance, réglée
@@ -365,6 +510,18 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
                 cache_size=settings.sql_cache_size,
             )
         )
+        # Processus d'analyse dédié aux appels retenus, sous un budget fixe : la décision
+        # n'attend pas derrière les analyses menées après les appels. Démarré à la première
+        # zone qui vise un outil SQL déclaré.
+        self.quarantine_analyzer = (
+            quarantine_analyzer
+            if quarantine_analyzer is not None
+            else SqlAnalyzer(
+                budget=ANALYSIS_BUDGET_MS / 1000,
+                queue_size=settings.sql_queue_size,
+                cache_size=settings.sql_cache_size,
+            )
+        )
 
     async def drain(self) -> None:
         """Attend la fin des analyses en cours, pour que leurs événements soient émis."""
@@ -395,6 +552,7 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
             self._reporting = None
         self._report(self.coverage.close_all(self._clock()))
         await self.analyzer.aclose()
+        await self.quarantine_analyzer.aclose()
         if self._deferred is not None:
             await self._deferred.aclose()
 
@@ -463,6 +621,7 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
             exchange.sample = None
             exchange.sessions = []
         rule = self.settings.sql_tools.get(inspection.tool) if inspection.tool else None
+        retained = exchange.retained
         if rule is None:
             try:
                 reads, declared = self._without_sql(inspection, exchange)
@@ -471,7 +630,16 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
                 reads, declared = None, None
             if declared is not None:
                 details = {**details, "declared": declared}
-            self._emit(inspection, exchange, event_time, details, reads)
+            note = self._note(retained)
+            self._emit(inspection, exchange, event_time, details, reads, quarantine=note)
+            return
+        if retained is not None:
+            # L'analyse de la requête, lancée dès son arrivée, sert à l'événement.
+            task = asyncio.ensure_future(
+                self._analyze_then_emit(inspection, exchange, event_time, details, rule)
+            )
+            self._pending.add(task)
+            task.add_done_callback(self._pending.discard)
             return
         if exchange.outcome != "COMPLETE":
             # Un appel qui a échoué n'a rien fait lire à l'agent.
@@ -566,9 +734,12 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
         # Tant que l'analyse n'a pas abouti, la lecture est non résolue : l'événement
         # part quoi qu'il arrive, même si l'attente est interrompue.
         reads = SqlAnalysis(resolved=False, reason="analyzer_unavailable")
+        retained = exchange.retained
         try:
-            if inspection.sql is None:
-                reads = SqlAnalysis(resolved=False, reason="missing_argument")
+            if retained is not None and retained.analysis is not None:
+                result = await self._retained_analysis(inspection, rule, retained.analysis)
+            elif inspection.sql is None:
+                result = AnalyzerResult(_MISSING_ARGUMENT, "analyzed")
             else:
                 # Dans un processus à part : l'analyse ne dispute pas l'interpréteur à la
                 # boucle qui relaie les appels.
@@ -578,18 +749,71 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
                     default_catalog=rule.default_catalog,
                     default_db=rule.default_db,
                 )
-                counter = _ORIGIN_COUNTERS.get(result.origin)
-                if counter is not None:
-                    setattr(self.stats, counter, getattr(self.stats, counter) + 1)
-                reads = result.analysis
+            counter = _ORIGIN_COUNTERS.get(result.origin)
+            if counter is not None:
+                setattr(self.stats, counter, getattr(self.stats, counter) + 1)
+            reads = result.analysis
         except Exception as error:
             self.stats.sql_analyzer_failures += 1
             logger.error("Analyse du SQL en échec (%s).", type(error).__name__)
             reads = SqlAnalysis(resolved=False, reason="analyzer_failed")
         finally:
+            note = None
+            if retained is not None:
+                if retained.verdict is None:
+                    retained.verdict = self._judge(retained, reads)
+                note = self._note(retained)
+            # Un appel qui a échoué n'a rien fait lire à l'agent.
+            read = reads if exchange.outcome == "COMPLETE" else None
             self._emit(
-                inspection, exchange, event_time, details, reads, rule.namespace, rule.dialect
+                inspection,
+                exchange,
+                event_time,
+                details,
+                read,
+                rule.namespace,
+                rule.dialect,
+                quarantine=note,
             )
+
+    async def _retained_analysis(
+        self, inspection: Inspection, rule: SqlTool, analysis: asyncio.Task[AnalyzerResult]
+    ) -> AnalyzerResult:
+        """L'analyse faite pendant l'appel retenu. Abandonnée à son budget fixe, elle est
+        refaite par l'analyseur ordinaire quand son budget réglé est plus large : le lignage
+        reste aussi complet que pour un autre appel."""
+        result = await analysis
+        sql = inspection.sql
+        if sql is None or result.origin != "over_budget":
+            return result
+        if self.settings.sql_budget_ms <= ANALYSIS_BUDGET_MS:
+            return result
+        return await self.analyzer.analyze(
+            sql, rule.dialect, default_catalog=rule.default_catalog, default_db=rule.default_db
+        )
+
+    @staticmethod
+    def _judge(retained: _Retained, analysis: SqlAnalysis | None) -> Verdict:
+        """La décision : statique pour une règle de lecture, d'après l'analyse pour un outil
+        SQL, incertaine sans analyse."""
+        if retained.retention.verdict is not None:
+            return retained.retention.verdict
+        namespace = retained.retention.namespace or ""
+        return sql_verdict(retained.zone, namespace, analysis)
+
+    def _note(self, retained: _Retained | None) -> QuarantineNote | None:
+        """Ce que l'événement d'un appel retenu dit de sa décision ; compte les résultats
+        annotés et ceux qui devaient l'être."""
+        if retained is None:
+            return None
+        verdict = retained.verdict if retained.verdict is not None else self._judge(retained, None)
+        note = retained.note(verdict)
+        if verdict.warns:
+            if note.annotated:
+                self.stats.annotated_results += 1
+            else:
+                self.stats.unannotated_results += 1
+        return note
 
     def _emit(
         self,
@@ -600,6 +824,8 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
         reads: SqlAnalysis | None = None,
         namespace: str | None = None,
         dialect: str | None = None,
+        *,
+        quarantine: QuarantineNote | None = None,
     ) -> None:
         """Émet l'événement de l'appel. Un échec d'émission n'atteint jamais l'appel."""
         self.stats.tool_calls += 1
@@ -622,6 +848,7 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
                 dialect=dialect,
                 transport=self.transport,
                 tagged_with_run_id=exchange.query_tagged,
+                quarantine=quarantine,
                 **details,
             )
             if self._deferred is not None:
@@ -685,6 +912,7 @@ class McpProxy(CallCapture[ProxySettings]):
         coverage_window: timedelta = DEFAULT_WINDOW,
         retries: RetryMemory | None = None,
         quarantine: QuarantineSync | None = None,
+        quarantine_analyzer: SqlAnalyzer | None = None,
     ) -> None:
         quiet_transport_logs()
         super().__init__(
@@ -695,6 +923,7 @@ class McpProxy(CallCapture[ProxySettings]):
             coverage_window=coverage_window,
             retries=retries,
             quarantine=quarantine,
+            quarantine_analyzer=quarantine_analyzer,
         )
         self._client = client
         self._owns_client = client is None
@@ -703,6 +932,14 @@ class McpProxy(CallCapture[ProxySettings]):
         # Appels en cours : à l'arrêt, ceux que le serveur HTTP a coupés finissent de se
         # décrire avant que la boîte d'envoi se vide.
         self._calls: set[asyncio.Task[Any]] = set()
+        # La zone de la diffusion vérifiée, et le périmètre dont elle vient : calculée quand le
+        # périmètre change, hors du chemin des appels.
+        self._zone: Zone | None = None
+        self._zone_of: KnownQuarantines | None = None
+        # Préchauffage de l'analyseur de quarantaine, hors du chemin des appels.
+        self._warming: asyncio.Task[None] | None = None
+        if quarantine is not None:
+            quarantine.watch(self._zone_changed)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
@@ -729,10 +966,33 @@ class McpProxy(CallCapture[ProxySettings]):
         # appel que rien n'a coupé n'est pas attendu.
         cut = [call for call in self._calls if call.cancelling()]
         await asyncio.gather(*cut, return_exceptions=True)
+        if self._warming is not None:
+            await _settle(self._warming)
+            self._warming = None
         await super().aclose()
         if self._client is not None and self._owns_client:
             await self._client.aclose()
             self._client = None
+
+    def _current_zone(self) -> Zone | None:
+        """La zone de la diffusion vérifiée, ``None`` sans elle. Calculée une fois par
+        périmètre connu : d'ordinaire quand il change, hors du chemin des appels."""
+        sync = self.quarantine
+        if sync is None or not sync.annotating:
+            return None
+        known = sync.known
+        if known is not None and known is not self._zone_of:
+            self._zone, self._zone_of = Zone.of(known.scopes), known
+        return self._zone
+
+    def _zone_changed(self) -> None:
+        """Le périmètre a changé : la zone se calcule, et, si elle vise un outil SQL déclaré,
+        l'analyseur de quarantaine démarre et se préchauffe, hors du chemin des appels."""
+        zone = self._current_zone()
+        if zone is None or (self._warming is not None and not self._warming.done()):
+            return
+        if any(rule.namespace in zone.namespaces for rule in self.settings.sql_tools.values()):
+            self._warming = asyncio.ensure_future(self.quarantine_analyzer.warm())
 
     def _upstream_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -807,6 +1067,7 @@ class McpProxy(CallCapture[ProxySettings]):
                 self._tagged(exchange.query_tagged)
                 if tagged is not None:
                     body, relayed = tagged
+            exchange.retained = self._retain(inspection, body, oversized, timing)
         try:
             await self._exchange(scope, relayed, body, stream, upload_done, receive, send, exchange)
         except asyncio.CancelledError:
@@ -817,6 +1078,55 @@ class McpProxy(CallCapture[ProxySettings]):
             timing.finish()
             if inspection is not None and inspection.is_tool_call:
                 self._describe(inspection, exchange, oversized=oversized)
+
+    def _retain(
+        self, inspection: Inspection, body: bytes, oversized: bool, timing: CallTiming
+    ) -> _Retained | None:
+        """L'appel est-il retenu par une quarantaine ? Une recherche dans la zone vérifiée, et
+        rien d'autre pour un appel qui n'y touche pas. Pour un outil SQL retenu, l'analyse de
+        la requête part aussitôt, dans l'analyseur de quarantaine."""
+        zone = self._current_zone()
+        found = retention(zone, inspection.tool, self.settings.sql_tools, self.settings.read_rules)
+        if found is None or zone is None:
+            return None
+        budget = self.settings.quarantine_decision_ms
+        identifier = read_message_prefix(body).identifier if oversized else inspection.identifier
+        retained = _Retained(
+            found,
+            zone,
+            deadline=timing.started + budget * _NS_PER_MS,
+            budget_ms=budget,
+            identifier=identifier,
+            verdict=found.verdict,
+        )
+        tool = inspection.tool
+        if found.namespace is not None and tool is not None:
+            rule = self.settings.sql_tools[tool]
+            retained.analysis = asyncio.ensure_future(
+                self._quarantine_analysis(inspection, rule, oversized)
+            )
+        self.stats.retained_calls += 1
+        return retained
+
+    async def _quarantine_analysis(
+        self, inspection: Inspection, rule: SqlTool, oversized: bool
+    ) -> AnalyzerResult:
+        """L'analyse de la requête d'un appel retenu, par l'analyseur de quarantaine. Ne lève
+        pas : un échec donne une lecture non résolue."""
+        if oversized:
+            return AnalyzerResult(_TOO_LARGE, "analyzed")
+        if inspection.sql is None:
+            return AnalyzerResult(_MISSING_ARGUMENT, "analyzed")
+        try:
+            return await self.quarantine_analyzer.analyze(
+                inspection.sql,
+                rule.dialect,
+                default_catalog=rule.default_catalog,
+                default_db=rule.default_db,
+            )
+        except Exception as error:
+            logger.error("Analyse de quarantaine en échec (%s).", type(error).__name__)
+            return AnalyzerResult(SqlAnalysis(resolved=False, reason="analyzer_failed"), "failed")
 
     def _comment(
         self, body: bytes, headers: list[Header], tool: str, trace: CallTrace
@@ -952,6 +1262,8 @@ class McpProxy(CallCapture[ProxySettings]):
         request = self._upstream_request(scope, headers, body, stream)
         if request is None:
             exchange.error = "invalid_request_target"
+            if exchange.retained is not None:
+                exchange.retained.settle(reason="error_response")
             await self._answer(send, 400, _BAD_REQUEST_BODY, exchange)
             return
 
@@ -968,6 +1280,8 @@ class McpProxy(CallCapture[ProxySettings]):
                 exchange.outcome = "ABORT"
                 exchange.failure = "client_abort"
                 self.stats.client_disconnects += 1
+                if exchange.retained is not None:
+                    exchange.retained.settle(reason="client_gone")
         finally:
             await _settle(watcher)
             if not relay.done():
@@ -997,6 +1311,8 @@ class McpProxy(CallCapture[ProxySettings]):
             exchange.outcome = "ABORT"
             exchange.failure = "client_abort"
             self.stats.client_disconnects += 1
+            if exchange.retained is not None:
+                exchange.retained.settle(reason="client_gone")
             return
         except httpx.HTTPError as error:
             timing.resume()
@@ -1004,6 +1320,8 @@ class McpProxy(CallCapture[ProxySettings]):
             logger.warning("Serveur MCP injoignable (%s).", type(error).__name__)
             exchange.error = "upstream_unreachable"
             exchange.failure = _failure(error)
+            if exchange.retained is not None:
+                exchange.retained.settle(reason="error_response")
             await self._answer(send, 502, _BAD_GATEWAY_BODY, exchange)
             return
         timing.resume()
@@ -1021,6 +1339,11 @@ class McpProxy(CallCapture[ProxySettings]):
                     for name, value in end_to_end_headers(response.headers.raw)
                 ],
             }
+            retained = exchange.retained
+            insertion = None if retained is None else _insertion(retained, response)
+            if retained is not None and insertion is not None:
+                await self._relay_warned(response, start, send, exchange, retained, insertion)
+                return
             timing.pause()
             await send(start)
             try:
@@ -1051,6 +1374,107 @@ class McpProxy(CallCapture[ProxySettings]):
             exchange.outcome = "COMPLETE" if response.status_code < 400 else "FAIL"
         finally:
             await response.aclose()
+
+    async def _relay_warned(
+        self,
+        response: httpx.Response,
+        start: Message,
+        send: Send,
+        exchange: _Exchange,
+        retained: _Retained,
+        insertion: JsonInsertion | SseInsertion,
+    ) -> None:
+        """Relaie la réponse d'un appel retenu, son avertissement en tête de son contenu.
+
+        Une réponse JSON retient ses en-têtes et son début jusqu'à la place du bloc ; un flux
+        SSE ne retient que la première ligne de l'événement qui porte la réponse. À la place
+        trouvée, la décision est attendue au plus jusqu'à son échéance : ce temps compte
+        dans la latence ajoutée. Le reste passe au fil de l'eau. Empreinte, taille et
+        échantillon portent sur les octets du serveur, annotation exclue.
+        """
+        timing = exchange.timing
+        head: Message | None = start if isinstance(insertion, JsonInsertion) else None
+        # Le proxy attend le serveur : ce temps n'est pas le sien.
+        timing.pause()
+        if head is None:
+            await send(start)
+        try:
+            async for chunk in response.aiter_raw():
+                timing.resume()
+                if chunk:
+                    _account(exchange, chunk)
+                    out = insertion.feed(chunk)
+                    if insertion.ready:
+                        out += insertion.release(await self._block(retained))
+                    if insertion.concluded:
+                        retained.settle(added=insertion.added, reason=insertion.reason)
+                    if head is not None and not insertion.holding:
+                        timing.pause()
+                        await send(_lengthened(head, insertion.added))
+                        timing.resume()
+                        head = None
+                    if out:
+                        timing.pause()
+                        await send({"type": "http.response.body", "body": out, "more_body": True})
+                        timing.resume()
+                timing.pause()
+        except httpx.HTTPError as error:
+            # Comme pour un autre appel, la réponse reste inachevée ; ce qui était retenu part
+            # tel quel, et rien n'est inséré.
+            timing.finish()
+            self.stats.upstream_failures += 1
+            logger.warning("Réponse du serveur MCP interrompue (%s).", type(error).__name__)
+            exchange.error = "upstream_interrupted"
+            exchange.failure = _failure(error)
+            retained.settle(reason="not_whole")
+            rest = insertion.finish()
+            if head is not None:
+                await send(head)
+            if rest:
+                await send({"type": "http.response.body", "body": rest, "more_body": True})
+            return
+        rest = insertion.finish()
+        retained.settle(added=insertion.added, reason=insertion.reason)
+        if head is not None:
+            await send(head)
+        if rest:
+            await send({"type": "http.response.body", "body": rest, "more_body": True})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+        timing.finish()
+        exchange.relayed_whole = exchange.delivered = True
+        exchange.outcome = "COMPLETE"
+
+    async def _block(self, retained: _Retained) -> bytes | None:
+        """Le bloc de l'avertissement, une fois la décision prise ; ``None`` hors de la zone.
+        Un échec du rendu n'atteint jamais l'appel : rien n'est inséré."""
+        try:
+            verdict = await self._decide(retained)
+            if not verdict.warns:
+                return None
+            return content_block(warning_text(verdict, retained.zone))
+        except Exception as error:
+            logger.error("Avertissement de quarantaine non rendu (%s).", type(error).__name__)
+            return None
+
+    @classmethod
+    async def _decide(cls, retained: _Retained) -> Verdict:
+        """La décision, attendue au plus jusqu'à son échéance, comptée depuis l'arrivée de la
+        requête : la réponse d'un serveur plus lent que l'échéance n'attend pas. Sans
+        analyse à temps, la décision est incertaine."""
+        if retained.verdict is not None:
+            return retained.verdict
+        task = retained.analysis
+        if task is not None and not task.done():
+            remaining = retained.deadline - time.monotonic_ns()
+            if remaining > 0:
+                began = time.monotonic_ns()
+                await asyncio.wait({task}, timeout=remaining / 1_000_000_000)
+                retained.waited = time.monotonic_ns() - began
+        analysis = None
+        if task is not None and task.done() and not task.cancelled():
+            analysis = task.result().analysis
+        retained.verdict = cls._judge(retained, analysis)
+        return retained.verdict
 
     async def _answer(self, send: Send, status: int, body: bytes, exchange: _Exchange) -> None:
         """Répond à la place du serveur MCP, avec un corps fixe."""

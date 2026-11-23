@@ -27,6 +27,7 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -199,11 +200,14 @@ async def test_a_quarantine_is_known_by_each_proxy_within_thirty_seconds_then_li
         )
         assert activated.status_code == 200
         since = time.monotonic()
+        # L'heure d'activation, posée par la base, est celle que le proxy apprend.
+        activated_at = datetime.fromisoformat(activated.json()["quarantine"]["activated_at"])
         expected = (
             QuarantineScope(
                 incident_id,
                 "warn",
                 frozenset((item["namespace"], item["name"]) for item in DATASETS),
+                activated_at,
             ),
         )
         http_delay = await waited(lambda: perimeter(proxy) == expected, since)

@@ -18,7 +18,22 @@ la mesure interne n'est pas cohérente : un événement par appel, chacun réuss
 une latence ajoutée qui ne dépasse ni la latence vue par le proxy ni celle vue
 par le client.
 
-Usage : ``python -m scripts.bench_proxy [--calls 100000] [--concurrency 1] [--threshold-ms 5]``
+Trois variantes mesurent ce que coûte une quarantaine en mode avertir, sur une
+zone vérifiée que le proxy du banc tient d'une synchronisation simulée, sans
+API (``--quarantine``) :
+
+- ``none`` : aucune quarantaine, le proxy tel qu'en service sans elle ;
+- ``outside`` : une zone qui ne vise pas l'outil du banc. Chaque appel coûte une
+  recherche dans la zone et ne doit jamais attendre : comparée à ``none``, sur la
+  même machine, la latence ajoutée reste dans le bruit ;
+- ``retained`` : l'outil du banc est décrit par une règle de lecture dont le jeu
+  est dans la zone. Chaque appel est retenu, sa décision est statique, sans
+  analyse ni attente, et son résultat reçoit l'avertissement : la variante mesure
+  la retenue de la réponse et l'insertion du bloc. Chaque événement doit dire que
+  le résultat a été annoté, et le client reçoit le résultat annoté.
+
+Usage : ``python -m scripts.bench_proxy [--calls 100000] [--concurrency 1] [--threshold-ms 5]
+[--quarantine none|outside|retained]``
 """
 
 from __future__ import annotations
@@ -40,12 +55,21 @@ from typing import Any, Final
 import httpx
 import uvicorn
 
+from answerlineage_proxy.annotation import (
+    JsonInsertion,
+    Zone,
+    content_block,
+    retention,
+    warning_text,
+)
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.cli import SERVER_OPTIONS
 from answerlineage_proxy.config import ProxySettings
-from answerlineage_proxy.events import QOS_FACET
+from answerlineage_proxy.events import QOS_FACET, TOOL_CALL_FACET
 from answerlineage_proxy.fingerprint import FingerprintKey
 from answerlineage_proxy.outbox import Outbox, OutboxSettings
+from answerlineage_proxy.quarantine import QuarantineSettings, QuarantineSync, parse
+from answerlineage_proxy.rules import DeclaredDataset, ReadRule
 
 ROOT: Final = Path(__file__).resolve().parents[1]
 DEFAULT_CALLS: Final = 100_000
@@ -75,6 +99,18 @@ HEADERS: Final = {
     "mcp-method": "tools/call",
     "mcp-name": TOOL,
 }
+# Variantes de quarantaine : aucune, une zone qui ne vise pas l'outil du banc, une zone qui
+# le retient par sa règle de lecture.
+QUARANTINES: Final = ("none", "outside", "retained")
+# Le jeu que lit l'outil du banc d'après sa règle, et un jeu d'un autre espace de noms.
+FORECASTS: Final = DeclaredDataset("meteo", "previsions.quotidiennes")
+ELSEWHERE: Final = DeclaredDataset("bigquery", "ventes.suivi.commandes")
+_INCIDENT: Final = "974e7c80-6643-4065-a541-e4c029abbdab"
+_VARIANTS: Final = {
+    "none": "sans quarantaine",
+    "outside": "quarantaine hors de l'outil",
+    "retained": "quarantaine sur l'outil, résultat annoté",
+}
 
 Scope = MutableMapping[str, Any]
 Receive = Callable[[], Awaitable[MutableMapping[str, Any]]]
@@ -83,6 +119,60 @@ Send = Callable[[MutableMapping[str, Any]], Awaitable[None]]
 
 class BenchError(RuntimeError):
     """Le banc n'a pas pu mesurer : processus muet, appel en échec."""
+
+
+def diffusion(quarantine: str) -> bytes:
+    """La diffusion que le proxy du banc tient pour vérifiée : un incident en quarantaine sur
+    le jeu de l'outil du banc (``retained``) ou sur un autre (``outside``)."""
+    dataset = FORECASTS if quarantine == "retained" else ELSEWHERE
+    document = {
+        "version": "b" * 64,
+        "quarantines": [
+            {
+                "incident_id": _INCIDENT,
+                "mode": "warn",
+                "activated_at": "2026-11-16T08:55:01.204517Z",
+                "datasets": [{"namespace": dataset.namespace, "name": dataset.name}],
+            }
+        ],
+    }
+    return json.dumps(document).encode()
+
+
+class FixedQuarantine(QuarantineSync):
+    """Une synchronisation simulée : une zone vérifiée, fixée au démarrage, sans API."""
+
+    def __init__(self, quarantine: str, api: str) -> None:
+        secret = "banc-" + secrets.token_urlsafe(32)
+        super().__init__(QuarantineSettings.create(httpx.URL(api), secret=secret))
+        self.known = parse(diffusion(quarantine))
+
+    async def start(self) -> None:
+        """Rien à interroger."""
+
+
+def read_rules(quarantine: str) -> tuple[ReadRule, ...]:
+    """Dans la variante ``retained``, l'outil du banc déclare lire le jeu en quarantaine ; dans
+    les autres, il n'a pas de règle, comme sans quarantaine."""
+    return (ReadRule(tool=TOOL, datasets=(FORECASTS,)),) if quarantine == "retained" else ()
+
+
+def expected_result(quarantine: str) -> bytes:
+    """Le résultat que le client doit recevoir à travers le proxy : celui du serveur, avec
+    l'avertissement en tête de son contenu quand l'appel est retenu."""
+    if quarantine != "retained":
+        return RESULT
+    zone = Zone.of(parse(diffusion(quarantine)).scopes)
+    rules = {rule.tool: rule for rule in read_rules(quarantine)}
+    retained = retention(zone, TOOL, {}, rules)
+    if retained is None or retained.verdict is None:  # pragma: no cover — zone fixée.
+        raise BenchError("la variante retenue ne retient pas l'outil du banc")
+    insertion = JsonInsertion(1)
+    held = insertion.feed(RESULT)
+    if not insertion.ready:  # pragma: no cover — résultat fixe.
+        raise BenchError("le résultat du banc n'a pas de place pour l'avertissement")
+    block = content_block(warning_text(retained.verdict, zone))
+    return held + insertion.release(block)
 
 
 async def upstream_app(scope: Scope, receive: Receive, send: Send) -> None:
@@ -113,18 +203,23 @@ class BenchSink:
         self.added = array("d")
         self.latency = array("d")
         self.failures = 0
+        # Événements qui disent que le résultat a reçu l'avertissement de quarantaine.
+        self.annotated = 0
         self._skip = skip
 
     def emit(self, event: Mapping[str, Any]) -> None:
         if self._skip > 0:
             self._skip -= 1
             return
-        signals = event["run"]["facets"].get(QOS_FACET, {})
+        facets = event["run"]["facets"]
+        signals = facets.get(QOS_FACET, {})
         if signals.get("outcome") != "success":
             self.failures += 1
             return
         self.added.append(signals["addedLatencyMs"])
         self.latency.append(signals["latencyMs"])
+        if facets.get(TOOL_CALL_FACET, {}).get("quarantine", {}).get("annotated"):
+            self.annotated += 1
 
     def report_coverage(self, report: Mapping[str, Any]) -> None:
         """Les relevés de couverture ne sont pas mesurés."""
@@ -133,6 +228,7 @@ class BenchSink:
         return {
             "measured": len(self.added),
             "failures": self.failures,
+            "annotated": self.annotated,
             "added": Distribution.of(self.added).as_dict(),
             "latency": Distribution.of(self.latency).as_dict(),
             "excess": sum(
@@ -190,6 +286,9 @@ class BenchResult:
     measured: int
     failures: int
     excess: int
+    # Variante de quarantaine, et événements qui disent le résultat annoté.
+    quarantine: str = "none"
+    annotated: int = 0
 
     @property
     def compared(self) -> Distribution:
@@ -210,6 +309,9 @@ class BenchResult:
             problems.append(f"{self.measured} mesures internes pour {self.calls} appels")
         if self.failures:
             problems.append(f"{self.failures} appels sans succès")
+        expected = self.measured if self.quarantine == "retained" else 0
+        if self.annotated != expected:
+            problems.append(f"{self.annotated} résultats annotés pour {expected} attendus")
         if self.excess or self.internal_latency.p50 > self.proxied.p50:
             problems.append("latence vue par le proxy supérieure à celle vue par le client")
         if self.compared.p99 > self.threshold_ms:
@@ -230,7 +332,8 @@ class BenchResult:
             ("Latence ajoutée, mesure interne", self.internal.as_dict()),
         ]
         lines = [
-            f"Banc du proxy MCP : {self.calls} appels, {self.concurrency} à la fois.",
+            f"Banc du proxy MCP : {self.calls} appels, {self.concurrency} à la fois, "
+            f"{_VARIANTS[self.quarantine]}.",
             f"{'':36}{'p50':>10}{'p99':>10}{'max':>10}",
             *(
                 f"{label:36}"
@@ -292,18 +395,22 @@ class MeasuredOutbox(Outbox):
         super().emit(event)
 
 
-async def serve_proxy(upstream: str) -> None:
+async def serve_proxy(upstream: str, quarantine: str = "none") -> None:
     """Le vrai proxy, avec une clé d'empreinte et sa boîte d'envoi : il fait tout ce qu'il
-    fait en service, l'API d'ingestion en panne."""
+    fait en service, l'API d'ingestion en panne. Hors de la variante ``none``, il tient une
+    zone de quarantaine vérifiée, fixée au démarrage."""
     sink = BenchSink(skip=WARMUP_CALLS)
     key = FingerprintKey(secrets.token_bytes(32))
-    settings = ProxySettings.create(upstream, "banc", fingerprint_key=key)
+    settings = ProxySettings.create(
+        upstream, "banc", fingerprint_key=key, read_rules=read_rules(quarantine)
+    )
     with socket.socket() as unreachable:
         # Réservé sans écouter : chaque connexion de la boîte à l'API y est refusée.
         unreachable.bind(("127.0.0.1", 0))
         api = f"http://127.0.0.1:{unreachable.getsockname()[1]}"
         box = MeasuredOutbox(OutboxSettings.create(api, flush_seconds=0), sink)
-        await serve(McpProxy(settings, box), _announce, _input_closed())
+        sync = None if quarantine == "none" else FixedQuarantine(quarantine, api)
+        await serve(McpProxy(settings, box, quarantine=sync), _announce, _input_closed())
     print(json.dumps(sink.summary()), flush=True)
 
 
@@ -351,20 +458,26 @@ class Process:
         return report
 
 
-async def _call(client: httpx.AsyncClient, url: str) -> float:
+async def _call(client: httpx.AsyncClient, url: str, expected: bytes = RESULT) -> float:
     """Un appel d'outil ; sa latence vue du client, en millisecondes."""
     started = time.perf_counter_ns()
     response = await client.post(url, content=CALL, headers=HEADERS)
     elapsed = time.perf_counter_ns() - started
-    if response.status_code != 200 or response.content != RESULT:
+    if response.status_code != 200 or response.content != expected:
         raise BenchError(f"appel en échec, statut {response.status_code}")
     return elapsed / 1_000_000
 
 
 async def load(
-    direct_url: str, proxied_url: str, *, calls: int, concurrency: int
+    direct_url: str,
+    proxied_url: str,
+    *,
+    calls: int,
+    concurrency: int,
+    expected: bytes = RESULT,
 ) -> tuple[array[float], array[float]]:
-    """Appelle l'outil ``calls`` fois de chaque façon, en alternant l'ordre d'un appel à l'autre."""
+    """Appelle l'outil ``calls`` fois de chaque façon, en alternant l'ordre d'un appel à l'autre.
+    À travers le proxy, le client doit recevoir ``expected``."""
     direct, proxied = array("d"), array("d")
     limits = httpx.Limits(
         max_connections=2 * concurrency, max_keepalive_connections=2 * concurrency
@@ -373,7 +486,7 @@ async def load(
         client.headers.clear()
         for _ in range(WARMUP_CALLS):
             await _call(client, direct_url)
-            await _call(client, proxied_url)
+            await _call(client, proxied_url, expected)
         remaining = [calls]
 
         async def worker() -> None:
@@ -381,9 +494,9 @@ async def load(
                 remaining[0] -= 1
                 if remaining[0] % 2:
                     direct.append(await _call(client, direct_url))
-                    proxied.append(await _call(client, proxied_url))
+                    proxied.append(await _call(client, proxied_url, expected))
                 else:
-                    proxied.append(await _call(client, proxied_url))
+                    proxied.append(await _call(client, proxied_url, expected))
                     direct.append(await _call(client, direct_url))
 
         await asyncio.gather(*(worker() for _ in range(concurrency)))
@@ -395,15 +508,20 @@ async def run_bench(
     calls: int = DEFAULT_CALLS,
     concurrency: int = 1,
     threshold_ms: float = DEFAULT_THRESHOLD_MS,
+    quarantine: str = "none",
 ) -> BenchResult:
     """Lance le serveur MCP de test et le proxy, mesure, puis arrête les deux."""
     upstream, proxy = Process("upstream"), None
     try:
         upstream_url = f"http://127.0.0.1:{await upstream.start()}"
-        proxy = Process("proxy", "--upstream", upstream_url)
+        proxy = Process("proxy", "--upstream", upstream_url, "--quarantine", quarantine)
         proxy_url = f"http://127.0.0.1:{await proxy.start()}"
         direct, proxied = await load(
-            upstream_url + "/mcp", proxy_url + "/mcp", calls=calls, concurrency=concurrency
+            upstream_url + "/mcp",
+            proxy_url + "/mcp",
+            calls=calls,
+            concurrency=concurrency,
+            expected=expected_result(quarantine),
         )
         internal = await proxy.stop()
     finally:
@@ -423,6 +541,8 @@ async def run_bench(
         measured=internal["measured"],
         failures=internal["failures"],
         excess=internal["excess"],
+        quarantine=quarantine,
+        annotated=internal["annotated"],
     )
 
 
@@ -461,6 +581,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_THRESHOLD_MS,
         help=f"seuil du p99 de la latence ajoutée, {DEFAULT_THRESHOLD_MS:g} ms par défaut",
     )
+    parser.add_argument(
+        "--quarantine",
+        choices=QUARANTINES,
+        default="none",
+        help=(
+            "zone de quarantaine vérifiée que tient le proxy : aucune (none, par défaut), hors "
+            "de l'outil du banc (outside), ou sur lui, son résultat annoté (retained)"
+        ),
+    )
     return parser
 
 
@@ -470,12 +599,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         asyncio.run(serve_upstream())
         return 0
     if args.role == "proxy":
-        asyncio.run(serve_proxy(args.upstream))
+        asyncio.run(serve_proxy(args.upstream, args.quarantine))
         return 0
     try:
         result = asyncio.run(
             run_bench(
-                calls=args.calls, concurrency=args.concurrency, threshold_ms=args.threshold_ms
+                calls=args.calls,
+                concurrency=args.concurrency,
+                threshold_ms=args.threshold_ms,
+                quarantine=args.quarantine,
             )
         )
     except BenchError as error:

@@ -25,6 +25,7 @@ from answerlineage_emitter.events import (
     SQL_FACET_SCHEMA,
     TOOL_CALL_FACET,
     TOOL_CALL_FACET_SCHEMA,
+    TOOL_CALL_FACET_SCHEMA_QUARANTINE,
     TOOL_CALL_FACET_SCHEMA_READ_KEYS,
     TOOL_CALL_FACET_SCHEMA_RUN_ID_TAG,
     UNDESCRIBED_TOOL,
@@ -35,6 +36,7 @@ from answerlineage_emitter.events import (
     run_event,
     schema_facet,
 )
+from answerlineage_proxy.annotation import QuarantineNote
 from answerlineage_proxy.inspection import Inspection
 from answerlineage_proxy.rules import DeclaredDataset, DeclaredReads
 from answerlineage_proxy.signals import CallSignals
@@ -53,6 +55,7 @@ __all__ = [
     "SQL_FACET_SCHEMA",
     "TOOL_CALL_FACET",
     "TOOL_CALL_FACET_SCHEMA",
+    "TOOL_CALL_FACET_SCHEMA_QUARANTINE",
     "TOOL_CALL_FACET_SCHEMA_READ_KEYS",
     "TOOL_CALL_FACET_SCHEMA_RUN_ID_TAG",
     "UNDESCRIBED_TOOL",
@@ -100,6 +103,7 @@ def build_tool_call_event(
     declared: DeclaredReads | None = None,
     transport: Transport = "http",
     tagged_with_run_id: bool | None = None,
+    quarantine: QuarantineNote | None = None,
 ) -> dict[str, Any]:
     """Construit le RunEvent d'un appel d'outil relayé.
 
@@ -115,7 +119,9 @@ def build_tool_call_event(
     ``transport`` est celui de l'appel relayé : ``http``, ou ``stdio`` pour un
     serveur lancé par le proxy. ``tagged_with_run_id`` dit, pour un outil dont la
     requête relayée doit porter l'identifiant de run en commentaire, si elle l'a
-    reçu : un indicateur, jamais la requête.
+    reçu : un indicateur, jamais la requête. ``quarantine`` dit, pour un appel
+    retenu par une quarantaine, la décision et si le résultat a été annoté : des
+    codes, des identifiants d'incident et une durée, jamais l'avertissement.
     """
     described = facet(
         PRODUCER,
@@ -171,6 +177,9 @@ def build_tool_call_event(
     if tagged_with_run_id is not None:
         described["taggedWithRunId"] = tagged_with_run_id
         described["_schemaURL"] = TOOL_CALL_FACET_SCHEMA_RUN_ID_TAG
+    if quarantine is not None:
+        described["quarantine"] = quarantine.fields()
+        described["_schemaURL"] = TOOL_CALL_FACET_SCHEMA_QUARANTINE
     run_facets: dict[str, Any] = {TOOL_CALL_FACET: described}
     if signals is not None:
         run_facets[QOS_FACET] = facet(PRODUCER, QOS_FACET_SCHEMA, **signals.fields())

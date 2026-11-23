@@ -18,6 +18,7 @@ from answerlineage_proxy.config import (
     DEFAULT_HOST,
     DEFAULT_MAX_INSPECTED_BYTES,
     DEFAULT_PORT,
+    DEFAULT_QUARANTINE_DECISION_MS,
     DEFAULT_SHUTDOWN_DELAY,
     DEFAULT_SHUTDOWN_GRACE,
     DEFAULT_SQL_BUDGET_MS,
@@ -31,6 +32,7 @@ from answerlineage_proxy.config import (
     ENV_HOST,
     ENV_INSTANCE_ID,
     ENV_PORT,
+    ENV_QUARANTINE_DECISION_MS,
     ENV_READ_RULES_FILE,
     ENV_SERVER_NAME,
     ENV_SHUTDOWN_DELAY,
@@ -39,6 +41,7 @@ from answerlineage_proxy.config import (
     ENV_SQL_CACHE_SIZE,
     ENV_SQL_QUEUE_SIZE,
     ENV_UPSTREAM,
+    QUARANTINE_DECISION_LIMITS,
     ProxyConfigurationError,
     ProxySettings,
     SqlTool,
@@ -309,6 +312,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--quarantine-decision-ms",
+        type=int,
+        help=(
+            "en HTTP, attente au plus de la décision sur l'appel d'un outil visé par une "
+            "quarantaine, comptée depuis l'arrivée de la requête, de "
+            f"{QUARANTINE_DECISION_LIMITS[0]} (n'attendre jamais) à "
+            f"{QUARANTINE_DECISION_LIMITS[1]} ms, {DEFAULT_QUARANTINE_DECISION_MS} par défaut "
+            f"(ou {ENV_QUARANTINE_DECISION_MS}) ; un appel "
+            "hors de la zone n'attend jamais"
+        ),
+    )
+    parser.add_argument(
         "--quarantine-secret-file",
         metavar="FICHIER",
         help=(
@@ -543,6 +558,11 @@ def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str
             if args.shutdown_grace_seconds is not None
             else integer(environment, ENV_SHUTDOWN_GRACE, DEFAULT_SHUTDOWN_GRACE)
         ),
+        quarantine_decision_ms=(
+            args.quarantine_decision_ms
+            if args.quarantine_decision_ms is not None
+            else integer(environment, ENV_QUARANTINE_DECISION_MS, DEFAULT_QUARANTINE_DECISION_MS)
+        ),
     )
 
 
@@ -573,6 +593,23 @@ def quarantine_sync(
     """La synchronisation des quarantaines, la même pour les deux transports : aucune sans
     adresse d'API, le proxy reste alors en mode observer."""
     return None if settings is None else QuarantineSync(settings, tokens=tokens)
+
+
+def log_warnings(settings: QuarantineSettings | None, decision_ms: int | None = None) -> None:
+    """Dit au démarrage ce que le proxy fera des lectures en quarantaine : en HTTP, avec une
+    diffusion vérifiée, un avertissement dans le résultat, après une attente de la décision
+    de ``decision_ms`` au plus ; en stdio (``decision_ms`` absent), rien."""
+    if settings is None or settings.secret is None:
+        return
+    if decision_ms is None:
+        logger.info("Quarantaine : en stdio, aucun résultat n'est annoté.")
+        return
+    logger.info(
+        "Quarantaine en mode avertir : le résultat d'un appel d'un outil visé porte un "
+        "avertissement, après une attente de la décision de %d ms au plus ; un appel hors de "
+        "la zone n'attend jamais.",
+        decision_ms,
+    )
 
 
 def log_instance(instance: str) -> None:
@@ -633,6 +670,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if settings.read_rules:
         logger.info("Règles de lecture : %d outils décrits.", len(settings.read_rules))
     log_run_comments(settings.sql_tools)
+    log_warnings(quarantine, settings.quarantine_decision_ms)
     tokens = token_source(credentials)
     proxy = McpProxy(
         settings,

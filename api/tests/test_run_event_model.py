@@ -21,14 +21,19 @@ from answerlineage_api.ingest.models import (
     ERROR_CODE_MIN,
     FACETS_MAX,
     INPUTS_MAX,
+    NOT_ANNOTATED_REASONS,
     OUTCOMES,
     OUTPUTS_MAX,
     QOS_FACET,
+    QUARANTINE_DECISIONS,
+    QUARANTINE_INCIDENTS_MAX,
+    QUARANTINE_WAIT_MAX_MS,
     READ_KEYS,
     RECIPIENTS_MAX,
     SCHEMA_FIELDS_MAX,
     SIGNAL_MAX,
     TOO_MANY_ITEMS,
+    UNCERTAIN_REASONS,
     json_pointer,
     parse_event_time,
     run_event_json_schema,
@@ -711,3 +716,86 @@ def test_what_became_of_a_key_read_outside_the_closed_list_rejects_the_event(
     assert [(error.path, error.type) for error in errors] == [
         ("/run/facets/answerlineage_toolCall/readKeys", "literal_error")
     ]
+
+
+QUARANTINE_PATH: list[str | int] = ["run", "facets", "answerlineage_toolCall", "quarantine"]
+INCIDENT = "974e7c80-6643-4065-a541-e4c029abbdab"
+# Un appel retenu par une quarantaine, tel que le proxy le décrit (version 1-3-0).
+RETAINED: dict[str, Any] = {
+    "decision": "uncertain",
+    "incidents": [INCIDENT],
+    "uncertainReason": "decision_timeout",
+    "annotated": False,
+    "notAnnotatedReason": "encoded",
+    "waitMs": 50.0,
+}
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        RETAINED,
+        {"decision": "certain", "incidents": [INCIDENT], "annotated": True, "waitMs": 0},
+        {**RETAINED, "waitMs": QUARANTINE_WAIT_MAX_MS, "futur": "un champ d'une version à venir"},
+        {
+            **RETAINED,
+            "incidents": [f"{rank:08x}-0000-4000-8000-000000000000" for rank in range(100)],
+        },
+        *({**RETAINED, "decision": value} for value in QUARANTINE_DECISIONS),
+        *({**RETAINED, "uncertainReason": value} for value in UNCERTAIN_REASONS),
+        *({**RETAINED, "notAnnotatedReason": value} for value in NOT_ANNOTATED_REASONS),
+    ],
+)
+def test_a_call_retained_by_a_quarantine_is_accepted_as_the_capture_point_describes_it(
+    fields: dict[str, Any],
+) -> None:
+    event, errors = validate_event(mutated(QUARANTINE_PATH, fields))
+    assert errors == []
+    assert event is not None
+
+
+@pytest.mark.parametrize(
+    ("fields", "faults"),
+    [
+        ("certain", [("", "dict_type")]),
+        (None, [("", "dict_type")]),
+        ({**RETAINED, "decision": "peut-etre"}, [("/decision", "literal_error")]),
+        ({**RETAINED, "incidents": []}, [("/incidents", "too_short")]),
+        (
+            {**RETAINED, "incidents": [INCIDENT] * (QUARANTINE_INCIDENTS_MAX + 1)},
+            [("/incidents", "too_long")],
+        ),
+        ({**RETAINED, "incidents": [INCIDENT, INCIDENT]}, [("/incidents", "unique_items")]),
+        (
+            {**RETAINED, "incidents": [INCIDENT.upper()]},
+            [("/incidents/0", "string_pattern_mismatch")],
+        ),
+        ({**RETAINED, "uncertainReason": None}, [("/uncertainReason", "literal_error")]),
+        ({**RETAINED, "annotated": "oui"}, [("/annotated", "bool_type")]),
+        ({**RETAINED, "notAnnotatedReason": "autre"}, [("/notAnnotatedReason", "literal_error")]),
+        ({**RETAINED, "waitMs": QUARANTINE_WAIT_MAX_MS + 0.5}, [("/waitMs", "less_than_equal")]),
+        ({**RETAINED, "waitMs": -1}, [("/waitMs", "greater_than_equal")]),
+        ({**RETAINED, "waitMs": "12"}, [("/waitMs", "float_type")]),
+        (
+            {key: value for key, value in RETAINED.items() if key != "decision"},
+            [("/decision", "missing")],
+        ),
+    ],
+)
+def test_a_call_retained_by_a_quarantine_out_of_its_bounds_rejects_the_event(
+    fields: object, faults: list[tuple[str, str]]
+) -> None:
+    event, errors = validate_event(mutated(QUARANTINE_PATH, fields))
+    assert event is None
+    prefix = "/run/facets/answerlineage_toolCall/quarantine"
+    assert [(error.path, error.type) for error in errors] == [
+        (prefix + path, kind) for path, kind in faults
+    ]
+
+
+def test_what_a_retained_call_says_is_never_echoed_nor_a_received_key_in_a_path() -> None:
+    received = "canari-quarantaine-recue-4b2e"
+    fields = {**RETAINED, "decision": received, "incidents": [received], received: received}
+    _, errors = validate_event(mutated(QUARANTINE_PATH, fields))
+    assert len(errors) == 2
+    assert received not in str([error.model_dump() for error in errors])

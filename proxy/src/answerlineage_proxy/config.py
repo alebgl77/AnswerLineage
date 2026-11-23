@@ -39,6 +39,8 @@ ENV_INSTANCE_ID = "ANSWERLINEAGE_PROXY_INSTANCE_ID"
 ENV_ADMIN_PORT = "ANSWERLINEAGE_PROXY_ADMIN_PORT"
 ENV_SHUTDOWN_DELAY = "ANSWERLINEAGE_PROXY_SHUTDOWN_DELAY_SECONDS"
 ENV_SHUTDOWN_GRACE = "ANSWERLINEAGE_PROXY_SHUTDOWN_GRACE_SECONDS"
+# Attente au plus de la décision sur l'appel d'un outil visé par une quarantaine, en HTTP.
+ENV_QUARANTINE_DECISION_MS = "ANSWERLINEAGE_PROXY_QUARANTINE_DECISION_MS"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8717
@@ -56,6 +58,10 @@ ADMIN_HOST = "127.0.0.1"
 # accorde d'ordinaire avant de tuer le processus.
 DEFAULT_SHUTDOWN_DELAY = 5.0
 DEFAULT_SHUTDOWN_GRACE = 15
+# Ce que la réponse d'un appel retenu par une quarantaine attend au plus sa décision, en
+# millisecondes, compté depuis l'arrivée de la requête : de 0 (n'attendre jamais) à 50.
+DEFAULT_QUARANTINE_DECISION_MS = 50
+QUARANTINE_DECISION_LIMITS = (0, 50)
 _SHUTDOWN_LIMITS = {
     "shutdown_delay": (0, 300),
     "shutdown_grace": (0, 3600),
@@ -336,8 +342,16 @@ class ProxySettings:
     # sert encore ; délai de grâce, laissé aux appels en cours une fois l'écoute fermée.
     shutdown_delay: float = DEFAULT_SHUTDOWN_DELAY
     shutdown_grace: int = DEFAULT_SHUTDOWN_GRACE
+    # Pendant une quarantaine en mode avertir, ce que la réponse d'un appel retenu attend au
+    # plus sa décision, en millisecondes, depuis l'arrivée de la requête.
+    quarantine_decision_ms: int = DEFAULT_QUARANTINE_DECISION_MS
 
     def __post_init__(self) -> None:
+        lowest, highest = QUARANTINE_DECISION_LIMITS
+        if not lowest <= self.quarantine_decision_ms <= highest:
+            raise ProxyConfigurationError(
+                f"L'attente de la décision de quarantaine va de {lowest} à {highest} millisecondes."
+            )
         if self.upstream.scheme not in ("http", "https") or not self.upstream.host:
             raise ProxyConfigurationError(
                 "L'adresse du serveur MCP doit être une URL http ou https complète."
@@ -416,6 +430,7 @@ class ProxySettings:
         admin_port: int | None = None,
         shutdown_delay: float = DEFAULT_SHUTDOWN_DELAY,
         shutdown_grace: int = DEFAULT_SHUTDOWN_GRACE,
+        quarantine_decision_ms: int = DEFAULT_QUARANTINE_DECISION_MS,
     ) -> ProxySettings:
         try:
             url = httpx.URL(upstream)
@@ -442,6 +457,7 @@ class ProxySettings:
             admin_port=admin_port,
             shutdown_delay=shutdown_delay,
             shutdown_grace=shutdown_grace,
+            quarantine_decision_ms=quarantine_decision_ms,
         )
 
     @classmethod
@@ -471,6 +487,9 @@ class ProxySettings:
             admin_port=optional_port(environment, ENV_ADMIN_PORT),
             shutdown_delay=seconds(environment, ENV_SHUTDOWN_DELAY, DEFAULT_SHUTDOWN_DELAY),
             shutdown_grace=integer(environment, ENV_SHUTDOWN_GRACE, DEFAULT_SHUTDOWN_GRACE),
+            quarantine_decision_ms=integer(
+                environment, ENV_QUARANTINE_DECISION_MS, DEFAULT_QUARANTINE_DECISION_MS
+            ),
         )
 
 

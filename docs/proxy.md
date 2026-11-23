@@ -1,6 +1,6 @@
 # Proxy MCP
 
-Le proxy se place devant un serveur MCP, en HTTP ou en stdio, sans toucher à l'agent ni au serveur. Il relaie chaque requête à l'identique et émet un événement OpenLineage par appel d'outil, que sa [boîte d'envoi](#boîte-denvoi) remet à l'API d'ingestion hors du chemin des appels.
+Le proxy se place devant un serveur MCP, en HTTP ou en stdio, sans toucher à l'agent ni au serveur. Il relaie chaque requête à l'identique et émet un événement OpenLineage par appel d'outil, que sa [boîte d'envoi](#boîte-denvoi) remet à l'API d'ingestion hors du chemin des appels. Pendant une quarantaine, en HTTP, il avertit le résultat d'une lecture des données en quarantaine ([Avertir](#avertir--lavertissement-dans-le-résultat)).
 
 ```bash
 uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrepot --sql-tool execute_sql=query:bigquery --api-url http://127.0.0.1:8000
@@ -37,6 +37,7 @@ La première ligne écoute devant un serveur HTTP. La seconde lance un serveur l
 | Intervalle entre deux interrogations des [périmètres en quarantaine](#périmètres-en-quarantaine) | `--quarantine-interval-seconds` | `ANSWERLINEAGE_PROXY_QUARANTINE_INTERVAL_SECONDS` | 10 s (1 à 30) |
 | Fichier du secret partagé avec l'API, qui vérifie la [diffusion des périmètres](#une-diffusion-signée-et-datée) | `--quarantine-secret-file` | `ANSWERLINEAGE_PROXY_QUARANTINE_SECRET_FILE` | aucun |
 | Secret de la diffusion lui-même | | `ANSWERLINEAGE_PROXY_QUARANTINE_SECRET` | aucun : les périmètres sont appris sans être vérifiés |
+| En HTTP, attente au plus de la décision sur l'appel d'un outil visé par une quarantaine, comptée depuis l'arrivée de la requête ([Avertir](#avertir--lavertissement-dans-le-résultat)) | `--quarantine-decision-ms` | `ANSWERLINEAGE_PROXY_QUARANTINE_DECISION_MS` | 50 ms (0, n'attendre jamais, à 50) |
 | Port d'administration, sur la boucle locale : [sondes de santé](#sondes-de-santé) `/livez` et `/readyz` | `--admin-port` | `ANSWERLINEAGE_PROXY_ADMIN_PORT` | aucun : aucune sonde |
 | Délai de retrait : au signal SIGTERM, le proxy, non prêt, sert encore ([Arrêt gracieux](#arrêt-gracieux)) | `--shutdown-delay-seconds` | `ANSWERLINEAGE_PROXY_SHUTDOWN_DELAY_SECONDS` | 5 s (0 à 300) |
 | Délai de grâce : l'écoute fermée, temps laissé aux appels en cours, au-delà coupés | `--shutdown-grace-seconds` | `ANSWERLINEAGE_PROXY_SHUTDOWN_GRACE_SECONDS` | 15 s (0 à 3 600, en secondes entières) |
@@ -48,7 +49,7 @@ L'adresse du serveur MCP ne porte ni identifiant ni paramètre : elle peut appar
 - Toutes les méthodes HTTP, le chemin et les paramètres tels que reçus, le chemin à la suite de celui de l'adresse du serveur MCP. Un chemin qui contient un segment `.` ou `..`, même encodé (`%2e`), sortirait de ce préfixe une fois résolu : il est refusé en `400` avec `{"error":"invalid_request_target"}`, sans être relayé. Les révisions 2026-07-28 (sans session) et 2025-11-25 (session, flux `GET`, clôture par `DELETE`) de MCP fonctionnent sans réglage.
 - Tous les en-têtes, dans leur ordre, sauf ceux qui sont propres à une connexion (RFC 9110, section 7.6.1). Le proxy n'en ajoute aucun (ni `Server`, ni `Date`, ni `Forwarded`), à une exception près : le `traceparent` qu'il crée pour un appel d'outil arrivé sans contexte de trace (voir [Identifiant de run et contexte de trace](#identifiant-de-run-et-contexte-de-trace)).
 - Le corps de la requête, octet pour octet : le proxy ne le modifie jamais, sauf, sur option et pour un outil SQL que l'on nomme, la requête de cet outil, qui commence alors par le commentaire de son run ([Étiquetage des requêtes de l'entrepôt](#étiquetage-des-requêtes-de-lentrepôt)).
-- Le corps de la réponse, octet pour octet et au fil de l'eau : rien n'est décompressé ni retenu, un flux SSE arrive événement par événement.
+- Le corps de la réponse, octet pour octet et au fil de l'eau : rien n'est décompressé ni retenu, un flux SSE arrive événement par événement. Une seule exception : pendant une quarantaine active et vérifiée, le résultat d'un appel d'un outil qui lit la zone reçoit, en tête de son contenu, un bloc de texte à gabarit fixe ; le début de sa réponse attend la décision, au plus 50 ms après l'arrivée de la requête ([Avertir](#avertir--lavertissement-dans-le-résultat)).
 - La fermeture du flux par le client : le proxy ferme aussitôt sa connexion au serveur MCP, ce qui annule l'appel.
 
 Si le serveur MCP est injoignable, le proxy répond `502` avec un corps fixe. Si sa réponse s'interrompt, la connexion au client est fermée sans être terminée : une réponse tronquée ne passe pas pour complète.
@@ -237,7 +238,7 @@ Le proxy lit le corps des requêtes `POST` pour reconnaître un appel d'outil. I
 - l'événement décrit l'outil du corps ;
 - la requête est relayée telle quelle : c'est le serveur MCP qui la refuse, comme la révision 2026-07-28 l'y oblige.
 
-De la réponse à un appel d'outil, le proxy ne lit qu'une copie bornée, une fois la réponse rendue, pour y trouver une erreur JSON-RPC et son code ([Qualité de service](#lissue)).
+De la réponse à un appel d'outil, le proxy ne lit qu'une copie bornée, une fois la réponse rendue, pour y trouver une erreur JSON-RPC et son code ([Qualité de service](#lissue)). D'un appel retenu par une quarantaine, il lit aussi le début du résultat, 16 Kio au plus, pour y placer l'avertissement : ce début n'est gardé que le temps de la décision, puis relayé ([Avertir](#avertir--lavertissement-dans-le-résultat)).
 
 Un nom d'outil hors de la forme recommandée par MCP (1 à 128 lettres, chiffres, `_`, `-`, `.`) n'est pas recopié : l'événement porte `invalidToolName`.
 
@@ -579,7 +580,7 @@ Le journal ne cite ni l'adresse de l'API, ni une réponse, ni rien d'un événem
 
 ## Périmètres en quarantaine
 
-Quand un responsable de données [met un incident en quarantaine](incidents.md#quarantaine), chaque proxy apprend le périmètre de l'incident : il interroge l'API qu'il connaît déjà pour sa boîte d'envoi (`--api-url`), sur `GET /api/v1/quarantine`, toutes les 10 secondes par défaut (`--quarantine-interval-seconds`, de 1 à 30). Il le connaît sans encore s'en servir : aucun appel n'est annoté, bloqué ni modifié, et l'événement d'un appel reste le même.
+Quand un responsable de données [met un incident en quarantaine](incidents.md#quarantaine), chaque proxy apprend le périmètre de l'incident : il interroge l'API qu'il connaît déjà pour sa boîte d'envoi (`--api-url`), sur `GET /api/v1/quarantine`, toutes les 10 secondes par défaut (`--quarantine-interval-seconds`, de 1 à 30). En mode avertir, et quand la [diffusion est vérifiée](#une-diffusion-signée-et-datée), le proxy HTTP en [avertit les lectures](#avertir--lavertissement-dans-le-résultat) : le résultat d'un appel qui lit ce périmètre porte, en tête de son contenu, un avertissement à gabarit fixe. Aucun appel n'est bloqué. Un appel qui ne lit pas le périmètre est relayé comme sans quarantaine. Le mode stdio apprend le périmètre sans annoter.
 
 ```bash
 uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --api-url https://answerlineage.interne --quarantine-interval-seconds 10
@@ -587,7 +588,7 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --api-url https://an
 
 **En moins de 30 secondes.** Chaque attente entre deux interrogations est tirée entre 80 % et 100 % de l'intervalle, jamais au-delà, pour que des proxys démarrés ensemble ne reviennent pas ensemble ; une interrogation est coupée à 10 s. Au réglage par défaut, une quarantaine activée juste après une interrogation est connue 20 s plus tard au pire, et une levée de même ; un test le vérifie, et le test de bout en bout mesure le délai réel. Au réglage maximal, l'attente seule atteint 30 s. Chaque proxy interroge de son côté : plusieurs proxys, en HTTP comme en stdio, n'ont rien à s'accorder.
 
-**Rien ne retarde un appel.** La synchronisation tourne dans une tâche de fond, démarrée sans attendre la première réponse : le proxy démarre et relaie aussitôt, l'API joignable ou non. La vérification de la [signature](#une-diffusion-signée-et-datée) se fait avec la lecture de la réponse, dans un fil à part. Elle n'envoie que `Accept`, le [jeton du proxy](#le-jeton-du-proxy-envers-lapi) quand il est réglé et, quand le proxy tient déjà une version, `If-None-Match` : une liste qui n'a pas changé ne se retélécharge pas (`304`). Sans jeton disponible, l'interrogation échoue comme une API en panne ; un refus `401` fait oublier le jeton. Son client suit les règles de celui de la boîte d'envoi : certificat vérifié, aucune redirection suivie, rien de l'environnement ; 5 s pour la connexion et chaque lecture.
+**Rien n'attend la synchronisation.** Elle tourne dans une tâche de fond, démarrée sans attendre la première réponse : le proxy démarre et relaie aussitôt, l'API joignable ou non. La vérification de la [signature](#une-diffusion-signée-et-datée) se fait avec la lecture de la réponse, dans un fil à part. Elle n'envoie que `Accept`, le [jeton du proxy](#le-jeton-du-proxy-envers-lapi) quand il est réglé et, quand le proxy tient déjà une version, `If-None-Match` : une liste qui n'a pas changé ne se retélécharge pas (`304`). Sans jeton disponible, l'interrogation échoue comme une API en panne ; un refus `401` fait oublier le jeton. Son client suit les règles de celui de la boîte d'envoi : certificat vérifié, aucune redirection suivie, rien de l'environnement ; 5 s pour la connexion et chaque lecture.
 
 ### Une réponse hostile est écartée
 
@@ -597,7 +598,7 @@ Une réponse de l'API est une entrée comme une autre. Elle est écartée en ent
 - elle dépasse 2 Mio : sa lecture s'arrête là ;
 - elle n'est pas du JSON strict : clé répétée, constante non numérique, échappement (ni l'API ni un nom admis n'en écrivent) ;
 - elle compte plus de 20 000 éléments JSON : un premier passage les compte, fait de courtes recherches que l'interpréteur interrompt pour rendre la main aux appels, avant que l'analyseur JSON, qui ne la rend pas, ne lise une réponse ainsi bornée, dans un fil à part ;
-- un identifiant d'incident n'a pas la forme d'un UUID, ou revient deux fois ; un nom de jeu de données n'a pas la forme que l'[ingestion](ingestion.md#identifiants) admet (contrôle écrit dans le proxy, `names.py`) ; plus de 100 quarantaines, ou un périmètre vide ou de plus de 20 jeux.
+- un identifiant d'incident n'a pas la forme d'un UUID, ou revient deux fois ; une heure d'activation n'est pas une heure RFC 3339 en UTC, à la seconde ou à la microseconde, suffixée de `Z` (`invalid_activation`) ; un nom de jeu de données n'a pas la forme que l'[ingestion](ingestion.md#identifiants) admet (contrôle écrit dans le proxy, `names.py`) ; plus de 100 quarantaines, ou un périmètre vide ou de plus de 20 jeux.
 
 Le journal dit le motif par un code (`réponse écartée, invalid_identifier`), jamais la réponse ni un nom. Les champs que le proxy ne lit pas sont ignorés. Une quarantaine d'un mode que le proxy ne connaît pas, après une mise à jour de l'API, est comptée et laissée de côté, avec un avertissement : mettre le proxy à jour.
 
@@ -617,7 +618,7 @@ Chaque réponse porte l'en-tête `AnswerLineage-Signature: t=<heure>,v1=<signatu
 - **Datée.** L'heure de la signature doit être à 5 minutes au plus de l'horloge du proxy, avant comme après : une réponse captée ne se rejoue pas au-delà. Les horloges de l'API et des proxys doivent donc être synchronisées (NTP).
 - **Écartée comme une réponse hostile.** Une réponse non signée, mal signée, trop ancienne ou venue du futur est écartée en entier ; le journal dit son code, jamais son contenu : `unsigned`, `malformed_signature` (en-tête illisible ou répété), `signature_mismatch` (charge altérée, autre secret, autre version), `signature_expired`, `signature_from_future`. Le proxy garde son dernier état valide, puis revient en mode observer au bout d'une heure sans diffusion valide, comme pour une [panne](#une-panne-garde-le-dernier-état-connu-une-heure).
 - **La rotation.** L'API signe sous son secret et sous le précédent pendant une rotation : un proxy qui connaît l'un ou l'autre accepte. On règle le nouveau secret à l'API avec l'ancien comme précédent, puis chez chaque proxy, puis on retire l'ancien de l'API.
-- **Sans secret**, le proxy apprend les périmètres sans les vérifier, comme avant : il ne sera jamais autorisé à agir sur une lecture (`annotating` reste faux), et le dit une fois au journal, au démarrage. Avec un secret, il n'adopte aucune réponse que l'API n'a pas signée : une API réglée sans secret le laisse en mode observer.
+- **Sans secret**, le proxy apprend les périmètres sans les vérifier, comme avant : il n'agit jamais sur une lecture (`annotating` reste faux), et le dit une fois au journal, au démarrage. Avec un secret, il n'adopte aucune réponse que l'API n'a pas signée : une API réglée sans secret le laisse en mode observer.
 - **Le secret ne sort pas.** Ni le journal, ni la représentation des réglages, ni l'état de la synchronisation ne le citent ; un réglage refusé ne cite ni le secret ni le chemin de son fichier ; le serveur MCP lancé en [stdio](#le-lancement) ne le reçoit pas. C'est de l'ASCII imprimable sans espace, de 32 à 512 caractères, le même qu'à l'API ; régler un secret sans `--api-url` est refusé.
 
 ### Une panne garde le dernier état connu, une heure
@@ -641,6 +642,124 @@ WARNING answerlineage_proxy Quarantaine : synchronisation en échec (réponse é
 ```
 
 L'état ne passe pas par les relevés de couverture : ils mesurent ce que le lignage a capté, et leur format est un contrat de l'ingestion. Le proxy n'a pas non plus de route à lui : en HTTP, tout chemin appartient au serveur MCP qu'il relaie, et en stdio il n'écoute pas. Son [port d'administration](#sondes-de-santé) ne dit que s'il est vivant et prêt.
+
+### Avertir : l'avertissement dans le résultat
+
+Pendant une quarantaine active en mode `warn`, et seulement si la diffusion est [vérifiée](#une-diffusion-signée-et-datée), le proxy HTTP insère en tête du contenu du résultat d'un appel qui lit la zone un bloc de texte à gabarit fixe. L'hôte de l'agent passe ce bloc au modèle avec le reste du résultat, et le montre à l'humain s'il affiche les blocs : la réponse que l'agent en tire peut dire que ses données sont en quarantaine. Le proxy ne bloque aucun appel et ne retire rien du résultat ; un appel hors de la zone n'en voit rien.
+
+```bash
+export ANSWERLINEAGE_PROXY_QUARANTINE_SECRET_FILE=/etc/answerlineage/secret-diffusion
+uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --api-url https://answerlineage.interne \
+  --sql-tool execute_sql=query:bigquery --read-rules-file regles.yaml --quarantine-decision-ms 50
+```
+
+Au démarrage, le proxy le dit : `Quarantaine en mode avertir : le résultat d'un appel d'un outil visé porte un avertissement, après une attente de la décision de 50 ms au plus ; un appel hors de la zone n'attend jamais.` En stdio, il dit qu'aucun résultat n'est annoté.
+
+#### La zone, et les appels retenus
+
+La zone est faite des jeux de données des périmètres en quarantaine active, indexés par espace de noms, puis par nom, avec les incidents qui les y mettent : un instantané immuable, calculé quand la synchronisation adopte une nouvelle version, hors du chemin des appels. Chaque jeu y porte une profondeur : 0 pour un jeu d'un périmètre, de 1 à 3 pour une vue ou une table dérivée. La diffusion ne porte pas encore de jeux dérivés : la zone est aujourd'hui celle des seuls périmètres, et un jeu dérivé, le jour où la diffusion en portera, sera nommé « (dérivée) » dans l'avertissement.
+
+À l'arrivée d'une requête, le proxy cherche dans la zone si l'appel d'outil, lu sans ambiguïté, est retenu :
+
+- **un outil SQL** déclaré par `--sql-tool`, quand son espace de noms porte au moins un jeu de la zone : sa décision attend l'analyse de sa requête ;
+- **un outil à règle de lecture**, quand sa [règle](#règles-de-lecture-des-outils-non-sql) déclare un jeu de la zone : sa décision est statique, sans analyse ni attente.
+
+Ne sont jamais retenus : un outil sans règle ni SQL déclaré, dont on ne connaît pas les lectures ; une requête que le proxy ne lit pas sans ambiguïté ; un lot ; et tout appel quand la diffusion n'est pas vérifiée, en mode observer, ou en stdio. Un appel qui n'est pas retenu est relayé à l'octet près, sans attente : sa rétention n'a coûté qu'une recherche dans un dictionnaire.
+
+#### La décision, et ce qu'elle attend
+
+| Décision | Quand | Ce que reçoit le résultat |
+| --- | --- | --- |
+| `certain` | La lecture établie touche la zone : une table que la requête lit, ou un jeu que la règle déclare | L'avertissement, qui nomme les jeux lus |
+| `outside` | La lecture établie ne touche pas la zone | Rien : le résultat passe tel quel |
+| `uncertain` | La lecture n'a pas été établie, quel qu'en soit le motif (`request_too_large`, `missing_argument`, `unsupported_statement`, `budget_exceeded`, `queue_full`, `analyzer_failed`…), ou pas avant l'échéance de la décision | L'avertissement incertain, qui nomme l'espace de noms de l'outil |
+
+Pour un outil SQL, l'analyse de la requête part dès son arrivée, en parallèle de son exécution par le serveur, qui dure presque toujours plus qu'elle sur un entrepôt. Elle tourne dans un second processus d'analyse, dédié aux appels retenus, sous un budget fixe de 50 ms : elle n'attend pas derrière les analyses menées après les appels. Ce processus démarre et se préchauffe dès qu'une version vérifiée de la zone vise un outil SQL déclaré.
+
+La réponse attend la décision au plus jusqu'à **l'arrivée de la requête plus l'attente réglée** (`--quarantine-decision-ms`, 50 ms par défaut, de 0 à 50). L'échéance se compte depuis l'arrivée, pas depuis la réponse : l'attente ajoutée est au plus de 50 ms, et nulle quand le serveur met plus que cela à répondre. Sans analyse à l'échéance, la décision est incertaine (`decision_timeout`). À 0, le proxy n'attend jamais : une décision qui n'est pas prête quand la réponse arrive donne un avertissement incertain. Ce temps d'attente compte dans la [latence ajoutée](#rien-ne-retarde-lappel), et l'événement le dit (`waitMs`).
+
+L'événement de l'appel réutilise l'analyse faite pendant l'appel. Abandonnée à son budget de 50 ms, elle est refaite par l'analyseur ordinaire, sous le budget réglé (`--sql-budget-ms`) : le lignage reste aussi complet que pour un autre appel.
+
+La capture reste ouverte en cas de panne : une API muette plus d'une heure ramène le proxy en mode observer, sans annotation ; une diffusion qui n'est pas vérifiée n'annote rien ; un analyseur en panne donne une décision incertaine, et l'appel passe ; un avertissement qui ne se rend pas laisse le résultat tel quel.
+
+#### Le gabarit
+
+L'avertissement est une information, pas un ordre. Une lecture certaine :
+
+```text
+[AnswerLineage] Avertissement sur la qualité des données : ce résultat lit des données qu'un incident déclare fausses.
+Incident : 974e7c80-6643-4065-a541-e4c029abbdab, en quarantaine depuis le 2026-11-16 08:55 UTC.
+Périmètre lu : bigquery ventes.suivi.commandes.
+Une réponse fondée sur ce résultat peut être fausse tant que la quarantaine n'est pas levée.
+```
+
+Une lecture incertaine :
+
+```text
+[AnswerLineage] Avertissement sur la qualité des données, incertain : ce résultat peut lire des données qu'un incident déclare fausses ; sa lecture n'a pas pu être établie à temps.
+Incident : 974e7c80-6643-4065-a541-e4c029abbdab, en quarantaine depuis le 2026-11-16 08:55 UTC.
+Périmètre possible : espace de noms bigquery.
+Une réponse fondée sur ce résultat peut être fausse tant que la quarantaine n'est pas levée.
+```
+
+Rien d'autre que le gabarit n'y entre :
+
+- des **identifiants d'incident**, des UUID contrôlés à la lecture de la diffusion ;
+- l'**heure d'activation** de la quarantaine, relue strictement (RFC 3339 en UTC), puis réécrite par le proxy, à la minute ;
+- des **noms que l'agent ou l'exploitant ont écrits** : les tables que lit la requête de l'agent, telles que l'analyse les rend ; les jeux d'une règle de lecture ; l'espace de noms de `--sql-tool`. Un nom de la zone n'entre dans le texte que s'il est égal à l'un d'eux.
+
+Aucun texte de l'API ni d'un émetteur n'y a de place : l'API n'admet aucun texte libre dans un incident, la diffusion n'en porte pas, et les champs qu'elle porterait en plus sont ignorés. Un test le vérifie avec une diffusion hostile qui porte des descriptions en forme de consigne et un nom de jeu en forme d'instruction : aucun n'atteint l'avertissement. Le texte nomme 3 incidents au plus, les plus anciennes quarantaines d'abord, et 5 jeux au plus, puis « et N autre(s) » : quelques Kio au pire.
+
+#### Où entre le bloc, à l'octet près
+
+Le bloc est un bloc de contenu texte MCP, inséré **en tête** du tableau `result.content`, sérialisé en ASCII pur (`é` s'y écrit `é`) :
+
+```json
+{"type":"text","text":"[AnswerLineage] Avertissement sur la qualité des données : …","annotations":{"audience":["assistant","user"],"priority":1}}
+```
+
+- **Dans `content`**, parce que les hôtes passent au modèle les blocs de contenu ; `_meta` est une métadonnée de protocole qu'ils ne lui transmettent pas, et `annotations.audience` nomme aussi l'humain.
+- **En tête**, parce que les hôtes tronquent une sortie longue par la fin, et qu'un résultat SQL volumineux est justement celui qui compte.
+- **Pas ailleurs** : `isError` changerait le sens de l'appel, que l'agent prendrait pour un échec ; `structuredContent` doit suivre le schéma de sortie de l'outil, que les clients valident ; préfixer le texte d'un bloc existant casserait un texte qu'un client relit comme du JSON.
+
+Rien n'est relu puis réécrit. Un lecteur strict cherche, dans les 16 premiers Kio de la réponse, la place qui suit le `[` de `result.content`, au premier niveau du résultat : un `content` imbriqué, dans `structuredContent` par exemple, ne compte pas. Il ne conclut pas devant une clé répétée, un `resultType` autre que `complete` vu avant `content`, une erreur JSON-RPC, ou un identifiant qui n'est pas celui de la requête. Les octets avant et après sont recopiés tels quels ; le bloc est suivi d'une virgule si le tableau n'est pas vide.
+
+- **Réponse JSON** : le relais retient les en-têtes et le début du corps jusqu'à la place et la décision, puis augmente `Content-Length` de la taille du bloc ; le reste passe au fil de l'eau.
+- **Flux SSE** : les autres événements, progression, requêtes du serveur, passent aussitôt ; seule la première ligne `data:` de l'événement qui porte la réponse est retenue, le temps de la place et de la décision. Une réponse dont le JSON s'étend sur plusieurs lignes `data:` sans que `content` soit sur la première n'est pas annotée.
+- **Empreinte et taille** du résultat (`resultFingerprint`, `resultSize`) portent sur les octets que le serveur a rendus, avertissement exclu : deux résultats identiques se reconnaissent toujours.
+
+Un test fait passer l'avertissement par le vrai client du SDK MCP, en révision 2026-07-28 et 2025-11-25, en réponse JSON et en flux SSE : le client lit l'avertissement en `content[0]`, puis le contenu d'origine, et le résultat structuré d'un outil qui déclare un schéma de sortie reste valide.
+
+#### Rien n'est inséré, et l'événement dit pourquoi
+
+Quand la place ne se trouve pas avec certitude, la réponse passe telle quelle, et l'événement dit pourquoi (`notAnnotatedReason`) :
+
+| Motif | Quand |
+| --- | --- |
+| `encoded` | La réponse porte un `Content-Encoding` : le proxy ne déploie rien |
+| `body_bound` | La réponse porte `Content-Digest`, `Repr-Digest`, `Digest`, `Content-MD5`, `Signature` ou `Signature-Input`, une longueur illisible, ou un flux SSE qui annonce sa longueur |
+| `error_response` | Un statut HTTP de 400 ou plus, une erreur JSON-RPC, ou un serveur injoignable |
+| `no_content` | Un résultat sans tableau `content` (un `resultType` autre que `complete`), une redirection, ou une réponse ni JSON ni flux SSE |
+| `not_whole` | Un début de réponse qui ne se lit pas entier et sans ambiguïté : place introuvable dans les 16 premiers Kio, clé répétée, autre identifiant, réponse en plusieurs lignes `data:`, réponse interrompue |
+| `client_gone` | Le client est parti avant que le bloc soit inséré |
+
+Ne sont pas annotés non plus, et ce n'est pas compté : un résultat rendu hors de la réponse à `tools/call` (une tâche de la révision 2025-11-25, un flux SSE repris par `Last-Event-ID`), un résultat `InputRequiredResult` de la révision 2026-07-28 (le résultat final, rendu par un nouvel appel, l'est), et un lot JSON-RPC.
+
+#### Ce que dit l'événement
+
+L'événement d'un appel retenu porte la décision dans la facette `answerlineage_toolCall`, en [version 1-3-0](facettes.md#answerlineage_toolcall) :
+
+```json
+"quarantine": {
+  "decision": "uncertain",
+  "incidents": ["974e7c80-6643-4065-a541-e4c029abbdab"],
+  "uncertainReason": "decision_timeout",
+  "annotated": true,
+  "waitMs": 49.731
+}
+```
+
+Des codes, des identifiants d'incident et une durée : jamais l'avertissement. Les compteurs `retained_calls`, `annotated_results` et `unannotated_results` de `ProxyStats` disent les appels retenus, les résultats annotés, et ceux qui devaient l'être sans l'avoir été.
 
 ## Identifiant de run et contexte de trace
 
@@ -829,7 +948,7 @@ Une empreinte est un HMAC-SHA-256 calculé avec une clé secrète propre au loca
 | Champ de `answerlineage_toolCall` | Octets empreints | Absent quand |
 | --- | --- | --- |
 | `argumentsFingerprint` | Forme canonique JSON ([RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)) de `params.arguments`, en UTF-8 ; `{}` pour un appel sans arguments | sans clé ; corps plus grand que la taille lue ; arguments sans forme canonique (nombre non fini, texte qui n'est pas de l'Unicode valide) |
-| `resultFingerprint` | Corps de la réponse, octet pour octet, tel que relayé : compressé s'il l'est, flux SSE compris | sans clé ; réponse interrompue ; client parti avant la fin |
+| `resultFingerprint` | Corps de la réponse, octet pour octet, tel que le serveur l'a rendu : compressé s'il l'est, flux SSE compris, sans l'[avertissement de quarantaine](#avertir--lavertissement-dans-le-résultat) que le proxy y insère | sans clé ; réponse interrompue ; client parti avant la fin |
 | `resultSize` | Taille de ces mêmes octets ; ce n'est pas une empreinte, elle est émise même sans clé | réponse interrompue ; client parti avant la fin |
 
 La forme canonique ne dépend ni de l'ordre des clés ni des blancs du JSON reçu : clés triées sur leurs unités de code UTF-16, aucun blanc, chaînes avec les seuls échappements obligatoires, nombres écrits comme en ECMAScript (`2.50` et `2.5` donnent `2.5`, `1.0` donne `1`, `1E-7` donne `1e-7`).
@@ -857,7 +976,7 @@ Les vecteurs de test, avec deux clés de locataire, sont publiés dans [`spec/fi
 
 ### Ce que coûte le calcul
 
-L'empreinte du résultat se calcule au fil du relais, morceau par morceau, après l'envoi de chaque morceau au client : la réponse n'est ni retenue ni attendue. Mesuré sur la boucle locale, HMAC-SHA-256 passe environ 1,5 Go/s, soit une quarantaine de microsecondes par morceau de 64 Ko : sur une réponse de 8 Mo relayée en 40 ms environ, quelques millisecondes de plus ; sur un appel ordinaire, rien de mesurable. Sans clé, seule la taille est comptée.
+L'empreinte du résultat se calcule au fil du relais, morceau par morceau, après l'envoi de chaque morceau au client : la réponse n'est ni retenue ni attendue (hors d'un appel retenu par une quarantaine, dont l'empreinte se calcule sur les octets du serveur à leur arrivée). Mesuré sur la boucle locale, HMAC-SHA-256 passe environ 1,5 Go/s, soit une quarantaine de microsecondes par morceau de 64 Ko : sur une réponse de 8 Mo relayée en 40 ms environ, quelques millisecondes de plus ; sur un appel ordinaire, rien de mesurable. Sans clé, seule la taille est comptée.
 
 L'empreinte des arguments se calcule après l'échange, quand l'événement est construit : quelques microsecondes pour des arguments ordinaires, de l'ordre de 7 ms pour 1 Mo, la taille lue par défaut, pendant lesquelles la boucle ne relaie rien d'autre.
 
@@ -931,6 +1050,8 @@ La mémoire des chaînes est bornée : 10 000 chaînes ouvertes au plus, oublié
 
 Sur le chemin de l'appel, le proxy ne prend que des horodatages et garde la copie bornée de la réponse, après l'envoi de chaque morceau. L'issue, les reprises et l'événement se calculent une fois la réponse rendue, dans l'ordre où les appels s'achèvent. Un calcul de signaux qui échoue est journalisé par sa classe ; l'événement part sans la facette.
 
+Une seule exception, bornée : pendant une quarantaine active en mode avertir, la réponse d'un appel retenu attend sa décision au plus jusqu'à l'arrivée de la requête plus 50 ms (réglable jusqu'à 0), puis passe ([Avertir](#avertir--lavertissement-dans-le-résultat)). Un appel hors de la zone n'attend jamais.
+
 La latence ajoutée compte le travail du proxy entre deux attentes : contrôle des en-têtes, lecture du corps, contexte de trace, préparation de la requête relayée, puis, pour chaque morceau de la réponse, son envoi préparé, l'empreinte et la copie qui le suivent. Elle ne compte pas ce que font, pendant ces attentes, le serveur HTTP qui lit la requête du client et la bibliothèque HTTP qui écrit vers le serveur MCP : c'est une borne basse de ce qu'ajoute le saut par le proxy. Le banc mesure aussi le saut entier, par comparaison.
 
 ### Le banc de latence
@@ -940,9 +1061,17 @@ La latence ajoutée compte le travail du proxy entre deux attentes : contrôle d
 - **par comparaison** : chaque percentile des appels à travers le proxy, moins le même percentile des appels directs, vus du client ;
 - **par la mesure interne** : `addedLatencyMs` de l'événement de chaque appel.
 
-Il échoue quand le p99 de l'une ou de l'autre dépasse 5 ms, et quand la mesure interne n'est pas cohérente : un événement réussi par appel mesuré, une latence ajoutée qui ne dépasse pas la latence de l'échange, une latence vue par le proxy dont la médiane ne dépasse pas celle vue par le client. Le proxy prend son dernier horodatage après avoir rendu la fin de la réponse : sur une machine chargée, un appel isolé peut finir plus tard pour lui que pour le client, si bien que la queue de la distribution n'est pas comparée. `BENCH_ARGS` règle le nombre d'appels, les appels menés à la fois et le seuil (`make bench BENCH_ARGS='--calls 20000 --concurrency 4'`).
+Il échoue quand le p99 de l'une ou de l'autre dépasse 5 ms, et quand la mesure interne n'est pas cohérente : un événement réussi par appel mesuré, une latence ajoutée qui ne dépasse pas la latence de l'échange, une latence vue par le proxy dont la médiane ne dépasse pas celle vue par le client. Le proxy prend son dernier horodatage après avoir rendu la fin de la réponse : sur une machine chargée, un appel isolé peut finir plus tard pour lui que pour le client, si bien que la queue de la distribution n'est pas comparée. `BENCH_ARGS` règle le nombre d'appels, les appels menés à la fois, le seuil et la variante de quarantaine (`make bench BENCH_ARGS='--calls 20000 --concurrency 4 --quarantine outside'`).
 
-Le banc tourne chaque nuit dans son propre workflow (`.github/workflows/bench.yml`), sur une machine qui ne fait que lui : c'est là que le seuil de 5 ms au p99 est strict, la boîte d'envoi comprise. Dans `make check`, un test de 2 000 appels vérifie que le banc fonctionne et que la mesure interne est cohérente, sans seuil de temps : sur une machine partagée, la charge des autres tests le ferait échouer à tort.
+Trois variantes mesurent ce que coûte une [quarantaine en mode avertir](#avertir--lavertissement-dans-le-résultat), sur une zone vérifiée que le proxy du banc tient d'une synchronisation simulée, sans API (`--quarantine`) :
+
+- `none`, par défaut : aucune quarantaine ;
+- `outside` : une zone qui ne vise pas l'outil du banc. Chaque appel coûte une recherche dans la zone et n'attend jamais ;
+- `retained` : l'outil du banc est décrit par une règle de lecture dont le jeu est dans la zone. Chaque appel est retenu, sa décision est statique, et son résultat reçoit l'avertissement : la variante mesure la retenue du début de la réponse, le rendu et l'insertion du bloc. Le banc vérifie aussi que le client reçoit le résultat annoté, et que chaque événement dit le résultat annoté.
+
+Un outil SQL retenu n'est pas au banc : quand sa requête est dans le cache de l'analyseur de quarantaine, sa décision est prête avant la réponse du serveur, et le coût est celui de la variante `retained` ; hors du cache, l'attente est bornée par construction à l'échéance de la décision, 50 ms au plus, que le seuil de 5 ms ne juge pas.
+
+Le banc tourne chaque nuit dans son propre workflow (`.github/workflows/bench.yml`), sur une machine qui ne fait que lui, dans ses trois variantes : c'est là que le seuil de 5 ms au p99 est strict, la boîte d'envoi comprise. Dans `make check`, un test de 2 000 appels par variante vérifie que le banc fonctionne et que la mesure interne est cohérente, sans seuil de temps : sur une machine partagée, la charge des autres tests le ferait échouer à tort.
 
 Dans `make check` aussi, un test de chaos (`tests/test_outbox_chaos.py`) fait passer 10 000 appels l'API d'ingestion coupée (connexion refusée), puis en trou noir (elle accepte et ne répond jamais), puis rétablie, sur la vraie API, dans son propre processus, un vrai PostgreSQL et le worker. Il vérifie que tous les appels passent, qu'aucun n'approche le délai de lecture de la boîte (8 s au plus, quand un appel qu'elle bloquerait en attendrait au moins 10), que la prise en charge d'un événement reste sous 1 ms au p99, et que chaque état de panne garde un p99 au plus double de celui d'un proxy sans boîte, plus 20 ms. Ce seuil est tolérant à dessein : le proxy, le faux serveur MCP et le client y partagent un processus, sur une machine partagée. Le test dure une à trois minutes. Un autre fait passer un appel en stdio, par la ligne de commande, jusqu'au graphe. Puis que chaque événement arrive dans le graphe, une fois. D'autres tests y injectent les pertes, boîte pleine, rejet par l'API, arrêt, et vérifient que la couverture lue par l'API les montre toutes, chacune dans sa fenêtre.
 
@@ -958,6 +1087,17 @@ Mesuré sur un poste à 4 cœurs, 100 000 appels un à la fois :
 L'écart entre les deux mesures est le saut lui-même : un serveur HTTP qui lit la requête et une bibliothèque HTTP qui la réécrit vers le serveur MCP, que la mesure interne ne voit pas. Un maximum est une valeur isolée, une pause du ramasse-miettes ou de l'ordonnanceur ; par comparaison, la différence de deux maxima n'a pas de sens, et le banc ne la juge pas.
 
 Ce tableau précède la boîte d'envoi. Sur 20 000 appels un à la fois, mesurés coup sur coup sur une même machine partagée, la boîte, l'API injoignable et la file pleine, ne déplace pas ces percentiles au-delà du bruit : p99 de la latence ajoutée par comparaison 2,38 ms avec elle, 2,39 ms sans ; par la mesure interne 0,46 ms avec elle, 0,43 ms sans.
+
+La quarantaine, mesurée de même : 20 000 appels un à la fois par mesure, sur une même machine partagée, en deux tours. Le code d'avant l'avertissement, `none` et `outside` sont lancés en alternance ; `retained`, dans une seconde série, en alternance avec `none`. Le p99 de la latence ajoutée, tour par tour :
+
+| Variante | Par comparaison | Mesure interne |
+| --- | --- | --- |
+| Avant l'avertissement, sans quarantaine | 2,33 ms ; 2,30 ms | 0,56 ms ; 0,55 ms |
+| `none` : sans quarantaine | 2,16 ms ; 2,46 ms | 0,54 ms ; 0,60 ms |
+| `outside` : quarantaine hors de l'outil | 2,17 ms ; 2,30 ms | 0,54 ms ; 0,54 ms |
+| `retained` : quarantaine sur l'outil, résultat annoté | 2,55 ms ; 2,28 ms | 0,73 ms ; 0,69 ms |
+
+Hors de la zone, l'écart reste dans le bruit de la machine. Sur un outil retenu, la médiane de la mesure interne passe de 0,26 à 0,38 ms : la retenue du début de la réponse, le rendu et l'insertion du bloc, loin du seuil de 5 ms.
 
 ## Mode stdio
 
@@ -1038,13 +1178,14 @@ Le relais n'attend jamais l'inspection ni l'émission : il remet sa copie et con
 | Statut HTTP | `httpStatus`, issue `http_error` | Aucun |
 | Portée d'une reprise | Session MCP, puis trace, puis le proxy | Trace, puis le proxy, qui ne sert qu'un client |
 | Requête étiquetée, sur option | Le corps lu en entier, sa longueur mise à jour | La ligne rassemblée avant d'être écrite |
+| Avertissement de quarantaine | En tête du résultat d'un appel retenu, après une attente bornée de la décision | Aucun : le périmètre est appris, aucun résultat n'est annoté |
 | Mode transparent ou passerelle | Selon l'URL que joint le client | Sans objet : le client lance le serveur |
 | Sondes de santé | Port d'administration, sur option | Aucune |
 | Arrêt | Retrait, grâce, puis vidage de la boîte | Celui du serveur, puis vidage de la boîte |
 
 ## Ce qui n'est jamais conservé
 
-Aucun argument, résultat, en-tête ni jeton n'est stocké ou journalisé : des arguments et du résultat, l'événement ne garde que des empreintes à clé et une taille ; d'une requête SQL, sa forme sans littéraux ; d'une erreur, sa catégorie et son code ; d'une clé lue d'après une règle, son empreinte à clé. Seuls le `trace-id` et le `parent-id` d'un contexte de trace bien formé, qui ne disent rien du contenu, sont recopiés dans l'événement ; ils ne sont jamais journalisés. Les en-têtes `Mcp-Param-*`, qui recopient des arguments d'outil, ne sont pas lus. L'en-tête `Mcp-Session-Id` n'est lu que pour reconnaître une reprise, et oublié après l'appel, sauf son empreinte à clé. En stdio, l'identifiant d'une requête n'est gardé que sous une empreinte à clé, le temps d'attendre sa réponse, et la commande lancée n'apparaît ni dans le journal, ni dans un message d'erreur, ni dans la représentation des réglages. Le journal d'accès du serveur HTTP est coupé. Les journaux des bibliothèques qui citeraient une URL complète, des en-têtes ou une requête SQL (`httpx`, `httpcore`, `sqlglot`) sont coupés pour tout le processus.
+Aucun argument, résultat, en-tête ni jeton n'est stocké ou journalisé : des arguments et du résultat, l'événement ne garde que des empreintes à clé et une taille ; d'une requête SQL, sa forme sans littéraux ; d'une erreur, sa catégorie et son code ; d'une clé lue d'après une règle, son empreinte à clé. Seuls le `trace-id` et le `parent-id` d'un contexte de trace bien formé, qui ne disent rien du contenu, sont recopiés dans l'événement ; ils ne sont jamais journalisés. Les en-têtes `Mcp-Param-*`, qui recopient des arguments d'outil, ne sont pas lus. L'en-tête `Mcp-Session-Id` n'est lu que pour reconnaître une reprise, et oublié après l'appel, sauf son empreinte à clé. En stdio, l'identifiant d'une requête n'est gardé que sous une empreinte à clé, le temps d'attendre sa réponse, et la commande lancée n'apparaît ni dans le journal, ni dans un message d'erreur, ni dans la représentation des réglages. Le début du résultat d'un appel retenu par une quarantaine, 16 Kio au plus, n'est gardé que le temps de placer l'avertissement et d'attendre la décision, puis relayé ; l'avertissement ne cite rien du résultat, et l'événement ne dit que la décision. Le journal d'accès du serveur HTTP est coupé. Les journaux des bibliothèques qui citeraient une URL complète, des en-têtes ou une requête SQL (`httpx`, `httpcore`, `sqlglot`) sont coupés pour tout le processus.
 
 ## Autorisation
 
@@ -1056,7 +1197,7 @@ Le mode passerelle, où un jeton lié à l'URL du serveur ne peut pas passer, es
 
 ## L'événement émis
 
-Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COMPLETE` si le serveur a répondu sans erreur HTTP, `FAIL` sinon, `ABORT` si le client est parti. Le job est `mcp://<serveur>` / `<outil>`, l'identifiant de run celui que dérive le contexte de trace. La facette `answerlineage_toolCall` porte le serveur, l'outil, le transport, la révision du protocole, le statut HTTP, les écarts relevés, la résolution de la lecture, le contexte de trace (`traceId`, `spanId`, `traceOrigin`), les empreintes à clé des arguments et du résultat et la taille du résultat, et, pour un outil dont la requête relayée porte l'identifiant de run, si elle l'a reçu (`taggedWithRunId`) ; son schéma est publié (voir [Facettes OpenLineage](facettes.md)). La facette `answerlineage_qos` porte la latence, la latence ajoutée, l'issue et les reprises ([Qualité de service](#qualité-de-service)). Les tables lues, ou les jeux de données que déclare la règle de lecture de l'outil, sont les jeux de données d'entrée ; leurs colonnes sont dans la facette standard `schema`, les empreintes des clés lues dans la facette `answerlineage_keys`. La forme sans littéraux d'une requête SQL est dans la facette de job standard `sql`.
+Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COMPLETE` si le serveur a répondu sans erreur HTTP, `FAIL` sinon, `ABORT` si le client est parti. Le job est `mcp://<serveur>` / `<outil>`, l'identifiant de run celui que dérive le contexte de trace. La facette `answerlineage_toolCall` porte le serveur, l'outil, le transport, la révision du protocole, le statut HTTP, les écarts relevés, la résolution de la lecture, le contexte de trace (`traceId`, `spanId`, `traceOrigin`), les empreintes à clé des arguments et du résultat et la taille du résultat, et, pour un outil dont la requête relayée porte l'identifiant de run, si elle l'a reçu (`taggedWithRunId`), pour un appel retenu par une quarantaine, sa décision et si son résultat a été annoté (`quarantine`) ; son schéma est publié (voir [Facettes OpenLineage](facettes.md)). La facette `answerlineage_qos` porte la latence, la latence ajoutée, l'issue et les reprises ([Qualité de service](#qualité-de-service)). Les tables lues, ou les jeux de données que déclare la règle de lecture de l'outil, sont les jeux de données d'entrée ; leurs colonnes sont dans la facette standard `schema`, les empreintes des clés lues dans la facette `answerlineage_keys`. La forme sans littéraux d'une requête SQL est dans la facette de job standard `sql`.
 
 ## Limites connues
 
@@ -1065,8 +1206,15 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - La boîte d'envoi et le client du jeton ne lisent ni mandataire ni autorité de certification de l'environnement : une API ou un émetteur OIDC derrière une autorité de certification privée ne sont pas encore joignables.
 - Le proxy ne s'authentifie auprès de l'émetteur que par un secret partagé (`client_secret_basic`) : ni certificat client, ni assertion signée.
 - La diffusion est signée sous un secret symétrique : qui le lit sur l'hôte de l'API ou d'un proxy signe comme l'API, et une API compromise signe ce qu'elle pousse. La signature date la réponse sans la lier à la requête : une diffusion captée se rejoue pendant les 5 minutes de la tolérance, et qui coupe le chemin fait garder le dernier état valide une heure. C'est une acceptation à signer du [modèle de menaces](securite/modele-de-menaces.md#acceptations) (`proxy/perimetre-usurpe`).
-- Sans secret, le proxy se fie au TLS de l'adresse réglée et apprend le périmètre sans le vérifier : c'est sans effet tant qu'il ne fait rien des lectures, et il ne sera jamais autorisé à le faire ainsi.
-- Une horloge décalée de plus de 5 minutes, sur l'API ou sur un proxy, fait écarter chaque diffusion : le proxy revient en mode observer au bout d'une heure, et le journal dit `signature_expired` ou `signature_from_future`.
+- Sans secret, le proxy se fie au TLS de l'adresse réglée et apprend le périmètre sans le vérifier : il n'annote alors aucun résultat.
+- Une horloge décalée de plus de 5 minutes, sur l'API ou sur un proxy, fait écarter chaque diffusion : le proxy revient en mode observer au bout d'une heure, sans plus rien annoter, et le journal dit `signature_expired` ou `signature_from_future`.
+- La zone d'une quarantaine est faite des seuls jeux de son périmètre : une vue ou une table bâtie sur eux n'est pas encore annotée, la diffusion ne portant pas encore les jeux dérivés connus du graphe.
+- Un hôte qui ne donne au modèle que `structuredContent` ne lui montre pas l'avertissement : l'événement dit que le résultat a été annoté, pas ce que l'hôte en a montré. Un client qui relit `content[0]` comme le JSON de `structuredContent` lit l'avertissement à sa place.
+- Le mode stdio n'annote pas : un serveur lancé en stdio voit ses lectures en quarantaine relayées sans avertissement.
+- Un outil sans règle de lecture ni SQL déclaré n'est jamais retenu : ses lectures d'un jeu en quarantaine passent sans avertissement.
+- Les premiers appels d'un outil SQL retenu après un démarrage, ou après une analyse abandonnée à son budget, peuvent être annotés comme incertains : l'analyseur de quarantaine démarre ou redémarre. Le préchauffage, dès qu'une zone vise un outil SQL, le limite.
+- Un nom de table ne s'apparie au nom d'un jeu de la zone que s'il lui est égal : un émetteur qui écrit le même jeu avec une autre casse, ou autrement qualifié, n'est pas reconnu, comme dans la propagation.
+- Une réponse compressée, liée par une empreinte ou une signature, une réponse JSON-RPC dont la place du bloc n'est pas dans ses 16 premiers Kio, ou un flux SSE dont la réponse s'étend sur plusieurs lignes `data:`, ne sont pas annotés ; l'événement dit pourquoi.
 - Une liste de périmètres de plus de 2 Mio est écartée : cent quarantaines de vingt jeux aux noms de plusieurs centaines de caractères. Le proxy garde alors son dernier état, puis revient en mode observer au bout d'une heure, et le journal dit `too_large`.
 - L'état de la synchronisation ne se lit qu'au journal et dans le processus (`quarantine_status()`) : ni relevé, ni route.
 - Le seuil de 5 ms au p99 ne se vérifie qu'au banc de chaque nuit ; l'intégration continue, sur une machine partagée, n'en garde qu'un seuil tolérant.
@@ -1096,7 +1244,7 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - Le budget se mesure en temps écoulé : sur une machine très chargée, une requête qui tient d'ordinaire dans le budget peut le dépasser et rester « non résolue » tant qu'elle est en cache.
 - Les signaux de qualité de service restent dans l'événement reçu : le graphe ne les stocke pas encore.
 - La forme d'une requête garde les noms d'un seul mot choisis par son auteur : un alias qui serait une donnée métier (`AS "Dupont"`) est conservé tel quel. Un nom qui n'a pas la forme d'un identifiant fait renoncer à la forme.
-- L'empreinte du résultat porte sur les octets relayés : le même résultat, compressé ou non, ou découpé autrement en événements SSE, a deux empreintes différentes.
+- L'empreinte du résultat porte sur les octets que le serveur a rendus : le même résultat, compressé ou non, ou découpé autrement en événements SSE, a deux empreintes différentes.
 - Les arguments d'un appel dont le corps dépasse la taille lue ne sont pas lus : pas d'empreinte des arguments.
 - Le label, le tag et le commentaire qui portent l'identifiant de run sont posés, mais rien ne les lit encore : le rapprochement des lectures avec les journaux d'audit de l'entrepôt reste à faire.
 - Le commentaire est écrit en tête de la requête : un serveur qui n'accepte une requête que d'après ses premiers mots peut refuser une requête étiquetée.

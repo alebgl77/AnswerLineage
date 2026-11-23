@@ -25,14 +25,20 @@ from answerlineage_api import identifiers
 from answerlineage_api.ingest.models import (
     ERROR_CODE_MAX,
     ERROR_CODE_MIN,
+    NOT_ANNOTATED_REASONS,
+    QUARANTINE_DECISIONS,
+    QUARANTINE_INCIDENTS_MAX,
+    QUARANTINE_WAIT_MAX_MS,
     RECIPIENTS_MAX,
     SIGNAL_MAX,
+    UNCERTAIN_REASONS,
     validate_event,
 )
 from answerlineage_api.pseudonyms.vault import is_pseudonym
 from answerlineage_corpus.enterprise import generate
 from answerlineage_corpus.events import render
 from answerlineage_corpus.scenarios import load_corpus
+from answerlineage_proxy.annotation import QuarantineNote
 from answerlineage_proxy.events import SQL_FACET_SCHEMA, UNDESCRIBED_TOOL, build_tool_call_event
 from answerlineage_proxy.fingerprint import (
     RESULT_LABEL,
@@ -102,13 +108,16 @@ def facet(name: str, version: str = "1-0-0", **fields: Any) -> dict[str, Any]:
     return {"_producer": PRODUCER, "_schemaURL": address(name, version), **fields}
 
 
-def test_five_facets_are_published_in_1_0_0_three_extended_in_1_1_0_and_one_in_1_2_0() -> None:
+def test_five_facets_are_published_in_1_0_0_three_extended_in_1_1_0_one_in_1_2_0_and_1_3_0() -> (
+    None
+):
     assert {path.relative_to(FACETS).as_posix() for path in schema_files()} == {
         *(f"1-0-0/{name}.json" for name in NAMES.values()),
         "1-1-0/QosRunFacet.json",
         "1-1-0/ToolCallRunFacet.json",
         "1-1-0/DeliveryOutputDatasetFacet.json",
         "1-2-0/ToolCallRunFacet.json",
+        "1-3-0/ToolCallRunFacet.json",
     }
 
 
@@ -444,6 +453,88 @@ def test_a_tool_call_1_1_0_says_what_became_of_the_key_read_from_a_closed_list()
     assert list(check.iter_errors(full)) == []
 
 
+INCIDENTS = ("3d1f5b52-8c1e-4f0e-a0a6-6a8e1f0c2b77", "974e7c80-6643-4065-a541-e4c029abbdab")
+# Ce que le proxy dit d'un appel retenu par une quarantaine : chaque décision, annoté ou non.
+QUARANTINE_NOTES = (
+    QuarantineNote("certain", INCIDENTS, annotated=True, wait_ms=0.0),
+    QuarantineNote(
+        "uncertain",
+        INCIDENTS[:1],
+        annotated=True,
+        wait_ms=50.0,
+        uncertain_reason="decision_timeout",
+    ),
+    QuarantineNote(
+        "uncertain",
+        INCIDENTS[1:],
+        annotated=False,
+        wait_ms=12.345,
+        uncertain_reason="unresolved_read",
+        not_annotated_reason="encoded",
+    ),
+    QuarantineNote("outside", INCIDENTS, annotated=False, wait_ms=3.5),
+)
+
+
+def _quarantine_property(name: str) -> dict[str, Any]:
+    document = load(FACETS / "1-3-0" / "ToolCallRunFacet.json")
+    quarantine = document["$defs"]["ToolCallRunFacet"]["allOf"][1]["properties"]["quarantine"]
+    found: dict[str, Any] = quarantine["properties"][name]
+    return found
+
+
+def test_a_tool_call_1_3_0_says_what_a_quarantine_decided_from_the_lists_of_the_ingestion() -> None:
+    """Les listes fermées et les bornes du schéma sont celles de l'ingestion ; ce que le proxy
+    émet, l'un et l'autre l'acceptent."""
+    assert tuple(_quarantine_property("decision")["enum"]) == QUARANTINE_DECISIONS
+    assert tuple(_quarantine_property("uncertainReason")["enum"]) == UNCERTAIN_REASONS
+    assert tuple(_quarantine_property("notAnnotatedReason")["enum"]) == NOT_ANNOTATED_REASONS
+    assert _quarantine_property("incidents")["maxItems"] == QUARANTINE_INCIDENTS_MAX
+    assert _quarantine_property("waitMs")["maximum"] == QUARANTINE_WAIT_MAX_MS
+    check = validator("ToolCallRunFacet", "1-3-0")
+    for note in QUARANTINE_NOTES:
+        emitted = facet("ToolCallRunFacet", "1-3-0", server="s", quarantine=note.fields())
+        assert list(check.iter_errors(emitted)) == []
+        event = _qos_event()
+        event["run"]["facets"]["answerlineage_toolCall"]["quarantine"] = note.fields()
+        assert validate_event(event)[1] == []
+    # Tout ce que la version 1-2-0 accepte, la version 1-3-0 l'accepte aussi.
+    full = facet(
+        "ToolCallRunFacet",
+        "1-3-0",
+        **EXAMPLES["ToolCallRunFacet"]["full"],
+        readKeys="fingerprinted",
+        taggedWithRunId=True,
+    )
+    assert list(check.iter_errors(full)) == []
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"decision": "peut-etre"},
+        {"incidents": []},
+        {"incidents": [INCIDENTS[0], INCIDENTS[0]]},
+        {"incidents": [INCIDENTS[0].upper()]},
+        {"incidents": [f"{rank:08x}-0000-4000-8000-000000000000" for rank in range(101)]},
+        {"uncertainReason": "plus-tard"},
+        {"annotated": "oui"},
+        {"notAnnotatedReason": "autre"},
+        {"waitMs": 50.5},
+        {"waitMs": -0.1},
+        {"waitMs": "1"},
+        {"decision": None},
+    ],
+)
+def test_a_tool_call_1_3_0_refuses_what_the_ingestion_refuses(fields: dict[str, Any]) -> None:
+    note = {**QUARANTINE_NOTES[2].fields(), **fields}
+    emitted = facet("ToolCallRunFacet", "1-3-0", server="s", quarantine=note)
+    assert list(validator("ToolCallRunFacet", "1-3-0").iter_errors(emitted)) != []
+    event = _qos_event()
+    event["run"]["facets"]["answerlineage_toolCall"]["quarantine"] = note
+    assert validate_event(event)[1] != []
+
+
 def test_a_tool_call_1_2_0_says_whether_the_query_carried_its_run_by_a_flag_only() -> None:
     check = validator("ToolCallRunFacet", "1-2-0")
     for flag in (True, False):
@@ -695,6 +786,22 @@ def proxy_events() -> list[dict[str, Any]]:
             tagged_with_run_id=tagged,
         )
         for tagged in (True, False)
+    )
+    # Un appel retenu par une quarantaine : chaque décision, annoté ou non, étiqueté ou non.
+    events.extend(
+        build_tool_call_event(
+            run_id=uuid4(),
+            event_time=datetime.now(UTC),
+            outcome="COMPLETE",
+            server="entrepot",
+            inspection=inspections[0],
+            http_status=200,
+            reads=SqlAnalysis(resolved=False, reason="unsupported_statement"),
+            namespace="bigquery",
+            tagged_with_run_id=True if note.decision == "outside" else None,
+            quarantine=note,
+        )
+        for note in QUARANTINE_NOTES
     )
     return [*events, failed, resolved, unresolved, fingerprinted]
 

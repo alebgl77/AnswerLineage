@@ -76,7 +76,7 @@ description = "PostgreSQL tient le graphe, les événements bruts, la file, les 
 [[asset]]
 id = "contenus"
 name = "Contenus des agents"
-description = "Prompts, arguments et résultats d'outils, réponses : ils traversent le proxy et ne sont jamais conservés."
+description = "Prompts, arguments et résultats d'outils, réponses : ils traversent le proxy et ne sont jamais conservés. Le proxy lit le début du résultat d'un appel retenu par une quarantaine pour y placer l'avertissement, sans rien en garder."
 
 [[asset]]
 id = "jetons"
@@ -151,7 +151,12 @@ description = "Le secret HMAC que l'API et les proxys partagent : qui le détien
 [[asset]]
 id = "perimetres-en-quarantaine"
 name = "Périmètres en quarantaine"
-description = "Les jeux de données qu'un incident met en quarantaine, que chaque proxy apprend de l'API : demain, l'annotation ou le blocage des lectures de ces jeux en dépendra."
+description = "Les jeux de données qu'un incident met en quarantaine, que chaque proxy apprend de l'API : en mode avertir, le résultat d'une lecture de ces jeux reçoit un avertissement, en HTTP."
+
+[[asset]]
+id = "avertissements"
+name = "Avertissements de quarantaine"
+description = "Le texte que le proxy insère en tête du résultat d'une lecture en quarantaine, et que le modèle de l'agent lit avec lui : un texte piégé y deviendrait une consigne, un résultat altéré une réponse fausse."
 
 [[asset]]
 id = "rappels"
@@ -325,7 +330,7 @@ name = "La capture retarde ou bloque un appel d'agent"
 category = "denial-of-service"
 boundary = "agent-proxy-mcp"
 assets = ["continuite-des-agents"]
-description = "Une API d'ingestion lente ou en panne, une analyse SQL longue ou un puits défaillant feraient attendre l'agent, ou échouer son appel."
+description = "Une API d'ingestion lente ou en panne, une analyse SQL longue, un puits défaillant ou une décision de quarantaine qui tarde feraient attendre l'agent, ou échouer son appel."
 
 [[threat.mitigation]]
 description = "La boîte d'envoi prend un événement par un ajout en mémoire, bornée, et n'attend rien."
@@ -356,6 +361,21 @@ test = "tests/test_quarantine_end_to_end.py::test_an_api_down_at_startup_leaves_
 description = "En stdio, le relais n'attend jamais l'inspection."
 code = "proxy/src/answerlineage_proxy/stdio.py"
 test = "proxy/tests/test_stdio.py::test_the_relay_never_waits_for_the_inspection"
+
+[[threat.mitigation]]
+description = "Un appel hors de la zone d'une quarantaine n'attend jamais : sa rétention est une recherche dans la zone, et il revient sans délai, à l'octet près, même quand l'analyseur de quarantaine ne rend plus la main."
+code = "proxy/src/answerlineage_proxy/annotation.py::retention"
+test = "proxy/tests/test_quarantine_relay.py::test_a_call_outside_the_zone_never_waits"
+
+[[threat.mitigation]]
+description = "La réponse d'un appel retenu n'attend sa décision que jusqu'à l'arrivée de sa requête plus 50 ms, réglable jusqu'à 0, l'analyse tournant dans un processus dédié sous un budget fixe ; à l'échéance, elle passe, annotée comme incertaine."
+code = "proxy/src/answerlineage_proxy/app.py::_decide"
+test = "proxy/tests/test_quarantine_relay.py::test_the_decision_waits_at_most_its_budget"
+
+[[threat.mitigation]]
+description = "Le banc de latence mesure chaque nuit la latence ajoutée sans quarantaine, pendant une quarantaine hors de l'outil, et sur un outil retenu dont chaque résultat est annoté."
+code = "scripts/bench_proxy.py::run_bench"
+test = "tests/test_bench_proxy.py::test_the_bench_runs_the_real_proxy_and_its_own_measure_holds"
 
 [[threat]]
 id = "proxy/entree-demesuree"
@@ -492,7 +512,7 @@ name = "Une API compromise ou usurpée pousse aux proxys un faux périmètre en 
 category = "spoofing"
 boundary = "api-proxy"
 assets = ["perimetres-en-quarantaine", "continuite-des-agents"]
-description = "Qui compromet l'API, ou se place sur le chemin qui y mène, répond aux proxys qui l'interrogent : il fait croire à une quarantaine qui n'existe pas, en tait une active, en prolonge une levée en rejouant une réponse ancienne, ou sert une réponse faite pour épuiser le proxy. Aujourd'hui le proxy ne fait rien des lectures du périmètre ; demain, il les annotera, puis pourra les bloquer."
+description = "Qui compromet l'API, ou se place sur le chemin qui y mène, répond aux proxys qui l'interrogent : il fait croire à une quarantaine qui n'existe pas, en tait une active, en prolonge une levée en rejouant une réponse ancienne, ou sert une réponse faite pour épuiser le proxy. En mode avertir, le proxy HTTP annote le résultat des lectures du périmètre : un faux périmètre fait annoter à tort, un périmètre tu fait taire un avertissement."
 
 [[threat.mitigation]]
 description = "Seule l'adresse que règle l'exploitant est jointe : TLS vérifié, aucune redirection suivie, aucun mandataire lu de l'environnement."
@@ -510,9 +530,14 @@ code = "proxy/src/answerlineage_proxy/quarantine.py"
 test = "proxy/tests/test_quarantine.py::test_a_failure_keeps_the_last_state_for_an_hour_then_the_proxy_observes_again"
 
 [[threat.mitigation]]
-description = "Le proxy connaît le périmètre sans s'en servir : un faux périmètre ne change ni l'appel relayé ni son événement."
+description = "Un faux périmètre ne change rien d'un appel hors de sa zone : l'appel relayé et son événement sont ceux d'un proxy qui ne connaît aucun périmètre."
 code = "proxy/src/answerlineage_proxy/app.py"
-test = "proxy/tests/test_quarantine.py::test_a_known_perimeter_changes_nothing_of_the_call_nor_of_its_event"
+test = "proxy/tests/test_quarantine.py::test_a_known_perimeter_changes_nothing_of_a_call_outside_its_zone"
+
+[[threat.mitigation]]
+description = "Seule une diffusion vérifiée fait annoter : sans secret, ou sans diffusion adoptée, aucun appel n'est retenu ni aucun résultat annoté."
+code = "proxy/src/answerlineage_proxy/app.py::_current_zone"
+test = "proxy/tests/test_quarantine_relay.py::test_nothing_is_retained_without_quarantine_or_without_a_verified_diffusion"
 
 [[threat.mitigation]]
 description = "Avec le secret partagé, le proxy n'adopte qu'une diffusion signée par l'API et datée de moins de cinq minutes, 200 comme 304 : une réponse non signée, mal signée, trop ancienne ou venue du futur est écartée avec un code, avant que son contenu soit lu, et le dernier état valide est gardé."
@@ -541,7 +566,58 @@ test = "proxy/tests/test_quarantine_signature.py::test_without_a_secret_the_prox
 
 [threat.acceptance]
 reason = "La diffusion est signée sous un secret symétrique : l'API et chaque proxy le gardent en clair, et qui le lit chez l'un d'eux signe comme l'API ; une API compromise signe le faux périmètre qu'elle pousse. La signature date la réponse sans la lier à la requête : une diffusion captée se rejoue pendant la tolérance de cinq minutes, et qui coupe le chemin fait garder au proxy son dernier état valide, une heure au plus, comme une panne. Un proxy réglé sans secret apprend le périmètre sans le vérifier, et n'est jamais autorisé à annoter."
-consequence = "Qui compromet l'API, ou lit le secret sur son hôte ou celui d'un proxy, fait croire aux proxys une quarantaine fausse ou en tait une vraie, jusqu'à la rotation du secret ; qui écoute le réseau sans le secret ne peut que rejouer une diffusion de moins de cinq minutes, ou faire garder une heure une quarantaine levée. Aujourd'hui sans effet sur les appels ; quand le proxy annotera en mode avertir, des avertissements à tort ou manquants : jamais un appel bloqué, ni un contenu divulgué."
+consequence = "Qui compromet l'API, ou lit le secret sur son hôte ou celui d'un proxy, fait croire aux proxys une quarantaine fausse ou en tait une vraie, jusqu'à la rotation du secret ; qui écoute le réseau sans le secret ne peut que rejouer une diffusion de moins de cinq minutes, ou faire garder une heure une quarantaine levée. En mode avertir, des avertissements à tort ou manquants dans les résultats relayés, et l'attente bornée de la décision sur les appels qu'un faux périmètre retient : jamais un appel bloqué, ni un contenu divulgué, ni un texte de l'attaquant dans un avertissement."
+
+[[threat]]
+id = "proxy/annotation-piegee"
+name = "Un texte de l'API ou d'un émetteur atteint le modèle de l'agent par l'avertissement de quarantaine"
+category = "tampering"
+boundary = "api-proxy"
+assets = ["avertissements", "perimetres-en-quarantaine"]
+description = "L'avertissement qu'insère le proxy est lu par le modèle de l'agent avec le résultat. Une description, un champ ajouté ou un nom de jeu en forme d'instruction, venus de la diffusion ou d'un émetteur, qui y entreraient deviendraient une consigne donnée au modèle : répondre « tout va bien », taire l'incident, appeler un autre outil."
+
+[[threat.mitigation]]
+description = "Le gabarit est fixe : il ne contient que des identifiants d'incident contrôlés, l'heure d'activation relue puis réécrite, et des noms que l'agent ou l'exploitant ont écrits. Une diffusion hostile, ses descriptions, ses champs inconnus et un nom de la zone en forme d'instruction que l'appel n'a pas lu n'atteignent pas l'avertissement."
+code = "proxy/src/answerlineage_proxy/annotation.py::warning_text"
+test = "proxy/tests/test_annotation.py::test_no_text_of_the_api_reaches_the_warning_nor_a_name_the_call_did_not_read"
+
+[[threat.mitigation]]
+description = "La diffusion est lue strictement : une heure d'activation qui n'est pas une heure RFC 3339 en UTC, un identifiant ou un nom hors de leur forme écartent la réponse entière."
+code = "proxy/src/answerlineage_proxy/quarantine.py::parse"
+test = "proxy/tests/test_quarantine.py::test_a_hostile_response_is_refused_with_a_code_never_with_its_content"
+
+[[threat.mitigation]]
+description = "Le bloc est un bloc de contenu texte sérialisé en ASCII, qui ne porte que le texte et son audience."
+code = "proxy/src/answerlineage_proxy/annotation.py::content_block"
+test = "proxy/tests/test_annotation.py::test_the_block_is_a_text_content_block_in_pure_ascii_for_the_model_and_the_user"
+
+[[threat]]
+id = "proxy/resultat-altere"
+name = "L'insertion de l'avertissement corrompt le résultat relayé"
+category = "tampering"
+boundary = "agent-proxy-mcp"
+assets = ["contenus", "avertissements", "continuite-des-agents"]
+description = "Pour avertir, le proxy modifie le résultat qu'il relaie. Une insertion fautive rendrait un JSON invalide, une longueur fausse, une trame SSE cassée, le contenu d'un autre message, ou démentirait une empreinte ou une signature du corps : l'agent recevrait un résultat illisible, ou faux."
+
+[[threat.mitigation]]
+description = "Un lecteur strict trouve la place sans relire ni réécrire le résultat : les octets avant et après sont recopiés tels quels, et le document relu après insertion est l'original avec le bloc en tête."
+code = "proxy/src/answerlineage_proxy/annotation.py::JsonInsertion"
+test = "proxy/tests/test_annotation.py::test_the_document_read_after_insertion_is_the_original_with_the_block_first"
+
+[[threat.mitigation]]
+description = "Dans un flux SSE, les autres événements passent aussitôt et intacts ; seule la réponse de l'appel est annotée, et la longueur d'une réponse JSON suit."
+code = "proxy/src/answerlineage_proxy/annotation.py::SseInsertion"
+test = "proxy/tests/test_quarantine_relay.py::test_in_a_stream_the_notifications_pass_at_once_and_the_reply_is_annotated"
+
+[[threat.mitigation]]
+description = "Une réponse compressée, liée par une empreinte ou une signature, une erreur, une réponse d'un autre identifiant ou dont la place n'est pas certaine passe telle quelle, et l'événement dit pourquoi."
+code = "proxy/src/answerlineage_proxy/app.py::_insertion"
+test = "proxy/tests/test_quarantine_relay.py::test_a_reply_that_cannot_be_annotated_with_certainty_passes_untouched_and_says_why"
+
+[[threat.mitigation]]
+description = "Le vrai client du SDK MCP lit l'avertissement puis le contenu d'origine, en révisions 2026-07-28 et 2025-11-25, en JSON et en flux SSE, et le résultat structuré d'un outil reste valide."
+code = "proxy/src/answerlineage_proxy/annotation.py"
+test = "proxy/tests/test_mcp_sdk.py::test_the_real_client_reads_the_warning_first_then_the_original_content"
 
 [[threat]]
 id = "proxy/secret-de-diffusion-divulgue"
@@ -929,7 +1005,7 @@ name = "Un appelant qui joint l'API lit le lignage et déclare des incidents"
 category = "information-disclosure"
 boundary = "lecteur-lecture"
 assets = ["lignage", "destinataires"]
-description = "Sans contrôle d'accès, qui joint l'API lit les noms des jeux de données, des agents et des outils, les empreintes des réponses et les pseudonymes des destinataires, déclare des incidents, met un incident en quarantaine ou la lève, confirme ou écarte un incident proposé."
+description = "Sans contrôle d'accès, qui joint l'API lit les noms des jeux de données, des agents et des outils, les empreintes des réponses et les pseudonymes des destinataires, déclare des incidents, met un incident en quarantaine ou la lève, et fait ainsi annoter, ou cesser d'annoter, le résultat des lectures de son périmètre par les proxys, confirme ou écarte un incident proposé."
 abuse_cases = ["jetons/sans-jeton-lecture", "jetons/lecteur-lit-les-doublons", "jetons/lecteur-confirme-une-proposition"]
 
 [[threat.mitigation]]

@@ -4,12 +4,15 @@ Le banc complet (100 000 appels, seuil du p99 à 5 ms) tourne la nuit, sur une
 machine qui ne fait que lui (``.github/workflows/bench.yml``). Ici, quelques
 milliers d'appels vérifient qu'il lance le vrai proxy, qu'il mesure de ses deux
 façons, et que la mesure interne tient avec celle du client : aucun seuil de
-temps, que la charge d'une machine partagée ferait échouer à tort.
+temps, que la charge d'une machine partagée ferait échouer à tort. Chaque
+variante de quarantaine est rejouée de même : sans quarantaine, hors de l'outil
+du banc, et sur lui, chaque résultat annoté.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from datetime import UTC, datetime
 from typing import Any
@@ -17,6 +20,7 @@ from typing import Any
 import httpx
 import pytest
 
+from answerlineage_proxy.annotation import QuarantineNote
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import ProxySettings
 from answerlineage_proxy.events import build_tool_call_event
@@ -27,6 +31,7 @@ from scripts import bench_proxy
 from scripts.bench_proxy import (
     CALL,
     HEADERS,
+    QUARANTINES,
     RESULT,
     WARMUP_CALLS,
     BenchError,
@@ -34,6 +39,7 @@ from scripts.bench_proxy import (
     BenchSink,
     Distribution,
     Process,
+    expected_result,
     main,
     percentile,
     run_bench,
@@ -49,16 +55,30 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-async def test_the_bench_runs_the_real_proxy_and_its_own_measure_holds() -> None:
-    result = await run_bench(calls=2_000, concurrency=2, threshold_ms=math.inf)
+@pytest.mark.parametrize("quarantine", QUARANTINES)
+async def test_the_bench_runs_the_real_proxy_and_its_own_measure_holds(quarantine: str) -> None:
+    result = await run_bench(
+        calls=2_000, concurrency=2, threshold_ms=math.inf, quarantine=quarantine
+    )
     assert result.problems() == []
     # Un événement par appel mesuré, mise en route exclue, aucun appel en échec.
     assert (result.measured, result.failures, result.excess) == (2_000, 0, 0)
+    # Seule la variante retenue annote, et chacun de ses résultats.
+    assert result.annotated == (2_000 if quarantine == "retained" else 0)
     for measure in (result.direct, result.proxied, result.internal, result.internal_latency):
         assert 0 < measure.p50 <= measure.p99 <= measure.max
     # La latence ajoutée ne dépasse pas l'échange que le proxy a vu, ni ce que le client a vu.
     assert result.internal.p50 <= result.internal_latency.p50 <= result.proxied.p50
     assert "Tenu" in result.render()
+
+
+def test_the_retained_variant_expects_the_result_of_the_server_with_the_warning_first() -> None:
+    assert expected_result("none") == expected_result("outside") == RESULT
+    annotated = json.loads(expected_result("retained"))
+    original = json.loads(RESULT)
+    assert annotated["result"]["content"][1:] == original["result"]["content"]
+    assert annotated["result"]["content"][0]["text"].startswith("[AnswerLineage]")
+    assert "meteo previsions.quotidiennes" in annotated["result"]["content"][0]["text"]
 
 
 async def test_a_process_that_does_not_start_stops_the_bench() -> None:
@@ -112,9 +132,12 @@ async def test_a_server_that_stops_before_serving_is_reported(
     assert ports == []
 
 
-def event(outcome: str = "success", added: float = 0.2, latency: float = 1.5) -> dict[str, Any]:
+def event(
+    outcome: str = "success", added: float = 0.2, latency: float = 1.5, annotated: bool = False
+) -> dict[str, Any]:
     trace = resolve_trace(None, [])
     signals = CallSignals(latency_ms=latency, added_latency_ms=added, outcome=outcome)  # type: ignore[arg-type]
+    note = QuarantineNote("certain", (bench_proxy._INCIDENT,), annotated=True, wait_ms=0.0)
     return build_tool_call_event(
         run_id=trace.run_id,
         event_time=datetime.now(UTC),
@@ -122,21 +145,23 @@ def event(outcome: str = "success", added: float = 0.2, latency: float = 1.5) ->
         server="banc",
         inspection=Inspection(is_tool_call=True, tool="get_weather"),
         signals=signals,
+        quarantine=note if annotated else None,
     )
 
 
 def test_the_sink_keeps_only_latencies_skips_the_warm_up_and_counts_failures() -> None:
     sink = BenchSink(skip=2)
     for _ in range(2):
-        sink.emit(event(added=50.0))
+        sink.emit(event(added=50.0, annotated=True))
     sink.emit(event(added=0.1, latency=1.0))
-    sink.emit(event(added=0.3, latency=2.0))
+    sink.emit(event(added=0.3, latency=2.0, annotated=True))
     sink.emit(event(added=3.0, latency=2.5))
     sink.emit(event("http_error"))
     sink.report_coverage({"emitter": "mcp://banc"})
     assert sink.summary() == {
         "measured": 3,
         "failures": 1,
+        "annotated": 1,
         "added": {"p50": 0.3, "p99": 3.0, "max": 3.0},
         "latency": {"p50": 2.0, "p99": 2.5, "max": 2.5},
         "excess": 1,
@@ -193,6 +218,8 @@ def test_the_bench_holds_below_the_threshold_and_says_so() -> None:
             {"internal_latency": Distribution(3.0, 3.5, 10.0)},
             "latence vue par le proxy supérieure à celle vue par le client",
         ),
+        ({"quarantine": "retained", "annotated": 999}, "999 résultats annotés pour 1000 attendus"),
+        ({"quarantine": "outside", "annotated": 1}, "1 résultats annotés pour 0 attendus"),
     ],
 )
 def test_the_bench_fails_on_a_threshold_or_an_incoherent_measure(
@@ -229,9 +256,24 @@ def test_the_command_line_exits_with_the_verdict(
 
     monkeypatch.setattr(bench_proxy, "run_bench", fake_run)
     assert main(["--calls", "1000", "--concurrency", "2", "--threshold-ms", "4"]) == code
-    assert received == {"calls": 1000, "concurrency": 2, "threshold_ms": 4.0}
+    assert received == {
+        "calls": 1000,
+        "concurrency": 2,
+        "threshold_ms": 4.0,
+        "quarantine": "none",
+    }
     output = capsys.readouterr().out
     assert ("Banc impossible : muet." in output) == (code == 2)
+    assert main(["--quarantine", "retained"]) == code
+    assert received["quarantine"] == "retained"
+
+
+def test_the_result_names_its_variant_of_quarantine() -> None:
+    assert "1 à la fois, sans quarantaine." in result().render()
+    retained = result(quarantine="retained", annotated=1_000)
+    assert retained.problems() == []
+    assert "quarantaine sur l'outil, résultat annoté." in retained.render()
+    assert "quarantaine hors de l'outil." in result(quarantine="outside").render()
 
 
 def test_the_default_bench_is_a_hundred_thousand_calls_one_at_a_time() -> None:

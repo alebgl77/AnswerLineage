@@ -6,7 +6,7 @@ Un test de données en échec, émis en OpenLineage par dbt ou un autre outil, [
 
 La déclaration se fait par l'API (`POST /api/v1/incidents`) ou par la [ligne de commande](cli.md#answerlineage-incident) (`answerlineage incident declare`), avec le rôle de responsable de données, de gestionnaire d'incident ou d'administrateur ; toute personne qui a un rôle lit les incidents ([Authentification et rôles](securite/authentification.md#la-matrice-des-droits)). Les [workers](workers.md#analyse-des-incidents) font l'analyse ; elle se lit sur l'incident (`GET /api/v1/incidents/{id}`, `answerlineage incident show`).
 
-Pendant l'incident, le responsable peut aussi le [mettre en quarantaine](#quarantaine) : chaque proxy apprend alors le périmètre de l'incident, en moins de 30 secondes, pour agir sur les lectures de ces données.
+Pendant l'incident, le responsable peut aussi le [mettre en quarantaine](#quarantaine) : chaque proxy apprend alors le périmètre de l'incident, en moins de 30 secondes, et, en mode avertir, le résultat d'une lecture de ces données porte un avertissement pour l'agent qui le reçoit.
 
 Chaque changement d'état, la déclaration, l'analyse faite, l'analyse en échec, la quarantaine activée, la quarantaine levée, s'annonce aussi par un [webhook signé](webhooks.md) (`incident.declared`, `incident.analysed`, `incident.analysis_failed`, `incident.quarantined`, `incident.quarantine_lifted`) quand les workers en ont un, dans la transaction qui le fait.
 
@@ -230,7 +230,9 @@ WHERE incident_id = '974e7c80-6643-4065-a541-e4c029abbdab';
 
 ## Quarantaine
 
-Mettre un incident en quarantaine, c'est dire aux proxys : les données de ce périmètre sont fausses, agissez sur leurs lectures. Chaque proxy apprend le périmètre des quarantaines actives en interrogeant l'API, 10 secondes par défaut, 30 au plus ([synchronisation](proxy.md#périmètres-en-quarantaine)) : moins de 30 secondes après l'activation, tous le connaissent. Aujourd'hui, ils le connaissent sans s'en servir encore : aucune lecture n'est annotée ni bloquée.
+Mettre un incident en quarantaine, c'est dire aux proxys : les données de ce périmètre sont fausses, agissez sur leurs lectures. Chaque proxy apprend le périmètre des quarantaines actives en interrogeant l'API, 10 secondes par défaut, 30 au plus ([synchronisation](proxy.md#périmètres-en-quarantaine)) : moins de 30 secondes après l'activation, tous le connaissent.
+
+En mode avertir (`warn`, le seul mode aujourd'hui), un proxy HTTP qui vérifie la [diffusion signée](#signée-et-datée) insère en tête du résultat d'un appel qui lit le périmètre un avertissement à gabarit fixe : l'incident, l'heure de sa mise en quarantaine, les jeux lus. Un appel dont la lecture ne peut pas être établie à temps reçoit un avertissement incertain. Aucune lecture n'est bloquée, aucun destinataire n'est contacté : c'est une information pour l'agent et l'humain qui le lit, pas un rappel ([le proxy](proxy.md#avertir--lavertissement-dans-le-résultat)). Un proxy en stdio, ou sans le secret de la diffusion, apprend le périmètre sans annoter.
 
 Le périmètre est celui de l'incident, ses jeux de données, sans texte libre ; il ne se modifie pas, puisque l'incident ne se modifie pas.
 
@@ -325,6 +327,7 @@ Rien n'est enregistré ni annoncé pour une demande refusée. Une activation pre
 - **La version** est l'empreinte SHA-256 de la liste : elle ne change que si la liste change. C'est aussi l'`ETag` de la réponse : un proxy la rend dans `If-None-Match` et reçoit `304`, sans corps, tant que rien n'a changé. Une valeur d'`If-None-Match` de plus de 1 024 caractères n'est pas lue, et n'est jamais recopiée.
 - **La lecture est bornée** : 100 quarantaines au plus, que l'activation garantit, de 20 jeux chacune, sous le [délai maximal des lectures](lecture.md#délai-maximal).
 - **Pas de `known_at`.** La route sert l'état d'aujourd'hui aux proxys ; une quarantaine telle qu'elle était à une date se lit dans les heures d'activation et de levée de l'incident. Le jour où le périmètre comprendra les tables dérivées connues du graphe, la question se posera de nouveau.
+- **L'heure d'activation** est relue strictement par le proxy (RFC 3339 en UTC, suffixée de `Z`) : c'est elle que l'avertissement d'une lecture annotée cite, à la minute. Une réponse dont l'heure n'a pas cette forme est écartée en entier.
 
 Plusieurs proxys l'interrogent chacun de leur côté, sans s'accorder : la route est faite pour cela.
 

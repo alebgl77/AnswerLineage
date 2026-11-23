@@ -57,7 +57,7 @@ Les menaces sont classées selon STRIDE :
 
 | Actif | Ce qu'il vaut |
 | --- | --- |
-| Contenus des agents | Prompts, arguments et résultats d'outils, réponses : ils traversent le proxy et ne sont jamais conservés. |
+| Contenus des agents | Prompts, arguments et résultats d'outils, réponses : ils traversent le proxy et ne sont jamais conservés. Le proxy lit le début du résultat d'un appel retenu par une quarantaine pour y placer l'avertissement, sans rien en garder. |
 | Jetons d'accès | Les jetons OAuth et en-têtes d'autorisation que l'agent présente au serveur MCP. |
 | Jetons d'accès à l'API | Les jetons porteurs que l'émetteur OIDC délivre aux personnes, au proxy et aux autres émetteurs pour appeler l'API, et le secret du client du proxy qui en obtient : qui les détient lit le lignage, ou y écrit, au nom de leur porteur. |
 | Clé des empreintes | La clé HMAC des empreintes du proxy : sans elle, une empreinte ne se retourne pas en valeur. |
@@ -72,7 +72,8 @@ Les menaces sont classées selon STRIDE :
 | Secret des webhooks | Le secret HMAC que les workers et le récepteur de webhooks partagent : qui le détient signe des messages que le récepteur accepte. |
 | Annonces d'incident | Les messages qui disent au récepteur de webhooks qu'un incident est déclaré, analysé ou en échec, avec ses décomptes : une alerte ou un rappel peut en partir. |
 | Secret de la diffusion des quarantaines | Le secret HMAC que l'API et les proxys partagent : qui le détient signe une diffusion des périmètres en quarantaine que les proxys acceptent. |
-| Périmètres en quarantaine | Les jeux de données qu'un incident met en quarantaine, que chaque proxy apprend de l'API : demain, l'annotation ou le blocage des lectures de ces jeux en dépendra. |
+| Périmètres en quarantaine | Les jeux de données qu'un incident met en quarantaine, que chaque proxy apprend de l'API : en mode avertir, le résultat d'une lecture de ces jeux reçoit un avertissement, en HTTP. |
+| Avertissements de quarantaine | Le texte que le proxy insère en tête du résultat d'une lecture en quarantaine, et que le modèle de l'agent lit avec lui : un texte piégé y deviendrait une consigne, un résultat altéré une réponse fausse. |
 | Rappels | Les listes de rappel, les décisions prises sur elles et les messages mis à l'envoi : ce qui sera dit aux destinataires, à qui, et qui l'a décidé. |
 
 ## Menaces par composant
@@ -88,14 +89,16 @@ Le détail de chaque menace, son scénario, ses parades avec leur code et leur t
 | `proxy/empreinte-retournee` | Une empreinte est retournée en valeur par dictionnaire | Divulgation | 3 parades |
 | `proxy/page-web-hostile` | Une page web ouverte sur le poste appelle des outils à travers le proxy local | Élévation de privilège | 2 parades |
 | `proxy/appel-cache-au-lignage` | Un appel d'outil échappe au lignage par des en-têtes ou un corps ambigus | Répudiation | 2 parades |
-| `proxy/agent-retarde` | La capture retarde ou bloque un appel d'agent | Déni de service | 6 parades |
+| `proxy/agent-retarde` | La capture retarde ou bloque un appel d'agent | Déni de service | 9 parades |
 | `proxy/entree-demesuree` | Une entrée démesurée épuise la mémoire ou le temps du proxy | Déni de service | 4 parades |
 | `proxy/sortie-du-prefixe` | Une requête sort du préfixe du serveur MCP | Élévation de privilège | 1 parade |
 | `proxy/requete-relayee-alteree` | La requête relayée est altérée par l'étiquetage de son run | Altération | 5 parades |
 | `proxy/nom-piege` | Un nom piégé entre dans l'événement | Altération | 2 parades |
 | `proxy/lecture-omise` | L'analyse du SQL omet une colonne lue | Altération | 2 parades |
 | `proxy/regle-de-lecture-trompee` | Un outil non SQL lit autre chose que ce que sa règle de lecture déclare | Altération | 1 parade, acceptation à signer |
-| `proxy/perimetre-usurpe` | Une API compromise ou usurpée pousse aux proxys un faux périmètre en quarantaine | Usurpation | 9 parades, acceptation à signer |
+| `proxy/perimetre-usurpe` | Une API compromise ou usurpée pousse aux proxys un faux périmètre en quarantaine | Usurpation | 10 parades, acceptation à signer |
+| `proxy/annotation-piegee` | Un texte de l'API ou d'un émetteur atteint le modèle de l'agent par l'avertissement de quarantaine | Altération | 3 parades |
+| `proxy/resultat-altere` | L'insertion de l'avertissement corrompt le résultat relayé | Altération | 4 parades |
 | `proxy/secret-de-diffusion-divulgue` | Le secret de la diffusion des quarantaines sort du proxy par la ligne de commande, le journal, ses réglages ou le serveur MCP | Divulgation | 3 parades |
 | `proxy/jeton-hors-audience` | Une passerelle pousse à accepter un jeton hors de son audience | Élévation de privilège | 3 parades |
 | `proxy/metadonnees-hostiles` | Les métadonnées OAuth du serveur MCP, lues au démarrage, retiennent ou trompent le proxy | Déni de service | 4 parades |
@@ -238,7 +241,7 @@ Un risque accepté l'est par le mainteneur, pour un motif dit et une conséquenc
 | Menace | Motif | Conséquence | Signature |
 | --- | --- | --- | --- |
 | `proxy/regle-de-lecture-trompee` | Une règle de lecture se fie à l'outil : le proxy relaie l'appel sans en lire le résultat, et ne peut savoir ce que l'outil a lu au-delà de ce que déclare son exploitant. | Une réponse fondée sur une lecture non déclarée n'est pas rappelée, et la couverture ne le montre pas, puisque l'appel est vu. | à signer |
-| `proxy/perimetre-usurpe` | La diffusion est signée sous un secret symétrique : l'API et chaque proxy le gardent en clair, et qui le lit chez l'un d'eux signe comme l'API ; une API compromise signe le faux périmètre qu'elle pousse. La signature date la réponse sans la lier à la requête : une diffusion captée se rejoue pendant la tolérance de cinq minutes, et qui coupe le chemin fait garder au proxy son dernier état valide, une heure au plus, comme une panne. Un proxy réglé sans secret apprend le périmètre sans le vérifier, et n'est jamais autorisé à annoter. | Qui compromet l'API, ou lit le secret sur son hôte ou celui d'un proxy, fait croire aux proxys une quarantaine fausse ou en tait une vraie, jusqu'à la rotation du secret ; qui écoute le réseau sans le secret ne peut que rejouer une diffusion de moins de cinq minutes, ou faire garder une heure une quarantaine levée. Aujourd'hui sans effet sur les appels ; quand le proxy annotera en mode avertir, des avertissements à tort ou manquants : jamais un appel bloqué, ni un contenu divulgué. | à signer |
+| `proxy/perimetre-usurpe` | La diffusion est signée sous un secret symétrique : l'API et chaque proxy le gardent en clair, et qui le lit chez l'un d'eux signe comme l'API ; une API compromise signe le faux périmètre qu'elle pousse. La signature date la réponse sans la lier à la requête : une diffusion captée se rejoue pendant la tolérance de cinq minutes, et qui coupe le chemin fait garder au proxy son dernier état valide, une heure au plus, comme une panne. Un proxy réglé sans secret apprend le périmètre sans le vérifier, et n'est jamais autorisé à annoter. | Qui compromet l'API, ou lit le secret sur son hôte ou celui d'un proxy, fait croire aux proxys une quarantaine fausse ou en tait une vraie, jusqu'à la rotation du secret ; qui écoute le réseau sans le secret ne peut que rejouer une diffusion de moins de cinq minutes, ou faire garder une heure une quarantaine levée. En mode avertir, des avertissements à tort ou manquants dans les résultats relayés, et l'attente bornée de la décision sur les appels qu'un faux périmètre retient : jamais un appel bloqué, ni un contenu divulgué, ni un texte de l'attaquant dans un avertissement. | à signer |
 | `adapters/lecture-non-decrite` | Les crochets du Claude Agent SDK ne portent ni contexte de trace ni description des lectures : l'adaptateur rattache l'appel à l'agent, il ne sait pas ce que l'outil a lu. | Une réponse fondée sur une lecture faite par un outil de l'agent n'est pas rappelée d'après cette lecture, tant qu'aucune règle ni aucun contexte partagé avec le proxy ne la relie au run de l'agent. | à signer |
 | `proxy/secret-client-divulgue` | Le secret est partagé avec l'émetteur et lu en clair d'un fichier ou de l'environnement du proxy : sa protection sur ce poste, et sa rotation, reviennent à l'exploitant. | Qui lit le secret sur le poste du proxy obtient des jetons d'émetteur jusqu'à sa rotation : il écrit dans le lignage au nom de n'importe quel émetteur. | à signer |
 | `api/emetteur-usurpe` | Le lien entre un émetteur et l'espace de noms de ses événements n'est pas encore fait : un client qui a le rôle d'émetteur est cru pour tous les espaces de noms. | Un client émetteur, ou qui en a volé le secret, peut inventer des lectures au nom d'un autre émetteur, donc faire rappeler des réponses saines, fausser le décompte des doublons d'un émetteur, et faire proposer des incidents qu'un humain devra écarter. | à signer |
