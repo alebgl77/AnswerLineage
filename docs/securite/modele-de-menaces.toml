@@ -29,12 +29,12 @@ description = "Le client MCP d'un agent appelle des outils à travers le proxy, 
 [[boundary]]
 id = "emetteur-ingestion"
 name = "Émetteur et ingestion"
-description = "Le proxy, l'entreprise synthétique ou tout émetteur OpenLineage envoie événements et relevés de couverture à l'API d'ingestion. Les émetteurs ne sont pas authentifiés : tout ce qu'ils déclarent est une entrée hostile."
+description = "Le proxy, l'entreprise synthétique ou tout émetteur OpenLineage envoie événements et relevés de couverture à l'API d'ingestion, avec le jeton OIDC d'un client qui a le rôle d'émetteur. Ce qu'un émetteur déclare reste une entrée hostile, et un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements."
 
 [[boundary]]
 id = "lecteur-lecture"
 name = "Lecteur, API de lecture et explorateur"
-description = "Un navigateur, la ligne de commande ou un script lit le lignage, déclare un incident ou ouvre une adresse partagée de l'explorateur. L'appelant n'est pas authentifié ; l'adresse, les paramètres et les corps sont hostiles, et les noms affichés viennent des émetteurs."
+description = "Un navigateur, la ligne de commande ou un script lit le lignage, déclare un incident ou ouvre une adresse partagée de l'explorateur, avec le jeton OIDC d'une personne et ses rôles. Un appelant sans jeton n'atteint aucune route ; l'adresse, les paramètres et les corps restent hostiles, et les noms affichés viennent des émetteurs."
 
 [[boundary]]
 id = "workers-catalogue"
@@ -49,7 +49,12 @@ description = "Les workers annoncent les changements d'état des incidents, par 
 [[boundary]]
 id = "api-proxy"
 name = "API et proxys"
-description = "Chaque proxy interroge l'API d'AnswerLineage, à l'adresse que règle l'exploitant, pour apprendre les périmètres en quarantaine. Le proxy n'authentifie pas encore l'API : le réseau qui y mène et ce qu'elle répond sont hostiles."
+description = "Chaque proxy interroge l'API d'AnswerLineage, à l'adresse que règle l'exploitant, pour apprendre les périmètres en quarantaine, avec son jeton d'émetteur. Le proxy n'authentifie pas encore l'API : le réseau qui y mène et ce qu'elle répond sont hostiles."
+
+[[boundary]]
+id = "api-emetteur-oidc"
+name = "API, clients et émetteur OIDC"
+description = "L'API lit la découverte et les clés de signature de l'émetteur OIDC que règle l'exploitant ; le proxy y obtient son jeton par l'octroi client_credentials, et l'explorateur celui d'une personne par le flux d'autorisation avec PKCE. L'émetteur, le réseau qui y mène et ses réponses sont hors du contrôle d'AnswerLineage."
 
 [[boundary]]
 id = "pipeline-publication"
@@ -72,6 +77,11 @@ description = "Prompts, arguments et résultats d'outils, réponses : ils traver
 id = "jetons"
 name = "Jetons d'accès"
 description = "Les jetons OAuth et en-têtes d'autorisation que l'agent présente au serveur MCP."
+
+[[asset]]
+id = "jetons-de-l-api"
+name = "Jetons d'accès à l'API"
+description = "Les jetons porteurs que l'émetteur OIDC délivre aux personnes, au proxy et aux autres émetteurs pour appeler l'API, et le secret du client du proxy qui en obtient : qui les détient lit le lignage, ou y écrit, au nom de leur porteur."
 
 [[asset]]
 id = "cle-des-empreintes"
@@ -570,6 +580,51 @@ description = "Un appel plus long que le délai de grâce est coupé : sa répon
 code = "proxy/src/answerlineage_proxy/app.py::McpProxy"
 test = "proxy/tests/test_lifecycle.py::test_a_call_longer_than_the_grace_delay_is_cut_and_its_event_says_it_failed"
 
+[[threat]]
+id = "proxy/secret-client-divulgue"
+name = "Le secret du client OIDC du proxy sort par la ligne de commande, le journal ou le serveur MCP"
+category = "information-disclosure"
+boundary = "agent-proxy-mcp"
+assets = ["jetons-de-l-api", "lignage"]
+description = "Le proxy obtient son jeton d'émetteur avec un secret : lu dans la liste des processus, écrit au journal, transmis au serveur MCP lancé en stdio ou envoyé en clair, il donnerait à un tiers des jetons d'émetteur."
+
+[[threat.mitigation]]
+description = "Le secret vient d'un fichier ou d'une variable, jamais d'une option ; ni lui, ni le jeton, ni l'émetteur ne sont journalisés ou affichés."
+code = "proxy/src/answerlineage_proxy/credentials.py::client_secret"
+test = "proxy/tests/test_credentials.py::test_an_issuer_that_does_not_give_a_proper_token_gives_none"
+
+[[threat.mitigation]]
+description = "Le serveur MCP lancé en stdio ne reçoit ni le secret ni la variable qui nomme son fichier."
+code = "proxy/src/answerlineage_proxy/stdio.py"
+test = "proxy/tests/test_stdio.py::test_the_server_does_not_get_the_client_secret_of_the_proxy"
+
+[[threat.mitigation]]
+description = "Le jeton ne part qu'en https, ou en http vers la boucle locale ; il reste en mémoire et se renouvelle avant d'expirer."
+code = "proxy/src/answerlineage_proxy/cli.py::credentials_from_args"
+test = "proxy/tests/test_credentials.py::test_an_incomplete_or_unsafe_identity_is_refused"
+
+[threat.acceptance]
+reason = "Le secret est partagé avec l'émetteur et lu en clair d'un fichier ou de l'environnement du proxy : sa protection sur ce poste, et sa rotation, reviennent à l'exploitant."
+consequence = "Qui lit le secret sur le poste du proxy obtient des jetons d'émetteur jusqu'à sa rotation : il écrit dans le lignage au nom de n'importe quel émetteur."
+
+[[threat]]
+id = "proxy/jeton-du-proxy-retarde"
+name = "L'obtention du jeton du proxy retarde ou bloque un appel d'agent"
+category = "denial-of-service"
+boundary = "api-emetteur-oidc"
+assets = ["continuite-des-agents"]
+description = "Un émetteur OIDC en panne, lent ou qui refuse le client ferait attendre l'appel relayé, si le jeton se demandait sur son chemin."
+
+[[threat.mitigation]]
+description = "Le jeton n'est demandé que par la boîte d'envoi et la synchronisation des quarantaines, dans leurs tâches de fond : sans jeton, les événements attendent dans la boîte et l'appel passe."
+code = "proxy/src/answerlineage_proxy/outbox.py"
+test = "proxy/tests/test_credentials.py::test_an_issuer_that_hangs_never_delays_a_relayed_call"
+
+[[threat.mitigation]]
+description = "Une demande à l'émetteur est bornée à 10 secondes, et un échec n'est pas retenté avant 5 secondes."
+code = "proxy/src/answerlineage_proxy/credentials.py::ClientCredentialsTokens"
+test = "proxy/tests/test_credentials.py::test_after_a_failure_the_issuer_is_not_asked_again_before_a_delay"
+
 # API
 
 [[threat]]
@@ -578,8 +633,13 @@ name = "Un émetteur envoie des événements au nom d'un autre"
 category = "spoofing"
 boundary = "emetteur-ingestion"
 assets = ["lignage"]
-description = "L'ingestion n'authentifie pas les émetteurs : quiconque la joint peut déclarer une lecture au nom du proxy, ou des rejeux au nom d'un autre émetteur, et la lecture inventée entre dans le graphe. Il peut aussi envoyer de faux tests de qualité en échec, qui proposent des incidents."
-abuse_cases = ["emetteur/evenement-au-nom-du-proxy", "emetteur/doublons-au-nom-d-un-autre"]
+description = "L'ingestion n'admet que les clients qui ont le rôle d'émetteur, mais ne lie pas encore un émetteur à l'espace de noms de ses événements : un client émetteur peut déclarer une lecture au nom du proxy, ou des rejeux au nom d'un autre émetteur, et la lecture inventée entre dans le graphe. Il peut aussi envoyer de faux tests de qualité en échec, qui proposent des incidents."
+abuse_cases = ["emetteur/evenement-au-nom-du-proxy", "emetteur/doublons-au-nom-d-un-autre", "jetons/sans-jeton-ingestion", "jetons/lecteur-ingere"]
+
+[[threat.mitigation]]
+description = "L'ingestion exige le jeton d'un client que l'API reconnaît comme émetteur, par son identifiant ; aucun rôle de personne ni revendication de rôles ne l'ouvre."
+code = "api/src/answerlineage_api/auth/oidc.py::OidcVerifier"
+test = "api/tests/test_tokens.py::test_the_emitter_role_comes_from_the_client_identifier"
 
 [[threat.mitigation]]
 description = "Un test en échec ne fait que proposer un incident : ni incident, ni analyse, ni annonce, ni quarantaine sans un humain."
@@ -587,8 +647,8 @@ code = "workers/src/answerlineage_workers/proposals.py::process_signals"
 test = "workers/tests/test_proposals.py::test_a_failing_quality_test_proposes_a_signaled_incident_bound_to_its_column"
 
 [threat.acceptance]
-reason = "Les émetteurs ne sont pas encore authentifiés : l'API est faite pour la boucle locale ou un réseau de confiance, comme le dit la politique de sécurité."
-consequence = "Un tiers qui joint l'ingestion peut inventer des lectures, donc faire rappeler des réponses saines, fausser le décompte des doublons d'un émetteur, et faire proposer des incidents qu'un humain devra écarter."
+reason = "Le lien entre un émetteur et l'espace de noms de ses événements n'est pas encore fait : un client qui a le rôle d'émetteur est cru pour tous les espaces de noms."
+consequence = "Un client émetteur, ou qui en a volé le secret, peut inventer des lectures au nom d'un autre émetteur, donc faire rappeler des réponses saines, fausser le décompte des doublons d'un émetteur, et faire proposer des incidents qu'un humain devra écarter."
 
 [[threat]]
 id = "api/releve-usurpe"
@@ -596,7 +656,7 @@ name = "Un relevé de couverture est publié au nom d'un autre émetteur"
 category = "spoofing"
 boundary = "emetteur-ingestion"
 assets = ["lignage"]
-description = "Un relevé non authentifié gonfle les appels vus d'une fenêtre, et la fusion au plus grand ne le défait pas."
+description = "Un relevé publié au nom d'un autre émetteur gonfle les appels vus d'une fenêtre, et la fusion au plus grand ne le défait pas."
 abuse_cases = ["emetteur/releve-au-nom-d-un-autre", "emetteur/releve-emetteur-hostile"]
 
 [[threat.mitigation]]
@@ -604,9 +664,14 @@ description = "Un relevé incohérent ou dont l'émetteur n'a pas la forme d'un 
 code = "api/src/answerlineage_api/ingest/coverage.py"
 test = "api/tests/test_coverage_report.py::test_a_trapped_emitter_is_refused_without_being_cited"
 
+[[threat.mitigation]]
+description = "Publier un relevé exige le jeton d'un émetteur : un appelant sans jeton, ou avec un rôle de personne, est refusé avant que le corps ne soit lu."
+code = "api/src/answerlineage_api/auth/matrix.py"
+test = "api/tests/test_authorization.py::test_every_route_refuses_a_role_that_does_not_open_it"
+
 [threat.acceptance]
-reason = "Un relevé n'est pas authentifié plus qu'un événement, et deux relevés d'une même fenêtre se fusionnent au plus grand."
-consequence = "Un tiers qui joint l'ingestion peut faire croire à des appels que le graphe n'a pas : la couverture d'une fenêtre se lit alors partielle à tort."
+reason = "Un relevé n'est pas lié à son émetteur plus qu'un événement, et deux relevés d'une même fenêtre se fusionnent au plus grand."
+consequence = "Un client émetteur, ou qui en a volé le secret, peut faire croire à des appels que le graphe n'a pas : la couverture d'une fenêtre se lit alors partielle à tort."
 
 [[threat]]
 id = "api/appelant-non-authentifie"
@@ -614,16 +679,28 @@ name = "Un appelant qui joint l'API lit le lignage et déclare des incidents"
 category = "information-disclosure"
 boundary = "lecteur-lecture"
 assets = ["lignage", "destinataires"]
-description = "L'API de lecture, la déclaration d'incidents, leur quarantaine, la décision des incidents proposés et l'explorateur n'authentifient pas leurs appelants : qui les joint lit les noms des jeux de données, des agents et des outils, les empreintes des réponses et les pseudonymes des destinataires, met un incident en quarantaine ou la lève, confirme ou écarte un incident proposé."
+description = "Sans contrôle d'accès, qui joint l'API lit les noms des jeux de données, des agents et des outils, les empreintes des réponses et les pseudonymes des destinataires, déclare des incidents, met un incident en quarantaine ou la lève, confirme ou écarte un incident proposé."
+abuse_cases = ["jetons/sans-jeton-lecture", "jetons/lecteur-lit-les-doublons", "jetons/lecteur-confirme-une-proposition"]
+
+[[threat.mitigation]]
+description = "Chaque route exige un jeton de l'émetteur OIDC réglé et un rôle de la matrice des droits, avant ses paramètres et son corps ; des tests générés depuis la spécification publiée le vérifient route par route."
+code = "api/src/answerlineage_api/auth/access.py::authorize"
+test = "api/tests/test_authorization.py::test_every_route_refuses_a_call_without_a_token"
+
+[[threat.mitigation]]
+description = "Une route absente de la matrice des droits empêche l'application de se construire : rien ne s'ouvre par oubli."
+code = "api/src/answerlineage_api/auth/matrix.py::undeclared"
+test = "api/tests/test_authorization.py::test_the_application_does_not_build_with_a_route_missing_from_the_matrix"
+
+[[threat.mitigation]]
+description = "Sans émetteur réglé, l'API ne démarre pas : l'authentification ne se désactive que par un réglage nommé."
+code = "api/src/answerlineage_api/auth/access.py::authentication_from_settings"
+test = "api/tests/test_authentication_settings.py::test_without_an_issuer_the_api_does_not_start"
 
 [[threat.mitigation]]
 description = "La démonstration ne publie son seul port que sur la boucle locale."
 code = "scripts/check_policy.py::check_compose"
 test = "tests/test_policy.py::test_a_port_published_beyond_the_loopback_fails"
-
-[threat.acceptance]
-reason = "L'API n'authentifie pas encore ses appelants : elle est faite pour la boucle locale ou derrière un contrôle d'accès."
-consequence = "Exposée sans contrôle d'accès, elle livre le lignage à qui la joint et le laisse déclarer des incidents, ou confirmer ceux qu'un test propose, donc lancer des analyses et des annonces, écarter un incident proposé, et mettre un incident en quarantaine ou la lever."
 
 [[threat]]
 id = "api/rejeu-non-authentifie"
@@ -631,7 +708,13 @@ name = "Un appelant qui joint l'API lit la file de rebut et la rejoue"
 category = "elevation-of-privilege"
 boundary = "lecteur-lecture"
 assets = ["disponibilite", "lignage"]
-description = "La file de rebut et son rejeu n'authentifient pas leurs appelants : qui joint l'API remet en file les événements que la projection a refusés, une action d'exploitation."
+description = "Sans contrôle d'accès, qui joint l'API lit la file de rebut et remet en file les événements que la projection a refusés, une action d'exploitation."
+abuse_cases = ["jetons/lecteur-rejoue"]
+
+[[threat.mitigation]]
+description = "Le rebut se lit avec le rôle d'auditeur ou d'administrateur, et ne se rejoue qu'avec celui d'administrateur."
+code = "api/src/answerlineage_api/auth/matrix.py"
+test = "api/tests/test_authorization.py::test_every_route_refuses_a_role_that_does_not_open_it"
 
 [[threat.mitigation]]
 description = "Un rejeu remet en file un nombre borné d'événements, sous le délai des lectures ; son corps est lu borné et un champ inconnu le refuse sans rien rejouer."
@@ -643,9 +726,105 @@ description = "Deux rejeux simultanés ne remettent jamais un événement deux f
 code = "api/src/answerlineage_api/ingest/dead_letters.py::replay"
 test = "api/tests/test_dead_letters.py::test_concurrent_replays_put_each_event_back_once"
 
+[[threat]]
+id = "api/jeton-vole"
+name = "Un jeton d'accès volé ouvre l'API à son voleur"
+category = "spoofing"
+boundary = "lecteur-lecture"
+assets = ["jetons-de-l-api", "lignage"]
+description = "Un jeton porteur vaut à quiconque le présente : pris dans un journal, une adresse, le stockage d'un navigateur ou une liste de processus, il lit le lignage ou y écrit avec les rôles de son porteur."
+
+[[threat.mitigation]]
+description = "L'API ne recopie ni l'en-tête ni le jeton dans une réponse, ne les journalise pas et ne les garde pas ; un jeton démesuré ou mal formé est refusé par un code."
+code = "api/src/answerlineage_api/auth/access.py::bearer_token"
+test = "api/tests/test_tokens.py::test_a_refused_header_says_its_code_and_echoes_nothing"
+
+[[threat.mitigation]]
+description = "Un jeton sans expiration est refusé ; l'expiration est vérifiée à une tolérance d'horloge de 60 secondes."
+code = "api/src/answerlineage_api/auth/oidc.py::OidcVerifier"
+test = "api/tests/test_tokens.py::test_the_clock_tolerance_is_of_one_minute"
+
+[[threat.mitigation]]
+description = "L'explorateur garde son jeton en mémoire seulement, ni stockage ni cookie, et retire le code de connexion de l'adresse."
+code = "ui/src/auth.ts::startAuth"
+test = "tests/test_explorer_authentication.py::test_the_explorer_signs_in_with_pkce_and_keeps_its_token_in_memory_only"
+
+[[threat.mitigation]]
+description = "La ligne de commande lit le jeton d'une variable ou d'un fichier, jamais de ses arguments, et ne l'envoie qu'en https ou vers la boucle locale."
+code = "cli/src/answerlineage_cli/client.py::configured_token"
+test = "cli/tests/test_token.py::test_the_token_leaves_only_over_https_or_to_the_loopback"
+
 [threat.acceptance]
-reason = "Le rebut se lit et se rejoue sans authentification, comme le reste de l'API : elle est faite pour la boucle locale ou derrière un contrôle d'accès. Le rejeu reviendra à l'administrateur quand l'API distinguera les rôles de ses appelants."
-consequence = "Exposée sans contrôle d'accès, l'API laisse qui la joint lire les émetteurs et les identifiants des événements au rebut, et les remettre en file autant de fois qu'il le veut : les workers refont un travail sans effet sur le graphe, et un événement qui échoue encore revient au rebut."
+reason = "L'API ne consulte ni l'introspection ni la révocation de l'émetteur : un jeton reste valable jusqu'à son expiration, dont l'émetteur règle la durée."
+consequence = "Qui vole un jeton lit le lignage, ou y écrit, avec les rôles de son porteur, jusqu'à l'expiration du jeton."
+
+[[threat]]
+id = "api/jwks-empoisonne"
+name = "Des clés de signature substituées font accepter des jetons forgés"
+category = "spoofing"
+boundary = "api-emetteur-oidc"
+assets = ["jetons-de-l-api", "lignage"]
+description = "Qui fait lire à l'API une autre découverte ou un autre JWKS que ceux de l'émetteur réglé, par une redirection, une adresse en clair, un document piégé ou une clé glissée dans le jeton lui-même, signe des jetons que l'API accepte."
+
+[[threat.mitigation]]
+description = "La découverte doit nommer l'émetteur réglé ; elle et le JWKS se lisent en https, sans redirection ni mandataire, bornés en taille et en durée."
+code = "api/src/answerlineage_api/auth/fetch.py::fetch_document"
+test = "api/tests/test_tokens.py::test_a_poisoned_document_of_the_issuer_gives_no_key"
+
+[[threat.mitigation]]
+description = "Seules des clés publiques de signature, d'un type et d'une taille admis, au kid unique, sont crues ; une clé n'est jamais prise du jeton (jwk, jku, x5u)."
+code = "api/src/answerlineage_api/auth/oidc.py::KeySet"
+test = "api/tests/test_tokens.py::test_a_key_that_is_not_an_admitted_public_signing_key_is_ignored"
+
+[[threat.mitigation]]
+description = "Un kid inconnu relit les clés au plus une fois toutes les 10 secondes : un appelant ne fait pas marteler l'émetteur."
+code = "api/src/answerlineage_api/auth/oidc.py::KeySet"
+test = "api/tests/test_tokens.py::test_an_unknown_kid_reads_the_keys_again_at_most_once_per_interval"
+
+[threat.acceptance]
+reason = "L'API croit l'émetteur que règle l'exploitant, et le TLS de son adresse : elle ne peut pas distinguer une clé que l'émetteur publie de son plein gré d'une clé qu'un attaquant y a glissée."
+consequence = "Qui compromet l'émetteur, ou lui vole une clé de signature, forge des jetons que l'API accepte, avec les rôles de son choix, jusqu'à la rotation de la clé."
+
+[[threat]]
+id = "api/confusion-d-algorithme"
+name = "Un jeton forgé passe par un algorithme que la clé n'attend pas"
+category = "spoofing"
+boundary = "lecteur-lecture"
+assets = ["jetons-de-l-api", "lignage"]
+description = "Un jeton sans signature (alg: none), ou signé en HMAC avec la clé publique de l'émetteur, passerait pour juste auprès d'une vérification qui suit l'algorithme que le jeton déclare."
+abuse_cases = ["jetons/alg-none", "jetons/hs256-cle-publique"]
+
+[[threat.mitigation]]
+description = "Seuls RS256, ES256 et EdDSA sont admis, jamais none ni HMAC ; l'algorithme du jeton doit être celui de la clé que son kid désigne."
+code = "api/src/answerlineage_api/auth/oidc.py::OidcVerifier"
+test = "api/tests/test_tokens.py::test_a_forged_token_is_refused"
+
+[[threat]]
+id = "api/demonstration-exposee"
+name = "L'API sans authentification de la démonstration est jointe au-delà du poste"
+category = "elevation-of-privilege"
+boundary = "lecteur-lecture"
+assets = ["lignage", "destinataires"]
+description = "La démonstration désactive l'authentification : jointe d'ailleurs que du poste, elle livrerait le lignage et l'ingestion à qui la joint."
+
+[[threat.mitigation]]
+description = "L'authentification ne se désactive que par un réglage nommé, et l'API refuse alors de démarrer si elle accepte un autre nom ou une autre origine que la boucle locale."
+code = "api/src/answerlineage_api/auth/access.py::check_guard"
+test = "api/tests/test_authentication_settings.py::test_disabled_the_api_refuses_to_start_beyond_the_loopback"
+
+[[threat.mitigation]]
+description = "La démonstration ne publie son seul port que sur la boucle locale."
+code = "scripts/check_policy.py::check_compose"
+test = "tests/test_policy.py::test_a_port_published_beyond_the_loopback_fails"
+
+[[threat.mitigation]]
+description = "L'explorateur le dit dans un bandeau."
+code = "ui/src/App.tsx::App"
+test = "tests/test_explorer_authentication.py::test_the_demonstration_shows_a_banner_and_reads_without_token"
+
+[threat.acceptance]
+reason = "L'API ne voit pas l'adresse sur laquelle le serveur HTTP écoute : il ouvre son port après avoir construit l'application, et Docker publie celui d'un conteneur hors de sa vue. Le refus porte sur ce que l'API règle elle-même, les noms et les origines qu'elle accepte."
+consequence = "Lancée hors de la démonstration, en écoute sur le réseau avec ce réglage, l'API répond à qui forge un en-tête Host de la boucle locale : il lit le lignage et y écrit sans jeton."
 
 [[threat]]
 id = "api/page-web-hostile"
@@ -709,8 +888,8 @@ assets = ["disponibilite"]
 description = "La taille d'une requête est bornée, pas leur nombre : un flot d'événements valides remplit la file, la base et le temps des workers."
 
 [threat.acceptance]
-reason = "L'ingestion n'a pas de limite de débit par émetteur ; sans authentification, une telle limite se contournerait en changeant de nom d'émetteur."
-consequence = "Un tiers qui joint l'ingestion peut retarder la projection des événements légitimes et faire grossir la base jusqu'à sa purge."
+reason = "L'ingestion n'a pas de limite de débit par émetteur : chaque client émetteur est authentifié, mais l'API ne compte pas encore ses requêtes."
+consequence = "Un client émetteur, ou qui en a volé le secret, peut retarder la projection des événements légitimes et faire grossir la base jusqu'à sa purge."
 
 [[threat]]
 id = "api/identifiant-piege"
@@ -1193,7 +1372,7 @@ name = "Un récepteur en panne ou un afflux d'incidents fait grossir la file des
 category = "denial-of-service"
 boundary = "workers-recepteur"
 assets = ["disponibilite", "annonces-d-incident"]
-description = "Un récepteur arrêté, lent ou qui répond goutte à goutte retiendrait l'envoi ; un appelant de l'API, qui n'est pas authentifié, déclarerait des incidents en nombre : la file grossirait dans la base, la projection et l'analyse attendraient le récepteur, des workers revenant tous ensemble l'empêcheraient de se relever, et deux workers enverraient deux fois le même message."
+description = "Un récepteur arrêté, lent ou qui répond goutte à goutte retiendrait l'envoi ; un appelant de l'API qui a le rôle de les déclarer, ou dont le jeton est volé, déclarerait des incidents en nombre : la file grossirait dans la base, la projection et l'analyse attendraient le récepteur, des workers revenant tous ensemble l'empêcheraient de se relever, et deux workers enverraient deux fois le même message."
 
 [[threat.mitigation]]
 description = "Sans webhook en service, rien n'est mis en file ; un changement d'état annulé n'y met rien."
@@ -1277,7 +1456,7 @@ name = "Un émetteur inonde les workers de tests en échec et masque les vraies 
 category = "denial-of-service"
 boundary = "emetteur-ingestion"
 assets = ["disponibilite", "lignage"]
-description = "L'ingestion n'authentifie pas les émetteurs : un tiers envoie des événements de test aux assertions sans nombre, sur des colonnes et des jeux sans nombre, ou vieux d'années. Les lots grossiraient, la base se remplirait de signaux, et les propositions ouvertes masqueraient les vraies."
+description = "L'ingestion n'admet que les clients émetteurs, mais ne les lie pas encore à l'espace de noms de leurs événements : un client émetteur, ou qui en a volé le secret, envoie des événements de test aux assertions sans nombre, sur des colonnes et des jeux sans nombre, ou vieux d'années. Les lots grossiraient, la base se remplirait de signaux, et les propositions ouvertes masqueraient les vraies."
 abuse_cases = ["lots/assertions-en-rafale"]
 
 [[threat.mitigation]]
@@ -1301,8 +1480,8 @@ code = "workers/src/answerlineage_workers/proposals.py::maintain_proposals"
 test = "workers/tests/test_proposals.py::test_a_proposal_without_a_new_failure_for_a_week_expires_and_announces_nothing"
 
 [threat.acceptance]
-reason = "Les émetteurs ne sont pas authentifiés, et une borne par émetteur se contournerait en changeant d'espace de noms : seule la borne globale des propositions ouvertes tient la table et la liste."
-consequence = "Un émetteur hostile peut remplir les 100 propositions ouvertes et faire refuser les signaux des vrais tests en échec, jusqu'à ce que des propositions soient décidées ou expirent ; le refus se compte, se dit au journal, et doctor signale les propositions qui attendent."
+reason = "Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements, et les workers ne savent pas quel client a envoyé un échec : une borne par émetteur se contournerait en changeant d'espace de noms ; seule la borne globale des propositions ouvertes tient la table et la liste."
+consequence = "Un client émetteur hostile, ou qui en a volé le secret, peut remplir les 100 propositions ouvertes et faire refuser les signaux des vrais tests en échec, jusqu'à ce que des propositions soient décidées ou expirent ; le refus se compte, se dit au journal, et doctor signale les propositions qui attendent."
 
 # Ligne de commande
 
@@ -1605,6 +1784,24 @@ description = "Dans un cadre invisible, l'explorateur recevrait des clics que le
 description = "Toute réponse porte les en-têtes de sécurité, dont frame-ancestors 'none'."
 code = "api/src/answerlineage_api/headers.py"
 test = "api/tests/test_explorer_files.py::test_every_response_carries_the_security_headers"
+
+[[threat]]
+id = "ui/connexion-detournee"
+name = "Une connexion détournée livre un code ou un jeton de l'explorateur à un tiers"
+category = "spoofing"
+boundary = "api-emetteur-oidc"
+assets = ["jetons-de-l-api", "lignage"]
+description = "Un code d'autorisation intercepté, une réponse de l'émetteur rejouée dans une autre session, ou un code resté dans l'adresse partagée donneraient à un tiers le jeton d'une personne."
+
+[[threat.mitigation]]
+description = "Flux d'autorisation avec PKCE (S256) et un état tiré au hasard, vérifié au retour ; le code est échangé une fois, puis retiré de l'adresse et de l'historique."
+code = "ui/src/auth.ts::signIn"
+test = "tests/test_explorer_authentication.py::test_the_explorer_signs_in_with_pkce_and_keeps_its_token_in_memory_only"
+
+[[threat.mitigation]]
+description = "La politique de sécurité du contenu n'ajoute que l'origine de l'émetteur aux adresses que l'explorateur peut joindre."
+code = "api/src/answerlineage_api/headers.py::content_security_policy"
+test = "api/tests/test_authentication_settings.py::test_the_explorer_learns_the_issuer_and_may_reach_its_origin_only"
 
 # Pipeline et publication
 
