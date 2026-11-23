@@ -312,6 +312,15 @@ async def until(condition: Callable[[], bool], timeout: float) -> None:
         await asyncio.sleep(0.02)
 
 
+async def settled(box: Outbox, *, queued: int, dropped: int) -> None:
+    """Attend que la boîte compte ``queued`` événements et ``dropped`` pertes par débordement,
+    sans lot en cours d'envoi qui fausserait l'un des deux."""
+    await until(
+        lambda: box.queued == queued and box.stats.dropped_overflow == dropped,
+        timeout=REQUEST_TIMEOUT_S + 5,
+    )
+
+
 async def project(engine: AsyncEngine) -> None:
     """Le worker projette tout ce qui attend dans la file."""
     while not (await process_batch(engine, batch_size=1_000)).empty:
@@ -431,13 +440,14 @@ async def test_a_full_outbox_drops_the_oldest_and_the_coverage_shows_the_hole_in
                 proxied(box, coverage_window=timedelta(seconds=1))
             )
             await calls(url, 50, concurrency=1)
-            assert box.stats.dropped_overflow == 30
-            assert box.queued == 20
+            # Un lot en cours d'envoi sort de la borne le temps de l'envoi : son échec le remet
+            # en file, et l'éviction se fait alors. L'état se lit une fois le lot revenu.
+            await settled(box, queued=20, dropped=30)
             # Des fenêtres se closent l'API coupée ; puis leurs événements sont évincés par de
             # nouveaux : leurs relevés, déjà en file, sont corrigés.
             await asyncio.sleep(1.5)
             await calls(url, 20, concurrency=1)
-            assert box.stats.dropped_overflow == 50
+            await settled(box, queued=20, dropped=50)
             await stack.enter_async_context(served(gate, sock))
             await until(lambda: box.queued == 0 and box.stats.sent == 20, timeout=30)
             await proxy.aclose()
