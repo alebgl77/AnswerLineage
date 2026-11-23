@@ -405,17 +405,19 @@ class Delivery:
 
 
 class Sender:
-    """Envoie les événements à la destination, un à la fois, hors de la boucle des workers.
+    """Envoie les messages à la destination, un à la fois, hors de la boucle des workers.
 
     Chaque envoi a un délai total : au-delà, la connexion est coupée et l'envoi
     compte comme un échec, dont l'issue n'est pas sûre. Un arrêt demandé coupe
-    l'envoi en cours de même.
+    l'envoi en cours de même. ``purpose`` nomme le fil d'envoi d'après son usage
+    (``reemission``, ``webhook``), pour qu'une trace des fils le dise.
     """
 
     def __init__(
         self,
         destination: Destination,
         *,
+        purpose: str = "sender",
         resolver: Resolver = resolve,
         timeouts: Timeouts | None = None,
         context: ssl.SSLContext | None = None,
@@ -423,7 +425,7 @@ class Sender:
         self.timeouts = timeouts or Timeouts()
         self._client = _Client(destination, resolver, self.timeouts, context or tls_context())
         # Un seul fil : un envoi abandonné à son délai finit avant le suivant.
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reemission")
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=purpose)
 
     async def send(
         self,

@@ -303,7 +303,7 @@ async def run_reemission(
     Rien n'y arrête la boucle : une erreur de la base ou de la destination est
     journalisée par sa classe, et reprise plus tard.
     """
-    sender = sender or Sender(settings.destination)
+    sender = sender or Sender(settings.destination, purpose="reemission")
     random = random or Random()  # noqa: S311 — une gigue, pas un secret.
     failures = 0
     next_trim = clock()

@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import socket
+import threading
 import time
 from collections import Counter
 from collections.abc import AsyncIterator, Mapping
@@ -30,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
 from answerlineage_api.store.engine import create_engine
-from answerlineage_workers import cli
+from answerlineage_workers import cli, reemission
 from answerlineage_workers.destination import Sender, Timeouts, parse_destination
 from answerlineage_workers.projection import project
 from answerlineage_workers.queue import BatchResult, process_batch, run_worker
@@ -443,6 +444,25 @@ async def test_an_unreachable_base_does_not_stop_the_reemission(
     assert "Bornes de la file de réémission non tenues (OperationalError)" in caplog.text
     assert "Lot de réémission non traité (OperationalError)" in caplog.text
     assert CANARY not in caplog.text
+
+
+async def test_the_sending_thread_of_the_reemission_says_it_reemits(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    threads: list[str] = []
+
+    class Recorded(Sender):
+        def close(self) -> None:
+            threads.append(self._executor.submit(lambda: threading.current_thread().name).result())
+            super().close()
+
+    monkeypatch.setattr(reemission, "Sender", Recorded)
+    stop = asyncio.Event()
+    stop.set()
+    await run_reemission(
+        engine, stop, Reemission(parse_destination("https://catalogue.interne/api/v1/lineage"))
+    )
+    assert [name.rpartition("_")[0] for name in threads] == ["reemission"]
 
 
 def test_the_attempts_wait_longer_and_longer_up_to_a_cap_drawn_at_random() -> None:

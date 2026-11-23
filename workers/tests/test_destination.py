@@ -10,6 +10,7 @@ n'attend pas une destination qui ne répond pas.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from collections.abc import Sequence
 from ipaddress import ip_address
@@ -180,6 +181,27 @@ async def test_each_connection_checks_what_the_name_leads_to_and_goes_there() ->
         sender.close()
     assert [request.body for request in catalog.received] == [b"{}"]
     assert catalog.received[0].headers["host"] == f"localhost:{port}"
+
+
+async def test_the_sending_thread_is_named_after_its_use() -> None:
+    threads: list[str] = []
+
+    def recording(host: str, port: int) -> Sequence[Address]:
+        threads.append(threading.current_thread().name)
+        return [ip_address("127.0.0.1")]
+
+    catalog = FakeCatalog()
+    async with serving(catalog) as base:
+        port = int(base.rpartition(":")[2])
+        destination = parse_destination(f"http://localhost:{port}{LINEAGE}")
+        for sender in (
+            Sender(destination, purpose="webhook", resolver=recording, timeouts=FAST),
+            Sender(destination, resolver=recording, timeouts=FAST),
+        ):
+            assert (await sender.send(b"{}")).verdict == "sent"
+            sender.close()
+    # Nommé par l'appelant, ou d'un nom neutre : jamais celui d'un autre usage.
+    assert [name.rpartition("_")[0] for name in threads] == ["webhook", "sender"]
 
 
 @pytest.mark.parametrize(

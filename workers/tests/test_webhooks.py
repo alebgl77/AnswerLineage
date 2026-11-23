@@ -16,6 +16,7 @@ import json
 import logging
 import secrets
 import socket
+import threading
 import time
 from collections import Counter
 from collections.abc import Mapping
@@ -33,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from answerlineage_api.incidents import quarantine
 from answerlineage_api.incidents.webhooks import announce
 from answerlineage_api.store.engine import create_engine
-from answerlineage_workers import cli, incidents
+from answerlineage_workers import cli, incidents, webhooks
 from answerlineage_workers.destination import Sender, Timeouts, parse_destination
 from answerlineage_workers.incidents import Processed, process_analysis
 from answerlineage_workers.queue import run_worker
@@ -464,6 +465,23 @@ async def test_the_overflow_of_the_queue_is_counted_and_said(
     )
     assert "Webhook : 2 message(s) abandonné(s)" in caplog.text
     assert "(3 messages, 168 h)" in caplog.text
+
+
+async def test_the_sending_thread_of_the_webhooks_says_it_sends_webhooks(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    threads: list[str] = []
+
+    class Recorded(Sender):
+        def close(self) -> None:
+            threads.append(self._executor.submit(lambda: threading.current_thread().name).result())
+            super().close()
+
+    monkeypatch.setattr(webhooks, "Sender", Recorded)
+    stop = asyncio.Event()
+    stop.set()
+    await run_webhooks(engine, stop, offline())
+    assert [name.rpartition("_")[0] for name in threads] == ["webhook"]
 
 
 async def test_two_workers_never_send_a_message_twice(engine: AsyncEngine) -> None:

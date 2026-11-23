@@ -377,7 +377,7 @@ async def run_webhooks(
     Rien n'y arrête la boucle : une erreur de la base ou du récepteur est
     journalisée par sa classe, et reprise plus tard.
     """
-    sender = sender or Sender(webhook.destination)
+    sender = sender or Sender(webhook.destination, purpose="webhook")
     random = random or Random()  # noqa: S311 — une gigue, pas un secret.
     failures = 0
     next_trim = clock()
