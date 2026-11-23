@@ -494,7 +494,7 @@ Le client de la boîte vérifie le certificat TLS, ne suit aucune redirection et
 
 ### Le jeton du proxy envers l'API
 
-L'API peut demander un jeton porteur OIDC sur chacune de ses routes. Le proxy obtient le sien auprès de l'émetteur OIDC de l'entreprise, par l'octroi `client_credentials`, sous l'identité d'un client qui lui est propre ; l'API lui donne le rôle d'émetteur. Le même jeton sert à la boîte d'envoi et à la [synchronisation des quarantaines](#périmètres-en-quarantaine).
+L'API demande un jeton porteur OIDC sur chacune de ses routes ([Authentification et rôles](securite/authentification.md)). Le proxy obtient le sien auprès de l'émetteur OIDC de l'entreprise, par l'octroi `client_credentials`, sous l'identité d'un client qui lui est propre ; l'API lui donne le rôle d'émetteur. Le même jeton sert à la boîte d'envoi et à la [synchronisation des quarantaines](#périmètres-en-quarantaine).
 
 ```bash
 export ANSWERLINEAGE_PROXY_OIDC_CLIENT_SECRET_FILE=/run/secrets/proxy-entrepot
@@ -1044,7 +1044,7 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - Le seuil de 5 ms au p99 ne se vérifie qu'au banc de chaque nuit ; l'intégration continue, sur une machine partagée, n'en garde qu'un seuil tolérant.
 - Deux proxys réglés par erreur sur le même identifiant d'instance se confondent : l'API fusionne leurs relevés d'une même fenêtre au plus grand.
 - Un client qui réutilise le même span pour deux appels d'outil leur donne le même identifiant de run : le graphe fusionne alors les deux appels en un seul run, qui porte les lectures des deux mais l'outil du premier événement projeté, donc selon l'ordre d'arrivée (`tests/test_trace_context_graph.py` le constate).
-- Sans authentification des émetteurs, un identifiant dérivé n'est pas une preuve d'origine : qui connaît le contexte d'un appel peut émettre un événement pour son run.
+- Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements : un identifiant dérivé n'est pas une preuve d'origine, et un émetteur qui connaît le contexte d'un appel peut émettre un événement pour son run.
 - Une reprise HTTP garde son run quand le contexte vient de `_meta`. Quand il vient de l'en-tête d'un client HTTP qui ouvre un span par tentative, ou quand le proxy le crée, chaque tentative est un run distinct.
 - Le proxy ne rattache pas un appel au run de l'agent : la facette standard `parent` exige le job de l'agent, que le proxy ne connaît pas. Un émetteur qui connaît l'agent peut le faire ; `traceId` relie déjà les appels d'une même trace.
 - Le résultat de l'appel n'est pas lu, sauf pour y trouver une erreur JSON-RPC : une erreur d'outil rendue comme un résultat (`isError`) compte comme un succès, et une erreur JSON-RPC rendue en `200` reste un événement `COMPLETE`, dont l'issue dit l'erreur.

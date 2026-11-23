@@ -14,6 +14,7 @@ from answerlineage_corpus.coverage import coverage_reports
 from answerlineage_corpus.enterprise import Enterprise, generate
 from answerlineage_corpus.events import render
 from answerlineage_workers.queue import process_batch
+from api.tests.issuer import authentication, signed_in
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -24,8 +25,8 @@ async def rows(engine: AsyncEngine, sql: str) -> list[tuple[Any, ...]]:
 
 
 def api(engine: AsyncEngine) -> httpx.AsyncClient:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    return httpx.AsyncClient(transport=transport, base_url="http://localhost")
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    return httpx.AsyncClient(transport=transport, base_url="http://localhost", headers=signed_in())
 
 
 async def load(engine: AsyncEngine, enterprise: Enterprise) -> None:

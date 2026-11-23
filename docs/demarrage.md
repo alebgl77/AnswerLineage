@@ -86,6 +86,7 @@ Vérification de l'installation : http://127.0.0.1:8000
 
   bon          API          L'API répond : API 1.0.0.
   bon          Adresse      L'API accepte cette adresse (en-têtes Host et Origin).
+  bon          Accès        L'API répond sans jeton : son authentification est désactivée, comme dans la démonstration.
   bon          Base         L'API lit sa base PostgreSQL.
   bon          Migrations   Le schéma de la base est à jour.
   bon          File         La file d'ingestion est vide.

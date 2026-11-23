@@ -16,6 +16,7 @@ from answerlineage_api.ingest.duplicates import emitter_of
 from answerlineage_api.ingest.models import validate_event
 from answerlineage_api.ingest.store import AcceptedEvent, event_identifier, store_events
 from api.tests.events import mutated, run_event
+from api.tests.issuer import authentication, signed_in
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -26,8 +27,10 @@ DUPLICATES = "/api/v1/ingestion/duplicates"
 
 @pytest.fixture
 async def client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         yield client
 
 

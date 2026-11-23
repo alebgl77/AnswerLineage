@@ -36,6 +36,7 @@ from answerlineage_workers.webhook_signature import (
     verify,
 )
 from answerlineage_workers.webhooks import Webhook
+from api.tests.issuer import authentication, signed_in
 from workers.tests.catalog import serving
 from workers.tests.test_incidents import RATES, answering, hours, reading, record
 
@@ -86,8 +87,10 @@ class Receiver:
 
 @pytest.fixture
 async def api(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://127.0.0.1", headers=signed_in()
+    ) as client:
         yield client
 
 

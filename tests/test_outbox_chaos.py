@@ -45,9 +45,19 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from answerlineage_api.app import create_app
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import ProxySettings
+from answerlineage_proxy.credentials import ClientCredentials, ClientCredentialsTokens
 from answerlineage_proxy.outbox import BACKOFF_CAP, Outbox, OutboxSettings
 from answerlineage_proxy.sink import EventSink, NullSink
 from answerlineage_workers.queue import process_batch
+from api.tests.issuer import (
+    EMITTER_CLIENT,
+    EMITTER_SECRET,
+    EmitterTokens,
+    LocalIssuer,
+    authentication,
+    serving_issuer,
+    signed_in,
+)
 from proxy.tests.conftest import TOOL_RESULT, FakeMcpServer, running, tool_call
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -173,11 +183,16 @@ asyncio.run(main())
 
 
 @asynccontextmanager
-async def api_process(database: URL) -> AsyncIterator[int]:
-    """La vraie API d'ingestion, dans un processus à part, sur la base du test ; son port."""
+async def api_process(database: URL, issuer: LocalIssuer) -> AsyncIterator[int]:
+    """La vraie API d'ingestion, dans un processus à part, sur la base du test ; son port.
+
+    Elle lit les clés de l'émetteur servi en HTTP, comme en service."""
     environment = {
         **os.environ,
         "ANSWERLINEAGE_DATABASE_URL": database.render_as_string(hide_password=False),
+        "ANSWERLINEAGE_OIDC_ISSUER": issuer.url,
+        "ANSWERLINEAGE_OIDC_AUDIENCE": issuer.audience,
+        "ANSWERLINEAGE_OIDC_EMITTER_CLIENTS": EMITTER_CLIENT,
     }
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -340,8 +355,10 @@ async def coverage_of(engine: AsyncEngine) -> dict[str, Any]:
                 text("SELECT min(window_start), max(window_end) FROM coverage_report")
             )
         ).one()
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         response = await client.get(
             "/api/v1/coverage", params={"from": start.isoformat(), "to": end.isoformat()}
         )
@@ -381,11 +398,15 @@ async def test_ten_thousand_calls_pass_while_the_api_is_down_then_reach_the_grap
     phases: dict[str, array[float]] = {}
     with reserved_port() as sock:
         settings = OutboxSettings.create(f"http://127.0.0.1:{sock.getsockname()[1]}")
-        box = TimedOutbox(settings)
-        switch = Switch(sock)
         async with AsyncExitStack() as stack:
+            # Le proxy obtient son jeton de l'émetteur par client_credentials, et l'API en
+            # vérifie la signature par le JWKS de l'émetteur : tous deux joints en HTTP.
+            issuer, _ = await stack.enter_async_context(serving_issuer())
+            credentials = ClientCredentials.create(issuer.url, EMITTER_CLIENT, EMITTER_SECRET)
+            box = TimedOutbox(settings, tokens=ClientCredentialsTokens(credentials))
+            switch = Switch(sock)
             stack.push_async_callback(switch.close)
-            api_port = await stack.enter_async_context(api_process(database))
+            api_port = await stack.enter_async_context(api_process(database, issuer))
             url, proxy = await stack.enter_async_context(proxied(box))
             # L'API coupée : la connexion est refusée.
             phases["refusée"] = await calls(url, CALLS // 3)
@@ -431,10 +452,10 @@ async def test_a_full_outbox_drops_the_oldest_and_the_coverage_shows_the_hole_in
 ) -> None:
     """Étant donné la boîte pleine, quand un événement arrive, alors le plus ancien est
     abandonné, le compteur de pertes augmente, et la couverture montre le trou."""
-    gate = Gate(create_app(engine))
+    gate = Gate(create_app(engine, authentication=authentication()))
     with reserved_port() as sock:
         settings = OutboxSettings.create(f"http://127.0.0.1:{sock.getsockname()[1]}", max_events=20)
-        box = Outbox(settings, request_timeout=REQUEST_TIMEOUT_S)
+        box = Outbox(settings, request_timeout=REQUEST_TIMEOUT_S, tokens=EmitterTokens())
         async with AsyncExitStack() as stack:
             url, proxy = await stack.enter_async_context(
                 proxied(box, coverage_window=timedelta(seconds=1))
@@ -458,10 +479,10 @@ async def test_a_full_outbox_drops_the_oldest_and_the_coverage_shows_the_hole_in
 
 async def test_events_rejected_by_the_api_are_marked_lost(engine: AsyncEngine) -> None:
     """L'API refuse chaque événement, plus lourd que sa borne ; elle accepte les relevés."""
-    strict = create_app(engine, max_body_bytes=1024)
+    strict = create_app(engine, max_body_bytes=1024, authentication=authentication())
     with reserved_port() as sock:
         settings = OutboxSettings.create(f"http://127.0.0.1:{sock.getsockname()[1]}")
-        box = Outbox(settings, request_timeout=REQUEST_TIMEOUT_S)
+        box = Outbox(settings, request_timeout=REQUEST_TIMEOUT_S, tokens=EmitterTokens())
         async with AsyncExitStack() as stack:
             await stack.enter_async_context(served(strict, sock))
             url, proxy = await stack.enter_async_context(proxied(box))
@@ -479,13 +500,13 @@ async def test_events_still_waiting_at_shutdown_are_marked_lost_by_the_last_repo
     engine: AsyncEngine,
 ) -> None:
     """À l'arrêt, les lots ne passent plus, les relevés si : ce qui reste est perdu, et dit."""
-    gate = Gate(create_app(engine))
+    gate = Gate(create_app(engine, authentication=authentication()))
     gate.hold_batches = True
     with reserved_port() as sock:
         settings = OutboxSettings.create(
             f"http://127.0.0.1:{sock.getsockname()[1]}", flush_seconds=1.5
         )
-        box = Outbox(settings, request_timeout=30)
+        box = Outbox(settings, request_timeout=30, tokens=EmitterTokens())
         async with AsyncExitStack() as stack:
             await stack.enter_async_context(served(gate, sock))
             url, proxy = await stack.enter_async_context(proxied(box))

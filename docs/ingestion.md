@@ -3,8 +3,13 @@
 L'API reçoit des `RunEvent` OpenLineage (schéma 2-0-2, OpenLineage 1.55), les valide et les enregistre tels quels dans `event_raw`. Elle est versionnée sous `/api/v1`. Sa spécification OpenAPI est servie sur `/api/v1/openapi.json` et publiée dans [`spec/openapi/answerlineage-v1.json`](../spec/openapi/answerlineage-v1.json).
 
 ```bash
-ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run uvicorn --factory answerlineage_api.app:create_app
+ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base \
+ANSWERLINEAGE_OIDC_ISSUER=https://idp.interne/realms/lignage ANSWERLINEAGE_OIDC_AUDIENCE=answerlineage-api \
+ANSWERLINEAGE_OIDC_EMITTER_CLIENTS=proxy-entrepot \
+uv run uvicorn --factory answerlineage_api.app:create_app
 ```
+
+Chaque route exige un jeton porteur OIDC de l'émetteur réglé, et un rôle qui l'ouvre ([Authentification et rôles](securite/authentification.md)) : l'ingestion revient aux émetteurs, que l'API reconnaît à l'identifiant de leur client ; l'exploitation de l'ingestion (doublons, outils à décrire, rebut), à l'auditeur, à l'administrateur et, pour les doublons et les outils, au responsable d'agent. Sans émetteur réglé, l'API ne démarre pas. Un appel sans jeton reçoit `401`, un rôle qui n'ouvre pas la route `403`, avant que le corps ne soit lu.
 
 | Route | Corps | Réponse |
 | --- | --- | --- |
@@ -373,7 +378,7 @@ Le corps est lu borné, compressé ou non, comme celui des événements, 256 Kio
 
 Le rejeu s'exécute sous le délai maximal des lectures : au-delà, il répond `503` et `query_timeout`, et rien n'est remis en file.
 
-Ces routes n'authentifient pas encore leurs appelants, comme le reste de l'API. Rejouer est une action d'exploitation : quand l'API authentifiera ses appelants et distinguera leurs rôles, le rejeu sera réservé à l'administrateur. D'ici là, l'API ne s'expose pas hors d'un réseau de confiance.
+Lister le rebut revient à l'auditeur et à l'administrateur ; le rejouer, action d'exploitation, à l'administrateur seul ([matrice des droits](securite/authentification.md#la-matrice-des-droits)).
 
 ## Limites
 
@@ -407,13 +412,12 @@ Tout ce que l'ingestion reçoit est borné, pour qu'une entrée piégée ne puis
 
 ## Limites connues
 
-- Les émetteurs ne sont pas authentifiés : l'API ne s'expose pas hors d'un réseau de confiance.
-- Les routes du rebut ne le sont pas davantage : quiconque joint l'API lit le rebut et le rejoue. Un rejeu ne change pas le graphe d'un événement déjà intégré, mais remet du travail aux workers.
+- Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements : il peut envoyer un événement, un rejeu ou un relevé au nom d'un autre émetteur, et la lecture inventée entre dans le graphe.
 - Aucune limite de débit par émetteur : la taille d'une requête est bornée, pas leur nombre.
 - Le corps est déployé puis analysé en mémoire, jusqu'à sa taille maximale : l'analyse JSON n'est pas incrémentale.
 - Le contrôle des identifiants porte sur leur forme, pas sur leur sens : une instruction écrite sans espace (`ignore_les_consignes`) a la forme d'un nom et passe. Aucun texte reçu n'atteint un modèle ni un destinataire autrement que dans un gabarit fixe.
 - La forme NFC ne confond pas les caractères qui se ressemblent : `а` cyrillique et `a` latin font deux noms distincts.
 - L'heure d'un événement est bornée par l'horloge de l'API : le corpus synthétique, daté à partir du 2 novembre 2026, voit refuser ses événements qui tombent plus d'un jour après la date du jour (`--days` élevé).
 - L'API n'exporte pas encore de métriques.
-- Un relevé n'est pas authentifié plus qu'un événement : un émetteur mal réglé, ou qui en usurpe un autre, peut gonfler les appels vus d'une fenêtre, et la fusion au plus grand ne peut pas le défaire.
+- Un relevé n'est pas lié à son émetteur plus qu'un événement : un émetteur mal réglé, ou qui en usurpe un autre, peut gonfler les appels vus d'une fenêtre, et la fusion au plus grand ne peut pas le défaire.
 - Les instances d'un émetteur se déclarent elles-mêmes : deux émetteurs qui publient sous la même instance se fusionnent au plus grand, et la couverture est alors surestimée. Le proxy en tire une au hasard quand elle n'est pas réglée.

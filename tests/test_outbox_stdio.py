@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
+from answerlineage_proxy.credentials import ENV_CLIENT_SECRET
 from answerlineage_workers.queue import process_batch
+from api.tests.issuer import EMITTER_CLIENT, EMITTER_SECRET, serving_issuer
 from proxy.tests.conftest import running, stdio_server
 from proxy.tests.stdio_server import RESULT_TEXT
 
@@ -34,7 +37,9 @@ SENT = b"".join(
 )
 
 
-async def proxy_in_stdio(*options: str, record: Path) -> tuple[int, bytes, bytes]:
+async def proxy_in_stdio(
+    *options: str, record: Path, environment: Mapping[str, str] | None = None
+) -> tuple[int, bytes, bytes]:
     """Lance ``answerlineage-proxy [options] -- <serveur>`` comme un client MCP le lance."""
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -48,7 +53,7 @@ async def proxy_in_stdio(*options: str, record: Path) -> tuple[int, bytes, bytes
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env=dict(os.environ),
+        env={**os.environ, **(environment or {})},
     )
     stdout, stderr = await asyncio.wait_for(process.communicate(SENT), timeout=60)
     assert process.returncode is not None
@@ -58,12 +63,30 @@ async def proxy_in_stdio(*options: str, record: Path) -> tuple[int, bytes, bytes
 async def test_a_tool_call_relayed_in_stdio_reaches_the_graph_through_the_outbox(
     engine: AsyncEngine, tmp_path: Path
 ) -> None:
-    async with running(create_app(engine)) as api_url:
-        code, stdout, stderr = await proxy_in_stdio("--api-url", api_url, record=tmp_path)
+    # Le proxy obtient son jeton de l'émetteur servi en HTTP, par client_credentials, son
+    # secret lu de l'environnement ; l'API vérifie ce jeton par les clés du même émetteur.
+    async with (
+        serving_issuer() as (issuer, served),
+        running(create_app(engine, authentication=issuer.authentication())) as api_url,
+    ):
+        code, stdout, stderr = await proxy_in_stdio(
+            "--api-url",
+            api_url,
+            "--oidc-issuer",
+            issuer.url,
+            "--oidc-client-id",
+            EMITTER_CLIENT,
+            record=tmp_path,
+            environment={ENV_CLIENT_SECRET: EMITTER_SECRET},
+        )
 
     assert code == 0
     assert RESULT_TEXT.encode() in stdout
     assert "boîte d'envoi".encode() in stderr
+    # Un jeton obtenu, jamais écrit au journal, pas plus que le secret.
+    assert len(served.issued) >= 1
+    for secret in (EMITTER_SECRET, *served.issued):
+        assert secret.encode() not in stderr + stdout
     while not (await process_batch(engine)).empty:
         pass
     async with engine.connect() as conn:

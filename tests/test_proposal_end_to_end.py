@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
 from answerlineage_workers.queue import run_worker
+from api.tests.issuer import authentication, signed_in
 from workers.tests.dbt import CUSTOMERS, WAREHOUSE, failing
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -39,9 +40,11 @@ async def test_a_failing_dbt_test_is_proposed_within_seconds_and_nothing_else_le
         )
     stop = asyncio.Event()
     worker = asyncio.ensure_future(run_worker(engine, stop, idle_delay=0.05))
-    transport = httpx.ASGITransport(app=create_app(engine))
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://localhost", headers=signed_in()
+        ) as client:
             sent = await client.post("/api/v1/lineage/batch", json=[failing(1, 3, "email")])
             assert sent.status_code == 202, sent.text
             started = time.monotonic()

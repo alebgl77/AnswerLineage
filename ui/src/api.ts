@@ -1,5 +1,7 @@
 // Ce que l'API de lecture renvoie à l'explorateur.
 
+import { authorization, expire } from "./auth";
+
 export interface DatasetNode {
   id: string;
   namespace: string;
@@ -125,7 +127,14 @@ export class ApiError extends Error {
 }
 
 export async function fetchJson<T>(path: string, signal: AbortSignal): Promise<T> {
-  const response = await fetch(path, { headers: { accept: "application/json" }, signal });
+  const response = await fetch(path, {
+    headers: { accept: "application/json", ...authorization() },
+    signal,
+  });
+  if (response.status === 401) {
+    // Le jeton est refusé ou a expiré : la session prend fin, la page propose de se reconnecter.
+    expire();
+  }
   if (!response.ok) {
     throw new ApiError(response.status);
   }

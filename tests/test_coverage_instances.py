@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
 from answerlineage_workers.silence import check_silent_emitters
+from api.tests.issuer import authentication, signed_in
 from api.tests.test_coverage_read import call_event, receive
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -51,8 +52,10 @@ def report(
 
 @pytest.fixture
 async def client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         yield client
 
 
@@ -109,8 +112,10 @@ async def test_two_instances_of_one_window_no_longer_merge_whatever_the_order_or
     ]
     states = []
     for order in orders:
-        transport = httpx.ASGITransport(app=create_app(engine))
-        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+        transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://localhost", headers=signed_in()
+        ) as client:
             answers = await publish(client, *order)
         # La réponse rend l'état de la fenêtre de cette instance ; un relevé sans instance
         # n'en reçoit pas.

@@ -19,16 +19,25 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
+from answerlineage_api.auth.roles import PERSON_ROLES
 from answerlineage_api.lineage.trace import answer_key
+from answerlineage_cli.client import ENV_TOKEN
 from answerlineage_cli.exits import Exit
 from answerlineage_corpus.cli import DEFAULT_SEED
 from answerlineage_corpus.enterprise import Enterprise, generate
 from answerlineage_corpus.truth import truth
+from api.tests.issuer import TEST_ISSUER, authentication, signed_in
 from cli.tests.fakes import Run, run
 from proxy.tests.conftest import running
 from tests.test_corpus_to_graph import load, report_coverage
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+
+@pytest.fixture(autouse=True)
+def command_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La commande présente le jeton d'une personne qui a tous les rôles de personne."""
+    monkeypatch.setenv(ENV_TOKEN, TEST_ISSUER.token(*PERSON_ROLES))
 
 
 @pytest.fixture(scope="module")
@@ -47,7 +56,7 @@ async def api(engine: AsyncEngine, enterprise: Enterprise) -> AsyncIterator[str]
     """Adresse de l'API, servie devant l'entreprise et ses relevés de couverture."""
     await load(engine, enterprise)
     await report_coverage(engine, enterprise)
-    async with running(create_app(engine)) as url:
+    async with running(create_app(engine, authentication=authentication())) as url:
         yield url
 
 
@@ -82,7 +91,7 @@ async def test_the_first_incident_reads_like_its_truth_in_text_and_in_json(
 
     shown = await command(monkeypatch, api, *argv, "--format", "json")
     assert shown.code == Exit.OK
-    async with httpx.AsyncClient(base_url=api) as client:
+    async with httpx.AsyncClient(base_url=api, headers=signed_in()) as client:
         direct = await client.get(
             "/api/v1/impact",
             params={**first["dataset"], "from": first["from"], "to": first["to"]},
@@ -130,7 +139,7 @@ async def test_an_unknown_dataset_is_refused_by_the_api(
     monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine, first: dict[str, Any]
 ) -> None:
     unknown = {"namespace": "bigquery", "name": "ventes.suivi.inconnue"}
-    async with running(create_app(engine)) as empty:
+    async with running(create_app(engine, authentication=authentication())) as empty:
         result = await command(monkeypatch, empty, *options(unknown, first["from"], first["to"]))
     assert result.code == Exit.API_ERROR
     assert "n'est pas connu du graphe" in result.err

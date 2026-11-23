@@ -25,6 +25,7 @@ from answerlineage_proxy.fingerprint import FingerprintKey
 from answerlineage_proxy.rules import KEY_LABEL, parse_read_rules
 from answerlineage_proxy.sink import MemorySink
 from answerlineage_workers.queue import process_batch
+from api.tests.issuer import authentication, signed_in
 from proxy.tests.conftest import FakeMcpServer, exchange, running, tool_call
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -66,8 +67,10 @@ async def test_a_declared_read_reaches_the_graph_and_an_undescribed_tool_the_lis
     judgement = judge(events, profile="capture", received_at=received_at)
     assert [(problem.code, problem.pointer) for problem in judgement.problems] == []
 
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as api:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as api:
         ingested = await api.post("/api/v1/lineage/batch", json=events)
         assert ingested.json() == {"accepted": 2, "duplicates": 0, "rejected": []}
         while not (await process_batch(engine)).empty:

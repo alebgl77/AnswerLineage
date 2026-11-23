@@ -439,6 +439,64 @@
         "title": "AnswerSummary",
         "type": "object"
       },
+      "AuthenticationSettings": {
+        "description": "Le mode d'authentification de l'API, et ce qu'un client public doit savoir.",
+        "properties": {
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Le client public de l'explorateur chez l'émetteur ; nul quand l'explorateur ne se connecte pas.",
+            "title": "Client Id"
+          },
+          "issuer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "L'émetteur OIDC ; nul quand l'authentification est désactivée.",
+            "title": "Issuer"
+          },
+          "mode": {
+            "description": "« oidc » : chaque route exige un jeton de l'émetteur. « disabled » : démonstration sur la boucle locale, sans jeton.",
+            "enum": [
+              "oidc",
+              "disabled"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "La portée que l'explorateur demande ; nulle sans client.",
+            "title": "Scope"
+          }
+        },
+        "required": [
+          "mode",
+          "issuer",
+          "client_id",
+          "scope"
+        ],
+        "title": "AuthenticationSettings",
+        "type": "object"
+      },
       "BatchResult": {
         "description": "Bilan de l'ingestion d'un lot.",
         "properties": {
@@ -2484,6 +2542,22 @@
         "title": "Job",
         "type": "object"
       },
+      "Liveness": {
+        "description": "Le processus de l'API répond : rien de plus.",
+        "properties": {
+          "status": {
+            "const": "alive",
+            "description": "Toujours « alive ».",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "Liveness",
+        "type": "object"
+      },
       "OutputDataset": {
         "properties": {
           "facets": {
@@ -3459,6 +3533,14 @@
         "title": "Window",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "bearerFormat": "JWT",
+        "description": "Jeton d'accès JWT de l'émetteur OIDC configuré, pour l'audience de l'API. Chaque opération nomme les rôles qui l'ouvrent : un seul suffit.",
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
@@ -3546,6 +3628,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3564,9 +3666,41 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          },
+          {
+            "bearer": [
+              "reader"
+            ]
+          }
+        ],
         "summary": "Retrouve les réponses diffusées par un message",
         "tags": [
           "lignage"
@@ -3621,6 +3755,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -3649,12 +3803,67 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          },
+          {
+            "bearer": [
+              "reader"
+            ]
+          }
+        ],
         "summary": "Remonte d'une réponse à ses sources",
         "tags": [
           "lignage"
+        ]
+      }
+    },
+    "/api/v1/authentication": {
+      "get": {
+        "description": "Ouverte sans jeton : l'explorateur la lit avant de se connecter.",
+        "operationId": "authentication_settings_api_v1_authentication_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticationSettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [],
+        "summary": "Dit comment se connecter : le mode d'authentification et l'émetteur",
+        "tags": [
+          "installation"
         ]
       }
     },
@@ -3713,6 +3922,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3731,9 +3960,41 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          },
+          {
+            "bearer": [
+              "reader"
+            ]
+          }
+        ],
         "summary": "Donne la couverture du lignage de chaque émetteur sur une période",
         "tags": [
           "lignage"
@@ -3773,6 +4034,26 @@
             },
             "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "413": {
             "content": {
               "application/json": {
@@ -3802,8 +4083,25 @@
               }
             },
             "description": "Le relevé est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "emitter"
+            ]
+          }
+        ],
         "summary": "Publie le relevé de couverture d'un émetteur pour une fenêtre",
         "tags": [
           "ingestion"
@@ -3860,6 +4158,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3878,9 +4196,41 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          },
+          {
+            "bearer": [
+              "reader"
+            ]
+          }
+        ],
         "summary": "Liste les jeux de données connus du graphe",
         "tags": [
           "lignage"
@@ -3975,6 +4325,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3993,9 +4363,41 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          },
+          {
+            "bearer": [
+              "reader"
+            ]
+          }
+        ],
         "summary": "Classe les jeux de données et leurs colonnes par exposition",
         "tags": [
           "lignage"
@@ -4090,6 +4492,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4118,9 +4540,41 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          },
+          {
+            "bearer": [
+              "reader"
+            ]
+          }
+        ],
         "summary": "Donne le graphe en cinq colonnes des réponses les plus récentes, ou d'une réponse",
         "tags": [
           "lignage"
@@ -4142,6 +4596,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "503": {
             "content": {
               "application/json": {
@@ -4150,9 +4624,21 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          }
+        ],
         "summary": "Donne l'état de l'installation",
         "tags": [
           "installation"
@@ -4280,6 +4766,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4308,9 +4814,41 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          },
+          {
+            "bearer": [
+              "reader"
+            ]
+          }
+        ],
         "summary": "Propage un incident de données jusqu'aux réponses et aux destinataires",
         "tags": [
           "lignage"
@@ -4391,6 +4929,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -4409,9 +4967,41 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          },
+          {
+            "bearer": [
+              "reader"
+            ]
+          }
+        ],
         "summary": "Liste les incidents proposés par des tests de qualité en échec, les plus récents d'abord",
         "tags": [
           "incidents"
@@ -4447,6 +5037,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4475,9 +5085,41 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          },
+          {
+            "bearer": [
+              "reader"
+            ]
+          }
+        ],
         "summary": "Donne un incident proposé par un test de qualité en échec",
         "tags": [
           "incidents"
@@ -4533,6 +5175,26 @@
             },
             "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4582,8 +5244,35 @@
               }
             },
             "description": "La confirmation est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          }
+        ],
         "summary": "Confirme un incident proposé : il est déclaré, son analyse demandée et annoncée",
         "tags": [
           "incidents"
@@ -4619,6 +5308,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4648,8 +5357,35 @@
               }
             },
             "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          }
+        ],
         "summary": "Écarte un incident proposé : rien n'est déclaré ni annoncé",
         "tags": [
           "incidents"
@@ -4706,6 +5442,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -4724,9 +5480,41 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          },
+          {
+            "bearer": [
+              "reader"
+            ]
+          }
+        ],
         "summary": "Liste les incidents déclarés, les plus récents d'abord",
         "tags": [
           "incidents"
@@ -4766,6 +5554,26 @@
             },
             "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "413": {
             "content": {
               "application/json": {
@@ -4795,8 +5603,35 @@
               }
             },
             "description": "La déclaration est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          }
+        ],
         "summary": "Déclare un incident de données et lance son analyse d'impact",
         "tags": [
           "incidents"
@@ -4865,6 +5700,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4893,9 +5748,41 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          },
+          {
+            "bearer": [
+              "reader"
+            ]
+          }
+        ],
         "summary": "Donne un incident, l'état de son analyse et les réponses touchées",
         "tags": [
           "incidents"
@@ -4951,6 +5838,26 @@
             },
             "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -5000,8 +5907,35 @@
               }
             },
             "description": "La demande est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          }
+        ],
         "summary": "Met un incident en quarantaine : les proxys reçoivent son périmètre",
         "tags": [
           "incidents"
@@ -5037,6 +5971,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -5066,8 +6020,35 @@
               }
             },
             "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          }
+        ],
         "summary": "Lève la quarantaine d'un incident : les proxys ne reçoivent plus son périmètre",
         "tags": [
           "incidents"
@@ -5170,6 +6151,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -5188,9 +6189,21 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          }
+        ],
         "summary": "Liste les événements au rebut, que la projection n'a pas pu intégrer au graphe",
         "tags": [
           "ingestion"
@@ -5232,6 +6245,26 @@
             },
             "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "413": {
             "content": {
               "application/json": {
@@ -5270,9 +6303,16 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          }
+        ],
         "summary": "Remet en file les événements du rebut, tous ou filtrés, en nombre borné",
         "tags": [
           "ingestion"
@@ -5310,6 +6350,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -5328,9 +6388,26 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          }
+        ],
         "summary": "Compte les événements reçus en double, par émetteur et par jour",
         "tags": [
           "ingestion"
@@ -5382,6 +6459,26 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -5400,9 +6497,26 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          }
+        ],
         "summary": "Liste les outils appelés sans règle de lecture, par émetteur",
         "tags": [
           "ingestion"
@@ -5444,6 +6558,26 @@
             },
             "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "413": {
             "content": {
               "application/json": {
@@ -5473,8 +6607,25 @@
               }
             },
             "description": "L'événement est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "emitter"
+            ]
+          }
+        ],
         "summary": "Envoie un RunEvent OpenLineage",
         "tags": [
           "ingestion"
@@ -5519,6 +6670,26 @@
             },
             "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`). Ou bien ce n'est pas un tableau (`batch_must_be_an_array`)."
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "413": {
             "content": {
               "application/json": {
@@ -5548,11 +6719,51 @@
               }
             },
             "description": "Aucun événement du lot n'est valide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "emitter"
+            ]
+          }
+        ],
         "summary": "Envoie un lot de RunEvents OpenLineage",
         "tags": [
           "ingestion"
+        ]
+      }
+    },
+    "/api/v1/live": {
+      "get": {
+        "description": "Ne lit pas la base et ne dit rien de l'installation : la sonde d'un orchestrateur,\nqui n'a pas de jeton. L'état détaillé (``/health``) demande un rôle d'exploitation.",
+        "operationId": "liveness_api_v1_live_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Liveness"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [],
+        "summary": "Sonde de vie, ouverte sans jeton",
+        "tags": [
+          "installation"
         ]
       }
     },
@@ -5594,6 +6805,26 @@
           "304": {
             "description": "La version donnée dans If-None-Match est la version courante : rien n'a changé."
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -5612,9 +6843,46 @@
                 }
               }
             },
-            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
           }
         },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "emitter"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          },
+          {
+            "bearer": [
+              "reader"
+            ]
+          }
+        ],
         "summary": "Donne les périmètres en quarantaine active, tels que les proxys les reçoivent",
         "tags": [
           "incidents"

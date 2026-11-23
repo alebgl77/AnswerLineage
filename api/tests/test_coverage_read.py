@@ -29,6 +29,7 @@ from answerlineage_api.store.graph import (
     record_run,
 )
 from api.tests.events import run_event
+from api.tests.issuer import authentication, signed_in
 
 T0 = datetime(2026, 11, 3, 6, 0, tzinfo=UTC)
 WAREHOUSE = "mcp://entrepot"
@@ -159,8 +160,10 @@ def test_events_beyond_the_calls_seen_never_raise_the_rate_above_one() -> None:
 
 @pytest.fixture
 async def client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         yield client
 
 

@@ -25,6 +25,7 @@ from answerlineage_api.ingest.dead_letters import bury
 from answerlineage_api.ingest.models import validate_event
 from answerlineage_api.ingest.store import AcceptedEvent, event_identifier, store_events
 from api.tests.events import mutated, run_event
+from api.tests.issuer import authentication, signed_in
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -43,8 +44,10 @@ REASONS = [
 
 @pytest.fixture
 async def client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         yield client
 
 
@@ -291,8 +294,10 @@ async def test_concurrent_replays_put_each_event_back_once(
     # Une connexion par requête : les deux rejeux tiennent chacun leur transaction.
     pooled = create_async_engine(database, poolclass=NullPool, hide_parameters=True)
     try:
-        transport = httpx.ASGITransport(app=create_app(pooled))
-        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+        transport = httpx.ASGITransport(app=create_app(pooled, authentication=authentication()))
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://localhost", headers=signed_in()
+        ) as client:
             first, second = await asyncio.gather(
                 client.post(REPLAY, json={"limit": 40}), client.post(REPLAY, json={"limit": 40})
             )
@@ -371,9 +376,13 @@ async def test_a_replay_beyond_the_time_limit_puts_nothing_back(
     await to_dead_letters(engine, ids, "invalid_event")
     holder = create_async_engine(database, poolclass=NullPool, hide_parameters=True)
     try:
-        transport = httpx.ASGITransport(app=create_app(engine, read_timeout_ms=50))
+        transport = httpx.ASGITransport(
+            app=create_app(engine, read_timeout_ms=50, authentication=authentication())
+        )
         async with (
-            httpx.AsyncClient(transport=transport, base_url="http://localhost") as client,
+            httpx.AsyncClient(
+                transport=transport, base_url="http://localhost", headers=signed_in()
+            ) as client,
             holder.connect() as conn,
         ):
             await conn.execute(text("LOCK TABLE dead_letter IN ACCESS EXCLUSIVE MODE"))

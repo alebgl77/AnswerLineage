@@ -20,17 +20,26 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
+from answerlineage_api.auth.roles import PERSON_ROLES
 from answerlineage_api.lineage.trace import answer_key
+from answerlineage_cli.client import ENV_TOKEN
 from answerlineage_cli.exits import Exit
 from answerlineage_corpus.cli import DEFAULT_SEED
 from answerlineage_corpus.enterprise import Enterprise, generate
 from answerlineage_corpus.truth import truth
 from answerlineage_workers.queue import run_worker
+from api.tests.issuer import TEST_ISSUER, authentication, signed_in
 from cli.tests.fakes import Run, run
 from proxy.tests.conftest import running
 from tests.test_corpus_to_graph import api, load, report_coverage
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+
+@pytest.fixture(autouse=True)
+def command_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La commande présente le jeton d'une personne qui a tous les rôles de personne."""
+    monkeypatch.setenv(ENV_TOKEN, TEST_ISSUER.token(*PERSON_ROLES))
 
 
 @pytest.fixture(scope="module")
@@ -138,7 +147,7 @@ async def test_an_incident_declared_from_the_terminal_is_shown_with_its_truth(
     first: dict[str, Any],
 ) -> None:
     dataset = first["dataset"]
-    async with running(create_app(loaded)) as url:
+    async with running(create_app(loaded, authentication=authentication())) as url:
         declared = await command(
             monkeypatch,
             url,
@@ -149,7 +158,7 @@ async def test_an_incident_declared_from_the_terminal_is_shown_with_its_truth(
         assert declared.code == Exit.OK, declared.err
         incident_id = json.loads(declared.out)["id"]
 
-        async with httpx.AsyncClient(base_url=url) as client:
+        async with httpx.AsyncClient(base_url=url, headers=signed_in()) as client:
             direct = await analysed(client, incident_id)
 
         shown = await command(monkeypatch, url, "incident", "show", incident_id)

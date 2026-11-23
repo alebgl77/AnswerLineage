@@ -23,6 +23,7 @@ from answerlineage_workers import gate, proposals, quality, queue
 from answerlineage_workers.proposals import Maintenance, maintain_proposals, process_signals
 from answerlineage_workers.queue import process_batch, record_event, run_worker
 from answerlineage_workers.rebuild import rebuild_graph
+from api.tests.issuer import authentication, signed_in
 from workers.tests.dbt import (
     CUSTOMERS,
     ORDERS,
@@ -114,8 +115,10 @@ async def test_a_failing_quality_test_proposes_a_signaled_incident_bound_to_its_
     for table in ("incident", "incident_analysis", "webhook_queue", "incident_quarantine"):
         assert await scalar(engine, f"SELECT count(*) FROM {table}") == 0, table  # noqa: S608
 
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         listed = (await client.get("/api/v1/incident-proposals")).json()
         (proposal,) = listed["proposals"]
         assert proposal["state"] == "signaled"

@@ -11,12 +11,21 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.types import ASGIApp
 
+from answerlineage_api.auth import matrix
+from answerlineage_api.auth.access import (
+    AccessRefusedError,
+    Authentication,
+    authentication_from_settings,
+    authorize,
+    refuse_access,
+)
+from answerlineage_api.auth.routes import router as authentication_router
 from answerlineage_api.explorer import explorer_files
 from answerlineage_api.guard import HostOriginMiddleware, guard_from_settings
 from answerlineage_api.headers import SecurityHeadersMiddleware
@@ -57,7 +66,10 @@ class _Application(FastAPI):
     """
 
     def build_middleware_stack(self) -> ASGIApp:
-        return SecurityHeadersMiddleware(super().build_middleware_stack())
+        authentication: Authentication = self.state.authentication
+        return SecurityHeadersMiddleware(
+            super().build_middleware_stack(), authentication.connect_sources()
+        )
 
 
 def create_app(
@@ -69,6 +81,7 @@ def create_app(
     allowed_origins: Sequence[str] | None = None,
     ui_directory: str | os.PathLike[str] | None = None,
     read_timeout_ms: int | None = None,
+    authentication: Authentication | None = None,
 ) -> FastAPI:
     """Construit l'application. Sans moteur fourni, la base vient de l'environnement.
 
@@ -83,11 +96,17 @@ def create_app(
     et vaut 5 secondes quand la variable n'est pas donnée.
     ``max_body_bytes`` borne en octets le corps d'une requête d'ingestion, reçu
     comme déployé ; sans lui, il vient de ``ANSWERLINEAGE_MAX_BODY_BYTES``.
+    ``authentication`` dit comment l'API reconnaît ses appelants ; sans elle,
+    elle vient de l'environnement (``ANSWERLINEAGE_OIDC_*``), et l'API ne démarre
+    pas sans émetteur, à moins d'être désactivée pour la démonstration
+    (``ANSWERLINEAGE_AUTH=disabled``), sur la boucle locale seule.
     """
     guard = guard_from_settings(allowed_hosts, allowed_origins, os.environ)
     body_limit = max_body_bytes_from_settings(max_body_bytes, os.environ)
     explorer = explorer_files(ui_directory, os.environ)
     read_timeout = read_timeout_from_settings(read_timeout_ms, os.environ)
+    access = authentication_from_settings(authentication, os.environ)
+    access.check_guard(guard)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -110,11 +129,14 @@ def create_app(
         # Les pages de documentation chargeraient des scripts depuis un CDN.
         docs_url=None,
         redoc_url=None,
+        # Avant toute route, et avant ses paramètres : le jeton, puis la matrice des droits.
+        dependencies=[Depends(authorize)],
     )
     app.state.engine = engine
     app.state.max_batch_events = max_batch_events
     app.state.read_timeout_ms = read_timeout
     app.state.max_body_bytes = body_limit
+    app.state.authentication = access
     app.include_router(ingestion_router)
     app.include_router(duplicates_router)
     app.include_router(dead_letters_router)
@@ -123,6 +145,13 @@ def create_app(
     app.include_router(lineage_router)
     app.include_router(incidents_router)
     app.include_router(health_router)
+    app.include_router(authentication_router)
+    # Une route que la matrice ne déclare pas ne s'ouvre pas par oubli : l'application
+    # ne se construit pas.
+    undeclared = matrix.undeclared(app.routes)
+    if undeclared:
+        raise RuntimeError("Matrice des droits incomplète : " + " ; ".join(undeclared) + ".")
+    app.add_exception_handler(AccessRefusedError, refuse_access)
     app.add_exception_handler(RequestValidationError, reject_invalid_request)
     app.add_exception_handler(ReadTimedOut, refuse_timed_out)
     app.add_middleware(HostOriginMiddleware, guard=guard)
@@ -147,6 +176,7 @@ def create_app(
             schemas.update(confirmation.pop("$defs", {}))
             schemas["ProposalConfirmation"] = confirmation
             schemas["DeadLetterReplay"] = replay_json_schema()
+            matrix.publish(document)
             app.openapi_schema = document
         return app.openapi_schema
 

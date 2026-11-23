@@ -44,7 +44,7 @@ La commande joint l'adresse donnée, directement : elle ne suit aucune redirecti
 
 ## Le jeton
 
-L'API peut demander sur chaque route un jeton porteur OIDC, et un rôle qui ouvre la route. La commande l'envoie sur chaque requête, dans l'en-tête `Authorization`. Elle ne l'obtient pas elle-même : il vient de l'émetteur OIDC de l'entreprise, par l'outil qu'elle donne pour cela.
+L'API demande sur chaque route un jeton porteur OIDC, et un rôle qui ouvre la route ([Authentification et rôles](securite/authentification.md)). La commande l'envoie sur chaque requête, dans l'en-tête `Authorization`. Elle ne l'obtient pas elle-même : il vient de l'émetteur OIDC de l'entreprise, par l'outil qu'elle donne pour cela.
 
 | Réglage | Rôle |
 | --- | --- |
@@ -477,7 +477,7 @@ Les filtres se cumulent. Rejouer tout le rebut se demande par `--all`, et lui se
 
 La réponse est validée comme celle d'`impact` ([une réponse de l'API est hostile](#une-réponse-de-lapi-est-hostile)) : un identifiant d'événement ou de run a sa forme, un émetteur celle d'un nom, un motif appartient à sa liste fermée, et une page qui annonce une suite donne son curseur.
 
-Les routes du rebut n'authentifient pas encore leurs appelants : la commande non plus. Le rejeu sera réservé à l'administrateur quand l'API distinguera les rôles de ses appelants.
+La liste du rebut demande le rôle d'auditeur ou d'administrateur, le rejeu celui d'administrateur ([la matrice des droits](securite/authentification.md#la-matrice-des-droits)) : avec un autre jeton, la commande sort en `5` (`403 insufficient_role`).
 
 ## `answerlineage doctor`
 

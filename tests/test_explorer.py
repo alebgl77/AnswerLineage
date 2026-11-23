@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, NoReturn
+from urllib.parse import urlsplit
 
 import pytest
 from playwright.async_api import Browser, Error, Page, async_playwright, expect
@@ -24,6 +26,7 @@ from answerlineage_api.lineage.trace import answer_key
 from answerlineage_corpus.cli import DEFAULT_SEED
 from answerlineage_corpus.coverage import coverage_reports
 from answerlineage_corpus.enterprise import Enterprise, Request, generate
+from api.tests.issuer import IssuerApp, LocalIssuer, serving_issuer
 from proxy.tests.conftest import running
 from tests.test_corpus_to_graph import api, load
 
@@ -48,14 +51,35 @@ def enterprise() -> Enterprise:
     return generate(DEFAULT_SEED)
 
 
+@asynccontextmanager
+async def served(
+    engine: AsyncEngine, issuer_options: Mapping[str, Any] | None = None, **settings: Any
+) -> AsyncIterator[tuple[str, LocalIssuer, IssuerApp]]:
+    """L'adresse de l'explorateur, servi par l'API devant un émetteur OIDC local, et cet
+    émetteur.
+
+    La page s'y connecte comme en service : flux d'autorisation avec PKCE, que
+    l'émetteur de test accorde aussitôt, par défaut à une personne qui a tous les rôles
+    (``issuer_options`` : ses rôles, la durée de ses jetons)."""
+    async with (
+        serving_issuer(**(issuer_options or {})) as (issuer, served_issuer),
+        running(
+            create_app(
+                engine, ui_directory=DIST, authentication=issuer.authentication(), **settings
+            )
+        ) as url,
+    ):
+        yield url + "/", issuer, served_issuer
+
+
 @pytest.fixture
 async def explorer(engine: AsyncEngine, enterprise: Enterprise) -> AsyncIterator[str]:
     """Adresse de l'explorateur, servi par l'API devant l'entreprise synthétique."""
     if not (DIST / "index.html").is_file():
         unavailable("L'explorateur n'est pas construit : lancer make ui.")
     await load(engine, enterprise)
-    async with running(create_app(engine, ui_directory=DIST)) as url:
-        yield url + "/"
+    async with served(engine) as (url, _, _):
+        yield url
 
 
 @pytest.fixture
@@ -523,8 +547,8 @@ async def test_an_unknown_answer_or_dataset_is_said_plainly(
 async def test_an_empty_graph_says_so(browser: Browser, engine: AsyncEngine) -> None:
     if not (DIST / "index.html").is_file():
         unavailable("L'explorateur n'est pas construit : lancer make ui.")
-    async with running(create_app(engine, ui_directory=DIST)) as url:
-        page, errors = await opened(browser, url + "/")
+    async with served(engine) as (url, _, _):
+        page, errors = await opened(browser, url)
         # Le message d'attente passe d'abord : c'est celui du graphe vide qui est attendu.
         await page.locator(
             ".notice", has_text="Aucune réponse d'agent n'a encore été captée."
@@ -705,7 +729,8 @@ async def test_a_hostile_or_unknown_trace_address_gives_a_fixed_message(
     # Rien de la valeur n'atteint la page, ni l'API : aucune requête ne la porte.
     assert "canari7c1d" not in await page.evaluate("() => document.body.innerHTML")
     assert not any("canari7c1d" in url for url in requested)
-    assert all(url.startswith(explorer) for url in requested)
+    # L'explorateur et, pour la connexion, l'émetteur OIDC de test : rien hors du poste.
+    assert {urlsplit(url).hostname for url in requested} == {"127.0.0.1"}
     assert await count(page, ".node.is-on") == 0
     assert errors == []
 
@@ -784,12 +809,12 @@ async def test_a_read_beyond_the_time_limit_is_said_plainly(
     if not (DIST / "index.html").is_file():
         unavailable("L'explorateur n'est pas construit : lancer make ui.")
     async with (
-        running(create_app(engine, ui_directory=DIST, read_timeout_ms=50)) as url,
+        served(engine, read_timeout_ms=50) as (url, _, _),
         engine.connect() as holder,
     ):
         # Une autre connexion tient la table des réponses : la lecture dépasse son délai.
         await holder.execute(text("LOCK TABLE answer IN ACCESS EXCLUSIVE MODE"))
-        page, _ = await opened(browser, url + "/")
+        page, _ = await opened(browser, url)
         await page.wait_for_selector(".notice-error")
         message = await page.locator(".notice-error").text_content() or ""
         assert message.startswith("La lecture du graphe a dépassé son délai maximal")

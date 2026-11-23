@@ -31,6 +31,7 @@ from answerlineage_corpus.events import request_events
 from answerlineage_workers.destination import Sender, parse_destination
 from answerlineage_workers.queue import run_worker
 from answerlineage_workers.reemission import Reemission, body
+from api.tests.issuer import authentication, signed_in
 
 # Marquez pèse près d'un gigaoctet : le test ne tourne que là où on le demande, dans une
 # seule case de la matrice du pipeline, et sur le poste à la demande.
@@ -144,8 +145,10 @@ async def test_a_run_ingested_and_projected_appears_in_marquez_with_its_input_da
 ) -> None:
     requests = requests_with_calls()
     events = [event for request in requests for event in request_events(request)]
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as api:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as api:
         accepted = await api.post("/api/v1/lineage/batch", json=events)
     assert accepted.json() == {"accepted": len(events), "duplicates": 0, "rejected": []}
 
@@ -161,7 +164,7 @@ async def test_a_run_ingested_and_projected_appears_in_marquez_with_its_input_da
         sent = (await conn.execute(text("SELECT sent FROM reemission_stats"))).scalar_one()
     assert sent == len(events)
 
-    async with httpx.AsyncClient(base_url=marquez) as client:
+    async with httpx.AsyncClient(base_url=marquez, headers=signed_in()) as client:
         for request in requests:
             for call in request.calls:
                 run = await run_in_marquez(client, call.run_id)

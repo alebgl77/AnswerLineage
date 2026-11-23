@@ -1,6 +1,6 @@
 # Explorateur
 
-L'explorateur montre le lignage en cinq colonnes, des données aux personnes : jeux de données, outils, agents, réponses, destinataires. Il se lit dans un navigateur, sans compte ni installation.
+L'explorateur montre le lignage en cinq colonnes, des données aux personnes : jeux de données, outils, agents, réponses, destinataires. Il se lit dans un navigateur, sans installation, avec le compte que l'entreprise donne déjà à ses personnes, par son émetteur OIDC.
 
 ![L'explorateur en mode Propager : une table fausse, les réponses et les destinataires touchés](images/explorateur-propager.png)
 
@@ -18,7 +18,18 @@ Puis l'API reçoit le dossier construit :
 ANSWERLINEAGE_UI_DIR=ui/dist uv run uvicorn --factory answerlineage_api.app:create_app
 ```
 
-L'explorateur est alors sur `http://127.0.0.1:8000/`. Sans `ANSWERLINEAGE_UI_DIR`, l'API ne sert aucune page.
+L'explorateur est alors sur `http://127.0.0.1:8000/`. Sans `ANSWERLINEAGE_UI_DIR`, l'API ne sert aucune page. L'API demande aussi son émetteur OIDC et le client de l'explorateur ([régler l'émetteur](securite/authentification.md#régler-lémetteur)).
+
+## Se connecter
+
+À l'ouverture, l'explorateur demande à l'API comment se connecter, puis envoie la personne à l'émetteur OIDC de l'entreprise : flux d'autorisation avec PKCE, écrit avec WebCrypto, sans dépendance. Au retour, il rouvre l'adresse d'avant la connexion, sans le code dans l'adresse ni dans l'historique. Une adresse partagée s'ouvre donc telle quelle, une fois la personne connectée.
+
+- **Le jeton reste en mémoire**, ni dans `localStorage` ni dans un cookie : recharger la page en demande un nouveau, que l'émetteur donne sans rien redemander tant que sa session tient.
+- **Se déconnecter**, en haut à droite, oublie le jeton et passe par la déconnexion de l'émetteur ; l'explorateur attend ensuite qu'on lui demande de se reconnecter.
+- **Une session expirée**, 30 secondes avant son jeton ou au premier refus `401` de l'API, se dit par un message fixe, avec un bouton pour se reconnecter. Un rôle qui n'ouvre pas une vue se dit aussi : « Votre rôle ne permet pas de lire cette vue. »
+- **La démonstration**, dont l'authentification est désactivée, le dit dans un bandeau en haut de la page, et se lit sans compte.
+
+Le détail du flux, et ce que l'émetteur doit permettre (client public, adresses de retour, CORS), est dans [Authentification et rôles](securite/authentification.md#lexplorateur).
 
 ## Ce qu'il montre
 
@@ -44,7 +55,7 @@ Survoler ou choisir un nœud met sa chaîne en évidence. Depuis une donnée, on
 
 L'explorateur ne lit que l'[API de lecture](lecture.md) : il n'affiche aucun contenu de prompt, de résultat d'outil ou de réponse, parce que l'API n'en a pas. Une réponse est une heure et une empreinte, un destinataire est un pseudonyme.
 
-Il ne charge rien d'ailleurs. L'API le sert sous une politique de sécurité du contenu qui n'autorise que ses propres fichiers : ni script ni style en ligne, aucune ressource tierce, aucune inclusion dans une autre page. L'application pose cette politique et ses autres en-têtes de sécurité sur toute réponse, page d'erreur comprise (fichier absent, méthode refusée, plage d'octets impossible) ; seule la durée de conservation est propre aux fichiers : les fichiers à empreinte de `assets/` sont gardés un an, la page n'est jamais gardée.
+Il ne charge rien d'ailleurs. L'API le sert sous une politique de sécurité du contenu qui n'autorise que ses propres fichiers : ni script ni style en ligne, aucune ressource tierce, aucune inclusion dans une autre page. Seule l'origine de l'émetteur OIDC s'ajoute aux adresses qu'il peut joindre, pour lire sa découverte et échanger le code de connexion. L'application pose cette politique et ses autres en-têtes de sécurité sur toute réponse, page d'erreur comprise (fichier absent, méthode refusée, plage d'octets impossible) ; seule la durée de conservation est propre aux fichiers : les fichiers à empreinte de `assets/` sont gardés un an, la page n'est jamais gardée.
 
 ## Développer l'interface
 
@@ -52,16 +63,16 @@ Il ne charge rien d'ailleurs. L'API le sert sous une politique de sécurité du 
 npm ci --prefix ui && npm run --prefix ui dev
 ```
 
-Le serveur de développement écoute sur `http://127.0.0.1:5173` et relaie `/api` vers une API lancée sur le port 8000.
+Le serveur de développement écoute sur `http://127.0.0.1:5173` et relaie `/api` vers une API lancée sur le port 8000. Il se connecte comme l'explorateur servi par l'API : son adresse, `http://127.0.0.1:5173/`, doit être une adresse de retour du client de l'explorateur chez l'émetteur, ou l'API lancée sans authentification, comme la démonstration.
 
 | Commande | Usage |
 | --- | --- |
 | `make ui` | Installe les paquets verrouillés, contrôle les types, construit `ui/dist` |
 | `make e2e` | Pilote l'explorateur construit dans Chromium, sur l'entreprise synthétique |
 
-Les tests de bout en bout comparent ce que la page affiche à l'entreprise générée : les cinq colonnes et leurs liens en moins de 2 secondes, rien qui déborde sur un écran de 400 pixels de large, la chaîne allumée d'un jeu de données, les compteurs d'un incident, sa couverture mesurée, mesurée avec un trou, partielle ou non mesurée, le chemin d'une réponse en mode Remonter, choisie à la souris ou au clavier, et sa couverture, les adresses rouvertes dans un nouvel onglet, une adresse hostile qui n'amène qu'un message fixe. Une erreur dans la console du navigateur, refus de la politique de contenu compris, fait échouer le test.
+Les tests de bout en bout comparent ce que la page affiche à l'entreprise générée : les cinq colonnes et leurs liens en moins de 2 secondes, rien qui déborde sur un écran de 400 pixels de large, la chaîne allumée d'un jeu de données, les compteurs d'un incident, sa couverture mesurée, mesurée avec un trou, partielle ou non mesurée, le chemin d'une réponse en mode Remonter, choisie à la souris ou au clavier, et sa couverture, les adresses rouvertes dans un nouvel onglet, une adresse hostile qui n'amène qu'un message fixe. Chacun se connecte d'abord à un émetteur OIDC de test, servi sur la boucle locale ; d'autres éprouvent la connexion elle-même (`tests/test_explorer_authentication.py`) : le jeton gardé en mémoire seulement, la déconnexion, l'expiration, un rôle insuffisant, le bandeau de la démonstration. Une erreur dans la console du navigateur, refus de la politique de contenu compris, fait échouer le test.
 
-Les sources sont dans `ui/src/` : `graph.ts` déduit les liens, la chaîne d'un nœud et ce dont il dépend, `route.ts` lit et écrit l'adresse, `CoverageNote.tsx` écrit la couverture d'un incident ou d'une remontée, `TraceView.tsx` tient le mode Remonter, `Graph.tsx` dessine les colonnes et trace les liens en SVG.
+Les sources sont dans `ui/src/` : `auth.ts` tient la connexion, `graph.ts` déduit les liens, la chaîne d'un nœud et ce dont il dépend, `route.ts` lit et écrit l'adresse, `CoverageNote.tsx` écrit la couverture d'un incident ou d'une remontée, `TraceView.tsx` tient le mode Remonter, `Graph.tsx` dessine les colonnes et trace les liens en SVG.
 
 ## Limites connues
 
@@ -69,4 +80,5 @@ Les sources sont dans `ui/src/` : `graph.ts` déduit les liens, la chaîne d'un 
 - Le mode Remonter part des 60 réponses les plus récentes. Une réponse plus ancienne s'y ouvre par son adresse, ou depuis sa page ; le destinataire qui n'a que la référence de son message la retrouve par l'[API de lecture](lecture.md#remonter-dune-réponse-à-ses-sources).
 - Les heures sont en UTC.
 - L'interface est en français, en thème clair, et n'a pas encore passé d'audit d'accessibilité.
-- L'explorateur n'a pas de contrôle d'accès : il est fait, à ce stade, pour la boucle locale.
+- Le point de jeton de l'émetteur doit être sur son origine : c'est la seule que la politique de sécurité du contenu laisse joindre.
+- Recharger la page refait l'aller-retour vers l'émetteur : le jeton n'est gardé nulle part.

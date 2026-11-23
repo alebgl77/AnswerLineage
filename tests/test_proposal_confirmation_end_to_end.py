@@ -38,6 +38,7 @@ from answerlineage_api.store.graph import (
 from answerlineage_workers.destination import parse_destination
 from answerlineage_workers.queue import run_worker
 from answerlineage_workers.webhooks import Webhook
+from api.tests.issuer import authentication, signed_in
 from tests.test_webhooks_end_to_end import Receiver, in_service, until
 from workers.tests.catalog import serving
 from workers.tests.dbt import CUSTOMERS, T0, WAREHOUSE, failing
@@ -50,8 +51,10 @@ QUIET_SECONDS = 1.5
 
 @pytest.fixture
 async def api(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://127.0.0.1", headers=signed_in()
+    ) as client:
         yield client
 
 

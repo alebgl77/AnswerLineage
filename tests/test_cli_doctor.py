@@ -22,7 +22,9 @@ from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
+from answerlineage_api.auth.roles import PERSON_ROLES
 from answerlineage_api.store.engine import create_engine
+from answerlineage_cli.client import ENV_TOKEN
 from answerlineage_cli.doctor import ANOMALIES
 from answerlineage_cli.exits import Exit
 from answerlineage_workers import queue
@@ -31,10 +33,18 @@ from answerlineage_workers.queue import process_batch
 from answerlineage_workers.silence import check_silent_emitters
 from answerlineage_workers.webhooks import Webhook, keep_in_service
 from api.tests.events import run_event
+from api.tests.issuer import TEST_ISSUER, authentication, signed_in
 from cli.tests.fakes import HTML, run
 from proxy.tests.conftest import running
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+
+@pytest.fixture(autouse=True)
+def command_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La commande présente le jeton d'une personne qui a tous les rôles de personne."""
+    monkeypatch.setenv(ENV_TOKEN, TEST_ISSUER.token(*PERSON_ROLES))
+
 
 REPORT = {
     "emitter": "mcp://entrepot",
@@ -55,13 +65,15 @@ def explorer(tmp_path: Path) -> Path:
 
 @asynccontextmanager
 async def served(engine: AsyncEngine, explorer: Path | None) -> AsyncIterator[str]:
-    async with running(create_app(engine, ui_directory=explorer)) as url:
+    async with running(
+        create_app(engine, ui_directory=explorer, authentication=authentication())
+    ) as url:
         yield url
 
 
 async def feed(url: str, *, process: AsyncEngine | None = None) -> None:
     """Un appel d'outil et le relevé de son émetteur, par l'API ; les workers passent ou non."""
-    async with httpx.AsyncClient(base_url=url) as client:
+    async with httpx.AsyncClient(base_url=url, headers=signed_in()) as client:
         assert (await client.post("/api/v1/lineage", json=run_event())).status_code == 201
         assert (await client.post("/api/v1/coverage", json=REPORT)).status_code == 201
     if process is not None:
@@ -259,7 +271,7 @@ async def test_webhooks_left_behind_are_named(
     webhook = Webhook(parse_destination("https://recepteur.interne/hooks"), "x" * 32)
     await keep_in_service(engine, webhook)
     async with served(engine, explorer) as url:
-        async with httpx.AsyncClient(base_url=url) as client:
+        async with httpx.AsyncClient(base_url=url, headers=signed_in()) as client:
             declared = await client.post(
                 "/api/v1/incidents",
                 json={

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
 from api.tests.events import run_event
+from api.tests.issuer import authentication, signed_in
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -38,9 +39,16 @@ async def call(
         headers["sec-fetch-site"] = fetch_site
     if navigation:
         headers |= {"sec-fetch-mode": "navigate", "sec-fetch-dest": "document"}
-    app = create_app(engine, allowed_hosts=allowed_hosts, allowed_origins=allowed_origins)
+    app = create_app(
+        engine,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+        authentication=authentication(),
+    )
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8000") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://127.0.0.1:8000", headers=signed_in()
+    ) as client:
         return await client.request(method, path, headers=headers, json=json)
 
 
@@ -162,9 +170,9 @@ def test_a_malformed_host_or_origin_stops_the_application_from_starting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with pytest.raises(ValueError, match="hôte"):
-        create_app(allowed_hosts=["exemple.fr:8000"])
+        create_app(allowed_hosts=["exemple.fr:8000"], authentication=authentication())
     with pytest.raises(ValueError, match="origine"):
-        create_app(allowed_origins=["exemple.fr"])
+        create_app(allowed_origins=["exemple.fr"], authentication=authentication())
     monkeypatch.setenv("ANSWERLINEAGE_ALLOWED_HOSTS", "http://exemple.fr")
     with pytest.raises(ValueError, match="ANSWERLINEAGE_ALLOWED_HOSTS"):
-        create_app()
+        create_app(authentication=authentication())

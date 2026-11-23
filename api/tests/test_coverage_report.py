@@ -19,6 +19,7 @@ from answerlineage_api.ingest.coverage import (
     MAX_WINDOW,
     validate_report,
 )
+from api.tests.issuer import authentication, signed_in
 
 COVERAGE = "/api/v1/coverage"
 RECEIVED = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
@@ -211,8 +212,10 @@ def test_every_fault_of_a_report_is_given_at_once() -> None:
 
 @pytest.fixture
 async def client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         yield client
 
 
@@ -286,8 +289,10 @@ async def test_two_reports_of_one_window_give_the_same_state_in_either_order(
     second = recent(calls_seen=12, events_emitted=9, events_lost=3, uninspected=2)
     states = []
     for order in ((first, second), (second, first)):
-        transport = httpx.ASGITransport(app=create_app(engine))
-        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+        transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://localhost", headers=signed_in()
+        ) as client:
             answers = [(await client.post(COVERAGE, json=body)).json() for body in order]
         states.append(await table(engine, "coverage_report"))
         # La réponse rend l'état fusionné de la fenêtre.
@@ -318,8 +323,10 @@ async def test_corrected_reports_of_one_window_merge_into_the_last_in_any_order_
     ]
     states = []
     for order in orders:
-        transport = httpx.ASGITransport(app=create_app(engine))
-        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+        transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://localhost", headers=signed_in()
+        ) as client:
             answers = [(await client.post(COVERAGE, json=body)).json() for body in order]
         assert answers[-1] == corrected[-1]
         states.append(await table(engine, "coverage_report"))
@@ -368,8 +375,10 @@ async def test_a_window_first_received_in_another_month_merges_into_its_line(
 @pytest.mark.anyio
 async def test_reports_sent_together_do_not_lose_one_another(engine: AsyncEngine) -> None:
     bodies = [recent(calls_seen=count, events_emitted=count, events_lost=0) for count in range(20)]
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         statuses = await asyncio.gather(*(client.post(COVERAGE, json=body) for body in bodies))
     assert {response.status_code for response in statuses} == {201}
     [stored] = await table(engine, "coverage_report")
@@ -422,8 +431,12 @@ async def test_an_unreadable_body_is_refused_like_any_ingestion(
 @pytest.mark.integration
 @pytest.mark.anyio
 async def test_a_report_body_beyond_the_maximal_size_is_refused(engine: AsyncEngine) -> None:
-    transport = httpx.ASGITransport(app=create_app(engine, max_body_bytes=64))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(
+        app=create_app(engine, max_body_bytes=64, authentication=authentication())
+    )
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         response = await client.post(COVERAGE, json=recent())
     assert response.status_code == 413
     assert response.json() == {"error": "body_too_large"}

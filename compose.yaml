@@ -52,9 +52,15 @@ services:
 
   # L'API n'accepte que la boucle locale dans Host : aucun autre nom, que le
   # réseau pourrait résoudre ailleurs. Son journal d'accès, qui écrirait les
-  # paramètres des adresses demandées, est coupé.
+  # paramètres des adresses demandées, est coupé. Son authentification OIDC est
+  # désactivée, par ce réglage nommé et pour la démonstration seule : l'API refuse
+  # alors de démarrer si elle accepte un autre nom que la boucle locale, et
+  # l'explorateur l'affiche dans un bandeau.
   api:
     <<: *answerlineage
+    environment:
+      ANSWERLINEAGE_DATABASE_URL: postgresql://answerlineage:answerlineage@postgres:5432/answerlineage
+      ANSWERLINEAGE_AUTH: disabled
     command:
       - uvicorn
       - --factory
@@ -74,7 +80,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/openapi.json', timeout=2)"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/live', timeout=2)"
       interval: 2s
       timeout: 3s
       retries: 30

@@ -19,11 +19,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
+from answerlineage_api.auth.roles import Role
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import ProxySettings, SqlTool
 from answerlineage_proxy.fingerprint import FingerprintKey
 from answerlineage_proxy.sink import MemorySink
 from answerlineage_workers.queue import process_batch
+from api.tests.issuer import TEST_ISSUER, authentication
 from proxy.tests.conftest import MODERN_META, TOOL_RESULT, exchange, running, tool_call
 from proxy.tests.oauth import RESOURCE, RESOURCE_HOST, ProtectedMcpServer, forge
 
@@ -35,6 +37,8 @@ BEARER = "canari-jeton-9f27c1"
 COOKIE = "canari-cookie-55aa"
 PARAMETER = "canari-parametre-71be"
 IN_URL = "canari-url-0c4d"
+# Le sujet du jeton que l'appelant de l'API présente.
+API_CALLER = "canari-appelant-api-8b2e"
 ARGUMENT = "canari-argument-3e88"
 # Le résultat de l'outil est du contenu, au même titre que son argument.
 CANARIES = (BEARER, COOKIE, PARAMETER, IN_URL, ARGUMENT, "canari", "Séville", "Il fait beau")
@@ -114,8 +118,15 @@ async def test_a_token_crosses_the_whole_path_without_leaving_a_trace(
         assert len(events) == 1
         seen.append(json.dumps(events, ensure_ascii=False))
 
-        transport = httpx.ASGITransport(app=create_app(engine))
-        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as api:
+        # Le jeton de l'appelant de l'API, autre que celui de l'agent : lui non plus ne
+        # laisse aucune trace.
+        api_token = TEST_ISSUER.token(*Role, sub=API_CALLER)
+        transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://localhost",
+            headers={"authorization": f"Bearer {api_token}"},
+        ) as api:
             ingested = await api.post("/api/v1/lineage/batch", json=events)
             assert ingested.json() == {"accepted": 1, "duplicates": 0, "rejected": []}
             while not (await process_batch(engine)).empty:
@@ -138,6 +149,6 @@ async def test_a_token_crosses_the_whole_path_without_leaving_a_trace(
     assert events[0]["job"]["facets"]["sql"]["query"].endswith("WHERE devise = ?")
 
     seen.append(caplog.text)
-    for canary in canaries:
+    for canary in (*canaries, api_token, API_CALLER):
         for place in seen:
             assert canary not in place

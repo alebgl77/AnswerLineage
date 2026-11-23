@@ -34,7 +34,9 @@ from answerlineage_api.app import create_app
 from answerlineage_proxy import cli
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import ProxySettings
+from answerlineage_proxy.credentials import ENV_CLIENT_SECRET
 from answerlineage_proxy.quarantine import QuarantineScope
+from api.tests.issuer import EMITTER_CLIENT, EMITTER_SECRET, LocalIssuer, serving_issuer
 from proxy.tests.conftest import FakeMcpServer, exchange, running, stdio_server, tool_call
 from proxy.tests.stdio_server import RESULT_TEXT
 from tests.test_outbox_chaos import reserved_port, served
@@ -63,17 +65,26 @@ CALL = json.dumps(
 ).encode()
 
 
+def identity(issuer: LocalIssuer) -> list[str]:
+    """Les options qui donnent au proxy son jeton envers l'API ; le secret, par l'environnement."""
+    return ["--oidc-issuer", issuer.url, "--oidc-client-id", EMITTER_CLIENT]
+
+
 @asynccontextmanager
-async def http_proxy(api_url: str) -> AsyncIterator[tuple[McpProxy, str]]:
+async def http_proxy(api_url: str, issuer: LocalIssuer) -> AsyncIterator[tuple[McpProxy, str]]:
     """Un proxy HTTP réglé comme la ligne de commande le règle, servi devant un faux serveur."""
     async with running(FakeMcpServer()) as upstream_url:
         options = ["--upstream", upstream_url, "--api-url", api_url, *INTERVAL]
-        options += ["--outbox-flush-seconds", "0"]
+        options += ["--outbox-flush-seconds", "0", *identity(issuer)]
         outbox = cli.outbox_settings_from_args(options, {})
-        sync = cli.quarantine_sync(cli.quarantine_settings_from_args(options, {}, outbox))
+        secret = {ENV_CLIENT_SECRET: EMITTER_SECRET}
+        tokens = cli.token_source(cli.credentials_from_args(options, secret, outbox))
+        sync = cli.quarantine_sync(cli.quarantine_settings_from_args(options, {}, outbox), tokens)
         assert sync is not None
         proxy = McpProxy(
-            ProxySettings.create(upstream_url, "entrepot"), cli.event_sink(outbox), quarantine=sync
+            ProxySettings.create(upstream_url, "entrepot"),
+            cli.event_sink(outbox, tokens),
+            quarantine=sync,
         )
         async with running(proxy, transparent=True) as proxy_url:
             yield proxy, proxy_url
@@ -97,7 +108,7 @@ class StdioProxy:
 
 
 @asynccontextmanager
-async def stdio_proxy(api_url: str, record: Path) -> AsyncIterator[StdioProxy]:
+async def stdio_proxy(api_url: str, record: Path, issuer: LocalIssuer) -> AsyncIterator[StdioProxy]:
     record.mkdir(exist_ok=True)
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -110,12 +121,13 @@ async def stdio_proxy(api_url: str, record: Path) -> AsyncIterator[StdioProxy]:
         *INTERVAL,
         "--outbox-flush-seconds",
         "0",
+        *identity(issuer),
         "--",
         *stdio_server("--record", str(record)),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env=dict(os.environ),
+        env={**os.environ, ENV_CLIENT_SECRET: EMITTER_SECRET},
     )
     proxy = StdioProxy(process)
 
@@ -152,10 +164,11 @@ async def test_a_quarantine_is_known_by_each_proxy_within_thirty_seconds_then_li
     engine: AsyncEngine, tmp_path: Path
 ) -> None:
     async with (
-        running(create_app(engine)) as api_url,
-        http_proxy(api_url) as (proxy, _),
-        stdio_proxy(api_url, tmp_path / "stdio") as stdio,
-        httpx.AsyncClient(base_url=api_url, trust_env=False) as client,
+        serving_issuer() as (issuer, _),
+        running(create_app(engine, authentication=issuer.authentication())) as api_url,
+        http_proxy(api_url, issuer) as (proxy, _),
+        stdio_proxy(api_url, tmp_path / "stdio", issuer) as stdio,
+        httpx.AsyncClient(base_url=api_url, trust_env=False, headers=issuer.headers()) as client,
     ):
         # Les deux proxys se sont synchronisés une première fois : aucune quarantaine.
         await waited(lambda: perimeter(proxy) == (), time.monotonic())
@@ -211,8 +224,9 @@ async def test_an_api_down_at_startup_leaves_each_proxy_relaying_in_observe_mode
         api_url = f"http://127.0.0.1:{sock.getsockname()[1]}"
         started = time.monotonic()
         async with (
-            http_proxy(api_url) as (proxy, proxy_url),
-            stdio_proxy(api_url, tmp_path / "stdio") as stdio,
+            serving_issuer() as (issuer, _),
+            http_proxy(api_url, issuer) as (proxy, proxy_url),
+            stdio_proxy(api_url, tmp_path / "stdio", issuer) as stdio,
         ):
             # Le proxy a démarré et relaie, sans attendre l'API.
             relayed = await exchange("POST", proxy_url + "/mcp", content=tool_call())
@@ -225,8 +239,10 @@ async def test_an_api_down_at_startup_leaves_each_proxy_relaying_in_observe_mode
             await waited(lambda: stdio.said("mode observer, aucun périmètre connu") == 1, started)
 
             # L'API revient, avec une quarantaine active : chaque proxy se synchronise.
-            async with served(create_app(engine), sock):
-                async with httpx.AsyncClient(base_url=api_url, trust_env=False) as client:
+            async with served(create_app(engine, authentication=issuer.authentication()), sock):
+                async with httpx.AsyncClient(
+                    base_url=api_url, trust_env=False, headers=issuer.headers()
+                ) as client:
                     declared = await client.post("/api/v1/incidents", json=DECLARATION)
                     incident_id = declared.json()["id"]
                     activated = await client.post(

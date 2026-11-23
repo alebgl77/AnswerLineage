@@ -33,6 +33,7 @@ from answerlineage_proxy.config import ProxySettings, SqlTool
 from answerlineage_proxy.fingerprint import FingerprintKey
 from answerlineage_proxy.sink import MemorySink
 from answerlineage_workers.queue import process_batch
+from api.tests.issuer import authentication, signed_in
 from proxy.tests.conftest import (
     MODERN_META,
     FakeMcpServer,
@@ -329,8 +330,10 @@ async def test_an_agent_behind_the_proxy_gives_a_combined_capture_and_a_complete
 
     assert conformant(judge(played.events, profile="adapter", received_at=RECEIVED_AT))
 
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as api:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as api:
         ingested = await api.post("/api/v1/lineage/batch", json=played.events)
         assert ingested.json() == {"accepted": 4, "duplicates": 0, "rejected": []}
         while not (await process_batch(engine)).empty:

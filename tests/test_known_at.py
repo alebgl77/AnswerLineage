@@ -20,6 +20,7 @@ from answerlineage_api.app import create_app
 from answerlineage_api.lineage.trace import answer_key
 from answerlineage_corpus.events import agent_event, answer_delivered, dataset_read, tool_event
 from answerlineage_workers.queue import process_batch
+from api.tests.issuer import authentication, signed_in
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -63,8 +64,8 @@ def tool_call(parent: UUID, index: int, table: tuple[str, str]) -> dict[str, Any
 
 
 def api(engine: AsyncEngine) -> httpx.AsyncClient:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    return httpx.AsyncClient(transport=transport, base_url="http://localhost")
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    return httpx.AsyncClient(transport=transport, base_url="http://localhost", headers=signed_in())
 
 
 async def receive(engine: AsyncEngine, events: list[dict[str, Any]]) -> datetime:

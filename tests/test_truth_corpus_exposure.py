@@ -17,13 +17,23 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
+from answerlineage_api.auth.roles import PERSON_ROLES
+from answerlineage_cli.client import ENV_TOKEN
 from answerlineage_cli.exits import Exit
 from answerlineage_corpus.scenarios import Scenario, load_corpus
+from api.tests.issuer import TEST_ISSUER, authentication
 from cli.tests.fakes import Run, run
 from proxy.tests.conftest import running
 from tests.test_corpus_to_graph import api, ingest
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+
+@pytest.fixture(autouse=True)
+def command_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La commande présente le jeton d'une personne qui a tous les rôles de personne."""
+    monkeypatch.setenv(ENV_TOKEN, TEST_ISSUER.token(*PERSON_ROLES))
+
 
 EXPOSED = [scenario for scenario in load_corpus() if scenario.exposure is not None]
 
@@ -98,7 +108,7 @@ async def test_the_command_reads_the_ranking_of_a_scenario_in_text_and_in_json(
     direct = await ranked(engine, scenario)
     at = scenario.exposure.at.isoformat()
 
-    async with running(create_app(engine)) as url:
+    async with running(create_app(engine, authentication=authentication())) as url:
         text = await command(monkeypatch, url, "exposure", "--at", at)
         shown = await command(
             monkeypatch, url, "exposure", "--at", at, "--limit", "200", "--format", "json"

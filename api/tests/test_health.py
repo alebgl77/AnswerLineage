@@ -25,6 +25,7 @@ from answerlineage_api.ingest.dead_letters import bury
 from answerlineage_api.store.engine import create_engine
 from answerlineage_api.store.migrate import downgrade, upgrade
 from api.tests.events import run_event
+from api.tests.issuer import authentication, signed_in
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -39,8 +40,8 @@ REPORT = {
 
 
 def client(engine: AsyncEngine) -> httpx.AsyncClient:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    return httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1")
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    return httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1", headers=signed_in())
 
 
 async def state(engine: AsyncEngine) -> dict[str, Any]:

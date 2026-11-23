@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import API_VERSION, create_app
 from api.tests.events import minimal_event, mutated, run_event
+from api.tests.issuer import authentication, signed_in
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -24,8 +25,10 @@ SINGLE = "/api/v1/lineage"
 
 @pytest.fixture
 async def client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         yield client
 
 
@@ -135,8 +138,12 @@ async def test_body_that_is_not_a_json_array_is_refused(
 
 
 async def test_batch_larger_than_the_limit_is_refused(engine: AsyncEngine) -> None:
-    transport = httpx.ASGITransport(app=create_app(engine, max_batch_events=3))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(
+        app=create_app(engine, max_batch_events=3, authentication=authentication())
+    )
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         allowed = await client.post(BATCH, json=[run_event(i) for i in range(3)])
         refused = await client.post(BATCH, json=[run_event(i) for i in range(10, 14)])
     assert allowed.status_code == 202
@@ -170,8 +177,12 @@ async def test_a_body_beyond_the_maximum_size_is_refused_and_nothing_is_recorded
 ) -> None:
     events = [run_event(index) for index in range(20)]
     content = json.dumps(events).encode()
-    transport = httpx.ASGITransport(app=create_app(engine, max_body_bytes=len(content) - 1))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(
+        app=create_app(engine, max_body_bytes=len(content) - 1, authentication=authentication())
+    )
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         plain = await client.post(BATCH, content=content)
         compressed = await client.post(
             BATCH, content=gzip.compress(content), headers={"content-encoding": "gzip"}
@@ -237,13 +248,14 @@ async def test_api_is_versioned_and_described_by_an_openapi_document(
     assert all(path.startswith("/api/v1/") for path in document["paths"])
 
     batch = document["paths"][BATCH]["post"]
-    assert set(batch["responses"]) == {"202", "400", "413", "415", "422"}
+    assert set(batch["responses"]) == {"202", "400", "401", "403", "413", "415", "422", "503"}
+    assert batch["security"] == [{"bearer": ["emitter"]}]
     assert batch["requestBody"]["content"]["application/json"]["schema"] == {
         "type": "array",
         "items": {"$ref": "#/components/schemas/RunEvent"},
     }
     single = document["paths"][SINGLE]["post"]
-    assert set(single["responses"]) == {"201", "400", "413", "415", "422"}
+    assert set(single["responses"]) == {"201", "400", "401", "403", "413", "415", "422", "503"}
 
     schemas = document["components"]["schemas"]
     run_event_schema = schemas["RunEvent"]
@@ -258,18 +270,20 @@ async def test_application_opens_and_closes_its_own_database_connection(
     database: URL, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANSWERLINEAGE_DATABASE_URL", database.render_as_string(hide_password=False))
-    app = create_app()
+    app = create_app(authentication=authentication())
     assert app.state.engine is None
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://localhost", headers=signed_in()
+        ) as client:
             response = await client.post(SINGLE, json=minimal_event())
         assert response.status_code == 201
     assert app.state.engine is None
 
 
 async def test_provided_engine_is_left_open(engine: AsyncEngine) -> None:
-    app = create_app(engine)
+    app = create_app(engine, authentication=authentication())
     async with app.router.lifespan_context(app):
         pass
     async with engine.connect() as conn:

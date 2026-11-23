@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from answerlineage_api.app import create_app
 from answerlineage_workers.queue import BatchResult, process_batch
 from api.tests.events import facet, run_event
+from api.tests.issuer import authentication, signed_in
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -29,8 +30,8 @@ async def rows(engine: AsyncEngine, sql: str) -> list[tuple[Any, ...]]:
 
 
 def api(engine: AsyncEngine) -> httpx.AsyncClient:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    return httpx.AsyncClient(transport=transport, base_url="http://localhost")
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    return httpx.AsyncClient(transport=transport, base_url="http://localhost", headers=signed_in())
 
 
 def reading(index: int, name: str, **overrides: Any) -> dict[str, Any]:

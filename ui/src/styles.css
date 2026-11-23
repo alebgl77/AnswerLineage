@@ -201,6 +201,42 @@ nav a[aria-current="page"] {
   border-color: var(--recipient);
 }
 
+/* La démonstration, sans authentification : un bandeau que l'on ne peut pas manquer. */
+.banner {
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #7c2d12;
+  background: #ffedd5;
+  border: 1px solid #ea580c;
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+
+.access {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.access .notice {
+  flex: 1 1 20rem;
+}
+
+.access button,
+.signout {
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
 .graph {
   position: relative;
   display: grid;

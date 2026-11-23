@@ -23,6 +23,7 @@ from answerlineage_api.app import create_app
 from answerlineage_api.incidents.models import MAX_DATASETS, validate_declaration
 from answerlineage_api.lineage.paging import digest
 from answerlineage_api.lineage.trace import answer_key
+from api.tests.issuer import authentication, signed_in
 
 CANARY = "canari-5d1e"
 DECLARATION: dict[str, Any] = {
@@ -223,8 +224,10 @@ def test_the_perimeter_holds_up_to_its_bound() -> None:
 
 @pytest.fixture
 async def client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         yield client
 
 

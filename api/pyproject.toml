@@ -21,6 +21,7 @@ classifiers = [
 dependencies = [
     "alembic>=1.16",
     "fastapi>=0.121",
+    "pyjwt[crypto]>=2.10",
     "psycopg[binary]>=3.2",
     "sqlalchemy[asyncio]>=2.0.40",
     "uvicorn>=0.38",

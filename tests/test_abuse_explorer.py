@@ -17,13 +17,12 @@ import pytest
 from playwright.async_api import Browser, Error, async_playwright
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from answerlineage_api.app import create_app
+from answerlineage_api.auth.roles import Role
 from answerlineage_corpus.abuse import Base, Case, healthy_play, load_abuse_corpus, play_of
 from answerlineage_corpus.abuse_requests import Play
 from answerlineage_corpus.abuse_verdict import Observation, conclude, judge, judge_healthy
-from proxy.tests.conftest import running
 from tests.test_abuse_corpus import ARCHIVE, drain, quiet_client, settle, tables
-from tests.test_explorer import DIST, opened, unavailable
+from tests.test_explorer import DIST, opened, served, unavailable
 
 pytestmark = [pytest.mark.e2e, pytest.mark.integration, pytest.mark.anyio]
 
@@ -65,11 +64,13 @@ async def observe_explorer(
         unavailable("L'explorateur n'est pas construit : lancer make ui.")
     quiet_client(caplog)
     with caplog.at_level(logging.DEBUG):
-        async with running(create_app(engine, ui_directory=DIST)) as url:
-            async with httpx.AsyncClient(base_url=url, trust_env=False) as client:
+        async with served(engine) as (url, issuer, _):
+            async with httpx.AsyncClient(
+                base_url=url, trust_env=False, headers=issuer.headers(Role.EMITTER)
+            ) as client:
                 await client.post("/api/v1/lineage/batch", json=list(play.seed))
             await drain(engine)
-            page, errors = await opened(browser, f"{url}/{play.path}")
+            page, errors = await opened(browser, f"{url}{play.path}")
             # La page a fini de lire l'API : plus aucun message d'attente.
             await page.wait_for_load_state("networkidle")
             await page.wait_for_function("() => !document.body.innerText.includes('Chargement')")

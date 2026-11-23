@@ -22,6 +22,7 @@ from sqlalchemy.pool import NullPool
 
 from answerlineage_api.app import create_app
 from answerlineage_api.openapi import render
+from api.tests.issuer import authentication, signed_in
 
 PUBLISHED = Path(__file__).resolve().parents[2] / "spec" / "openapi" / "answerlineage-v1.json"
 # « Conformément à son schéma » : jamais d'erreur du serveur, statut documenté,
@@ -45,8 +46,12 @@ def api_schema(database: URL) -> Iterator[Any]:
     engine = create_async_engine(database, poolclass=NullPool, hide_parameters=True)
     try:
         # Le client de test se présente sous le nom « testserver ».
-        app = create_app(engine, allowed_hosts=["testserver"])
-        yield schemathesis.openapi.from_asgi("/api/v1/openapi.json", app)
+        app = create_app(engine, allowed_hosts=["testserver"], authentication=authentication())
+        loaded = schemathesis.openapi.from_asgi("/api/v1/openapi.json", app)
+        # Le jeton d'un appelant qui a tous les rôles est posé par le test : aucun autre
+        # en-tête d'autorisation n'est généré.
+        loaded.config.generation.update(with_security_parameters=False)
+        yield loaded
     finally:
         asyncio.run(engine.dispose())
 
@@ -62,4 +67,8 @@ schema = schemathesis.pytest.from_fixture("api_schema")
     suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
 )
 def test_every_route_answers_as_its_schema_says(case: Any) -> None:
-    case.call_and_validate(checks=CONFORMANCE)
+    """Avec le jeton d'un appelant qui a tous les rôles : chaque route répond comme son
+    schéma le dit, et une requête que la route accepterait n'est jamais refusée pour l'accès."""
+    answered = case.call_and_validate(checks=CONFORMANCE, headers=signed_in())
+    if case.meta is not None and not case.meta.generation.mode.is_negative:
+        assert answered.status_code not in (401, 403), case.operation.label

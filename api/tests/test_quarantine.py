@@ -28,6 +28,7 @@ from answerlineage_api.incidents import quarantine
 from answerlineage_api.incidents.models import ActiveQuarantines, validate_quarantine
 from answerlineage_api.incidents.quarantine import Diffusion, version_of
 from answerlineage_api.store import schema
+from api.tests.issuer import authentication, signed_in
 from api.tests.test_incidents import DECLARATION, declaration, first_dataset
 
 CANARY = "canari-6b2f"
@@ -37,8 +38,10 @@ WARN = {"mode": "warn"}
 
 @pytest.fixture
 async def client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         yield client
 
 

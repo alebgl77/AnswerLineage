@@ -2,6 +2,8 @@
 
 L'API de lecture interroge le graphe de lignage. Elle est versionnée sous `/api/v1`, décrite par la même spécification OpenAPI que l'API d'ingestion, et ne renvoie jamais de contenu : des noms, des empreintes, des heures.
 
+Chaque route exige un jeton porteur OIDC et un rôle de personne : lecteur, responsable de données, responsable d'agent, gestionnaire d'incident, auditeur ou administrateur ; un émetteur n'y a pas accès ([Authentification et rôles](securite/authentification.md)). Sans jeton, l'appel reçoit `401` ; avec un rôle qui n'ouvre pas la route, `403`.
+
 | Route | Réponse |
 | --- | --- |
 | `GET /api/v1/answers?channel=…&message_ref=…` | Les réponses d'agents diffusées par un message |
@@ -497,7 +499,7 @@ Les réponses vont des plus récentes aux plus anciennes. Plusieurs réponses pe
 
 ## Limites connues
 
-- L'API n'authentifie pas ses appelants : elle est faite, à ce stade, pour écouter sur la boucle locale ou derrière un contrôle d'accès. Elle refuse déjà les requêtes dont l'hôte ou l'origine n'est pas attendu ([réglages](ingestion.md#hôtes-et-origines-attendus)).
+- Un rôle ouvre une route entière : la lecture ne se restreint pas encore aux jeux de données, aux agents ou aux espaces de noms d'une personne.
 - Un appel d'outil n'est rattaché à une réponse que si son événement désigne le run de l'agent comme parent.
 - La propagation s'arrête au niveau table : elle renvoie tout lecteur de la fenêtre, y compris ceux qui n'ont lu que des colonnes, des lignes ou une version saines.
 - Elle ne suit pas encore ce qu'un run touché a écrit : une réponse fondée sur une note ou une table dérivée de la donnée fausse n'est pas renvoyée.

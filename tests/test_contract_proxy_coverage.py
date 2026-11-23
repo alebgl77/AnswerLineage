@@ -15,6 +15,7 @@ from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import ProxySettings
 from answerlineage_proxy.coverage import CoverageWindows, Report
 from answerlineage_proxy.sink import MemorySink
+from api.tests.issuer import authentication, signed_in
 
 
 def reports_of_a_proxy(started_at: datetime, instance: str | None = None) -> list[Report]:
@@ -59,8 +60,10 @@ async def test_the_last_window_of_a_stopped_proxy_is_accepted() -> None:
 
 @pytest.fixture
 async def client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         yield client
 
 

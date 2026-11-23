@@ -60,6 +60,8 @@ Rien n'écoute hors de la boucle locale : seul le port de l'API est publié, sur
 
 Le journal d'accès de l'API est coupé : il écrirait les paramètres des adresses demandées, qui peuvent porter une donnée.
 
+L'authentification OIDC de l'API est désactivée, par un réglage nommé que `compose.yaml` pose sur le service `api` : `ANSWERLINEAGE_AUTH=disabled`. Hors de ce réglage, l'API ne démarre pas sans émetteur OIDC. Désactivée, elle refuse de démarrer si elle accepte un autre nom ou une autre origine que la boucle locale, et l'explorateur le dit dans un bandeau ([Authentification et rôles](securite/authentification.md#la-démonstration)). Le contrôle de santé du service `api` interroge la sonde de vie, `GET /api/v1/live`, ouverte sans jeton.
+
 Le pipeline rejoue la démonstration à chaque merge request :
 
 - les commandes du [guide de démarrage](demarrage.md) se jouent dans l'ordre depuis un clone neuf, et le premier lignage est là dans le budget de cinq minutes ([ci-dessous](#le-guide-de-démarrage-rejoué)) ;
@@ -119,6 +121,6 @@ La politique du dépôt (`make policy`) contrôle tout fichier YAML du dépôt q
 
 ## Limites connues
 
-- La démonstration n'a ni authentification ni chiffrement : elle est faite pour un poste, pas pour un serveur partagé.
+- La démonstration n'a ni authentification ni chiffrement : elle est faite pour un poste, pas pour un serveur partagé. L'API ne voit pas l'adresse sur laquelle elle écoute : c'est la publication du port sur `127.0.0.1`, que la politique des fichiers compose et `scripts/check_demo.sh` vérifient, qui la garde sur la boucle locale.
 - Le mot de passe de la base est écrit dans `compose.yaml`. Il ne protège rien d'autre que cette base, qui n'est pas publiée.
 - Le proxy MCP n'y tourne pas : les événements viennent de l'entreprise synthétique, pas d'agents réels.

@@ -4,7 +4,7 @@ Un responsable de données constate qu'une donnée est fausse : une table mal ch
 
 Un test de données en échec, émis en OpenLineage par dbt ou un autre outil, [propose un incident](#incidents-proposés-par-un-test-de-qualité) sur la table et la colonne qu'il accuse : la proposition attend un humain, rien n'en part avant qu'il la confirme.
 
-La déclaration se fait par l'API (`POST /api/v1/incidents`) ou par la [ligne de commande](cli.md#answerlineage-incident) (`answerlineage incident declare`). Les [workers](workers.md#analyse-des-incidents) font l'analyse ; elle se lit sur l'incident (`GET /api/v1/incidents/{id}`, `answerlineage incident show`).
+La déclaration se fait par l'API (`POST /api/v1/incidents`) ou par la [ligne de commande](cli.md#answerlineage-incident) (`answerlineage incident declare`), avec le rôle de responsable de données, de gestionnaire d'incident ou d'administrateur ; toute personne qui a un rôle lit les incidents ([Authentification et rôles](securite/authentification.md#la-matrice-des-droits)). Les [workers](workers.md#analyse-des-incidents) font l'analyse ; elle se lit sur l'incident (`GET /api/v1/incidents/{id}`, `answerlineage incident show`).
 
 Pendant l'incident, le responsable peut aussi le [mettre en quarantaine](#quarantaine) : chaque proxy apprend alors le périmètre de l'incident, en moins de 30 secondes, pour agir sur les lectures de ces données.
 
@@ -385,7 +385,7 @@ curl http://127.0.0.1:8000/api/v1/incident-proposals/5b0f6a52-2c1e-4f0e-9d7b-8b4
 | `limit` | Propositions par page, de 1 à 100 ; `more` vaut `true` quand d'autres suivent | 20 |
 | `cursor` | La page suivante : la valeur de `next_cursor`, rendue telle quelle | aucun |
 
-La liste rend les plus récentes d'abord ; comme toute lecture du graphe, ces routes s'exécutent sous le [délai maximal des lectures](lecture.md#délai-maximal). Un identifiant inconnu répond `404` (`unknown_proposal`), un identifiant, un état ou un curseur mal formés `422`, sans être recopiés.
+Lire les propositions demande le rôle de lecteur, de responsable de données, de gestionnaire d'incident ou d'auditeur ; les confirmer ou les écarter, celui de responsable de données ou de gestionnaire d'incident ([la matrice des droits](securite/authentification.md#la-matrice-des-droits)). La liste rend les plus récentes d'abord ; comme toute lecture du graphe, ces routes s'exécutent sous le [délai maximal des lectures](lecture.md#délai-maximal). Un identifiant inconnu répond `404` (`unknown_proposal`), un identifiant, un état ou un curseur mal formés `422`, sans être recopiés.
 
 ### Confirmer ou écarter
 
@@ -426,7 +426,7 @@ Les signaux d'échec reçus il y a plus de 62 jours sont purgés, par lots : un 
 
 ### Bornes
 
-Un émetteur n'est pas authentifié : il peut envoyer des échecs en nombre. Chaque borne dit ce qu'elle écarte, par un compteur, jamais par une valeur.
+Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements : il peut envoyer des échecs en nombre, sur n'importe quel jeu. Chaque borne dit ce qu'elle écarte, par un compteur, jamais par une valeur.
 
 | Borne | Au-delà |
 | --- | --- |
@@ -439,9 +439,9 @@ Un émetteur n'est pas authentifié : il peut envoyer des échecs en nombre. Cha
 
 ## Ce qui n'existe pas encore
 
-- **L'authentification.** Ces routes n'authentifient pas leurs appelants, pas plus que le reste de l'API : elles sont faites pour la boucle locale ou un accès déjà contrôlé, et refusent les hôtes et les origines qu'elles n'attendent pas ([réglages](ingestion.md#hôtes-et-origines-attendus)). Les rôles et ce que chacun peut déclarer ou lire viendront avec l'authentification ; d'ici là, qui joint l'API peut mettre un incident en quarantaine ou la lever, et les proxys n'authentifient pas l'API qui leur donne le périmètre ([modèle de menaces](securite/modele-de-menaces.md#acceptations)).
+- **L'authentification de l'API par les proxys.** Chaque route exige un jeton et un rôle ([Authentification et rôles](securite/authentification.md)) : déclarer, mettre en quarantaine et lever reviennent au responsable de données, au gestionnaire d'incident et à l'administrateur ; les proxys lisent les périmètres avec le jeton d'un émetteur. Mais les proxys n'authentifient pas encore l'API qui leur donne le périmètre ([modèle de menaces](securite/modele-de-menaces.md#acceptations)).
 - **Ce que la quarantaine fait des lectures.** Les proxys connaissent le périmètre, sans encore annoter ni bloquer une lecture. Le périmètre se limite aux jeux de l'incident, sans les vues ni les tables dérivées connues du graphe.
-- **Le journal des quarantaines** : qui a activé ou levé, faute d'authentification. Les heures, le mode et le périmètre sont déjà gardés.
+- **Le journal des quarantaines** : qui a activé ou levé. L'API vérifie l'identité de l'appelant, mais ne la garde pas encore. Les heures, le mode et le périmètre sont déjà gardés.
 - **L'interface.** L'explorateur ne déclare pas encore d'incident ; l'API et la ligne de commande le font.
 - **La suite du cycle de vie.** Un incident reste `qualified` : ni modification, ni clôture, ni liste de rappel pour l'instant. Une déclaration fautive ne se corrige pas, elle se refait. Sa quarantaine se lève à la main.
 - **Les colonnes.** Le périmètre s'arrête aux tables, comme la propagation. Une [proposition](#incidents-proposés-par-un-test-de-qualité) nomme ses colonnes en échec, sans que la propagation s'en serve.

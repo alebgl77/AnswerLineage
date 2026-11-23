@@ -425,6 +425,19 @@ async def _proposals(reader: Reader) -> ProposalHealth:
     )
 
 
+class Liveness(BaseModel):
+    """Le processus de l'API répond : rien de plus."""
+
+    status: Literal["alive"] = Field(description="Toujours « alive ».")
+
+
+@router.get("/live", response_model=Liveness, summary="Sonde de vie, ouverte sans jeton")
+async def liveness() -> Liveness:
+    """Ne lit pas la base et ne dit rien de l'installation : la sonde d'un orchestrateur,
+    qui n'a pas de jeton. L'état détaillé (``/health``) demande un rôle d'exploitation."""
+    return Liveness(status="alive")
+
+
 @router.get(
     "/health",
     response_model=Health,

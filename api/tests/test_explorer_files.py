@@ -8,10 +8,15 @@ import httpx
 import pytest
 
 from answerlineage_api.app import create_app
+from answerlineage_api.auth import matrix
+from answerlineage_api.auth.matrix import Access
+from answerlineage_api.auth.roles import Role
 from answerlineage_api.headers import CONTENT_SECURITY_POLICY
+from api.tests.issuer import authentication, signed_in
 
 pytestmark = pytest.mark.anyio
 
+STRICT = authentication(explorer_client_id=None)
 SECURITY_HEADERS = (
     "content-security-policy",
     "x-content-type-options",
@@ -39,8 +44,13 @@ async def get(
     method: str = "GET",
     headers: dict[str, str] | None = None,
 ) -> httpx.Response:
-    transport = httpx.ASGITransport(app=create_app(ui_directory=ui_directory))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    # Sans client de l'explorateur chez l'émetteur : la politique n'ajoute aucune origine.
+    transport = httpx.ASGITransport(
+        app=create_app(ui_directory=ui_directory, authentication=STRICT)
+    )
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         return await client.request(method, path, headers=headers)
 
 
@@ -139,15 +149,23 @@ async def test_every_response_carries_the_security_headers(
     assert_secured(response)
 
 
-async def test_an_unexpected_failure_carries_the_security_headers() -> None:
-    app = create_app()
+async def test_an_unexpected_failure_carries_the_security_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(authentication=STRICT)
+    # Une route ajoutée après coup s'ouvre par la matrice, comme toute route.
+    monkeypatch.setitem(
+        matrix.ACCESS, ("GET", "/api/v1/panne"), Access(frozenset({Role.READER}), "Une panne.")
+    )
 
     @app.get("/api/v1/panne")
     async def failing() -> None:
         raise RuntimeError
 
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         response = await client.get("/api/v1/panne")
     assert response.status_code == 500
     assert_secured(response)
@@ -157,7 +175,7 @@ def test_a_directory_without_the_explorer_stops_the_application_from_starting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with pytest.raises(ValueError, match=r"index\.html"):
-        create_app(ui_directory=tmp_path)
+        create_app(ui_directory=tmp_path, authentication=authentication())
     monkeypatch.setenv("ANSWERLINEAGE_UI_DIR", str(tmp_path / "absent"))
     with pytest.raises(ValueError, match="ANSWERLINEAGE_UI_DIR"):
-        create_app()
+        create_app(authentication=authentication())

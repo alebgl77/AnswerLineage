@@ -25,6 +25,7 @@ from answerlineage_api.app import create_app
 from answerlineage_conformance import cli
 from answerlineage_conformance.canaries import Searcher, canaries_document, new_canaries
 from answerlineage_workers.queue import process_batch
+from api.tests.issuer import authentication, signed_in
 from tests.test_conformance_emitters import CHANNEL, MESSAGE_REF, RECEIVED_AT, T0, TABLE, play
 from tests.test_no_token_anywhere import dump
 
@@ -54,8 +55,10 @@ async def test_three_canaries_cross_the_whole_path_and_come_out_nowhere(
     with caplog.at_level(logging.DEBUG):
         played = await play(in_prompt, tool_result, answer)
 
-        transport = httpx.ASGITransport(app=create_app(engine))
-        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as api:
+        transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://localhost", headers=signed_in()
+        ) as api:
             ingested = await api.post("/api/v1/lineage/batch", json=played.events)
             assert ingested.json() == {"accepted": 4, "duplicates": 0, "rejected": []}
             while not (await process_batch(engine)).empty:

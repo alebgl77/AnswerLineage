@@ -24,6 +24,7 @@ from starlette.types import Message
 
 from answerlineage_api import identifiers
 from answerlineage_api.app import create_app
+from answerlineage_api.auth.roles import Role
 from answerlineage_api.identifiers import identifier_fault
 from answerlineage_api.ingest import body as ingest_body
 from answerlineage_api.ingest.body import (
@@ -33,6 +34,7 @@ from answerlineage_api.ingest.body import (
     nesting_depth,
 )
 from api.tests.events import facet, minimal_event, run_event
+from api.tests.issuer import authentication, signed_in
 
 BATCH = "/api/v1/lineage/batch"
 SINGLE = "/api/v1/lineage"
@@ -90,6 +92,8 @@ async def call(
         "headers": [
             (b"host", b"localhost"),
             (b"content-type", b"application/json"),
+            # Le jeton d'un émetteur : les bornes se jugent une fois l'accès accordé.
+            *((name.encode(), value.encode()) for name, value in signed_in(Role.EMITTER).items()),
             *((name.encode(), value.encode()) for name, value in headers),
         ],
         "client": ("127.0.0.1", 50000),
@@ -117,7 +121,7 @@ def gzipped(data: bytes) -> bytes:
 async def test_a_body_announced_beyond_the_maximum_is_refused_without_being_read(
     path: str,
 ) -> None:
-    app = create_app(max_body_bytes=4 * KIB)
+    app = create_app(max_body_bytes=4 * KIB, authentication=authentication())
     exchange = await call(
         app, endless(b"[" * KIB), headers=[("content-length", str(4 * KIB + 1))], path=path
     )
@@ -134,7 +138,7 @@ async def test_a_body_announced_beyond_the_maximum_is_refused_without_being_read
 async def test_reading_stops_as_soon_as_the_maximum_is_crossed(
     headers: list[tuple[str, str]],
 ) -> None:
-    app = create_app(max_body_bytes=4 * KIB)
+    app = create_app(max_body_bytes=4 * KIB, authentication=authentication())
     exchange = await call(app, endless(b" " * KIB), headers=headers, path=BATCH)
     assert (exchange.status, exchange.json()) == (413, {"error": "body_too_large"})
     # Quatre morceaux tiennent dans la borne, le cinquième la franchit : rien après.
@@ -143,7 +147,7 @@ async def test_reading_stops_as_soon_as_the_maximum_is_crossed(
 
 @pytest.mark.anyio
 async def test_a_body_at_the_maximum_is_read() -> None:
-    app = create_app(max_body_bytes=4 * KIB)
+    app = create_app(max_body_bytes=4 * KIB, authentication=authentication())
     exchange = await call(app, [b"{" + b" " * (4 * KIB - 1)])
     assert (exchange.status, exchange.json()) == (400, {"error": "invalid_json"})
 
@@ -151,10 +155,12 @@ async def test_a_body_at_the_maximum_is_read() -> None:
 @pytest.mark.anyio
 async def test_the_maximum_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(ENV_MAX_BODY_BYTES, "2048")
-    exchange = await call(create_app(), endless(b" " * KIB))
+    exchange = await call(create_app(authentication=authentication()), endless(b" " * KIB))
     assert (exchange.status, exchange.receive_calls) == (413, 3)
     # Le réglage de l'appelant passe avant celui de l'environnement.
-    allowed = await call(create_app(max_body_bytes=4096), [b" " * 3 * KIB])
+    allowed = await call(
+        create_app(max_body_bytes=4096, authentication=authentication()), [b" " * 3 * KIB]
+    )
     assert allowed.json() == {"error": "invalid_json"}
 
 
@@ -169,11 +175,14 @@ def test_a_malformed_maximum_prevents_the_application_from_starting(
     monkeypatch.setenv(ENV_MAX_BODY_BYTES, value)
     if value.strip():
         with pytest.raises(ValueError, match=ENV_MAX_BODY_BYTES):
-            create_app()
+            create_app(authentication=authentication())
     else:
-        assert create_app().state.max_body_bytes == DEFAULT_MAX_BODY_BYTES
+        assert (
+            create_app(authentication=authentication()).state.max_body_bytes
+            == DEFAULT_MAX_BODY_BYTES
+        )
     with pytest.raises(ValueError, match=ENV_MAX_BODY_BYTES):
-        create_app(max_body_bytes=0)
+        create_app(max_body_bytes=0, authentication=authentication())
 
 
 # Compression.
@@ -207,7 +216,7 @@ async def test_a_compressed_bomb_is_refused_without_being_inflated(
     bomb = member * 64
     assert len(bomb) < 2 * MIB
 
-    app = create_app(max_body_bytes=MIB)
+    app = create_app(max_body_bytes=MIB, authentication=authentication())
     pieces = [bomb[offset : offset + 4 * KIB] for offset in range(0, len(bomb), 4 * KIB)]
     exchange = await call(app, pieces, headers=[("content-encoding", "gzip")], path=BATCH)
 
@@ -224,7 +233,7 @@ async def test_the_maximum_also_bounds_the_compressed_bytes_received() -> None:
     header = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff"
     empty_block = b"\x00\x00\x00\xff\xff"
     first = header + empty_block * 198
-    app = create_app(max_body_bytes=4 * KIB)
+    app = create_app(max_body_bytes=4 * KIB, authentication=authentication())
     exchange = await call(
         app,
         itertools.chain([first], endless(empty_block * 200)),
@@ -241,7 +250,11 @@ async def test_a_gzip_body_is_inflated_before_being_read_as_json(encoding: str) 
     content = json.dumps(minimal_event() | {"run": {"runId": "x"}}).encode()
     compressed = gzipped(content)
     pieces = [compressed[offset : offset + 7] for offset in range(0, len(compressed), 7)]
-    exchange = await call(create_app(), pieces, headers=[("content-encoding", encoding)])
+    exchange = await call(
+        create_app(authentication=authentication()),
+        pieces,
+        headers=[("content-encoding", encoding)],
+    )
     assert exchange.status == 422
     assert [error["path"] for error in exchange.json()["errors"]] == ["/run/runId"]
 
@@ -251,7 +264,11 @@ async def test_several_gzip_members_make_one_body() -> None:
     content = json.dumps(minimal_event() | {"run": {"runId": "x"}}).encode()
     middle = len(content) // 2
     members = gzipped(content[:middle]) + gzipped(content[middle:])
-    exchange = await call(create_app(), [members], headers=[("content-encoding", "gzip")])
+    exchange = await call(
+        create_app(authentication=authentication()),
+        [members],
+        headers=[("content-encoding", "gzip")],
+    )
     assert exchange.status == 422
 
 
@@ -269,7 +286,11 @@ async def test_several_gzip_members_make_one_body() -> None:
     ids=["vide", "illisible", "tronqué", "en-tête seul", "somme fausse", "suivi de déchets"],
 )
 async def test_a_corrupt_or_truncated_gzip_body_is_refused(content: bytes) -> None:
-    exchange = await call(create_app(), [content], headers=[("content-encoding", "gzip")])
+    exchange = await call(
+        create_app(authentication=authentication()),
+        [content],
+        headers=[("content-encoding", "gzip")],
+    )
     assert (exchange.status, exchange.json()) == (400, {"error": "invalid_gzip"})
 
 
@@ -288,7 +309,9 @@ async def test_a_corrupt_or_truncated_gzip_body_is_refused(content: bytes) -> No
 )
 async def test_any_other_or_stacked_encoding_is_refused(headers: list[tuple[str, str]]) -> None:
     for path in (SINGLE, BATCH):
-        exchange = await call(create_app(), endless(b"x"), headers=headers, path=path)
+        exchange = await call(
+            create_app(authentication=authentication()), endless(b"x"), headers=headers, path=path
+        )
         assert (exchange.status, exchange.json()) == (
             415,
             {"error": "unsupported_content_encoding"},
@@ -369,16 +392,21 @@ def test_the_depth_check_is_linear_even_on_unterminated_strings() -> None:
 async def test_a_document_nested_on_a_thousand_levels_is_refused(
     path: str, document: bytes
 ) -> None:
-    exchange = await call(create_app(), [document], path=path)
+    exchange = await call(create_app(authentication=authentication()), [document], path=path)
     assert (exchange.status, exchange.json()) == (400, {"error": "json_too_deep"})
 
 
 @pytest.mark.anyio
 async def test_a_document_at_the_maximum_depth_is_parsed() -> None:
-    at_the_bound = await call(create_app(), [b"[" * MAX_DEPTH + b"]" * MAX_DEPTH])
+    at_the_bound = await call(
+        create_app(authentication=authentication()), [b"[" * MAX_DEPTH + b"]" * MAX_DEPTH]
+    )
     assert at_the_bound.status == 422
     assert at_the_bound.json()["errors"][0]["type"] == "not_an_object"
-    beyond = await call(create_app(), [b"[" * (MAX_DEPTH + 1) + b"]" * (MAX_DEPTH + 1)])
+    beyond = await call(
+        create_app(authentication=authentication()),
+        [b"[" * (MAX_DEPTH + 1) + b"]" * (MAX_DEPTH + 1)],
+    )
     assert beyond.json() == {"error": "json_too_deep"}
 
 
@@ -393,7 +421,7 @@ async def test_a_document_at_the_maximum_depth_is_parsed() -> None:
     ids=["UTF-16", "octet illisible", "marque d'ordre"],
 )
 async def test_a_body_that_is_not_utf8_json_is_refused(document: bytes) -> None:
-    exchange = await call(create_app(), [document])
+    exchange = await call(create_app(authentication=authentication()), [document])
     assert (exchange.status, exchange.json()) == (400, {"error": "invalid_json"})
 
 
@@ -435,7 +463,7 @@ def event_with_facet(container: tuple[str | int, ...], name: str) -> dict[str, A
 
 def post(event: object) -> Exchange:
     content = json.dumps(event).encode()
-    return anyio.run(lambda: call(create_app(), [content]))
+    return anyio.run(lambda: call(create_app(authentication=authentication()), [content]))
 
 
 def test_the_reported_facet_name_is_not_echoed() -> None:

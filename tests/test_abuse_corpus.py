@@ -43,6 +43,7 @@ from answerlineage_proxy.config import ProxySettings, SqlTool
 from answerlineage_proxy.sink import MemorySink
 from answerlineage_workers.proposals import process_signals
 from answerlineage_workers.queue import process_batch
+from api.tests.issuer import authentication, signed_in
 from proxy.tests.conftest import exchange, running
 
 pytestmark = pytest.mark.anyio
@@ -275,12 +276,18 @@ async def observe_api(
     """Joue la requête devant l'API : ingestion, puis un worker ; ou lecture d'un graphe
     que les événements, les relevés et les incidents préalables ont rempli par le même
     chemin."""
-    app = Counted(create_app(engine, **{**play.settings, **weakened}))
+    app = Counted(
+        create_app(engine, **{**play.settings, **weakened}, authentication=authentication())
+    )
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     quiet_client(caplog)
     with caplog.at_level(logging.DEBUG):
         async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+            # Rien d'autre que ce que la requête porte, et le jeton d'un appelant qui a tous
+            # les rôles : un cas n'est bloqué que pour la raison qu'il déclare, pas faute
+            # d'accès. Un cas qui vise l'accès remplace ce jeton par le sien.
             client.headers.clear()
+            client.headers.update(signed_in())
             if play.seed:
                 await client.post("/api/v1/lineage/batch", json=list(play.seed))
                 await drain(engine)

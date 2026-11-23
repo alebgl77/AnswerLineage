@@ -22,16 +22,26 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
+from answerlineage_api.auth.roles import PERSON_ROLES
 from answerlineage_api.ingest.store import event_identifier
 from answerlineage_api.store.graph import DatasetKind, RunRecord
+from answerlineage_cli.client import ENV_TOKEN
 from answerlineage_cli.exits import Exit
 from answerlineage_workers.projection import project
 from answerlineage_workers.queue import BatchResult, process_batch
 from api.tests.events import mutated, run_event
+from api.tests.issuer import TEST_ISSUER, authentication, signed_in
 from cli.tests.fakes import Run, run
 from proxy.tests.conftest import running
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+
+@pytest.fixture(autouse=True)
+def command_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La commande présente le jeton d'une personne qui a tous les rôles de personne."""
+    monkeypatch.setenv(ENV_TOKEN, TEST_ISSUER.token(*PERSON_ROLES))
+
 
 DEAD_LETTERS = "/api/v1/ingestion/dead-letters"
 REPLAY = f"{DEAD_LETTERS}/replay"
@@ -74,8 +84,10 @@ def broken_projection(monkeypatch: pytest.MonkeyPatch, defect: Any) -> None:
 
 @pytest.fixture
 async def client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+    transport = httpx.ASGITransport(app=create_app(engine, authentication=authentication()))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost", headers=signed_in()
+    ) as client:
         yield client
 
 
@@ -184,12 +196,14 @@ async def command(monkeypatch: pytest.MonkeyPatch, url: str, *argv: str) -> Run:
 async def test_the_command_lists_and_replays_the_dead_letters_of_the_real_api(
     engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async with running(create_app(engine)) as url:
-        async with httpx.AsyncClient(base_url=url) as client:
+    async with running(create_app(engine, authentication=authentication())) as url:
+        async with httpx.AsyncClient(base_url=url, headers=signed_in()) as client:
             await client.post("/api/v1/lineage/batch", json=[event_of(0), event_of(1, BROKEN)])
         broken_projection(monkeypatch, schema_error)
         await drain(engine)
         monkeypatch.undo()
+        # Défaire la panne a défait le jeton de la commande : il est rendu.
+        monkeypatch.setenv(ENV_TOKEN, TEST_ISSUER.token(*PERSON_ROLES))
 
         listed = await command(monkeypatch, url, "dead-letters", "list", "--emitter", BROKEN)
         assert listed.code == Exit.WAITING, listed.err

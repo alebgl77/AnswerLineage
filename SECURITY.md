@@ -60,6 +60,6 @@ Tout ce qui fait mentir une garantie du produit, en plus des failles habituelles
 - un contournement du contrôle des en-têtes `Host` et `Origin` ;
 - une faille de la chaîne de construction : workflow, dépendance, image.
 
-Deux limites sont connues et documentées, et ne sont donc pas des découvertes : l'API n'authentifie pas encore ses appelants, et les émetteurs d'événements ne sont pas authentifiés. Dans cet état, l'API est faite pour la boucle locale ou un réseau de confiance.
+Une limite est connue et documentée, et n'est donc pas une découverte : l'API authentifie ses appelants et leurs rôles ([Authentification et rôles](docs/securite/authentification.md)), mais un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements. Un émetteur ne doit donc recevoir son identifiant de client que s'il est de confiance pour tous les espaces de noms.
 
-Le [modèle de menaces](docs/securite/modele-de-menaces.md) tient les menaces connues de chaque composant, leurs parades et les risques acceptés, dont ces deux limites ; il est revu à chaque version, et une version ne sort pas tant qu'une acceptation y reste à signer.
+Le [modèle de menaces](docs/securite/modele-de-menaces.md) tient les menaces connues de chaque composant, leurs parades et les risques acceptés, dont cette limite ; il est revu à chaque version, et une version ne sort pas tant qu'une acceptation y reste à signer.
