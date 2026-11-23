@@ -178,7 +178,7 @@ devcontainer:
   stage: devcontainer
   timeout: 15 minutes
   script:
-    - docker build --tag answerlineage-dev .devcontainer
+    - scripts/retry.sh docker build --tag answerlineage-dev .devcontainer
     - docker run --rm --volume "$PWD:/src:ro" answerlineage-dev sh -c 'cp -r /src /tmp/projet && cd /tmp/projet && make setup && uv run pytest -m "not integration" -q'
 
 # L'explorateur se construit dans l'image de Node 22, puis se pilote dans Chromium

@@ -210,8 +210,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Le registre public limite parfois le débit des tirages anonymes : la
+      # construction est retentée avant d'être tenue pour un échec.
       - name: Construit le conteneur
-        run: docker build --tag answerlineage-dev .devcontainer
+        run: scripts/retry.sh docker build --tag answerlineage-dev .devcontainer
       - name: Vérifie qu'il installe et contrôle le projet
         run: |
           docker run --rm --volume "$PWD:/src:ro" answerlineage-dev sh -c \
