@@ -73,7 +73,6 @@ from answerlineage_proxy.names import (
     normalize_name,
 )
 from answerlineage_proxy.quarantine_signature import (
-    ENV_SECRET,
     HEADER,
     MALFORMED,
     SignatureRefusedError,
@@ -376,11 +375,12 @@ class QuarantineSync:
             self.settings.interval,
         )
         if self.settings.secret is None:
+            # Le nom de la variable est écrit dans le message fixe, pas passé en argument :
+            # aucune valeur liée au secret ne rejoint le journal, même indirectement.
             logger.warning(
-                "Quarantaine : aucun secret de diffusion (%s ou --quarantine-secret-file) ; les"
-                " périmètres sont appris sans être vérifiés, et ce proxy ne sera jamais autorisé"
-                " à annoter un résultat.",
-                ENV_SECRET,
+                "Quarantaine : aucun secret de diffusion (ANSWERLINEAGE_PROXY_QUARANTINE_SECRET"
+                " ou --quarantine-secret-file) ; les périmètres sont appris sans être vérifiés,"
+                " et ce proxy ne sera jamais autorisé à annoter un résultat."
             )
         else:
             logger.info(
