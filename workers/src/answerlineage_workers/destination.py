@@ -1,9 +1,10 @@
-"""Destination de la réémission : un consommateur OpenLineage externe, joint en HTTP.
+"""Destination d'un envoi des workers, jointe en HTTP : réémission et webhooks.
 
 Marquez, DataHub, OpenMetadata, Dataplex lisent le transport HTTP d'OpenLineage :
-un événement par requête ``POST``, en JSON. La destination est l'adresse de ce
-point d'entrée, réglée par l'exploitant au démarrage du worker, jamais tirée d'un
-événement ni d'une réponse :
+un événement par requête ``POST``, en JSON. Le récepteur des webhooks reçoit de
+même un message par requête ``POST`` (``webhooks.py``). La destination est
+l'adresse de ce point d'entrée, réglée par l'exploitant au démarrage du worker,
+jamais tirée d'un événement ni d'une réponse :
 
 - **une adresse ``https``**, ou ``http`` sur la boucle locale seulement, pour les
   tests et la démonstration ; sans identifiant, paramètre ni fragment : elle peut
@@ -26,7 +27,8 @@ point d'entrée, réglée par l'exploitant au démarrage du worker, jamais tiré
 - **des délais bornés** : la connexion, chaque lecture et écriture, et l'envoi
   entier, qu'une réponse servie goutte à goutte ne prolonge pas ;
 - **un en-tête ``Authorization`` facultatif**, lu de l'environnement, envoyé tel
-  quel, jamais journalisé ni affiché.
+  quel, jamais journalisé ni affiché ; et les en-têtes propres à un envoi, comme
+  la signature d'un webhook.
 
 Le client parle HTTP/1.1 et garde sa connexion d'un événement à l'autre. Il ne
 lit de la réponse que son statut, et au plus 64 Kio de corps, qu'il ne garde
@@ -42,7 +44,7 @@ import re
 import socket
 import ssl
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -327,21 +329,21 @@ class _Client:
             raise
         return connection
 
-    def post(self, body: bytes, deadline: float) -> int:
-        """Envoie le corps et rend le statut de la réponse.
+    def post(self, body: bytes, deadline: float, headers: Mapping[str, str]) -> int:
+        """Envoie le corps, avec les en-têtes propres à cet envoi, et rend le statut.
 
         Une connexion gardée que la destination a fermée entre deux envois est
         rouverte une fois : l'événement n'était pas parti.
         """
         reused = self._connection is not None and self._connection.sock is not None
         try:
-            return self._exchange(body, deadline)
+            return self._exchange(body, deadline, headers)
         except (ConnectionResetError, BrokenPipeError):
             if not reused:
                 raise
-            return self._exchange(body, deadline)
+            return self._exchange(body, deadline, headers)
 
-    def _exchange(self, body: bytes, deadline: float) -> int:
+    def _exchange(self, body: bytes, deadline: float, headers: Mapping[str, str]) -> int:
         try:
             if self._connection is None or self._connection.sock is None:
                 self.close()
@@ -349,7 +351,9 @@ class _Client:
             connection = self._connection
             assert self._socket is not None  # noqa: S101 — ouvert par _open.
             self._socket.settimeout(self._left(deadline, self._timeouts.io))
-            connection.request("POST", self._destination.target, body=body, headers=self._headers)
+            connection.request(
+                "POST", self._destination.target, body=body, headers=self._headers | dict(headers)
+            )
             self._socket.settimeout(self._left(deadline, self._timeouts.io))
             response = connection.getresponse()
             response.read(MAX_RESPONSE_BYTES)
@@ -421,10 +425,18 @@ class Sender:
         # Un seul fil : un envoi abandonné à son délai finit avant le suivant.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reemission")
 
-    async def send(self, body: bytes, stop: asyncio.Event | None = None) -> Delivery:
+    async def send(
+        self,
+        body: bytes,
+        stop: asyncio.Event | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> Delivery:
+        """Envoie le corps, avec ``headers`` en plus des en-têtes de la destination."""
         loop = asyncio.get_running_loop()
         deadline = time.monotonic() + self.timeouts.request
-        sending = loop.run_in_executor(self._executor, self._client.post, body, deadline)
+        sending = loop.run_in_executor(
+            self._executor, self._client.post, body, deadline, dict(headers or {})
+        )
         waits: set[asyncio.Future[Any]] = {sending}
         stopped = None if stop is None else asyncio.ensure_future(stop.wait())
         if stopped is not None:

@@ -26,6 +26,11 @@ seulement, jamais de contenu.
   ``query_timeout`` quand une lecture dépasse le délai de l'analyse,
   ``analysis_error`` pour toute autre erreur, dont seule la classe est
   journalisée.
+- **Annoncée dans sa transaction.** Une analyse faite, ou en échec pour de bon,
+  met son annonce dans la file des webhooks quand un webhook est en service
+  (``answerlineage_api.incidents.webhooks``), dans la transaction qui
+  l'enregistre ; une analyse remise à plus tard ne change pas d'état et
+  n'annonce rien.
 """
 
 from __future__ import annotations
@@ -42,6 +47,7 @@ from sqlalchemy import func, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from answerlineage_api.incidents.models import MAX_DATASETS
+from answerlineage_api.incidents.webhooks import announce
 from answerlineage_api.lineage import coverage, impact
 from answerlineage_api.lineage.paging import ANSWER_ORDER
 from answerlineage_api.lineage.reading import Reader, ReadTimedOut, known
@@ -269,6 +275,7 @@ async def process_analysis(
             ).scalar_one()
             # L'identifiant est tiré par l'API ; seule la classe de l'erreur est gardée.
             if state == "failed":
+                await announce(conn, incident_id, "incident.analysis_failed")
                 logger.error(
                     "Analyse de l'incident %s en échec après %d essais (%s).",
                     incident_id,
@@ -284,5 +291,6 @@ async def process_analysis(
             return Processed(incident_id, "postponed")
         # Le délai posé pour les lectures de l'analyse ne vaut pas pour sa validation.
         await conn.execute(_NO_STATEMENT_TIMEOUT)
+        await announce(conn, incident_id, "incident.analysed")
     logger.info("Incident %s analysé.", incident_id)
     return Processed(incident_id, "done")

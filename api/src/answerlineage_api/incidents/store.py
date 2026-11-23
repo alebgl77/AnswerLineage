@@ -3,7 +3,8 @@
 La déclaration écrit l'incident, son périmètre et sa demande d'analyse dans la
 transaction de l'appelant : une demande n'existe jamais sans son incident, ni
 un incident sans sa demande. Les workers réclament ensuite la demande
-(``answerlineage_workers.incidents``).
+(``answerlineage_workers.incidents``). Quand un webhook est en service, la même
+transaction met en file l'annonce de la déclaration (``webhooks.py``).
 
 Chaque lecture est bornée : une page d'incidents, une page des réponses
 touchées d'un incident, et les destinataires de ces réponses.
@@ -33,6 +34,7 @@ from answerlineage_api.incidents.models import (
     TouchedAnswer,
     in_utc,
 )
+from answerlineage_api.incidents.webhooks import announce
 from answerlineage_api.lineage.models import Coverage, ImpactCounts, Window
 from answerlineage_api.lineage.paging import (
     AFTER_CURSOR,
@@ -165,6 +167,7 @@ async def declare(conn: AsyncConnection, declaration: IncidentDeclaration) -> In
             .returning(schema.incident_analysis.c.requested_at)
         )
     ).scalar_one()
+    await announce(conn, incident_id, "incident.declared")
     return Incident(
         id=incident_id,
         state="qualified",

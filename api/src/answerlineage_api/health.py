@@ -2,8 +2,9 @@
 
 La route dit si l'API lit sa base, si le schéma est à jour, si la file
 d'ingestion avance, combien d'événements attendent au rebut, combien
-d'émetteurs sont muets, combien de partitions manquent, et où en est la
-réémission vers un consommateur OpenLineage externe. Elle reste petite et
+d'émetteurs sont muets, combien de partitions manquent, où en est la
+réémission vers un consommateur OpenLineage externe, et où en sont les
+webhooks qui annoncent les incidents. Elle reste petite et
 bornée : quelques requêtes indexées, des décomptes plafonnés, sous le délai
 maximal des lectures. Elle ne dit aucun détail interne : ni révision du
 schéma, ni adresse de la base, ni message d'erreur, seulement des états d'une
@@ -86,6 +87,24 @@ _REEMIT_OLDEST = text(
 )
 # Une ligne au plus ; aucune tant que rien n'a été réémis ni perdu.
 _REEMIT_COUNTS = text("SELECT sent, rejected, dropped FROM reemission_stats")
+_WEBHOOK_QUEUED = text("SELECT count(*) FROM (SELECT 1 FROM webhook_queue LIMIT :limit) AS queued")
+# Par l'index partiel des messages en reprise.
+_WEBHOOK_RETRYING = text(
+    "SELECT count(*) FROM (SELECT 1 FROM webhook_queue WHERE attempts > 0 LIMIT :limit) AS r"
+)
+_WEBHOOK_OLDEST = text(
+    """
+    SELECT GREATEST(0, floor(EXTRACT(EPOCH FROM now() - enqueued_at)))::bigint
+    FROM webhook_queue ORDER BY enqueued_at LIMIT 1
+    """
+)
+# Une ligne au plus ; aucune tant qu'aucun worker n'a eu de webhook.
+_WEBHOOK_STATE = text(
+    """
+    SELECT coalesce(in_service_until > now(), false) AS in_service, sent, rejected, dropped
+    FROM webhook_stats
+    """
+)
 
 
 class QueueHealth(BaseModel):
@@ -173,6 +192,44 @@ class ReemissionHealth(BaseModel):
     rejected: int = Field(description="Parmi les perdus, ceux que la destination a refusés.")
 
 
+class WebhookHealth(BaseModel):
+    """Les webhooks qui annoncent les changements d'état des incidents au récepteur."""
+
+    in_service: bool = Field(
+        description=(
+            "Vrai quand un worker qui a un webhook est passé depuis moins que la borne d'âge"
+            " de sa file : un changement d'état d'incident est alors mis en file."
+        )
+    )
+    queued: int = Field(description="Messages qui attendent d'être envoyés au récepteur.")
+    retrying: int = Field(
+        description=(
+            "Parmi eux, ceux dont un envoi a échoué sans que le récepteur dise les avoir pris :"
+            " ils seront renvoyés."
+        )
+    )
+    lower_bound: bool = Field(
+        description=(
+            f"Vrai au-delà de {COUNT_LIMIT} messages : « queued » et « retrying » sont des"
+            " minimums."
+        )
+    )
+    oldest_age_seconds: int | None = Field(
+        description=(
+            "Depuis combien de secondes le plus ancien attend, à l'horloge de la base ;"
+            " nul quand la file est vide."
+        )
+    )
+    sent: int = Field(description="Messages remis au récepteur depuis la mise en service.")
+    lost: int = Field(
+        description=(
+            "Messages perdus depuis la mise en service : refusés par le récepteur, ou"
+            " abandonnés par les bornes de la file."
+        )
+    )
+    rejected: int = Field(description="Parmi les perdus, ceux que le récepteur a refusés.")
+
+
 class Health(BaseModel):
     """L'état de l'installation : des états d'une liste fermée et des décomptes bornés."""
 
@@ -203,6 +260,12 @@ class Health(BaseModel):
     reemission: ReemissionHealth | None = Field(
         description=(
             "La file de réémission et ses compteurs ; nuls tant que le schéma n'est pas à jour."
+        )
+    )
+    webhooks: WebhookHealth | None = Field(
+        description=(
+            "Les webhooks des incidents, leur file et leurs compteurs ; nuls tant que le schéma"
+            " n'est pas à jour."
         )
     )
 
@@ -282,6 +345,24 @@ async def _reemission(reader: Reader) -> ReemissionHealth:
     )
 
 
+async def _webhooks(reader: Reader) -> WebhookHealth:
+    queued, beyond_queued = await _count(reader, _WEBHOOK_QUEUED)
+    retrying, beyond_retrying = await _count(reader, _WEBHOOK_RETRYING)
+    oldest = (await reader.execute(_WEBHOOK_OLDEST, {})).scalar_one_or_none()
+    found = (await reader.execute(_WEBHOOK_STATE, {})).first()
+    in_service, sent, rejected, dropped = (False, 0, 0, 0) if found is None else tuple(found)
+    return WebhookHealth(
+        in_service=in_service,
+        queued=queued,
+        retrying=retrying,
+        lower_bound=beyond_queued or beyond_retrying,
+        oldest_age_seconds=None if oldest is None else int(oldest),
+        sent=sent,
+        lost=rejected + dropped,
+        rejected=rejected,
+    )
+
+
 @router.get(
     "/health",
     response_model=Health,
@@ -290,7 +371,7 @@ async def _reemission(reader: Reader) -> ReemissionHealth:
 )
 async def installation_health(request: Request) -> Health:
     """Base, migrations, file d'ingestion, rebut, émetteurs muets, partitions manquantes,
-    réémission.
+    réémission, webhooks.
 
     Une base injoignable n'est pas une erreur de la route : elle répond
     « unavailable », sans dire pourquoi.
@@ -316,6 +397,7 @@ async def installation_health(request: Request) -> Health:
                     emitters=None,
                     partitions=None,
                     reemission=None,
+                    webhooks=None,
                 )
             return Health(
                 api_version=version,
@@ -326,6 +408,7 @@ async def installation_health(request: Request) -> Health:
                 emitters=await _emitters(reader),
                 partitions=await _partitions(reader),
                 reemission=await _reemission(reader),
+                webhooks=await _webhooks(reader),
             )
         except (TimeoutError, DBAPIError, OSError):
             return Health(
@@ -337,4 +420,5 @@ async def installation_health(request: Request) -> Health:
                 emitters=None,
                 partitions=None,
                 reemission=None,
+                webhooks=None,
             )

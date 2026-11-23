@@ -48,6 +48,7 @@ def test_a_sound_installation_has_no_anomaly(monkeypatch: pytest.MonkeyPatch) ->
         "emitters": ("ok", None),
         "partitions": ("ok", None),
         "reemission": ("ok", None),
+        "webhooks": ("ok", None),
         "explorer": ("ok", None),
         "workers": ("not_checked", None),
     }
@@ -147,12 +148,18 @@ def test_an_origin_refused_by_the_api_is_named_and_the_rest_is_checked(
 def test_a_database_or_schema_anomaly_leaves_what_depends_on_it_unchecked(
     monkeypatch: pytest.MonkeyPatch, changes: dict[str, Any], check: str, code: str
 ) -> None:
-    changes |= {"dead_letters": None, "emitters": None, "partitions": None, "reemission": None}
+    changes |= {
+        "dead_letters": None,
+        "emitters": None,
+        "partitions": None,
+        "reemission": None,
+        "webhooks": None,
+    }
     result = doctor(with_health(**changes), monkeypatch)
 
     found = statuses(result.out)
     assert found[check] == ("anomaly", code)
-    for later in ("queue", "dead_letters", "emitters", "partitions", "reemission"):
+    for later in ("queue", "dead_letters", "emitters", "partitions", "reemission", "webhooks"):
         assert found[later] == ("not_checked", None)
     assert found["explorer"] == ("ok", None)
     assert json.loads(result.out)["anomalies"] == [code]
@@ -308,6 +315,87 @@ def test_a_reemission_that_cannot_be_judged_is_not_checked(
     assert statuses(result.out)["reemission"] == ("not_checked", None)
 
 
+def webhooks(**changes: Any) -> dict[str, Any]:
+    state = {
+        "in_service": True,
+        "queued": 0,
+        "retrying": 0,
+        "lower_bound": False,
+        "oldest_age_seconds": None,
+        "sent": 0,
+        "lost": 0,
+        "rejected": 0,
+    }
+    return state | changes
+
+
+def test_webhooks_behind_their_threshold_are_an_anomaly_with_its_remedy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = with_health(
+        webhooks=webhooks(queued=2, retrying=1, oldest_age_seconds=420, sent=5, lost=1, rejected=1)
+    )
+    result = doctor(api, monkeypatch)
+
+    assert result.code == Exit.ANOMALY
+    report = json.loads(result.out)
+    assert report["anomalies"] == ["webhooks_lagging"]
+    (late,) = [item for item in report["checks"] if item["check"] == "webhooks"]
+    assert late["message"] == (
+        "Les webhooks des incidents sont en retard : 2 messages à envoyer, le plus ancien depuis"
+        " 7 min (seuil : 5 min) ; 1 perdu depuis la mise en service."
+    )
+    assert late["remedy"] == ANOMALIES["webhooks_lagging"].remedy
+    assert "ANSWERLINEAGE_WEBHOOK_SECRET" in late["remedy"]
+    relaxed = doctor(api, monkeypatch, "--webhook-max-age", "600")
+    assert relaxed.code == Exit.OK
+    (moving,) = [item for item in json.loads(relaxed.out)["checks"] if item["check"] == "webhooks"]
+    assert (moving["status"], moving["message"]) == (
+        "ok",
+        "Les webhooks avancent : 2 messages à envoyer, le plus ancien depuis 7 min ;"
+        " 5 remis, 1 perdu.",
+    )
+
+
+def test_webhooks_left_behind_by_their_last_worker_are_still_judged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = with_health(webhooks=webhooks(in_service=False, queued=1, oldest_age_seconds=3600))
+    assert statuses(doctor(api, monkeypatch).out)["webhooks"] == ("anomaly", "webhooks_lagging")
+
+
+def test_webhooks_that_keep_up_say_what_left_and_what_was_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = with_health(webhooks=webhooks(sent=1, lost=2, rejected=1))
+    (found,) = [
+        item
+        for item in json.loads(doctor(api, monkeypatch).out)["checks"]
+        if item["check"] == "webhooks"
+    ]
+    assert (found["status"], found["message"]) == (
+        "ok",
+        "Les webhooks avancent : file vide ; 1 remis, 2 perdus.",
+    )
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        health(webhooks=webhooks(in_service=False, sent=7)),
+        {k: v for k, v in health().items() if k != "webhooks"},
+    ],
+    ids=["not-in-service", "older-api"],
+)
+def test_webhooks_that_cannot_be_judged_are_not_checked(
+    monkeypatch: pytest.MonkeyPatch, answer: dict[str, Any]
+) -> None:
+    api = FakeApi.sound().answer("/api/v1/health", answer)
+    result = doctor(api, monkeypatch)
+    assert result.code == Exit.OK
+    assert statuses(result.out)["webhooks"] == ("not_checked", None)
+
+
 @pytest.mark.parametrize(
     "explorer",
     [
@@ -362,6 +450,11 @@ def test_an_address_that_does_not_serve_the_explorer_is_an_anomaly(
         httpx.Response(200, json=health(reemission=reemission(oldest_age_seconds=5))),
         httpx.Response(200, json=health(reemission=reemission(queued=1, oldest_age_seconds=None))),
         httpx.Response(200, json=health(reemission=reemission(lost=1, rejected=2))),
+        httpx.Response(200, json=health(webhooks=None)),
+        httpx.Response(200, json=health(webhooks=webhooks(in_service=CANARY))),
+        httpx.Response(200, json=health(webhooks=webhooks(queued=1, oldest_age_seconds=None))),
+        httpx.Response(200, json=health(webhooks=webhooks(lost=0, rejected=1))),
+        httpx.Response(200, json=health(webhooks={CANARY: 1})),
         httpx.Response(500, json={"detail": CANARY}),
         httpx.Response(404, json={"detail": "Not Found"}),
         httpx.Response(403, json={"error": CANARY}),
@@ -382,6 +475,11 @@ def test_an_address_that_does_not_serve_the_explorer_is_an_anomaly(
         "reemission-empty-with-age",
         "reemission-without-age",
         "reemission-more-rejected-than-lost",
+        "webhooks-null",
+        "webhooks-not-a-flag",
+        "webhooks-without-age",
+        "webhooks-more-rejected-than-lost",
+        "webhooks-unknown-field",
         "server-error",
         "no-route",
         "403",
@@ -421,5 +519,6 @@ def test_a_usage_error_of_doctor_has_its_exit_code(monkeypatch: pytest.MonkeyPat
     api = FakeApi.sound()
     assert run(["doctor", "--queue-max-age", "-1"], api, monkeypatch).code == Exit.USAGE
     assert run(["doctor", "--reemission-max-age", "un"], api, monkeypatch).code == Exit.USAGE
+    assert run(["doctor", "--webhook-max-age", "-5"], api, monkeypatch).code == Exit.USAGE
     assert run(["doctor", "--url", "ftp://127.0.0.1"], api, monkeypatch).code == Exit.USAGE
     assert api.requests == []

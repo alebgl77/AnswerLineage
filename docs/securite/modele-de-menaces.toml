@@ -42,6 +42,11 @@ name = "Workers et catalogue externe"
 description = "Les workers réémettent les événements projetés vers un consommateur OpenLineage externe (Marquez, DataHub, OpenMetadata, Dataplex), à l'adresse que règle l'exploitant. Le catalogue, le réseau qui y mène et ses réponses sont hors du contrôle d'AnswerLineage."
 
 [[boundary]]
+id = "workers-recepteur"
+name = "Workers et récepteur de webhooks"
+description = "Les workers annoncent les changements d'état des incidents, par des messages signés, au récepteur de webhooks que règle l'exploitant. Le récepteur, le réseau qui y mène et ses réponses sont hors du contrôle d'AnswerLineage ; quiconque joint le récepteur peut lui envoyer une requête, ou rejouer une requête captée."
+
+[[boundary]]
 id = "pipeline-publication"
 name = "Pipeline et publication"
 description = "Une merge request, écrite par un contributeur ou un agent de code, fait tourner le pipeline ; une étiquette de version publie l'image et les paquets. Le contenu de la merge request, les actions, les images et les dépendances tierces sont hors de confiance."
@@ -102,6 +107,16 @@ description = "L'image, les paquets, leurs signatures et attestations, et le pip
 id = "mesures"
 name = "Mesures et jugements"
 description = "Le corpus de vérité, le corpus d'abus et le kit de conformité, qui disent si le moteur rappelle ce qu'il doit, si une attaque est bloquée, si un émetteur ne fuit rien."
+
+[[asset]]
+id = "secret-des-webhooks"
+name = "Secret des webhooks"
+description = "Le secret HMAC que les workers et le récepteur de webhooks partagent : qui le détient signe des messages que le récepteur accepte."
+
+[[asset]]
+id = "annonces-d-incident"
+name = "Annonces d'incident"
+description = "Les messages qui disent au récepteur de webhooks qu'un incident est déclaré, analysé ou en échec, avec ses décomptes : une alerte ou un rappel peut en partir."
 
 # Composants du dépôt : les membres de l'espace de travail uv, les paquets npm, le pipeline.
 
@@ -945,6 +960,143 @@ test = "workers/tests/test_reemission.py::test_a_destination_down_then_back_lose
 description = "Deux workers réclament leurs lots avec FOR UPDATE SKIP LOCKED : jamais deux fois le même événement."
 code = "workers/src/answerlineage_workers/reemission.py::reemit_batch"
 test = "workers/tests/test_reemission.py::test_two_workers_never_send_an_event_twice"
+
+[[threat]]
+id = "workers/webhook-usurpe"
+name = "Un tiers se fait passer pour AnswerLineage auprès du récepteur des webhooks"
+category = "spoofing"
+boundary = "workers-recepteur"
+assets = ["annonces-d-incident"]
+description = "Quiconque joint le récepteur lui envoie un faux message : un incident inventé, une analyse dite faite, des décomptes faux. Sans signature, ou avec une vérification qui accepte un corps changé, le récepteur déclencherait sur sa parole une alerte ou un rappel."
+
+[[threat.mitigation]]
+description = "Chaque message est signé, HMAC-SHA-256 sous le secret partagé, sur l'heure d'émission et le corps ; la fonction de vérification de référence refuse une signature fausse et un corps altéré."
+code = "workers/src/answerlineage_workers/webhook_signature.py::verify"
+test = "workers/tests/test_webhook_signature.py::test_a_false_signature_and_an_altered_body_are_refused"
+
+[[threat.mitigation]]
+description = "Des vecteurs publiés, figés avec le format, disent ce qu'un récepteur doit accepter et refuser : toute autre écriture de la vérification s'y juge."
+code = "workers/src/answerlineage_workers/webhook_signature.py::verify"
+test = "workers/tests/test_webhook_signature.py::test_the_receiver_decides_as_the_vectors_say"
+
+[[threat.mitigation]]
+description = "De bout en bout, un récepteur qui vérifie avec la fonction de référence accepte les messages des workers et refuse une signature fausse et un corps altéré."
+code = "workers/src/answerlineage_workers/webhooks.py::deliver_batch"
+test = "tests/test_webhooks_end_to_end.py::test_a_change_of_state_leaves_signed_in_less_than_a_minute_and_a_replay_is_refused"
+
+[threat.acceptance]
+reason = "Le secret est symétrique : le récepteur le garde, en clair, pour vérifier, et peut donc signer comme les workers. Sa rotation est manuelle : AnswerLineage accepte deux secrets le temps d'une rotation, mais ne garde pas le secret du récepteur et ne le fait pas tourner à sa place."
+consequence = "Qui lit le secret chez le récepteur ou dans l'environnement des workers forge des messages que le récepteur accepte, jusqu'à la rotation suivante."
+
+[[threat]]
+id = "workers/webhook-rejoue"
+name = "Un message capté est rejoué au récepteur des webhooks"
+category = "tampering"
+boundary = "workers-recepteur"
+assets = ["annonces-d-incident"]
+description = "Un message authentique, capté sur le réseau, dans un journal du récepteur ou chez un intermédiaire, est renvoyé tel quel : sa signature reste juste. Le récepteur annoncerait deux fois le même changement d'état, ou une analyse ancienne comme nouvelle."
+
+[[threat.mitigation]]
+description = "La signature couvre l'heure d'émission : la vérification de référence refuse un message émis hors d'une tolérance de cinq minutes, avant comme après l'horloge du récepteur."
+code = "workers/src/answerlineage_workers/webhook_signature.py::verify"
+test = "workers/tests/test_webhook_signature.py::test_a_signature_replayed_outside_the_window_is_refused"
+
+[[threat.mitigation]]
+description = "Chaque message porte un identifiant de livraison, le même d'un envoi à l'autre : le récepteur écarte par lui un rejeu dans la fenêtre comme un renvoi."
+code = "workers/src/answerlineage_workers/webhooks.py::message"
+test = "workers/tests/test_webhooks.py::test_a_receiver_down_then_back_loses_nothing_and_keeps_the_delivery_id"
+
+[threat.acceptance]
+reason = "La vérification de référence ne garde aucun état : écarter, par son identifiant de livraison, un message rejoué dans la fenêtre de tolérance revient au récepteur."
+consequence = "Un récepteur qui ne garde pas les identifiants vus accepte, pendant cinq minutes, un message capté et renvoyé : il annonce deux fois le même changement d'état."
+
+[[threat]]
+id = "workers/webhook-secret-divulgue"
+name = "Le secret des webhooks, ou ce que tient un incident, sort par le réglage, le journal, la base ou le message"
+category = "information-disclosure"
+boundary = "workers-recepteur"
+assets = ["secret-des-webhooks", "destinataires", "lignage"]
+description = "Un secret réglé par une option se lirait dans la liste des processus ; un refus de réglage, le journal, la base ou une route qui le citeraient le feraient sortir. Un message qui porterait un texte libre, les noms des jeux de données ou les pseudonymes des destinataires livrerait au récepteur, ou à qui écoute, plus que l'annonce."
+
+[[threat.mitigation]]
+description = "Les secrets ne se règlent que par des variables d'environnement ; un réglage refusé empêche le worker de démarrer, sans citer le secret ni l'adresse."
+code = "workers/src/answerlineage_workers/cli.py::webhook_from"
+test = "workers/tests/test_webhooks.py::test_a_refused_webhook_stops_the_worker_at_startup_without_citing_its_address_or_secret"
+
+[[threat.mitigation]]
+description = "Le journal et la base ne gardent que des nombres, des statuts et des classes d'erreur : ni le secret, ni l'adresse, ni rien d'un message ; le secret n'est jamais affiché."
+code = "workers/src/answerlineage_workers/webhooks.py::run_webhooks"
+test = "workers/tests/test_webhooks.py::test_neither_the_journal_nor_the_base_keep_the_address_the_secret_or_any_content"
+
+[[threat.mitigation]]
+description = "Le message suit un gabarit fixe, publié et fermé : des identifiants, des codes de listes fermées, des heures et des nombres ; les destinataires sont comptés, jamais nommés."
+code = "workers/src/answerlineage_workers/webhooks.py::message"
+test = "workers/tests/test_webhooks.py::test_the_message_follows_the_published_format_signed_without_any_content"
+
+[[threat.mitigation]]
+description = "Le récepteur obéit aux règles d'adresse de la réémission : https, ou http sur la boucle locale seulement, TLS vérifié, certificat et nom."
+code = "workers/src/answerlineage_workers/destination.py::tls_context"
+test = "workers/tests/test_destination.py::test_tls_is_verified_and_an_internal_authority_is_trusted_through_the_system_setting"
+
+[[threat]]
+id = "workers/webhook-file-epuisante"
+name = "Un récepteur en panne ou un afflux d'incidents fait grossir la file des webhooks ou retarde les workers"
+category = "denial-of-service"
+boundary = "workers-recepteur"
+assets = ["disponibilite", "annonces-d-incident"]
+description = "Un récepteur arrêté, lent ou qui répond goutte à goutte retiendrait l'envoi ; un appelant de l'API, qui n'est pas authentifié, déclarerait des incidents en nombre : la file grossirait dans la base, la projection et l'analyse attendraient le récepteur, des workers revenant tous ensemble l'empêcheraient de se relever, et deux workers enverraient deux fois le même message."
+
+[[threat.mitigation]]
+description = "Sans webhook en service, rien n'est mis en file ; un changement d'état annulé n'y met rien."
+code = "api/src/answerlineage_api/incidents/webhooks.py::announce"
+test = "workers/tests/test_webhooks.py::test_without_a_webhook_in_service_no_change_of_state_is_queued"
+
+[[threat.mitigation]]
+description = "La file est bornée en âge et en nombre : ce qui déborde, les plus anciens d'abord, est retiré, compté perdu et dit au journal."
+code = "workers/src/answerlineage_workers/webhooks.py::trim"
+test = "workers/tests/test_webhooks.py::test_the_overflow_of_the_queue_is_counted_and_said"
+
+[[threat.mitigation]]
+description = "L'envoi tourne dans une boucle à part, ses entrées-sorties dans un fil à part, sous un délai total : un récepteur qui ne répond pas ne retarde ni la projection ni l'analyse, et l'arrêt coupe l'envoi en cours."
+code = "workers/src/answerlineage_workers/queue.py::run_worker"
+test = "workers/tests/test_webhooks.py::test_a_receiver_that_does_not_answer_slows_neither_the_projection_nor_the_analysis"
+
+[[threat.mitigation]]
+description = "Une panne arrête le lot au premier échec ; la reprise attend de plus en plus, jusqu'à un plafond, tirée au hasard ; rien ne se perd quand le récepteur revient."
+code = "workers/src/answerlineage_workers/webhooks.py::run_webhooks"
+test = "workers/tests/test_webhooks.py::test_a_receiver_down_then_back_loses_nothing_and_keeps_the_delivery_id"
+
+[[threat.mitigation]]
+description = "Deux workers réclament leurs lots avec FOR UPDATE SKIP LOCKED : jamais deux fois le même message."
+code = "workers/src/answerlineage_workers/webhooks.py::deliver_batch"
+test = "workers/tests/test_webhooks.py::test_two_workers_never_send_a_message_twice"
+
+[[threat]]
+id = "workers/webhook-detourne"
+name = "L'adresse du récepteur des webhooks est détournée vers une autre adresse"
+category = "elevation-of-privilege"
+boundary = "workers-recepteur"
+assets = ["hote", "secret-des-webhooks"]
+description = "Si un incident, une réponse ou une redirection choisissait l'adresse, le webhook deviendrait une requête sortante au service d'un tiers, depuis le réseau des workers : vers le service de métadonnées d'un cloud, qui sert les identifiants de la machine, ou vers un service interne, signée sous le secret partagé."
+
+[[threat.mitigation]]
+description = "L'adresse est réglée par l'exploitant au démarrage et contrôlée par les règles de la réémission ; une adresse interdite empêche le worker de démarrer, sans être citée."
+code = "workers/src/answerlineage_workers/cli.py::webhook_from"
+test = "workers/tests/test_webhooks.py::test_a_refused_webhook_stops_the_worker_at_startup_without_citing_its_address_or_secret"
+
+[[threat.mitigation]]
+description = "Aucune redirection n'est suivie : une réponse 3xx est un échec, le message reste en file."
+code = "workers/src/answerlineage_workers/destination.py::Sender"
+test = "workers/tests/test_destination.py::test_a_redirect_is_not_followed"
+
+[[threat.mitigation]]
+description = "Chaque connexion résout le nom, contrôle chaque adresse et se fait à l'adresse contrôlée : une seconde résolution ne mène pas ailleurs."
+code = "workers/src/answerlineage_workers/destination.py::addresses_of"
+test = "workers/tests/test_destination.py::test_each_connection_checks_what_the_name_leads_to_and_goes_there"
+
+[threat.acceptance]
+reason = "Comme pour la réémission, les adresses internes autres que les métadonnées et le lien local sont admises : le récepteur d'une entreprise est souvent sur son réseau privé, et l'adresse ne vient que de l'exploitant."
+consequence = "Un exploitant qui règle par erreur l'adresse d'un service interne y envoie les annonces d'incident, signées, sans contenu ; le contrôle ne le distingue pas d'un récepteur."
 
 # Ligne de commande
 

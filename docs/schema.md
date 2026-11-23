@@ -39,6 +39,8 @@ Les onze tables d'`agent` à `delivery_recipient` forment le graphe (`schema.GRA
 | `incident_analysis` | incident | Demande d'analyse d'un incident, son état, et les décomptes, la couverture et les jeux inconnus de son résultat |
 | `incident_answer` | incident, run et empreinte | Réponse touchée par un incident |
 | `incident_recipient` | incident, réponse et pseudonyme | Destinataire d'une réponse touchée |
+| `webhook_queue` | identifiant de livraison | File des webhooks : changements d'état des incidents qui attendent d'être annoncés au récepteur, figés à l'heure du changement, leurs envois en échec |
+| `webhook_stats` | une seule ligne | Échéance de la mise en service des webhooks ; messages remis, refusés par le récepteur et abandonnés, depuis la mise en service |
 | `graph_rebuild` | identifiant tiré par la base | Reconstruction du graphe depuis les événements bruts : départ, fin, événements rejoués, période des événements conservés |
 
 ## Deux heures
@@ -185,6 +187,19 @@ Un index partiel range les demandes en attente par heure de reprise : c'est ce q
 `incident_analysis.coverage` garde la couverture du lignage de la fenêtre à l'heure de l'analyse, sous la forme que rend l'API (état, taux, compteurs, trous) ; `unknown_datasets`, les jeux du périmètre que le graphe ne connaissait pas. Ce sont des colonnes `jsonb` : un instantané, qu'aucune requête ne parcourt.
 
 Les incidents ne sont ni partitionnés ni purgés : ils sont rares, et un rappel s'appuie sur eux. La migration `0010` crée ces tables ; sa descente les retire, incidents compris.
+
+## File des webhooks
+
+Quand un [webhook](webhooks.md) est en service, chaque changement d'état d'un incident écrit son message dans `webhook_queue`, dans la transaction qui le fait : celle de la déclaration, ou celle qui enregistre la fin de l'analyse. Le message y est tel qu'il partira, figé à l'heure du changement : la sorte d'événement, l'incident, son état, sa gravité, l'état de son analyse, son code d'échec et ses décomptes. Il en sort dans la transaction qui enregistre l'issue de son envoi, avec les compteurs de `webhook_stats`.
+
+| Table | Contraintes |
+| --- | --- |
+| `webhook_queue` | Un identifiant de livraison par message, tiré par la base (`uq_webhook_queue_delivery_id`), clé étrangère vers l'incident. Sorte d'événement, état de l'incident, gravité et code d'échec de leurs listes fermées (`ck_webhook_queue_event_type`, `ck_webhook_queue_incident_state`, `ck_webhook_queue_severity`, `ck_webhook_queue_analysis_error`) ; chaque sorte d'événement annonce l'état d'analyse qui est le sien (`ck_webhook_queue_analysis_state`) ; une analyse en échec, et elle seule, porte son code (`ck_webhook_queue_failure`) ; une analyse faite, et elle seule, porte ses décomptes (`ck_webhook_queue_counts_given`), positifs (`ck_webhook_queue_counts`) ; la classe du dernier échec, ou le statut de la réponse, dès le premier échec, et seulement alors (`ck_webhook_queue_last_error`) |
+| `webhook_stats` | Une seule ligne (`ck_webhook_stats_single_row`), des compteurs positifs (`ck_webhook_stats_counts`). `in_service_until` : un worker qui a un webhook la repousse à chaque passage ; tant qu'elle n'est pas passée, un changement d'état est mis en file |
+
+Un index range la file par heure de mise en file, pour son âge et sa borne d'âge ; un index partiel tient les messages en reprise. Aucune colonne ne porte de texte libre ni de pseudonyme : des identifiants, des codes, des heures et des nombres.
+
+La migration `0014` crée les deux tables ; sa descente les retire : ce qui attendait d'être annoncé ne l'est pas, les incidents ne changent pas.
 
 ## Reconstructions du graphe
 

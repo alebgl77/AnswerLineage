@@ -4,6 +4,8 @@ Un responsable de données constate qu'une donnée est fausse : une table mal ch
 
 La déclaration se fait par l'API (`POST /api/v1/incidents`) ou par la [ligne de commande](cli.md#answerlineage-incident) (`answerlineage incident declare`). Les [workers](workers.md#analyse-des-incidents) font l'analyse ; elle se lit sur l'incident (`GET /api/v1/incidents/{id}`, `answerlineage incident show`).
 
+Chaque changement d'état, la déclaration, l'analyse faite, l'analyse en échec, s'annonce aussi par un [webhook signé](webhooks.md) (`incident.declared`, `incident.analysed`, `incident.analysis_failed`) quand les workers en ont un, dans la transaction qui le fait.
+
 ## Le modèle
 
 | Champ | Contenu |

@@ -33,7 +33,9 @@ est déjà parti : il n'y entre pas. La boucle de réémission tourne à côté 
 celle du worker, sans la retarder.
 
 Entre deux lots, la boucle du worker analyse aussi un incident déclaré, quand
-une demande attend (``incidents.py``).
+une demande attend (``incidents.py``). Quand le worker a un webhook, une autre
+boucle annonce les changements d'état des incidents au récepteur
+(``webhooks.py``), sans retarder la projection.
 
 Pendant une reconstruction du graphe (``rebuild.py``), le worker ne réclame ni
 lot ni analyse : la reconstruction tient la barrière du graphe et projette la
@@ -69,6 +71,7 @@ from answerlineage_workers.partitions import (
 from answerlineage_workers.projection import project
 from answerlineage_workers.reemission import Reemission, run_reemission
 from answerlineage_workers.silence import DEFAULT_SILENCE, check_silent_emitters
+from answerlineage_workers.webhooks import Webhook, run_webhooks
 
 logger = logging.getLogger("answerlineage_workers")
 
@@ -450,6 +453,7 @@ async def run_worker(
     analysis_timeout: timedelta = DEFAULT_ANALYSIS_TIMEOUT,
     clock: Callable[[], datetime] = _now,
     reemission: Reemission | None = None,
+    webhook: Webhook | None = None,
 ) -> None:
     """Traite la file jusqu'à ce que ``stop`` soit levé.
 
@@ -468,13 +472,15 @@ async def run_worker(
     Avec ``reemission``, les événements projetés entrent dans la file de
     réémission, et une seconde boucle, à côté, les envoie à la destination
     (``run_reemission``) : une destination en panne ne retarde pas la projection.
+    Avec ``webhook``, une autre boucle annonce les changements d'état des
+    incidents au récepteur (``run_webhooks``), sans la retarder non plus.
     """
     checked_batch_size(batch_size)
-    reemitting = (
-        None
-        if reemission is None
-        else asyncio.create_task(run_reemission(engine, stop, reemission))
-    )
+    beside: list[asyncio.Task[None]] = []
+    if reemission is not None:
+        beside.append(asyncio.create_task(run_reemission(engine, stop, reemission)))
+    if webhook is not None:
+        beside.append(asyncio.create_task(run_webhooks(engine, stop, webhook)))
     try:
         await _project_loop(
             engine,
@@ -493,10 +499,10 @@ async def run_worker(
             reemit=reemission is not None,
         )
     finally:
-        if reemitting is not None:
-            if not stop.is_set():
-                reemitting.cancel()
-            await asyncio.gather(reemitting, return_exceptions=True)
+        if not stop.is_set():
+            for task in beside:
+                task.cancel()
+        await asyncio.gather(*beside, return_exceptions=True)
 
 
 async def _project_loop(

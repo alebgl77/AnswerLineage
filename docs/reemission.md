@@ -39,7 +39,7 @@ Seul Marquez est éprouvé par les tests ; pour les autres, l'adresse et l'authe
 
 ### L'adresse de la destination
 
-L'adresse est réglée par l'exploitant au démarrage ; elle n'est jamais tirée d'un événement, d'une facette ni d'une réponse. Une adresse refusée empêche le worker de démarrer, avec « Configuration invalide : … » et le code de sortie 2, sans être citée.
+L'adresse est réglée par l'exploitant au démarrage ; elle n'est jamais tirée d'un événement, d'une facette ni d'une réponse. Une adresse refusée empêche le worker de démarrer, avec « Configuration invalide : … » et le code de sortie 2, sans être citée. Le récepteur des [webhooks](webhooks.md) obéit aux mêmes règles, par le même code, et il est joint par le même client.
 
 | Adresse | Admise |
 | --- | --- |

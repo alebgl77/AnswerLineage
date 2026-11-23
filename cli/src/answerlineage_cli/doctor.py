@@ -4,9 +4,9 @@ Les vérifications, dans l'ordre : l'API répond et sa version ; elle accepte
 l'adresse utilisée (en-têtes Host et Origin) ; elle lit sa base ; le schéma
 est à jour ; la file d'ingestion avance ; aucun événement n'attend au rebut ;
 aucun émetteur n'est muet ; aucune partition mensuelle ne manque ; la
-réémission vers un consommateur OpenLineage externe n'est pas en retard ;
-l'explorateur est servi. Les sept du milieu viennent de la route
-``GET /api/v1/health``.
+réémission vers un consommateur OpenLineage externe n'est pas en retard ; les
+webhooks qui annoncent les incidents ne sont pas en retard ; l'explorateur est
+servi. Les huit du milieu viennent de la route ``GET /api/v1/health``.
 
 Chaque anomalie a un code stable, un message et un remède écrits d'avance :
 aucun texte reçu de l'API n'y est recopié, seulement des nombres et l'adresse
@@ -31,6 +31,7 @@ MAX_PAGE_BYTES: Final = 1024 * 1024
 DEFAULT_QUEUE_MAX_AGE: Final = 300
 MAX_QUEUE_MAX_AGE: Final = 7 * 24 * 3600
 DEFAULT_REEMISSION_MAX_AGE: Final = 300
+DEFAULT_WEBHOOK_MAX_AGE: Final = 300
 # La version majeure de l'API que la commande sait lire.
 API_MAJOR: Final = 1
 
@@ -47,6 +48,7 @@ CHECKS: Final = (
     "emitters",
     "partitions",
     "reemission",
+    "webhooks",
     "explorer",
     "workers",
 )
@@ -60,6 +62,7 @@ _LABELS: Final = {
     "emitters": "Émetteurs",
     "partitions": "Partitions",
     "reemission": "Réémission",
+    "webhooks": "Webhooks",
     "explorer": "Explorateur",
     "workers": "Workers",
 }
@@ -176,6 +179,16 @@ ANOMALIES: Final[Mapping[str, Anomaly]] = {
         "ANSWERLINEAGE_REEMIT_AUTHORIZATION dans l'environnement des workers, et qu'un worker "
         "tourne avec ce réglage. Au-delà des bornes de la file, les plus anciens sont perdus.",
     ),
+    "webhooks_lagging": Anomaly(
+        "webhooks",
+        "Les webhooks des incidents sont en retard : {queued}, le plus ancien depuis {age} "
+        "(seuil : {threshold}) ; {lost} depuis la mise en service.",
+        "Vérifier que le récepteur répond et que les workers le joignent : leur journal donne "
+        "la classe de l'échec ou le statut de la réponse ; un récepteur qui refuse la signature "
+        "répond souvent 401 ou 403, vérifier alors le secret. Vérifier ANSWERLINEAGE_WEBHOOK_URL "
+        "et ANSWERLINEAGE_WEBHOOK_SECRET dans l'environnement des workers, et qu'un worker "
+        "tourne avec ce réglage. Au-delà des bornes de la file, les plus anciens sont perdus.",
+    ),
     "explorer_missing": Anomaly(
         "explorer",
         "L'explorateur n'est pas servi à cette adresse.",
@@ -240,8 +253,9 @@ class _Tallies:
     dead_letters: dict[str, Any]
     emitters: dict[str, Any]
     partitions: dict[str, Any]
-    # Absente d'une API qui ne la publie pas encore.
+    # Absentes d'une API qui ne les publie pas encore.
     reemission: dict[str, Any] | None
+    webhooks: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -258,7 +272,7 @@ def _tally(value: Any, where: str, fields: Sequence[str]) -> dict[str, Any] | No
     document = shape.obj(value, where, fields)
     checked: dict[str, Any] = {}
     for key in fields:
-        if key == "lower_bound":
+        if key in ("lower_bound", "in_service"):
             checked[key] = shape.flag(document[key], f"{where}/{key}")
         elif key == "oldest_age_seconds":
             checked[key] = shape.optional_count(document[key], f"{where}/{key}")
@@ -278,7 +292,7 @@ def parse_health(document: Any) -> _Health:
         "emitters",
         "partitions",
     )
-    found = shape.obj(document, "", fields, ("reemission",))
+    found = shape.obj(document, "", fields, ("reemission", "webhooks"))
     version = shape.version(found["api_version"], "/api_version")
     database = shape.choice(found["database"], "/database", DATABASE_STATES)
     migrations = found["migrations"]
@@ -295,6 +309,20 @@ def parse_health(document: Any) -> _Health:
         "/reemission",
         ("queued", "retrying", "lower_bound", "oldest_age_seconds", "sent", "lost", "rejected"),
     )
+    webhooks = _tally(
+        found.get("webhooks"),
+        "/webhooks",
+        (
+            "in_service",
+            "queued",
+            "retrying",
+            "lower_bound",
+            "oldest_age_seconds",
+            "sent",
+            "lost",
+            "rejected",
+        ),
+    )
     # Une base disponible a un état de ses migrations ; un schéma à jour, ses décomptes.
     if (database == "available") != (migrations is not None):
         raise shape.fault("/migrations")
@@ -307,16 +335,20 @@ def parse_health(document: Any) -> _Health:
     # Le rebut a un plus ancien dès qu'il n'est pas vide, et seulement alors.
     if (buried["events"] == 0) != (buried["oldest_age_seconds"] is None):
         raise shape.fault("/dead_letters/oldest_age_seconds")
-    if "reemission" in found and reemission is None:
-        # Une API qui publie la réémission la donne dès que le schéma est à jour.
-        raise shape.fault("/reemission")
-    if reemission is not None:
-        if (reemission["queued"] == 0) != (reemission["oldest_age_seconds"] is None):
-            raise shape.fault("/reemission/oldest_age_seconds")
-        if reemission["rejected"] > reemission["lost"]:
-            raise shape.fault("/reemission/rejected")
+    for name, tally in (("reemission", reemission), ("webhooks", webhooks)):
+        if name in found and tally is None:
+            # Une API qui publie cet état le donne dès que le schéma est à jour.
+            raise shape.fault(f"/{name}")
+        if tally is not None:
+            if (tally["queued"] == 0) != (tally["oldest_age_seconds"] is None):
+                raise shape.fault(f"/{name}/oldest_age_seconds")
+            if tally["rejected"] > tally["lost"]:
+                raise shape.fault(f"/{name}/rejected")
     return _Health(
-        version, database, migrations, _Tallies(queue, buried, emitters, partitions, reemission)
+        version,
+        database,
+        migrations,
+        _Tallies(queue, buried, emitters, partitions, reemission, webhooks),
     )
 
 
@@ -355,6 +387,7 @@ def diagnose(
     *,
     queue_max_age: int = DEFAULT_QUEUE_MAX_AGE,
     reemission_max_age: int = DEFAULT_REEMISSION_MAX_AGE,
+    webhook_max_age: int = DEFAULT_WEBHOOK_MAX_AGE,
 ) -> list[Check]:
     report = _Report()
     try:
@@ -401,7 +434,7 @@ def diagnose(
 
     report.add(_ok("api", f"L'API répond : API {health.version}."))
     report.add(_ok("address", "L'API accepte cette adresse (en-têtes Host et Origin)."))
-    _installation(health, report, queue_max_age, reemission_max_age)
+    _installation(health, report, queue_max_age, reemission_max_age, webhook_max_age)
     _explorer(api, report)
     return report.finish(_unchecked_reason(health))
 
@@ -413,7 +446,11 @@ def _unchecked_reason(health: _Health) -> str:
 
 
 def _installation(
-    health: _Health, report: _Report, queue_max_age: int, reemission_max_age: int
+    health: _Health,
+    report: _Report,
+    queue_max_age: int,
+    reemission_max_age: int,
+    webhook_max_age: int,
 ) -> None:
     if health.database != "available":
         report.add(_anomaly("database_unavailable"))
@@ -448,6 +485,7 @@ def _installation(
     else:
         report.add(_ok("partitions", "Aucune partition mensuelle ne manque."))
     report.add(_reemission(health.tallies.reemission, reemission_max_age))
+    report.add(_webhooks(health.tallies.webhooks, webhook_max_age))
 
 
 def _sentence(text: str) -> str:
@@ -521,6 +559,36 @@ def _reemission(reemission: Mapping[str, Any] | None, max_age: int) -> Check:
     sent = _plural(reemission["sent"], "remis", "remis")
     waiting = "file vide" if age is None else f"{queued}, le plus ancien depuis {duration(age)}"
     return _ok("reemission", f"La réémission avance : {waiting} ; {sent}, {lost}.")
+
+
+def _webhooks(webhooks: Mapping[str, Any] | None, max_age: int) -> Check:
+    if webhooks is None:
+        return _unchecked("webhooks", "l'API ne publie pas l'état des webhooks.")
+    age = webhooks["oldest_age_seconds"]
+    if not webhooks["in_service"] and age is None:
+        return _unchecked(
+            "webhooks",
+            "aucun webhook n'est en service : sans webhook réglé aux workers, aucun changement "
+            "d'état d'incident n'est annoncé.",
+        )
+    queued = _plural(
+        webhooks["queued"],
+        "message à envoyer",
+        "messages à envoyer",
+        beyond=webhooks["lower_bound"],
+    )
+    lost = _plural(webhooks["lost"], "perdu", "perdus")
+    if age is not None and age > max_age:
+        return _anomaly(
+            "webhooks_lagging",
+            queued=queued,
+            age=duration(age),
+            threshold=duration(max_age),
+            lost=lost,
+        )
+    sent = _plural(webhooks["sent"], "remis", "remis")
+    waiting = "file vide" if age is None else f"{queued}, le plus ancien depuis {duration(age)}"
+    return _ok("webhooks", f"Les webhooks avancent : {waiting} ; {sent}, {lost}.")
 
 
 def _explorer(api: Api, report: _Report) -> None:

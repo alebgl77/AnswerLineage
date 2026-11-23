@@ -6,7 +6,7 @@ Un worker lit la file de traitement et projette chaque événement reçu dans le
 ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run answerlineage-worker
 ```
 
-Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Un événement qu'il ne parvient pas à projeter va à la [file de rebut](#file-de-rebut), où il se consulte et se rejoue. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés, contrôle les [émetteurs muets](#émetteurs-muets), entretient les [partitions mensuelles](#partitions-mensuelles) et, quand une destination est réglée, [réémet les événements](#réémission) vers un catalogue OpenLineage. La même commande [reconstruit le graphe](#reconstruire-le-graphe) depuis les événements bruts, quand il est corrompu.
+Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Un événement qu'il ne parvient pas à projeter va à la [file de rebut](#file-de-rebut), où il se consulte et se rejoue. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés, contrôle les [émetteurs muets](#émetteurs-muets), entretient les [partitions mensuelles](#partitions-mensuelles) et, quand une destination est réglée, [réémet les événements](#réémission) vers un catalogue OpenLineage ; quand un webhook est réglé, il [annonce les changements d'état des incidents](#webhooks) à son récepteur. La même commande [reconstruit le graphe](#reconstruire-le-graphe) depuis les événements bruts, quand il est corrompu.
 
 ## Garanties
 
@@ -159,6 +159,19 @@ Avec une destination (`--reemit-url` ou `ANSWERLINEAGE_REEMIT_URL`), chaque év�
 | Heures d'attente au plus dans la file de réémission | `--reemit-max-age-hours` | 168 (1 à 2 160) |
 
 Le réglage, l'adresse admise, ce qui est réémis, les garanties, les compteurs et les limites : [Réémission vers un catalogue OpenLineage](reemission.md).
+
+## Webhooks
+
+Avec un webhook (`--webhook-url` ou `ANSWERLINEAGE_WEBHOOK_URL`, et son secret partagé dans `ANSWERLINEAGE_WEBHOOK_SECRET`), une autre boucle du worker annonce chaque changement d'état d'un [incident](incidents.md) au récepteur : sa déclaration, son analyse faite, son analyse en échec. Le message entre dans la file des webhooks dans la transaction qui change l'état, celle de l'API pour la déclaration, celle de l'[analyse](#analyse-des-incidents) pour les deux autres ; la boucle l'envoie, signé, en une seconde environ, et à côté de la projection : un récepteur en panne ne la retarde pas.
+
+| Réglage | Option | Défaut |
+| --- | --- | --- |
+| Adresse du récepteur | `--webhook-url`, ou `ANSWERLINEAGE_WEBHOOK_URL` | aucune : rien n'est annoncé |
+| Secret partagé, et le précédent pendant une rotation | `ANSWERLINEAGE_WEBHOOK_SECRET`, `ANSWERLINEAGE_WEBHOOK_PREVIOUS_SECRET` seulement | aucun : obligatoire avec une adresse |
+| Messages gardés au plus dans la file des webhooks | `--webhook-max-messages` | 10 000 (1 à 1 000 000) |
+| Heures d'attente au plus dans la file, et de mise en service après le dernier passage | `--webhook-max-age-hours` | 168 (1 à 2 160) |
+
+Le réglage, le format, la signature et sa vérification, la rotation du secret, les garanties, les compteurs et les limites : [Webhooks signés](webhooks.md).
 
 ## Analyse des incidents
 
@@ -328,7 +341,7 @@ L'ordre n'y fait rien. Les workers avaient projeté les événements dans l'ordr
 
 ### Ce qu'elle ne touche pas
 
-Seules les tables du graphe sont vidées. Les événements bruts, la file, où elle remet les événements, le rebut, la file de réémission, le compteur de doublons, les relevés de couverture et les émetteurs connus, les alertes de partition, les incidents et leurs analyses restent tels quels.
+Seules les tables du graphe sont vidées. Les événements bruts, la file, où elle remet les événements, le rebut, la file de réémission, la file des webhooks, le compteur de doublons, les relevés de couverture et les émetteurs connus, les alertes de partition, les incidents et leurs analyses restent tels quels.
 
 De tout cela, seul le résultat d'une analyse d'incident dérive du graphe : ses réponses touchées, leurs destinataires, ses décomptes et sa couverture, lus tels que le graphe était connu à l'heure de l'analyse (`known_at`). La reconstruction ne les recalcule pas. Elle rend chaque ligne avec son heure d'enregistrement : le graphe tel que connu à `known_at` est celui d'avant la corruption, et une analyse faite avant elle reste juste. Une analyse faite sur le graphe corrompu se rejoue en gardant son `known_at` ([rejouer une analyse](incidents.md#rejouer-une-analyse)) : elle lit alors ce qu'elle aurait dû lire. La couverture du lignage se calcule à la lecture, des événements bruts et de la file : rien n'est à recalculer.
 

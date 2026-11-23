@@ -22,6 +22,11 @@ qu'elle a intégrés attendent d'être réémis vers un consommateur OpenLineage
 externe dans la file de réémission (``reemission_queue``), quand les workers en
 ont un ; ``reemission_stats`` compte ce qui est parti et ce qui s'est perdu.
 
+Chaque changement d'état d'un incident attend d'être annoncé au récepteur de
+webhooks dans la file des webhooks (``webhook_queue``), quand un webhook est en
+service ; ``webhook_stats`` dit jusqu'à quand il l'est, et compte ce qui est
+parti et ce qui s'est perdu.
+
 Les tables du graphe (``GRAPH``) se déduisent toutes des événements bruts : la
 reconstruction les vide et les rejoue, et garde la trace de chaque
 reconstruction (``graph_rebuild``).
@@ -90,6 +95,17 @@ AnalysisError = Literal["query_timeout", "analysis_error"]
 ANALYSIS_ERRORS: Final[tuple[str, ...]] = get_args(AnalysisError)
 # Durée maximale de la fenêtre de validité d'un incident.
 INCIDENT_WINDOW_DAYS: Final = 31
+# Événement d'incident annoncé par webhook, d'une liste fermée : un par
+# changement d'état qui existe. La déclaration ; l'analyse faite ; l'analyse en
+# échec pour de bon. Une analyse remise à plus tard ne change pas d'état.
+WebhookEvent = Literal["incident.declared", "incident.analysed", "incident.analysis_failed"]
+WEBHOOK_EVENTS: Final[tuple[str, ...]] = get_args(WebhookEvent)
+# L'état de l'analyse que chaque événement annonce.
+WEBHOOK_EVENT_ANALYSIS: Final[dict[str, str]] = {
+    "incident.declared": "pending",
+    "incident.analysed": "done",
+    "incident.analysis_failed": "failed",
+}
 # Motif de la mise au rebut d'un événement, d'une liste fermée : une classe
 # d'erreur, jamais le message d'une exception. Les quatre premiers ne se
 # corrigent pas en réessayant ; les deux derniers sont réessayés d'abord.
@@ -622,6 +638,88 @@ incident_recipient = Table(
         ["incident_id", "run_id", "fingerprint"],
         [incident_answer.c.incident_id, incident_answer.c.run_id, incident_answer.c.fingerprint],
     ),
+)
+
+# File des webhooks : chaque changement d'état d'un incident, à annoncer au
+# récepteur que règlent les workers. Le message y entre dans la transaction qui
+# change l'état, quand un webhook est en service, et en sort dans celle qui
+# enregistre l'issue de son envoi. Il y est tel qu'il partira, figé à l'heure du
+# changement : des identifiants, des codes de listes fermées, des heures et des
+# décomptes, jamais un texte libre ni un pseudonyme. ``delivery_id`` reste le
+# même d'un envoi à l'autre : le récepteur s'en sert pour écarter un doublon.
+# Bornée en âge et en nombre par les workers : ce qui déborde est compté dans
+# ``webhook_stats``.
+webhook_queue = Table(
+    "webhook_queue",
+    metadata,
+    Column("id", BigInteger, Identity(always=True), primary_key=True),
+    Column("delivery_id", Uuid, nullable=False, server_default=func.gen_random_uuid()),
+    Column("event_type", Text, nullable=False),
+    Column("incident_id", Uuid, ForeignKey("incident.id"), nullable=False),
+    # L'heure du changement d'état : la déclaration, ou la fin de l'analyse.
+    Column("occurred_at", DateTime(timezone=True), nullable=False),
+    Column("incident_state", Text, nullable=False),
+    Column("severity", Text, nullable=False),
+    Column("analysis_state", Text, nullable=False),
+    Column("analysis_error", Text),
+    # Les décomptes d'une analyse faite : réponses touchées, destinataires distincts.
+    Column("answers", BigInteger),
+    Column("recipients", BigInteger),
+    Column("lower_bound", Boolean),
+    Column("enqueued_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    # Envois en échec : le récepteur n'a pas dit s'il avait pris le message.
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    # Classe de la dernière erreur, ou statut de la réponse : jamais un message.
+    Column("last_error", Text),
+    UniqueConstraint("delivery_id"),
+    CheckConstraint(_in("event_type", WEBHOOK_EVENTS), name="event_type"),
+    CheckConstraint(
+        " OR ".join(
+            f"(event_type = '{kind}' AND analysis_state = '{state}')"
+            for kind, state in WEBHOOK_EVENT_ANALYSIS.items()
+        ),
+        name="analysis_state",
+    ),
+    CheckConstraint(_in("incident_state", INCIDENT_STATES), name="incident_state"),
+    CheckConstraint(_in("severity", SEVERITIES), name="severity"),
+    CheckConstraint(
+        f"analysis_error IS NULL OR {_in('analysis_error', ANALYSIS_ERRORS)}",
+        name="analysis_error",
+    ),
+    CheckConstraint("(analysis_state = 'failed') = (analysis_error IS NOT NULL)", name="failure"),
+    CheckConstraint(
+        "(analysis_state = 'done') = (answers IS NOT NULL AND recipients IS NOT NULL"
+        " AND lower_bound IS NOT NULL)",
+        name="counts_given",
+    ),
+    CheckConstraint("answers >= 0 AND recipients >= 0 AND attempts >= 0", name="counts"),
+    CheckConstraint("(attempts = 0) = (last_error IS NULL)", name="last_error"),
+    # Les plus anciens : l'âge de la file, et ce qui dépasse sa borne d'âge.
+    Index(None, "enqueued_at"),
+)
+# Les messages en reprise, que la route de santé compte.
+Index(
+    "ix_webhook_queue_retrying",
+    webhook_queue.c.id,
+    postgresql_where=webhook_queue.c.attempts > 0,
+)
+
+# État et compteurs des webhooks, en une seule ligne. ``in_service_until`` : un
+# worker qui a un webhook le repousse à chaque passage, de la borne d'âge de sa
+# file ; tant qu'elle n'est pas passée, un changement d'état met son message en
+# file. Les compteurs, depuis la mise en service : messages remis au récepteur,
+# refusés par lui, abandonnés par la borne de la file. Ils grandissent dans la
+# transaction qui retire les messages de la file.
+webhook_stats = Table(
+    "webhook_stats",
+    metadata,
+    Column("id", Boolean, primary_key=True, server_default=text("true")),
+    Column("in_service_until", DateTime(timezone=True)),
+    Column("sent", BigInteger, nullable=False, server_default="0"),
+    Column("rejected", BigInteger, nullable=False, server_default="0"),
+    Column("dropped", BigInteger, nullable=False, server_default="0"),
+    CheckConstraint("id", name="single_row"),
+    CheckConstraint("sent >= 0 AND rejected >= 0 AND dropped >= 0", name="counts"),
 )
 
 # Reconstructions du graphe depuis les événements bruts, une ligne chacune : tant

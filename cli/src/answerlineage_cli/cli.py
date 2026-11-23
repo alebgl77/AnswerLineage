@@ -443,6 +443,15 @@ def build_parser() -> argparse.ArgumentParser:
             f"retard, en secondes, {doctor.DEFAULT_REEMISSION_MAX_AGE} par défaut"
         ),
     )
+    check.add_argument(
+        "--webhook-max-age",
+        type=_bounded(0, doctor.MAX_QUEUE_MAX_AGE, "de secondes"),
+        default=doctor.DEFAULT_WEBHOOK_MAX_AGE,
+        help=(
+            "âge du plus ancien message de webhook à envoyer au-delà duquel les webhooks sont "
+            f"en retard, en secondes, {doctor.DEFAULT_WEBHOOK_MAX_AGE} par défaut"
+        ),
+    )
     check.add_argument("--format", choices=("text", "json"), default="text")
     _common(check)
 
@@ -601,7 +610,10 @@ def _dead_letters(api: Api, args: argparse.Namespace) -> Exit:
 
 def _doctor(api: Api, args: argparse.Namespace) -> Exit:
     checks = doctor.diagnose(
-        api, queue_max_age=args.queue_max_age, reemission_max_age=args.reemission_max_age
+        api,
+        queue_max_age=args.queue_max_age,
+        reemission_max_age=args.reemission_max_age,
+        webhook_max_age=args.webhook_max_age,
     )
     render = doctor.render_json if args.format == "json" else doctor.render_text
     out(render(api.base, checks))

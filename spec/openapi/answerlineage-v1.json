@@ -1594,6 +1594,17 @@
               }
             ],
             "description": "La file de réémission et ses compteurs ; nuls tant que le schéma n'est pas à jour."
+          },
+          "webhooks": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WebhookHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Les webhooks des incidents, leur file et leurs compteurs ; nuls tant que le schéma n'est pas à jour."
           }
         },
         "required": [
@@ -1604,7 +1615,8 @@
           "dead_letters",
           "emitters",
           "partitions",
-          "reemission"
+          "reemission",
+          "webhooks"
         ],
         "title": "Health",
         "type": "object"
@@ -2574,6 +2586,70 @@
         "title": "UndescribedToolList",
         "type": "object"
       },
+      "WebhookHealth": {
+        "description": "Les webhooks qui annoncent les changements d'état des incidents au récepteur.",
+        "properties": {
+          "in_service": {
+            "description": "Vrai quand un worker qui a un webhook est passé depuis moins que la borne d'âge de sa file : un changement d'état d'incident est alors mis en file.",
+            "title": "In Service",
+            "type": "boolean"
+          },
+          "lost": {
+            "description": "Messages perdus depuis la mise en service : refusés par le récepteur, ou abandonnés par les bornes de la file.",
+            "title": "Lost",
+            "type": "integer"
+          },
+          "lower_bound": {
+            "description": "Vrai au-delà de 10000 messages : « queued » et « retrying » sont des minimums.",
+            "title": "Lower Bound",
+            "type": "boolean"
+          },
+          "oldest_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Depuis combien de secondes le plus ancien attend, à l'horloge de la base ; nul quand la file est vide.",
+            "title": "Oldest Age Seconds"
+          },
+          "queued": {
+            "description": "Messages qui attendent d'être envoyés au récepteur.",
+            "title": "Queued",
+            "type": "integer"
+          },
+          "rejected": {
+            "description": "Parmi les perdus, ceux que le récepteur a refusés.",
+            "title": "Rejected",
+            "type": "integer"
+          },
+          "retrying": {
+            "description": "Parmi eux, ceux dont un envoi a échoué sans que le récepteur dise les avoir pris : ils seront renvoyés.",
+            "title": "Retrying",
+            "type": "integer"
+          },
+          "sent": {
+            "description": "Messages remis au récepteur depuis la mise en service.",
+            "title": "Sent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "in_service",
+          "queued",
+          "retrying",
+          "lower_bound",
+          "oldest_age_seconds",
+          "sent",
+          "lost",
+          "rejected"
+        ],
+        "title": "WebhookHealth",
+        "type": "object"
+      },
       "Window": {
         "description": "Fenêtre de temps : début inclus, fin exclue.",
         "properties": {
@@ -3265,7 +3341,7 @@
     },
     "/api/v1/health": {
       "get": {
-        "description": "Base, migrations, file d'ingestion, rebut, émetteurs muets, partitions manquantes,\nréémission.\n\nUne base injoignable n'est pas une erreur de la route : elle répond\n« unavailable », sans dire pourquoi.",
+        "description": "Base, migrations, file d'ingestion, rebut, émetteurs muets, partitions manquantes,\nréémission, webhooks.\n\nUne base injoignable n'est pas une erreur de la route : elle répond\n« unavailable », sans dire pourquoi.",
         "operationId": "installation_health_api_v1_health_get",
         "responses": {
           "200": {

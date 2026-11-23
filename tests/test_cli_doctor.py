@@ -26,8 +26,10 @@ from answerlineage_api.store.engine import create_engine
 from answerlineage_cli.doctor import ANOMALIES
 from answerlineage_cli.exits import Exit
 from answerlineage_workers import queue
+from answerlineage_workers.destination import parse_destination
 from answerlineage_workers.queue import process_batch
 from answerlineage_workers.silence import check_silent_emitters
+from answerlineage_workers.webhooks import Webhook, keep_in_service
 from api.tests.events import run_event
 from cli.tests.fakes import HTML, run
 from proxy.tests.conftest import running
@@ -107,6 +109,8 @@ async def test_a_sound_installation_has_no_anomaly(
         "partitions": "ok",
         # Sans destination réglée aux workers, rien n'est réémis : rien à juger.
         "reemission": "not_checked",
+        # Sans webhook réglé aux workers, rien n'est annoncé : rien à juger.
+        "webhooks": "not_checked",
         "explorer": "ok",
         "workers": "not_checked",
     }
@@ -243,4 +247,35 @@ async def test_a_reemission_left_behind_is_named(
     assert late["message"].startswith(
         "La réémission vers le consommateur OpenLineage externe est en retard : 1 événement à"
         " réémettre, le plus ancien depuis 1 h 00 min"
+    )
+
+
+async def test_webhooks_left_behind_are_named(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine, explorer: Path
+) -> None:
+    # Un worker qui a un webhook est passé ; le récepteur ne prend rien depuis dix minutes.
+    webhook = Webhook(parse_destination("https://recepteur.interne/hooks"), "x" * 32)
+    await keep_in_service(engine, webhook)
+    async with served(engine, explorer) as url:
+        async with httpx.AsyncClient(base_url=url) as client:
+            declared = await client.post(
+                "/api/v1/incidents",
+                json={
+                    "scope": {"datasets": [{"namespace": "bigquery", "name": "finance.taux"}]},
+                    "window": {"from": "2026-11-03T06:00:00Z", "to": "2026-11-03T07:00:00Z"},
+                    "severity": "medium",
+                },
+            )
+            assert declared.status_code == 201
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE webhook_queue SET enqueued_at = now() - interval '10 minutes'")
+            )
+        code, report = await doctor(monkeypatch, url)
+    assert code == Exit.ANOMALY
+    only(report, "webhooks_lagging")
+    (late,) = [check for check in report["checks"] if check["check"] == "webhooks"]
+    assert late["message"].startswith(
+        "Les webhooks des incidents sont en retard : 1 message à envoyer, le plus ancien depuis"
+        " 10 min"
     )

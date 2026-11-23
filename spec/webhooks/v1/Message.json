@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/webhooks/v1/Message.json",
+  "$ref": "#/$defs/Message",
+  "$defs": {
+    "Message": {
+      "description": "Message d'un webhook d'AnswerLineage, version 1 : un changement d'état d'un incident. Le corps de la requête POST, en JSON, signé avec son heure d'émission dans l'en-tête AnswerLineage-Signature. Un gabarit fixe, sans aucun texte libre ni contenu : des identifiants, des codes de listes fermées, des heures et des nombres. Les destinataires ne sont que comptés.",
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 1,
+          "description": "Version du format. Une autre version est un autre schéma, dans un autre dossier."
+        },
+        "delivery_id": {
+          "$ref": "#/$defs/Uuid",
+          "description": "Identifiant de livraison, unique par message et le même d'un envoi à l'autre : le récepteur s'en sert pour écarter un doublon ou un rejeu."
+        },
+        "emitted_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+          "description": "Heure d'émission de cet envoi, à la seconde, en UTC : celle que porte et que signe l'en-tête (t). Elle change d'un envoi à l'autre."
+        },
+        "type": {
+          "enum": [
+            "incident.declared",
+            "incident.analysed",
+            "incident.analysis_failed"
+          ],
+          "description": "Le changement d'état annoncé : l'incident est déclaré ; son analyse d'impact est faite ; son analyse est en échec pour de bon."
+        },
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$",
+          "description": "Heure du changement d'état, à la microseconde, en UTC : la déclaration, ou la fin de l'analyse."
+        },
+        "incident": {
+          "$ref": "#/$defs/Incident"
+        }
+      },
+      "required": [
+        "version",
+        "delivery_id",
+        "emitted_at",
+        "type",
+        "occurred_at",
+        "incident"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "incident.declared"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "incident": {
+                "properties": {
+                  "analysis": {
+                    "properties": {
+                      "state": {
+                        "const": "pending"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "incident.analysed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "incident": {
+                "properties": {
+                  "analysis": {
+                    "properties": {
+                      "state": {
+                        "const": "done"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "incident.analysis_failed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "incident": {
+                "properties": {
+                  "analysis": {
+                    "properties": {
+                      "state": {
+                        "const": "failed"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Incident": {
+      "description": "L'incident, tel qu'il était au changement d'état.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Uuid",
+          "description": "Identifiant de l'incident, celui de l'API (GET /api/v1/incidents/{id})."
+        },
+        "state": {
+          "enum": [
+            "qualified"
+          ],
+          "description": "État de l'incident : déclaré, son périmètre, sa fenêtre et sa gravité établis."
+        },
+        "severity": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "description": "Gravité déclarée."
+        },
+        "analysis": {
+          "$ref": "#/$defs/Analysis"
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "severity",
+        "analysis"
+      ],
+      "additionalProperties": false
+    },
+    "Analysis": {
+      "description": "L'analyse d'impact de l'incident : son état, son code d'échec, ses décomptes.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "pending",
+            "done",
+            "failed"
+          ],
+          "description": "En attente d'un worker ; faite ; en échec pour de bon."
+        },
+        "error": {
+          "enum": [
+            "query_timeout",
+            "analysis_error",
+            null
+          ],
+          "description": "Code de l'échec d'une analyse en échec ; nul sinon."
+        },
+        "counts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Counts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Décomptes d'une analyse faite ; nuls sinon."
+        }
+      },
+      "required": [
+        "state",
+        "error",
+        "counts"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "done"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "error": {
+                "type": "null"
+              },
+              "counts": {
+                "$ref": "#/$defs/Counts"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "counts": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "pending"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "error": {
+                "type": "null"
+              },
+              "counts": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Counts": {
+      "description": "Ce que l'analyse a trouvé, en nombres : les réponses touchées et leurs destinataires distincts, jamais leurs pseudonymes.",
+      "type": "object",
+      "properties": {
+        "answers": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Réponses d'agents touchées par l'incident."
+        },
+        "recipients": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Destinataires distincts de ces réponses."
+        },
+        "lower_bound": {
+          "type": "boolean",
+          "description": "Vrai quand l'analyse a dépassé une de ses bornes : les décomptes sont des minimums."
+        }
+      },
+      "required": [
+        "answers",
+        "recipients",
+        "lower_bound"
+      ],
+      "additionalProperties": false
+    },
+    "Uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    }
+  }
+}

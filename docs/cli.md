@@ -385,13 +385,14 @@ Vérification de l'installation : http://127.0.0.1:8000
   bon          Émetteurs    3 émetteurs connus, aucun muet.
   bon          Partitions   Aucune partition mensuelle ne manque.
   bon          Réémission   La réémission avance : file vide ; 1520 remis, 0 perdu.
+  bon          Webhooks     Les webhooks avancent : file vide ; 12 remis, 0 perdu.
   bon          Explorateur  L'explorateur est servi : http://127.0.0.1:8000/
   non vérifié  Workers      Les workers ne publient aucun signal de vie : leur marche se lit dans la file, qui avance, et dans le contrôle des émetteurs muets, qui ne tourne qu'avec eux.
 
 1 anomalie.
 ```
 
-Chaque vérification rend `bon`, `anomalie` ou `non vérifié`. Une vérification qui dépend d'une autre en échec n'est pas faite, et le dit : quand l'API ne répond pas, rien d'autre n'est vérifié ; quand la base est injoignable, ni les migrations, ni la file, ni le rebut, ni les émetteurs, ni les partitions, ni la réémission. Ce que la commande ne peut pas savoir n'est jamais donné pour bon.
+Chaque vérification rend `bon`, `anomalie` ou `non vérifié`. Une vérification qui dépend d'une autre en échec n'est pas faite, et le dit : quand l'API ne répond pas, rien d'autre n'est vérifié ; quand la base est injoignable, ni les migrations, ni la file, ni le rebut, ni les émetteurs, ni les partitions, ni la réémission, ni les webhooks. Ce que la commande ne peut pas savoir n'est jamais donné pour bon.
 
 | Vérification | Ce qui est vérifié | Anomalies |
 | --- | --- | --- |
@@ -404,6 +405,7 @@ Chaque vérification rend `bon`, `anomalie` ou `non vérifié`. Une vérificatio
 | `emitters` | Aucun émetteur n'est signalé [muet](workers.md#émetteurs-muets). Sans émetteur qui publie de relevés, leur silence ne se mesure pas : non vérifié | `emitters_muted` |
 | `partitions` | Aucune [partition mensuelle](workers.md#partitions-mensuelles) n'est signalée manquante | `partitions_missing` |
 | `reemission` | La [réémission](reemission.md) vers un consommateur OpenLineage externe n'est pas en retard : le plus ancien événement à réémettre n'attend pas depuis plus que `--reemission-max-age`. Le message dit aussi combien d'événements ont été remis et perdus depuis la mise en service. Sans destination réglée aux workers, rien n'est jamais mis en file : non vérifié | `reemission_lagging` |
+| `webhooks` | Les [webhooks](webhooks.md) qui annoncent les incidents ne sont pas en retard : le plus ancien message à envoyer n'attend pas depuis plus que `--webhook-max-age`. Le message dit aussi combien de messages ont été remis et perdus depuis la mise en service. Sans webhook en service et sans message en file, rien n'est annoncé : non vérifié. Des messages laissés en file par un webhook qui n'est plus en service sont encore jugés | `webhooks_lagging` |
 | `explorer` | L'adresse sert la page de l'explorateur | `explorer_missing` |
 | `workers` | Jamais vérifié : les workers ne publient aucun signal de vie. La file et le contrôle des émetteurs muets témoignent d'eux | |
 
@@ -411,6 +413,7 @@ Chaque vérification rend `bon`, `anomalie` ou `non vérifié`. Une vérificatio
 | --- | --- | --- |
 | `--queue-max-age` | Âge, en secondes, au-delà duquel le plus ancien événement en attente signale une file qui n'avance pas | 300 |
 | `--reemission-max-age` | Âge, en secondes, au-delà duquel le plus ancien événement à réémettre signale une réémission en retard | 300 |
+| `--webhook-max-age` | Âge, en secondes, au-delà duquel le plus ancien message de webhook à envoyer signale des webhooks en retard | 300 |
 | `--format` | `text` ou `json` | `text` |
 
 Le code de sortie est `0` sans anomalie, `1` avec au moins une, `2` pour un usage fautif. Une API injoignable est une anomalie comme une autre : `1`.
@@ -436,6 +439,7 @@ Chaque anomalie a un code stable, un message et un remède écrits d'avance. Auc
 | `emitters_muted` | Combien d'émetteurs sont muets | Vérifier qu'ils tournent et joignent l'API ; `GET /api/v1/coverage` les nomme |
 | `partitions_missing` | Combien de partitions manquent : l'ingestion d'un mois sans partition échouera | Vérifier qu'un worker tourne ; son journal nomme la table et le mois |
 | `reemission_lagging` | La réémission est en retard : combien d'événements attendent, depuis quand le plus ancien, le seuil, et combien se sont perdus | Vérifier que la destination répond et que les workers la joignent (leur journal donne la classe de l'échec ou le statut de la réponse), `ANSWERLINEAGE_REEMIT_URL` et `ANSWERLINEAGE_REEMIT_AUTHORIZATION` dans leur environnement, et qu'un worker tourne avec ce réglage. Au-delà des bornes de la file, les plus anciens sont perdus |
+| `webhooks_lagging` | Les webhooks sont en retard : combien de messages attendent, depuis quand le plus ancien, le seuil, et combien se sont perdus | Vérifier que le récepteur répond et que les workers le joignent (leur journal donne la classe de l'échec ou le statut de la réponse ; un récepteur qui refuse la signature répond souvent `401` ou `403` : vérifier alors le secret), `ANSWERLINEAGE_WEBHOOK_URL` et `ANSWERLINEAGE_WEBHOOK_SECRET` dans leur environnement, et qu'un worker tourne avec ce réglage. Au-delà des bornes de la file, les plus anciens sont perdus |
 | `explorer_missing` | L'adresse ne sert pas l'explorateur | `make ui`, puis l'API avec `ANSWERLINEAGE_UI_DIR=ui/dist` |
 
 ### Sortie JSON
@@ -461,7 +465,7 @@ Chaque anomalie a un code stable, un message et un remède écrits d'avance. Auc
 | Champ | Contenu |
 | --- | --- |
 | `url` | L'adresse vérifiée |
-| `checks` | Les onze vérifications, toujours dans l'ordre du tableau plus haut |
+| `checks` | Les douze vérifications, toujours dans l'ordre du tableau plus haut |
 | `checks[].check` | Le nom de la vérification |
 | `checks[].status` | `ok`, `anomaly` ou `not_checked` |
 | `checks[].code` | Le code de l'anomalie, nul sinon |
@@ -472,7 +476,7 @@ Un script lit `status` et `code` ; `message` et `remedy` sont faits pour être l
 
 ### La route de santé
 
-`doctor` lit l'état de la base, des migrations, de la file, du rebut, des émetteurs, des partitions et de la réémission par une route de l'API, `GET /api/v1/health`. Elle est petite et bornée : quelques requêtes indexées, des décomptes plafonnés, sous le [délai maximal des lectures](lecture.md#délai-maximal). Elle ne dit aucun détail interne, ni révision du schéma, ni adresse de la base, ni message d'erreur : seulement des états d'une liste fermée et des nombres.
+`doctor` lit l'état de la base, des migrations, de la file, du rebut, des émetteurs, des partitions, de la réémission et des webhooks par une route de l'API, `GET /api/v1/health`. Elle est petite et bornée : quelques requêtes indexées, des décomptes plafonnés, sous le [délai maximal des lectures](lecture.md#délai-maximal). Elle ne dit aucun détail interne, ni révision du schéma, ni adresse de la base, ni message d'erreur : seulement des états d'une liste fermée et des nombres.
 
 ```json
 {
@@ -486,6 +490,10 @@ Un script lit `status` et `code` ; `message` et `remedy` sont faits pour être l
   "reemission": {
     "queued": 0, "retrying": 0, "lower_bound": false, "oldest_age_seconds": null,
     "sent": 1520, "lost": 0, "rejected": 0
+  },
+  "webhooks": {
+    "in_service": true, "queued": 0, "retrying": 0, "lower_bound": false,
+    "oldest_age_seconds": null, "sent": 12, "lost": 0, "rejected": 0
   }
 }
 ```
@@ -500,8 +508,9 @@ Un script lit `status` et `code` ; `message` et `remedy` sont faits pour être l
 | `emitters` | Émetteurs connus, ceux qui ont publié un relevé, et ceux que le contrôle des workers a signalés muets sans relevé reçu depuis |
 | `partitions` | Partitions mensuelles signalées manquantes par les workers |
 | `reemission` | La [réémission](reemission.md#ce-qui-se-lit) vers un consommateur OpenLineage externe : événements à réémettre, ceux en reprise, l'âge du plus ancien en secondes (nul quand la file est vide), et depuis la mise en service, les événements remis, perdus, et parmi les perdus ceux que la destination a refusés |
+| `webhooks` | Les [webhooks](webhooks.md#ce-qui-se-lit) des incidents : s'ils sont en service, messages à envoyer, ceux en reprise, l'âge du plus ancien en secondes (nul quand la file est vide), et depuis la mise en service, les messages remis, perdus, et parmi les perdus ceux que le récepteur a refusés |
 
-`queue`, `dead_letters`, `emitters`, `partitions` et `reemission` sont nuls tant que le schéma n'est pas à jour. Chaque décompte s'arrête à 10 000 : au-delà, `lower_bound` vaut `true`. Comme toute route, elle n'accepte que les hôtes et les origines attendus, et une lecture qui dépasse son délai répond `503` (`query_timeout`).
+`queue`, `dead_letters`, `emitters`, `partitions`, `reemission` et `webhooks` sont nuls tant que le schéma n'est pas à jour. Chaque décompte s'arrête à 10 000 : au-delà, `lower_bound` vaut `true`. Comme toute route, elle n'accepte que les hôtes et les origines attendus, et une lecture qui dépasse son délai répond `503` (`query_timeout`).
 
 ## `answerlineage demo`
 

@@ -1,5 +1,5 @@
 """L'état de l'installation : base, migrations, file d'ingestion, rebut, émetteurs, partitions,
-réémission.
+réémission, webhooks.
 
 La route sert la vérification d'une installation (``answerlineage doctor``) :
 elle dit des états et des décomptes bornés, jamais un détail interne.
@@ -11,6 +11,7 @@ import socket
 from collections.abc import AsyncIterator
 from datetime import date
 from typing import Any
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -87,6 +88,16 @@ async def test_a_sound_installation_says_so_with_empty_tallies(engine: AsyncEngi
             "lost": 0,
             "rejected": 0,
         },
+        "webhooks": {
+            "in_service": False,
+            "queued": 0,
+            "retrying": 0,
+            "lower_bound": False,
+            "oldest_age_seconds": None,
+            "sent": 0,
+            "lost": 0,
+            "rejected": 0,
+        },
     }
 
 
@@ -100,6 +111,7 @@ async def test_a_database_without_schema_is_not_migrated(bare: AsyncEngine) -> N
         "emitters": None,
         "partitions": None,
         "reemission": None,
+        "webhooks": None,
     }
 
 
@@ -120,6 +132,7 @@ async def test_a_schema_with_migrations_left_to_apply_is_behind(
     assert (body["migrations"], body["queue"], body["emitters"]) == ("behind", None, None)
     assert body["dead_letters"] is None
     assert body["reemission"] is None
+    assert body["webhooks"] is None
 
 
 async def test_a_revision_the_api_does_not_know_is_reported_without_being_cited(
@@ -154,6 +167,7 @@ async def test_an_unreachable_database_is_unavailable_and_nothing_else_is_said()
         "emitters": None,
         "partitions": None,
         "reemission": None,
+        "webhooks": None,
     }
     assert "canari" not in response.text
     assert str(port) not in response.text
@@ -324,6 +338,86 @@ async def test_the_reemission_count_stops_at_its_bound_and_says_so(
         0,
         True,
     )
+
+
+async def declared_incident(engine: AsyncEngine) -> UUID:
+    incident_id = uuid4()
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO incident (id, state, severity, window_start, window_end)"
+                " VALUES (:id, 'qualified', 'high', now() - interval '1 hour', now())"
+            ),
+            {"id": incident_id},
+        )
+        await conn.execute(
+            text("INSERT INTO incident_analysis (incident_id) VALUES (:id)"), {"id": incident_id}
+        )
+    return incident_id
+
+
+async def test_the_webhooks_say_whether_in_service_what_waits_and_what_left_or_was_lost(
+    engine: AsyncEngine,
+) -> None:
+    incident_id = await declared_incident(engine)
+    async with engine.begin() as conn:
+        for rank in range(3):
+            await conn.execute(
+                text(
+                    "INSERT INTO webhook_queue (event_type, incident_id, occurred_at,"
+                    " incident_state, severity, analysis_state, enqueued_at, attempts, last_error)"
+                    " VALUES ('incident.declared', :id, now(), 'qualified', 'high', 'pending',"
+                    " now() - make_interval(mins => :rank), :attempts, :error)"
+                ),
+                {
+                    "id": incident_id,
+                    "rank": rank,
+                    "attempts": rank,
+                    "error": "HTTP 503" if rank else None,
+                },
+            )
+        await conn.execute(
+            text(
+                "INSERT INTO webhook_stats (in_service_until, sent, rejected, dropped)"
+                " VALUES (now() + interval '1 day', 4, 1, 2)"
+            )
+        )
+    webhooks = (await state(engine))["webhooks"]
+    oldest = webhooks.pop("oldest_age_seconds")
+    assert 120 <= oldest < 180
+    assert webhooks == {
+        "in_service": True,
+        "queued": 3,
+        "retrying": 2,
+        "lower_bound": False,
+        "sent": 4,
+        "lost": 3,
+        "rejected": 1,
+    }
+
+    # La borne passée sans qu'un worker à webhook repasse : plus en service.
+    async with engine.begin() as conn:
+        await conn.execute(text("UPDATE webhook_stats SET in_service_until = now()"))
+    assert (await state(engine))["webhooks"]["in_service"] is False
+
+
+async def test_the_webhook_count_stops_at_its_bound_and_says_so(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(health, "COUNT_LIMIT", 2)
+    incident_id = await declared_incident(engine)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO webhook_queue (event_type, incident_id, occurred_at,"
+                " incident_state, severity, analysis_state)"
+                " SELECT 'incident.declared', :id, now(), 'qualified', 'high', 'pending'"
+                " FROM generate_series(1, 3)"
+            ),
+            {"id": incident_id},
+        )
+    webhooks = (await state(engine))["webhooks"]
+    assert (webhooks["queued"], webhooks["retrying"], webhooks["lower_bound"]) == (2, 0, True)
 
 
 async def test_the_route_answers_only_an_expected_host(engine: AsyncEngine) -> None:

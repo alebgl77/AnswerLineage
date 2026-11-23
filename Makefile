@@ -14,7 +14,7 @@ policy: ## Politique du dépôt (actions et images épinglées, permissions mini
 	uv run python -m scripts.check_policy
 	uv run python -m scripts.check_threat_model
 
-contract: ## Compatibilité de l'API, des schémas de facettes et de l'extension A2A avec ceux publiés sur la branche cible
+contract: ## Compatibilité de l'API, des schémas de facettes, de l'extension A2A et du format des webhooks avec ceux publiés sur la branche cible
 	uv run python -m scripts.check_openapi_compat
 	uv run python -m scripts.check_facets_compat
 

@@ -46,6 +46,7 @@ Les menaces sont classées selon STRIDE :
 | Émetteur et ingestion | Le proxy, l'entreprise synthétique ou tout émetteur OpenLineage envoie événements et relevés de couverture à l'API d'ingestion. Les émetteurs ne sont pas authentifiés : tout ce qu'ils déclarent est une entrée hostile. |
 | Lecteur, API de lecture et explorateur | Un navigateur, la ligne de commande ou un script lit le lignage, déclare un incident ou ouvre une adresse partagée de l'explorateur. L'appelant n'est pas authentifié ; l'adresse, les paramètres et les corps sont hostiles, et les noms affichés viennent des émetteurs. |
 | Workers et catalogue externe | Les workers réémettent les événements projetés vers un consommateur OpenLineage externe (Marquez, DataHub, OpenMetadata, Dataplex), à l'adresse que règle l'exploitant. Le catalogue, le réseau qui y mène et ses réponses sont hors du contrôle d'AnswerLineage. |
+| Workers et récepteur de webhooks | Les workers annoncent les changements d'état des incidents, par des messages signés, au récepteur de webhooks que règle l'exploitant. Le récepteur, le réseau qui y mène et ses réponses sont hors du contrôle d'AnswerLineage ; quiconque joint le récepteur peut lui envoyer une requête, ou rejouer une requête captée. |
 | Pipeline et publication | Une merge request, écrite par un contributeur ou un agent de code, fait tourner le pipeline ; une étiquette de version publie l'image et les paquets. Le contenu de la merge request, les actions, les images et les dépendances tierces sont hors de confiance. |
 | Données au repos | PostgreSQL tient le graphe, les événements bruts, la file, les relevés et les incidents ; le poste ou le serveur du proxy tient la clé des empreintes et les règles de lecture. Qui y accède lit ce qui y est écrit. |
 
@@ -63,6 +64,8 @@ Les menaces sont classées selon STRIDE :
 | Poste et serveurs | Les machines qui font tourner AnswerLineage et ses outils : leurs fichiers, leur terminal, leurs identifiants. |
 | Artefacts publiés | L'image, les paquets, leurs signatures et attestations, et le pipeline qui les produit. |
 | Mesures et jugements | Le corpus de vérité, le corpus d'abus et le kit de conformité, qui disent si le moteur rappelle ce qu'il doit, si une attaque est bloquée, si un émetteur ne fuit rien. |
+| Secret des webhooks | Le secret HMAC que les workers et le récepteur de webhooks partagent : qui le détient signe des messages que le récepteur accepte. |
+| Annonces d'incident | Les messages qui disent au récepteur de webhooks qu'un incident est déclaré, analysé ou en échec, avec ses décomptes : une alerte ou un rappel peut en partir. |
 
 ## Menaces par composant
 
@@ -119,6 +122,11 @@ Le détail de chaque menace, son scénario, ses parades avec leur code et leur t
 | `workers/reemission-fuite` | La réémission livre le lignage à une destination mal réglée ou écoutée | Divulgation | 4 parades |
 | `workers/reemission-detournee` | La destination de la réémission est détournée vers une autre adresse | Élévation de privilège | 4 parades, acceptation à signer |
 | `workers/reemission-file-epuisante` | Une destination en panne fait grossir la file sans fin ou retarde la projection | Déni de service | 5 parades |
+| `workers/webhook-usurpe` | Un tiers se fait passer pour AnswerLineage auprès du récepteur des webhooks | Usurpation | 3 parades, acceptation à signer |
+| `workers/webhook-rejoue` | Un message capté est rejoué au récepteur des webhooks | Altération | 2 parades, acceptation à signer |
+| `workers/webhook-secret-divulgue` | Le secret des webhooks, ou ce que tient un incident, sort par le réglage, le journal, la base ou le message | Divulgation | 4 parades |
+| `workers/webhook-file-epuisante` | Un récepteur en panne ou un afflux d'incidents fait grossir la file des webhooks ou retarde les workers | Déni de service | 5 parades |
+| `workers/webhook-detourne` | L'adresse du récepteur des webhooks est détournée vers une autre adresse | Élévation de privilège | 3 parades, acceptation à signer |
 
 ### Ligne de commande
 
@@ -189,6 +197,9 @@ Un risque accepté l'est par le mainteneur, pour un motif dit et une conséquenc
 | `api/donnees-au-repos` | AnswerLineage ne chiffre pas la base : son accès, le chiffrement du disque et des sauvegardes reviennent à l'exploitant. Le mot de passe de la démonstration est écrit dans compose.yaml, pour une base que la démonstration ne publie pas. | Qui obtient un accès à la base lit les noms des jeux de données, des agents et des outils, les empreintes et les pseudonymes, sans aucun contenu ; avec la clé des empreintes en plus, il peut éprouver des valeurs candidates. | à signer |
 | `workers/graphe-partiel` | La reconstruction ne bloque pas les lectures de l'API, pour qu'elle reste disponible : un événement est à tout instant dans la file ou dans le graphe, et la couverture du lignage compte comme trous les appels d'outil encore en file. | Pendant une reconstruction, une lecture voit un graphe partiel : une réponse dont l'événement d'agent attend encore dans la file manque sans que la couverture le dise. | à signer |
 | `workers/reemission-detournee` | Les adresses internes autres que les métadonnées et le lien local sont admises : le catalogue d'une entreprise est souvent sur son réseau privé, et l'adresse ne vient que de l'exploitant. | Un exploitant qui règle par erreur l'adresse d'un service interne y envoie les événements projetés, sans contenu ; le contrôle ne le distingue pas d'un catalogue. | à signer |
+| `workers/webhook-usurpe` | Le secret est symétrique : le récepteur le garde, en clair, pour vérifier, et peut donc signer comme les workers. Sa rotation est manuelle : AnswerLineage accepte deux secrets le temps d'une rotation, mais ne garde pas le secret du récepteur et ne le fait pas tourner à sa place. | Qui lit le secret chez le récepteur ou dans l'environnement des workers forge des messages que le récepteur accepte, jusqu'à la rotation suivante. | à signer |
+| `workers/webhook-rejoue` | La vérification de référence ne garde aucun état : écarter, par son identifiant de livraison, un message rejoué dans la fenêtre de tolérance revient au récepteur. | Un récepteur qui ne garde pas les identifiants vus accepte, pendant cinq minutes, un message capté et renvoyé : il annonce deux fois le même changement d'état. | à signer |
+| `workers/webhook-detourne` | Comme pour la réémission, les adresses internes autres que les métadonnées et le lien local sont admises : le récepteur d'une entreprise est souvent sur son réseau privé, et l'adresse ne vient que de l'exploitant. | Un exploitant qui règle par erreur l'adresse d'un service interne y envoie les annonces d'incident, signées, sans contenu ; le contrôle ne le distingue pas d'un récepteur. | à signer |
 | `conformance/resume-a2a-mensonger` | Le résumé A2A n'est pas signé dans la version 1 de l'extension, et aucun adaptateur A2A n'est encore fourni : le lignage d'un agent appelé se prend sur sa parole. | Une lecture tue par un agent appelé manque au lignage de son appelant : une réponse qui en dépend n'est pas rappelée. | à signer |
 | `pipeline/reglages-du-depot` | Ces réglages ne se versionnent pas : aucun contrôle du dépôt ne peut les vérifier. Ils sont listés pour le mainteneur dans la documentation du pipeline et de la publication. | Si l'un d'eux manque, les artefacts restent signés et attestés, mais par une identité qu'un tiers a pu mettre en mouvement. | à signer |
 | `pipeline/nom-usurpe` | PyPI et npm ne réservent un nom qu'à sa première publication : le mainteneur réserve ceux du projet avant la première étiquette, comme le dit le guide de publication. | Tant qu'un nom n'est pas réservé, un tiers peut le prendre, et qui installe le projet sous ce nom installe son paquet. | à signer |

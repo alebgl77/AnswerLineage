@@ -269,6 +269,16 @@ def health(**changes: Any) -> dict[str, Any]:
             "lost": 0,
             "rejected": 0,
         },
+        "webhooks": {
+            "in_service": True,
+            "queued": 0,
+            "retrying": 0,
+            "lower_bound": False,
+            "oldest_age_seconds": None,
+            "sent": 3,
+            "lost": 0,
+            "rejected": 0,
+        },
     }
     state.update(changes)
     return state

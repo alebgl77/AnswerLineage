@@ -19,6 +19,15 @@ consommateur OpenLineage externe (``reemission.py``), par une file bornée à
 destination refusée (adresse de métadonnées, ``http`` hors de la boucle locale,
 identifiant dans l'adresse) empêche le worker de démarrer, sans être citée.
 
+Avec un webhook (``--webhook-url`` ou ``ANSWERLINEAGE_WEBHOOK_URL``, et son
+secret partagé dans ``ANSWERLINEAGE_WEBHOOK_SECRET``, le précédent dans
+``ANSWERLINEAGE_WEBHOOK_PREVIOUS_SECRET`` pendant une rotation), les changements
+d'état des incidents sont annoncés au récepteur par des messages signés
+(``webhooks.py``), par une file bornée à ``--webhook-max-messages`` messages et
+``--webhook-max-age-hours`` heures. Le webhook obéit aux règles d'adresse de la
+réémission ; une adresse refusée, un secret absent, trop court ou réglé sans
+webhook empêchent le worker de démarrer, sans être cités.
+
 ``answerlineage-worker rebuild`` reconstruit le graphe depuis les événements
 bruts (``rebuild.py``). Sans ``--yes``, il n'en donne qu'un aperçu et ne change
 rien ; quand des lignes du graphe, plus anciennes que le premier événement
@@ -46,6 +55,7 @@ from answerlineage_api.store.engine import (
     create_engine,
     database_url_from_environment,
 )
+from answerlineage_workers import webhooks
 from answerlineage_workers.destination import (
     AUTHORIZATION_VARIABLE,
     URL_VARIABLE,
@@ -83,6 +93,13 @@ from answerlineage_workers.reemission import (
     Reemission,
 )
 from answerlineage_workers.silence import DEFAULT_SILENCE
+from answerlineage_workers.webhooks import (
+    PREVIOUS_SECRET_VARIABLE,
+    SECRET_VARIABLE,
+    Webhook,
+    WebhookSecretError,
+    checked_secret,
+)
 
 logger = logging.getLogger("answerlineage_workers")
 
@@ -134,6 +151,55 @@ def reemission_from(
     return Reemission(destination, max_events=max_events, max_age=max_age)
 
 
+class WebhookConfigurationError(ValueError):
+    """Le réglage du webhook est refusé. Le message est un gabarit fixe."""
+
+
+def webhook_from(
+    url: str | None,
+    environ: Mapping[str, str],
+    *,
+    max_messages: int = webhooks.DEFAULT_MAX_MESSAGES,
+    max_age: timedelta = webhooks.DEFAULT_MAX_AGE,
+    resolver: Resolver = resolve,
+) -> Webhook | None:
+    """Le webhook réglé par l'exploitant, contrôlé ; aucun sans adresse.
+
+    L'adresse vient de l'option, sinon de ``ANSWERLINEAGE_WEBHOOK_URL`` ; le
+    secret partagé, de ``ANSWERLINEAGE_WEBHOOK_SECRET`` seulement, et le
+    précédent, pendant une rotation, de ``ANSWERLINEAGE_WEBHOOK_PREVIOUS_SECRET`` :
+    une option se lit dans la liste des processus. Une variable vide ne règle
+    rien. Aucun message ne cite l'adresse ni un secret.
+    """
+    url = url or environ.get(webhooks.URL_VARIABLE) or None
+    secret = environ.get(SECRET_VARIABLE) or None
+    previous = environ.get(PREVIOUS_SECRET_VARIABLE) or None
+    if url is None:
+        for variable, value in ((SECRET_VARIABLE, secret), (PREVIOUS_SECRET_VARIABLE, previous)):
+            if value is not None:
+                raise WebhookConfigurationError(f"{variable} est réglée sans webhook.")
+        return None
+    if secret is None:
+        raise WebhookConfigurationError(
+            f"Un webhook signe ses messages : {SECRET_VARIABLE} doit être réglée."
+        )
+    try:
+        checked_secret(secret, SECRET_VARIABLE)
+        if previous is not None:
+            checked_secret(previous, PREVIOUS_SECRET_VARIABLE)
+        destination = parse_destination(url)
+        check_resolution(destination, resolver)
+    except (WebhookSecretError, DestinationError) as error:
+        raise WebhookConfigurationError(f"webhook : {error}") from None
+    return Webhook(
+        destination,
+        secret,
+        previous_secret=previous,
+        max_messages=max_messages,
+        max_age=max_age,
+    )
+
+
 async def serve(
     batch_size: int,
     stop: asyncio.Event | None = None,
@@ -141,6 +207,7 @@ async def serve(
     retention: Retention = DEFAULT_RETENTION,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     reemission: Reemission | None = None,
+    webhook: Webhook | None = None,
 ) -> None:
     engine = create_engine(database_url_from_environment())
     stop = stop or asyncio.Event()
@@ -155,6 +222,7 @@ async def serve(
                 retention=retention,
                 max_attempts=max_attempts,
                 reemission=reemission,
+                webhook=webhook,
             )
     finally:
         await engine.dispose()
@@ -243,6 +311,21 @@ def _reemit_hours(value: str) -> timedelta:
     return timedelta(hours=int(value))
 
 
+def _webhook_messages(value: str) -> int:
+    if not value.isdigit() or not 1 <= int(value) <= webhooks.MAX_MAX_MESSAGES:
+        raise argparse.ArgumentTypeError(
+            f"un nombre entier de messages, de 1 à {webhooks.MAX_MAX_MESSAGES}"
+        )
+    return int(value)
+
+
+def _webhook_hours(value: str) -> timedelta:
+    most = webhooks.MAX_MAX_AGE // timedelta(hours=1)
+    if not value.isdigit() or not 1 <= int(value) <= most:
+        raise argparse.ArgumentTypeError(f"un nombre entier d'heures, de 1 à {most}")
+    return timedelta(hours=int(value))
+
+
 def _batch_size(value: str) -> int:
     if not value.isdigit() or not 1 <= int(value) <= MAX_BATCH_SIZE:
         raise argparse.ArgumentTypeError(f"un nombre entier d'événements, de 1 à {MAX_BATCH_SIZE}")
@@ -317,6 +400,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             f" ({DEFAULT_MAX_AGE // timedelta(hours=1)} par défaut)"
         ),
     )
+    parser.add_argument(
+        "--webhook-url",
+        metavar="URL",
+        help=(
+            "adresse du récepteur où annoncer les changements d'état des incidents, en https"
+            f" ({webhooks.URL_VARIABLE} par défaut ; aucun sinon). Le secret partagé se lit de"
+            f" {SECRET_VARIABLE}, le précédent, pendant une rotation, de"
+            f" {PREVIOUS_SECRET_VARIABLE}"
+        ),
+    )
+    parser.add_argument(
+        "--webhook-max-messages",
+        type=_webhook_messages,
+        default=webhooks.DEFAULT_MAX_MESSAGES,
+        help=(
+            "messages gardés au plus dans la file des webhooks ; au-delà, les plus anciens sont"
+            f" perdus ({webhooks.DEFAULT_MAX_MESSAGES} par défaut)"
+        ),
+    )
+    parser.add_argument(
+        "--webhook-max-age-hours",
+        type=_webhook_hours,
+        default=webhooks.DEFAULT_MAX_AGE,
+        help=(
+            "heures pendant lesquelles un message attend au plus d'être annoncé, et pendant"
+            " lesquelles le webhook reste en service après le dernier passage d'un worker"
+            f" ({webhooks.DEFAULT_MAX_AGE // timedelta(hours=1)} par défaut)"
+        ),
+    )
     commands = parser.add_subparsers(dest="command", title="sous-commandes")
     rebuilding = commands.add_parser(
         "rebuild",
@@ -359,7 +471,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_events=args.reemit_max_events,
             max_age=args.reemit_max_age_hours,
         )
-    except ReemissionConfigurationError as error:
+        webhook = webhook_from(
+            args.webhook_url,
+            os.environ,
+            max_messages=args.webhook_max_messages,
+            max_age=args.webhook_max_age_hours,
+        )
+    except (ReemissionConfigurationError, WebhookConfigurationError) as error:
         print(f"Configuration invalide : {error}", file=sys.stderr)
         return 2
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -384,6 +502,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 retention=retention,
                 max_attempts=args.max_attempts,
                 reemission=reemission,
+                webhook=webhook,
             )
         )
     except DatabaseConfigurationError as error:
