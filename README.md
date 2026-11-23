@@ -47,6 +47,7 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Fonction | État |
 | --- | --- |
 | Proxy MCP transparent, en HTTP ou en stdio, révisions 2026-07-28 et 2025-11-25 du protocole | Disponible |
+| Proxy en plusieurs réplicas : sondes de vie et de disponibilité, arrêt gracieux, refus du mode passerelle devant des jetons liés à l'URL du serveur | Disponible |
 | Tables et colonnes lues, déduites des requêtes SQL (BigQuery, Snowflake, PostgreSQL), analysées dans un processus à part sous un budget | Disponible |
 | Règles de lecture déclaratives en YAML pour les outils non SQL : jeux de données, colonnes, clés lues sous forme d'empreinte | Disponible |
 | Envoi des événements et des relevés du proxy vers l'API, par une boîte d'envoi en mémoire qui ne retarde jamais un appel | Disponible |
@@ -60,6 +61,9 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Déclaration d'un incident (périmètre, fenêtre, gravité) et analyse d'impact par les workers, sur le graphe tel qu'il était connu | Disponible |
 | Score d'exposition des jeux de données et des colonnes, selon les réponses et les destinataires qui en dépendent | Disponible |
 | Webhooks signés à chaque changement d'état d'un incident, format publié et fonction de vérification de référence | Disponible |
+| Quarantaine d'un incident et diffusion de son périmètre aux proxys | Disponible |
+| Incident proposé par un test de qualité en échec (assertions OpenLineage, dbt, Great Expectations), confirmé par un humain | Disponible |
+| Authentification OIDC sur toutes les routes de l'API, six rôles et une matrice des droits publiée ; connexion PKCE de l'explorateur | Disponible |
 | Réémission des événements vers un catalogue par le protocole HTTP d'OpenLineage, éprouvée sur Marquez | Disponible |
 | Étiquetage des requêtes de l'entrepôt par l'identifiant du run, pour rejoindre ses journaux | Disponible |
 | File de rebut des événements que la projection n'intègre pas, et reconstruction du graphe depuis les événements reçus | Disponible |
@@ -77,7 +81,7 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Couverture du lignage : part des appels captés, trous connus, émetteurs muets, instances additionnées | Disponible |
 | Signaux de qualité de service de chaque appel (latence, latence ajoutée, issue, reprises) et banc de latence du proxy, chaque nuit | Disponible |
 | Kit de conformité des émetteurs, avec preuve de non-fuite par canari | Disponible |
-| Corpus d'abus rejoué à chaque merge request : 140 attaques, par famille, contre le proxy, l'API et l'explorateur | Disponible |
+| Corpus d'abus rejoué à chaque merge request : 171 attaques, par famille, contre le proxy, l'API et l'explorateur | Disponible |
 | Image analysée à chaque merge request : SBOM, vulnérabilités hautes et critiques bloquantes | Disponible |
 | Chaîne de publication d'une version : image et paquets signés sans clé et attestés, éprouvée à chaque merge request sans rien publier | Disponible |
 | Modèle de menaces tenu à jour et contrôlé : une version ne sort pas tant qu'une acceptation reste à signer | Disponible |
@@ -252,6 +256,7 @@ Chaque composant :
 - [Réémission](docs/reemission.md) : les événements renvoyés vers un catalogue OpenLineage en place
 - [Extension A2A](docs/a2a.md) : le lignage entre agents qui s'appellent
 - [Modèle de menaces](docs/securite/modele-de-menaces.md) : frontières de confiance, menaces, parades et acceptations
+- [Authentification et rôles](docs/securite/authentification.md) : régler un fournisseur OIDC, les rôles, la matrice des droits, les jetons du proxy et de la ligne de commande
 - [Facettes](docs/facettes.md) : les schémas JSON versionnés des facettes propres à AnswerLineage
 - [Kit de conformité](docs/conformite.md) : vérifier un émetteur, lire son rapport
 - [Workers](docs/workers.md) : file de traitement, garanties, projection dans le graphe, émetteurs muets, partitions
