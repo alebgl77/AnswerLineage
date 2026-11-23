@@ -17,7 +17,9 @@ Le calcul, à l'octet près, pour qu'un autre émetteur l'établisse à l'identi
   UTF-8 ; un appel sans arguments est empreint comme ``{}`` ;
 - résultat : les octets du corps de la réponse tels que le proxy les relaie ;
   pour un adaptateur, qui ne voit que le résultat décodé, sa forme canonique
-  JSON.
+  JSON ;
+- réponse d'un agent, quand elle est diffusée : les octets UTF-8 de son texte,
+  tel que l'intégration le diffuse.
 
 La clé se lit d'un fichier ou d'une variable d'environnement que chaque
 émetteur nomme (``read_key``) : jamais de sa ligne de commande.
@@ -30,21 +32,19 @@ import hmac
 import json
 import math
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Final
 
-from answerlineage_emitter.config import ConfigurationError
+from answerlineage_emitter.config import ConfigurationError, key_text
 
 FINGERPRINT_PREFIX: Final = "hmac-sha256:"
 ARGUMENTS_LABEL: Final = b"answerlineage/fingerprint/arguments/v1"
 RESULT_LABEL: Final = b"answerlineage/fingerprint/result/v1"
+ANSWER_LABEL: Final = b"answerlineage/fingerprint/answer/v1"
 # Longueur de la clé, en octets : 256 bits au moins, la taille d'un bloc de SHA-256 au plus.
 MIN_KEY_BYTES: Final = 32
 MAX_KEY_BYTES: Final = 64
 # Plus grand entier qu'un nombre JSON en double précision représente exactement.
 _EXACT_INTEGER: Final = 2**53
-# Fichier de la clé lu au plus : une clé en hexadécimal, ses blancs et sa fin de ligne.
-_KEY_FILE_BYTES: Final = 4096
 
 
 class FingerprintKey:
@@ -187,6 +187,19 @@ def arguments_fingerprint(key: FingerprintKey, arguments: object) -> str | None:
     return key.fingerprint(ARGUMENTS_LABEL, canonical) if canonical is not None else None
 
 
+def answer_fingerprint(key: FingerprintKey, answer: object) -> str | None:
+    """Empreinte de la réponse d'un agent : les octets UTF-8 de son texte. ``None`` pour
+    ce qui n'est pas un texte Unicode valide, plutôt qu'une empreinte qu'un autre émetteur
+    ne retrouverait pas."""
+    if not isinstance(answer, str):
+        return None
+    try:
+        data = answer.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return key.fingerprint(ANSWER_LABEL, data)
+
+
 def read_key(
     environment: Mapping[str, str],
     key_file: str | None = None,
@@ -201,21 +214,13 @@ def read_key(
     Aucun message d'erreur ne cite la clé, ni le chemin du fichier, qui pourrait
     être une clé passée par erreur.
     """
-    path = key_file or environment.get(file_variable) or None
-    text = environment.get(variable) or None
-    if path is not None and text is not None:
-        raise ConfigurationError(
-            f"La clé d'empreinte vient d'un fichier ou de {variable}, pas des deux."
-        )
-    if path is not None:
-        try:
-            with Path(path).open("rb") as source:
-                content = source.read(_KEY_FILE_BYTES + 1)
-        except OSError:
-            raise ConfigurationError("Le fichier de la clé d'empreinte est illisible.") from None
-        if len(content) > _KEY_FILE_BYTES:
-            raise ConfigurationError("Le fichier de la clé d'empreinte est trop grand.")
-        text = content.decode("ascii", errors="replace")
+    text = key_text(
+        environment,
+        key_file,
+        variable=variable,
+        file_variable=file_variable,
+        what="la clé d'empreinte",
+    )
     if text is None:
         return None
     try:

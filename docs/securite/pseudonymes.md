@@ -2,7 +2,7 @@
 
 Un destinataire, la personne qui a reçu la réponse d'un agent, n'entre dans AnswerLineage que sous son pseudonyme : un HMAC de son identité, sous une clé que la base ne contient pas. Aucune table ne relie un pseudonyme à une personne. Quand il faut savoir qui c'est, pour le prévenir d'un rappel ou répondre à sa demande, un gestionnaire d'incident le révèle : il apporte des identités candidates, l'API dit laquelle a ce pseudonyme, et l'action est journalisée, avec son auteur et son motif. C'est l'invariant 8 du produit : les destinataires sont pseudonymisés, sans table de correspondance.
 
-Ce document dit la forme du pseudonyme et son calcul, la clé et sa rotation, la révélation, son journal, et les limites connues. Le code est dans `api/src/answerlineage_api/pseudonyms/`.
+Ce document dit la forme du pseudonyme et son calcul, la clé et sa rotation, la révélation, son journal, et les limites connues. Le code est dans `api/src/answerlineage_api/pseudonyms/` pour l'API, et dans `emitter/src/answerlineage_emitter/pseudonym.py` pour les émetteurs.
 
 ## Le pseudonyme
 
@@ -44,6 +44,12 @@ def pseudonym(key: bytes, identity: str) -> str:
 
 Les vecteurs de test sont publiés dans [`spec/pseudonym/vectors-v1.json`](../../spec/pseudonym/vectors-v1.json) : deux clés, des identités, leur forme canonique et leurs pseudonymes, et des identités qui n'en ont pas. `answerlineage_api.pseudonyms.vault.pseudonym_of` est l'implémentation de référence.
 
+### Le calcul côté émetteur
+
+L'émetteur commun le fait aussi : `answerlineage_emitter.pseudonym.PseudonymKey.pseudonym`. L'[adaptateur du Claude Agent SDK](../adaptateurs.md#déclarer-la-diffusion-de-la-réponse) s'en sert pour les destinataires d'une réponse que l'intégration a diffusée : chaque identité devient son pseudonyme dans le processus de l'agent, avant tout envoi, et n'en sort jamais. Une identité sans pseudonyme y est écartée et comptée, jamais recopiée.
+
+Les deux calculs sont écrits chacun de son côté, comme les autres fonctions que deux composants partagent sans dépendre l'un de l'autre : l'émetteur n'importe rien de l'API. Les vecteurs publiés les fixent l'un et l'autre, et `tests/test_contract_delivery.py` les compare sur des identités tirées au hasard (casse, accents composés ou décomposés, caractères invisibles, demi-codets, longueurs à la borne). L'émetteur écarte d'emblée une identité de plus de 1 280 caractères : la normalisation NFC réunit au plus quatre caractères en un, et sa forme canonique dépasserait 320 caractères ; il ne la parcourt pas.
+
 ## La clé et le coffre à clés
 
 ### Une clé de locataire, propre aux pseudonymes
@@ -53,6 +59,8 @@ Le HMAC se calcule sous une clé secrète, propre au locataire : la même person
 Ce n'est pas la [clé des empreintes du proxy](../proxy.md#la-clé) : qui tiendrait celle-ci dans l'API pourrait aussi éprouver les arguments des appels d'outils. Les deux clés sont distinctes, et l'API ne tient que celle des pseudonymes.
 
 La clé ne vit jamais dans la base : ni en clair, ni chiffrée, ni dans une table de réglages. Elle vit dans le **coffre à clés**, que tiennent l'émetteur (pour calculer) et l'API (pour révéler). Les workers n'en ont pas besoin.
+
+L'émetteur ne tient que la clé courante. L'adaptateur du Claude Agent SDK la lit de `ANSWERLINEAGE_ADAPTER_PSEUDONYM_KEY`, ou du fichier que nomme `ANSWERLINEAGE_ADAPTER_PSEUDONYM_KEY_FILE`, en hexadécimal, de 32 à 64 octets ; jamais de la ligne de commande, et jamais au journal. Une clé des pseudonymes de même valeur que sa clé d'empreinte l'arrête au démarrage : la comparaison se fait sur un HMAC d'un message fixe, sans que l'une des clés passe par l'autre, et le message ne cite aucune des deux ([réglages](../adaptateurs.md#réglages)).
 
 ### Le régler
 
@@ -78,7 +86,7 @@ Le coffre (`PseudonymVault`) a une seule opération : le pseudonyme d'une identi
 Changer de clé change le pseudonyme de chaque personne. Une rotation se fait donc à une date connue :
 
 1. tirer la nouvelle clé, et la placer **en tête** du coffre de l'API, l'ancienne derrière ;
-2. faire passer les émetteurs à la nouvelle clé, à la date choisie ;
+2. faire passer les émetteurs à la nouvelle clé, à la date choisie (pour l'adaptateur, `ANSWERLINEAGE_ADAPTER_PSEUDONYM_KEY`) ;
 3. garder l'ancienne clé dans le coffre de l'API tant qu'il faut pouvoir révéler les destinataires d'avant la date ;
 4. la retirer ensuite : les pseudonymes calculés sous elle ne se révèlent plus, par personne. Retirer une clé, c'est oublier qui étaient ces destinataires.
 
@@ -185,7 +193,7 @@ La démonstration ne révèle rien : son authentification est désactivée (aucu
 - **Un pseudonyme est stable sous une clé** : il relie entre elles les réponses reçues par une même personne. C'est ce qui permet de compter les destinataires d'un incident ; c'est aussi un profil, sous pseudonyme.
 - **La forme canonique ne réunit que la casse et la normalisation** : deux adresses d'une même personne, un alias, une adresse avec un suffixe (`camille+lignage@…`) font deux pseudonymes.
 - **L'ajout seul tient contre l'API et son rôle, pas contre un superutilisateur de la base**, qui peut désactiver les déclencheurs ou se rendre les droits retirés.
-- **Le schéma publié de la facette de diffusion** (version 1-0-0) n'écrit pas la forme du pseudonyme : il admet un texte de 1 à 255 caractères. L'API l'exige ; une version suivante du schéma pourra la porter.
+- **La version 1-0-0 du schéma de la facette de diffusion** n'écrit pas la forme du pseudonyme : elle admet un texte de 1 à 255 caractères. L'API l'exige, et la [version 1-1-0](../facettes.md#answerlineage_delivery) l'écrit ; un émetteur qui se réclame encore de la 1-0-0 n'est averti que par l'ingestion.
 - **Un champ libre d'une facette**, ou une facette inconnue, n'est pas contrôlé : un émetteur qui y écrirait une identité la ferait entrer dans l'événement brut. Le [kit de conformité](../conformite.md) le cherche par des canaris.
 - **Aucune commande de la ligne de commande ne révèle encore** : la route s'appelle directement, avec le jeton d'un gestionnaire d'incident.
 - **La révélation à l'envoi d'un rappel** n'existe pas encore, faute de rappel : elle s'appuiera sur le même coffre.

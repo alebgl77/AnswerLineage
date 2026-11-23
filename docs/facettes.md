@@ -31,7 +31,7 @@ Aucune facette ne ferme ses objets : un champ inconnu est admis, comme dans Open
 | `AgentRunFacet` | [1-0-0](../spec/facets/1-0-0/AgentRunFacet.json) | `answerlineage_agent` | Run | `run.facets` | aucun |
 | `ToolCallRunFacet` | [1-0-0](../spec/facets/1-0-0/ToolCallRunFacet.json), [1-1-0](../spec/facets/1-1-0/ToolCallRunFacet.json), [1-2-0](../spec/facets/1-2-0/ToolCallRunFacet.json) | `answerlineage_toolCall` | Run | `run.facets` | `server` |
 | `QosRunFacet` | [1-0-0](../spec/facets/1-0-0/QosRunFacet.json), [1-1-0](../spec/facets/1-1-0/QosRunFacet.json) | `answerlineage_qos` | Run | `run.facets` | aucun |
-| `DeliveryOutputDatasetFacet` | [1-0-0](../spec/facets/1-0-0/DeliveryOutputDatasetFacet.json) | `answerlineage_delivery` | Jeu de données de sortie | `outputs[].outputFacets` | `fingerprint`, `channel`, `messageRef` |
+| `DeliveryOutputDatasetFacet` | [1-0-0](../spec/facets/1-0-0/DeliveryOutputDatasetFacet.json), [1-1-0](../spec/facets/1-1-0/DeliveryOutputDatasetFacet.json) | `answerlineage_delivery` | Jeu de données de sortie | `outputs[].outputFacets` | `fingerprint`, `channel`, `messageRef` |
 | `KeysInputDatasetFacet` | [1-0-0](../spec/facets/1-0-0/KeysInputDatasetFacet.json) | `answerlineage_keys` | Jeu de données d'entrée | `inputs[].inputFacets` | `hmacs` ou `bloomFilter` |
 
 ### `answerlineage_agent`
@@ -89,6 +89,10 @@ Aucune des deux versions ne dit dans quelle monnaie est `estimatedCost` : c'est 
 Diffusion d'une réponse d'agent. La sortie qui la porte est la réponse, décrite par son empreinte (`fingerprint`) ; `channel` et `messageRef` disent où elle est partie, `recipients` à qui, sous des pseudonymes sans table de correspondance. Sans cette facette, une sortie est comptée comme une écriture ordinaire.
 
 Chaque destinataire est un pseudonyme que l'émetteur calcule, là où il connaît l'identité : `hmac-sha256:` suivi de HMAC-SHA-256, sous la clé de pseudonymisation du locataire, de l'étiquette `answerlineage/pseudonym/recipient/v1`, d'un octet nul et de l'identité mise en minuscules puis normalisée en NFC ([le calcul à l'octet près](securite/pseudonymes.md#son-calcul-à-loctet-près), vecteurs dans [`spec/pseudonym/vectors-v1.json`](../spec/pseudonym/vectors-v1.json)). L'API refuse toute autre forme (`recipient_not_pseudonym`) : une identité n'entre jamais, même par erreur.
+
+La version 1-1-0 écrit cette forme dans le schéma : un destinataire y suit le motif `^hmac-sha256:[0-9a-f]{64}$`. Elle n'ajoute ni ne retire aucun champ, n'en rend aucun obligatoire, n'en change aucun type. Elle n'admet plus un destinataire que la version 1-0-0 admettait sous une autre forme, mais l'ingestion le refusait déjà : aucun émetteur que l'API accepte n'en est cassé, et un lecteur y gagne une garantie que le schéma n'écrivait pas. La version 1-0-0 reste servie, inchangée.
+
+L'[adaptateur du Claude Agent SDK](adaptateurs.md#la-diffusion) émet cette facette, dans sa version 1-1-0, quand l'intégration lui déclare la réponse qu'elle a publiée : `fingerprint`, une empreinte à clé de la réponse sous l'étiquette `answerlineage/fingerprint/answer/v1` ; `channel`, le canal (`slack`) ; `messageRef`, sur Slack l'identifiant du canal et l'horodatage du message (`C024BE91L/1355517523.000005`) ; `recipients`, les pseudonymes, triés, absents quand aucun n'est connu. La facette est posée sur la sortie `<nom de l'agent>/reponses` d'un événement du run de l'agent.
 
 ### `answerlineage_keys`
 
@@ -165,6 +169,6 @@ Elle peut ajouter des champs facultatifs. Une rupture demande une nouvelle facet
 ## Limites connues
 
 - Le contrôle compare les champs, leur caractère obligatoire et leur type. Il ne compare ni les bornes (`maxLength`, `maxItems`, `minimum`) ni les valeurs admises (`enum`) : les resserrer dans une nouvelle version casserait des émetteurs sans le faire échouer.
-- Le schéma publié de `answerlineage_delivery` (1-0-0) admet pour un destinataire un texte de 1 à 255 caractères : il n'écrit pas la forme du pseudonyme, que l'API exige.
-- De la facette `answerlineage_agent`, seul `framework` est émis, par l'adaptateur du Claude Agent SDK ; de `answerlineage_qos`, le proxy et cet adaptateur émettent ce qu'ils voient, et de `answerlineage_keys`, seul le proxy. Leurs champs sont facultatifs et décrits sobrement ; ils s'étendront.
+- La version 1-0-0 de `answerlineage_delivery` admet pour un destinataire un texte de 1 à 255 caractères : elle n'écrit pas la forme du pseudonyme, que l'API exige. La version 1-1-0 l'écrit ; un émetteur qui se réclame encore de la 1-0-0 n'est pas averti par le schéma, seulement par l'ingestion.
+- De la facette `answerlineage_agent`, seul `framework` est émis, par l'adaptateur du Claude Agent SDK ; de `answerlineage_qos`, le proxy et cet adaptateur émettent ce qu'ils voient ; de `answerlineage_keys`, seul le proxy ; de `answerlineage_delivery`, l'entreprise synthétique et cet adaptateur. Leurs champs sont facultatifs et décrits sobrement ; ils s'étendront.
 - Les schémas sont servis par le fichier brut du dépôt sur la branche principale : une adresse n'existe qu'une fois la version fusionnée.

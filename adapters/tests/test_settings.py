@@ -22,6 +22,8 @@ from answerlineage_adapters.settings import (
     ENV_OIDC_CLIENT_SECRET_FILE,
     ENV_OIDC_ISSUER,
     ENV_OIDC_SCOPE,
+    ENV_PSEUDONYM_KEY,
+    ENV_PSEUDONYM_KEY_FILE,
     AdapterSettings,
     AgentJob,
 )
@@ -29,6 +31,7 @@ from answerlineage_emitter.config import ConfigurationError
 from answerlineage_emitter.credentials import ClientCredentialsTokens
 from answerlineage_emitter.fingerprint import FingerprintKey
 from answerlineage_emitter.outbox import Outbox
+from answerlineage_emitter.pseudonym import PseudonymKey
 from answerlineage_emitter.sink import NullSink
 
 AGENT = AgentJob.create("agent://finance", "analyste-change")
@@ -70,6 +73,7 @@ def test_without_an_api_nothing_is_sent_and_the_journal_says_so(
 ) -> None:
     settings = AdapterSettings.from_environment({}, agent=AGENT)
     assert (settings.outbox, settings.credentials, settings.fingerprint_key) == (None, None, None)
+    assert settings.pseudonym_key is None
     with caplog.at_level(logging.WARNING, logger="answerlineage_adapters"):
         assert isinstance(settings.sink(), NullSink)
     assert "Aucune adresse d'API" in caplog.text
@@ -108,6 +112,33 @@ def test_the_api_the_key_and_the_identity_come_from_the_variables_of_the_adapter
     assert keyed.fingerprint_key == FingerprintKey.from_hex(written)
 
 
+def test_the_key_of_the_pseudonyms_comes_from_its_own_variable_or_file(tmp_path: Path) -> None:
+    written = secrets.token_hex(32)
+    settings = AdapterSettings.from_environment({ENV_PSEUDONYM_KEY: written}, agent=AGENT)
+    assert settings.pseudonym_key == PseudonymKey.from_hex(written)
+    assert settings.fingerprint_key is None
+    assert written not in repr(settings)
+    held = tmp_path / "cle-des-pseudonymes"
+    held.write_text(written + "\n", encoding="ascii")
+    from_file = AdapterSettings.from_environment({ENV_PSEUDONYM_KEY_FILE: str(held)}, agent=AGENT)
+    assert from_file.pseudonym_key == settings.pseudonym_key
+
+
+def test_the_key_of_the_pseudonyms_is_not_the_key_of_the_fingerprints() -> None:
+    """L'API tient la clé des pseudonymes : la même que celle des empreintes lui permettrait
+    d'éprouver les arguments des appels d'outils."""
+    written = secrets.token_hex(32)
+    environment = {ENV_FINGERPRINT_KEY: written, ENV_PSEUDONYM_KEY: written.upper()}
+    with pytest.raises(ConfigurationError) as refused:
+        AdapterSettings.from_environment(environment, agent=AGENT)
+    assert ENV_PSEUDONYM_KEY in str(refused.value)
+    assert written not in str(refused.value).lower()
+    other = {ENV_FINGERPRINT_KEY: written, ENV_PSEUDONYM_KEY: secrets.token_hex(32)}
+    settings = AdapterSettings.from_environment(other, agent=AGENT)
+    assert settings.fingerprint_key is not None
+    assert settings.pseudonym_key is not None
+
+
 @pytest.mark.anyio
 async def test_with_an_api_the_events_leave_by_the_outbox_with_the_token() -> None:
     settings = AdapterSettings.from_environment(identity("s"), agent=AGENT)
@@ -126,6 +157,7 @@ async def test_with_an_api_the_events_leave_by_the_outbox_with_the_token() -> No
         {**identity("s"), ENV_API_URL: "http://lignage.exemple.fr"},
         {ENV_API_URL: "ftp://lignage.exemple.fr"},
         {ENV_FINGERPRINT_KEY: "abc"},
+        {ENV_PSEUDONYM_KEY: "abc"},
     ],
     ids=[
         "émetteur seul",
@@ -134,6 +166,7 @@ async def test_with_an_api_the_events_leave_by_the_outbox_with_the_token() -> No
         "jeton en clair",
         "adresse d'un autre schéma",
         "clé trop courte",
+        "clé des pseudonymes trop courte",
     ],
 )
 def test_an_incomplete_or_unsafe_setting_is_refused(environment: dict[str, str]) -> None:

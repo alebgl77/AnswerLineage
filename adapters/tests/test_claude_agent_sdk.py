@@ -345,8 +345,7 @@ async def test_the_run_of_the_agent_opens_with_the_prompt_and_ends_with_the_stop
     opened, _, ended = sink.events
     assert ended["run"]["runId"] == opened["run"]["runId"]
     assert ended["job"] == AGENT.job()
-    # La réponse de l'agent n'est pas dans ce run : sa diffusion viendra avec les
-    # destinataires pseudonymisés.
+    # La réponse de l'agent n'est pas lue à son arrêt : sa diffusion vient de l'intégration.
     assert ended["outputs"] == []
 
 
@@ -494,7 +493,10 @@ async def test_the_adapter_is_built_from_its_settings() -> None:
         await fire(adapter, "Stop", stopped())
     # Sans adresse d'API, rien ne part ; la clé des réglages empreint les arguments.
     assert adapter.stats.emitted == 3
-    assert repr(adapter) == ("ClaudeAgentLineage(AdapterStats(emitted=3, dropped=0, failures=0))")
+    assert repr(adapter) == (
+        "ClaudeAgentLineage(AdapterStats(emitted=3, dropped=0, failures=0, deliveries=0, "
+        "recipients_refused=0))"
+    )
     assert written not in repr(adapter)
 
 

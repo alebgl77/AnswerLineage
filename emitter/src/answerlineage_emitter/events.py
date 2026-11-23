@@ -15,7 +15,8 @@ from uuid import UUID
 
 from answerlineage_emitter import __version__
 
-EventType = Literal["START", "COMPLETE", "FAIL", "ABORT"]
+# OTHER porte des métadonnées sur un run sans changer son état : la sortie d'un run clos.
+EventType = Literal["START", "COMPLETE", "FAIL", "ABORT", "OTHER"]
 
 RUN_EVENT_SCHEMA: Final = "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent"
 _OWN: Final = "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/"
@@ -42,6 +43,12 @@ QOS_FACET_SCHEMA: Final = _OWN + "1-1-0/QosRunFacet.json#/$defs/QosRunFacet"
 # L'agent qui exécute un run : le graphe reconnaît un run d'agent à cette facette.
 AGENT_FACET: Final = "answerlineage_agent"
 AGENT_FACET_SCHEMA: Final = _OWN + "1-0-0/AgentRunFacet.json#/$defs/AgentRunFacet"
+# La diffusion d'une réponse, sur la sortie du run de l'agent qui l'a produite. La version
+# 1-1-0 écrit la forme du pseudonyme d'un destinataire, que l'ingestion exige.
+DELIVERY_FACET: Final = "answerlineage_delivery"
+DELIVERY_FACET_SCHEMA: Final = (
+    _OWN + "1-1-0/DeliveryOutputDatasetFacet.json#/$defs/DeliveryOutputDatasetFacet"
+)
 # Facette standard : le run parent, celui de l'agent pour un appel d'outil ou un sous-agent.
 PARENT_FACET: Final = "parent"
 PARENT_FACET_SCHEMA: Final = _STANDARD + "1-2-0/ParentRunFacet.json#/$defs/ParentRunFacet"

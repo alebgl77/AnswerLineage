@@ -43,7 +43,7 @@ Les menaces sont classées selon STRIDE :
 | Frontière | Ce qui la traverse |
 | --- | --- |
 | Agent, proxy et serveur MCP | Le client MCP d'un agent appelle des outils à travers le proxy, en HTTP ou en stdio, et le proxy relaie au serveur MCP. Le corps, les en-têtes et la réponse viennent de part et d'autre ; une page web ouverte sur le poste peut aussi viser un proxy qui écoute sur la boucle locale. |
-| Agent et adaptateur | L'adaptateur tourne dans le processus de l'agent : les crochets du kit de l'agent lui passent le prompt, les arguments et le résultat de chaque outil, le message d'une erreur, la réponse, et des identifiants de session, d'outil et de sous-agent. Tout cela vient de l'agent, de ses outils et de l'utilisateur : c'est hostile, et aucun contenu ne doit en sortir. |
+| Agent et adaptateur | L'adaptateur tourne dans le processus de l'agent : les crochets du kit de l'agent lui passent le prompt, les arguments et le résultat de chaque outil, le message d'une erreur, la réponse, et des identifiants de session, d'outil et de sous-agent ; l'intégration lui déclare la réponse qu'elle a diffusée, le canal, la référence du message et les identités des destinataires. Tout cela vient de l'agent, de ses outils, de l'utilisateur et d'une messagerie : c'est hostile, et aucun contenu ni aucune identité ne doit en sortir. |
 | Émetteur et ingestion | Le proxy, l'entreprise synthétique ou tout émetteur OpenLineage envoie événements et relevés de couverture à l'API d'ingestion, avec le jeton OIDC d'un client qui a le rôle d'émetteur. Ce qu'un émetteur déclare reste une entrée hostile, et un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements. |
 | Lecteur, API de lecture et explorateur | Un navigateur, la ligne de commande ou un script lit le lignage, déclare un incident ou ouvre une adresse partagée de l'explorateur, avec le jeton OIDC d'une personne et ses rôles. Un appelant sans jeton n'atteint aucune route ; l'adresse, les paramètres et les corps restent hostiles, et les noms affichés viennent des émetteurs. |
 | Workers et catalogue externe | Les workers réémettent les événements projetés vers un consommateur OpenLineage externe (Marquez, DataHub, OpenMetadata, Dataplex), à l'adresse que règle l'exploitant. Le catalogue, le réseau qui y mène et ses réponses sont hors du contrôle d'AnswerLineage. |
@@ -195,8 +195,9 @@ Le détail de chaque menace, son scénario, ses parades avec leur code et leur t
 | Menace | Ce qui est craint | Catégorie | Traitement |
 | --- | --- | --- | --- |
 | `adapters/contenu-dans-l-evenement` | Un contenu de l'agent sort de l'adaptateur dans un événement, un journal ou un compteur | Divulgation | 2 parades |
-| `adapters/agent-retarde` | Le lignage retarde ou interrompt l'agent qui porte l'adaptateur | Déni de service | 3 parades |
-| `adapters/nom-piege` | Un nom ou un identifiant piégé venu du SDK entre dans l'événement | Altération | 2 parades |
+| `adapters/agent-retarde` | Le lignage retarde ou interrompt l'agent qui porte l'adaptateur | Déni de service | 4 parades |
+| `adapters/nom-piege` | Un nom ou un identifiant piégé venu du SDK ou de l'intégration entre dans l'événement | Altération | 3 parades |
+| `adapters/identite-du-destinataire` | L'identité d'un destinataire ou le texte de la réponse sort de l'adaptateur | Divulgation | 4 parades |
 | `adapters/lecture-non-decrite` | Un appel d'outil vu par l'adaptateur ne dit pas ce qu'il a lu | Répudiation | 1 parade, acceptation à signer |
 
 ### Explorateur

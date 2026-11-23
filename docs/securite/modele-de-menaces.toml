@@ -29,7 +29,7 @@ description = "Le client MCP d'un agent appelle des outils à travers le proxy, 
 [[boundary]]
 id = "agent-adaptateur"
 name = "Agent et adaptateur"
-description = "L'adaptateur tourne dans le processus de l'agent : les crochets du kit de l'agent lui passent le prompt, les arguments et le résultat de chaque outil, le message d'une erreur, la réponse, et des identifiants de session, d'outil et de sous-agent. Tout cela vient de l'agent, de ses outils et de l'utilisateur : c'est hostile, et aucun contenu ne doit en sortir."
+description = "L'adaptateur tourne dans le processus de l'agent : les crochets du kit de l'agent lui passent le prompt, les arguments et le résultat de chaque outil, le message d'une erreur, la réponse, et des identifiants de session, d'outil et de sous-agent ; l'intégration lui déclare la réponse qu'elle a diffusée, le canal, la référence du message et les identités des destinataires. Tout cela vient de l'agent, de ses outils, de l'utilisateur et d'une messagerie : c'est hostile, et aucun contenu ni aucune identité ne doit en sortir."
 
 [[boundary]]
 id = "emetteur-ingestion"
@@ -797,13 +797,18 @@ description = "La file des événements à construire et les runs suivis sont bo
 code = "adapters/src/answerlineage_adapters/claude_agent_sdk.py::ClaudeAgentLineage"
 test = "adapters/tests/test_claude_agent_sdk.py::test_the_events_waiting_to_be_built_are_bounded"
 
+[[threat.mitigation]]
+description = "Déclarer une diffusion ne calcule rien : l'empreinte de la réponse et les pseudonymes se calculent dans un fil, et l'événement part par la boîte d'envoi ; une API pendante ne retient pas l'intégration."
+code = "adapters/src/answerlineage_adapters/claude_agent_sdk.py::ClaudeAgentLineage"
+test = "adapters/tests/test_delivery.py::test_recording_a_delivery_never_waits_for_the_api"
+
 [[threat]]
 id = "adapters/nom-piege"
-name = "Un nom ou un identifiant piégé venu du SDK entre dans l'événement"
+name = "Un nom ou un identifiant piégé venu du SDK ou de l'intégration entre dans l'événement"
 category = "tampering"
 boundary = "agent-adaptateur"
 assets = ["lignage", "disponibilite"]
-description = "Le nom d'un outil ou le type d'un sous-agent peuvent venir d'un serveur MCP ou d'une configuration hostile ; des identifiants de session démesurés useraient la mémoire de l'adaptateur."
+description = "Le nom d'un outil ou le type d'un sous-agent peuvent venir d'un serveur MCP ou d'une configuration hostile, le canal et la référence d'un message diffusé d'une messagerie ; des identifiants de session démesurés, ou une liste de destinataires sans fin, useraient la mémoire de l'adaptateur."
 
 [[threat.mitigation]]
 description = "Un nom d'outil ou de sous-agent n'est recopié que s'il a la forme recommandée par MCP ; sinon l'événement le dit, sans le citer."
@@ -814,6 +819,39 @@ test = "adapters/tests/test_claude_agent_sdk.py::test_a_hostile_tool_name_is_not
 description = "Les identifiants de session, de demande et de sous-agent ne servent que de clés en mémoire, bornées en longueur."
 code = "adapters/src/answerlineage_adapters/claude_agent_sdk.py::_key"
 test = "adapters/tests/test_claude_agent_sdk.py::test_hostile_identifiers_from_the_sdk_are_bounded"
+
+[[threat.mitigation]]
+description = "Un canal ou une référence de message n'est recopié que s'il a une forme admise, plus étroite que celle de l'ingestion (sur Slack, l'identifiant du canal et l'horodatage du message) ; sinon l'événement dit qu'il n'est pas résolu, sans le citer. Les destinataires d'une diffusion sont lus jusqu'à la borne de l'ingestion, pas au-delà."
+code = "emitter/src/answerlineage_emitter/delivery.py::message_ref"
+test = "adapters/tests/test_delivery.py::test_a_channel_or_a_reference_without_an_admitted_form_is_not_copied"
+
+[[threat]]
+id = "adapters/identite-du-destinataire"
+name = "L'identité d'un destinataire ou le texte de la réponse sort de l'adaptateur"
+category = "information-disclosure"
+boundary = "agent-adaptateur"
+assets = ["destinataires", "contenus", "cle-des-pseudonymes"]
+description = "L'intégration déclare à l'adaptateur la réponse qu'elle a diffusée et les identités de ses destinataires : les recopier dans un événement ou au journal, dire la taille de la réponse, ou hacher une identité sans clé, ou sous la clé des empreintes que l'API ne doit pas tenir, ferait sortir du processus de l'agent ce qu'il ne doit pas quitter, ou relierait la base à des personnes."
+
+[[threat.mitigation]]
+description = "Chaque identité devient son pseudonyme HMAC sous la clé des pseudonymes, dans le processus de l'agent ; la réponse ne part qu'en empreinte à clé, sans sa taille. De l'adaptateur au graphe, un canari placé dans la réponse et dans les identités ne se retrouve ni dans les événements reçus, ni dans la base, ni au journal."
+code = "adapters/src/answerlineage_adapters/claude_agent_sdk.py::ClaudeAgentLineage"
+test = "tests/test_delivery_end_to_end.py::test_the_answer_and_its_pseudonymized_recipients_are_attached_to_the_run"
+
+[[threat.mitigation]]
+description = "Une identité sans pseudonyme (vide, trop longue, qui porte un blanc ou un caractère de contrôle, de formatage, ou qui n'est pas un texte) est écartée et comptée, jamais recopiée ; le journal le dit par un texte fixe."
+code = "emitter/src/answerlineage_emitter/pseudonym.py::canonical_identity"
+test = "adapters/tests/test_delivery.py::test_an_identity_without_a_pseudonym_is_dropped_counted_and_never_copied"
+
+[[threat.mitigation]]
+description = "Le calcul de l'émetteur et celui de l'API sont écrits chacun de son côté, et tenus d'accord par les vecteurs publiés et des identités tirées au hasard : le pseudonyme que l'adaptateur envoie est celui que l'API retrouve en révélant."
+code = "emitter/src/answerlineage_emitter/pseudonym.py::PseudonymKey"
+test = "tests/test_contract_delivery.py::test_on_any_identity_the_emitter_and_the_api_agree"
+
+[[threat.mitigation]]
+description = "La clé des pseudonymes se lit d'une variable ou d'un fichier, jamais de la ligne de commande, et ne s'affiche ni ne se sérialise ; une clé de même valeur que la clé d'empreinte arrête l'adaptateur, sans qu'aucune soit citée."
+code = "adapters/src/answerlineage_adapters/settings.py::AdapterSettings"
+test = "adapters/tests/test_settings.py::test_the_key_of_the_pseudonyms_is_not_the_key_of_the_fingerprints"
 
 [[threat]]
 id = "adapters/lecture-non-decrite"

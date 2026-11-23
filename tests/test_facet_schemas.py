@@ -29,6 +29,7 @@ from answerlineage_api.ingest.models import (
     SIGNAL_MAX,
     validate_event,
 )
+from answerlineage_api.pseudonyms.vault import is_pseudonym
 from answerlineage_corpus.enterprise import generate
 from answerlineage_corpus.events import render
 from answerlineage_corpus.scenarios import load_corpus
@@ -101,11 +102,12 @@ def facet(name: str, version: str = "1-0-0", **fields: Any) -> dict[str, Any]:
     return {"_producer": PRODUCER, "_schemaURL": address(name, version), **fields}
 
 
-def test_five_facets_are_published_in_1_0_0_two_extended_in_1_1_0_and_one_in_1_2_0() -> None:
+def test_five_facets_are_published_in_1_0_0_three_extended_in_1_1_0_and_one_in_1_2_0() -> None:
     assert {path.relative_to(FACETS).as_posix() for path in schema_files()} == {
         *(f"1-0-0/{name}.json" for name in NAMES.values()),
         "1-1-0/QosRunFacet.json",
         "1-1-0/ToolCallRunFacet.json",
+        "1-1-0/DeliveryOutputDatasetFacet.json",
         "1-2-0/ToolCallRunFacet.json",
     }
 
@@ -458,6 +460,71 @@ def test_a_tool_call_1_2_0_says_whether_the_query_carried_its_run_by_a_flag_only
         readKeys="fingerprinted",
     )
     assert list(check.iter_errors(full)) == []
+
+
+def _delivery_event(**fields: Any) -> dict[str, Any]:
+    """La réponse d'un agent, diffusée, telle qu'un émetteur l'envoie."""
+    delivery = facet("DeliveryOutputDatasetFacet", "1-1-0", **fields)
+    return {
+        "eventType": "COMPLETE",
+        "eventTime": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "producer": PRODUCER,
+        "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
+        "run": {"runId": str(uuid4()), "facets": {}},
+        "job": {"namespace": "agent://finance", "name": "analyste-change"},
+        "inputs": [],
+        "outputs": [
+            {
+                "namespace": "agent://finance",
+                "name": "analyste-change/reponses",
+                "outputFacets": {"answerlineage_delivery": delivery},
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "recipient",
+    [
+        "hmac-sha256:" + "0" * 64,
+        "hmac-sha256:95ed34146f303882fcaf60a3490bf4e89eb0875290df1c636d9c4849016557a1",
+        "hmac-sha256:" + "A" * 64,
+        "hmac-sha256:" + "a" * 63,
+        "hmac-sha256:" + "a" * 65,
+        "sha256:" + "a" * 64,
+        "0" * 32,
+        "camille.martin@exemple.fr",
+        "U07AB12CD",
+    ],
+)
+def test_a_delivery_1_1_0_admits_a_recipient_where_ingestion_does(recipient: str) -> None:
+    """La version 1-1-0 écrit la forme du pseudonyme : elle admet un destinataire si et
+    seulement si l'ingestion l'admet. Ce qu'elle retire de la version 1-0-0, l'ingestion le
+    refusait déjà : aucun émetteur accepté n'en est cassé."""
+    check = validator("DeliveryOutputDatasetFacet", "1-1-0")
+    minimal = EXAMPLES["DeliveryOutputDatasetFacet"]["minimal"]
+    emitted = facet("DeliveryOutputDatasetFacet", "1-1-0", **minimal, recipients=[recipient])
+    by_the_schema = list(check.iter_errors(emitted)) == []
+    by_the_ingestion = validate_event(_delivery_event(**minimal, recipients=[recipient]))[1] == []
+    assert by_the_schema == by_the_ingestion == is_pseudonym(recipient)
+    assert list(validator("DeliveryOutputDatasetFacet").iter_errors(emitted)) == []
+
+
+def test_a_delivery_1_1_0_keeps_every_other_field_of_1_0_0() -> None:
+    check = validator("DeliveryOutputDatasetFacet", "1-1-0")
+    for kind, fields in EXAMPLES["DeliveryOutputDatasetFacet"].items():
+        pseudonymized = (
+            {**fields, "recipients": ["hmac-sha256:" + "1" * 64]} if kind == "full" else fields
+        )
+        emitted = facet("DeliveryOutputDatasetFacet", "1-1-0", **pseudonymized)
+        assert list(check.iter_errors(emitted)) == []
+    for fields in FAULTY["DeliveryOutputDatasetFacet"].values():
+        emitted = facet("DeliveryOutputDatasetFacet", "1-1-0", **fields)
+        assert list(check.iter_errors(emitted)) != []
+    too_many = ["hmac-sha256:" + "1" * 64] * (RECIPIENTS_MAX + 1)
+    minimal = EXAMPLES["DeliveryOutputDatasetFacet"]["minimal"]
+    emitted = facet("DeliveryOutputDatasetFacet", "1-1-0", **minimal, recipients=too_many)
+    assert list(check.iter_errors(emitted)) != []
 
 
 def own_facets(event: Mapping[str, Any]) -> Iterator[tuple[str, Mapping[str, Any]]]:

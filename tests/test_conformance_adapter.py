@@ -2,15 +2,17 @@
 
 Une demande est jouée avec trois canaris : dans le prompt et les arguments de
 l'outil, dans son résultat et un message d'erreur, dans la réponse de l'agent et
-celle d'un sous-agent. Les crochets passent par le vrai protocole du SDK, la CLI
-jouée par le test, sans modèle ni réseau, et les événements partent par la vraie
-boîte d'envoi vers une API simulée. Le kit juge ensuite ce que l'API a reçu, le
-journal au niveau le plus bavard, les sorties et les compteurs.
+celle d'un sous-agent, puis dans la réponse diffusée dans un fil Slack et
+l'identité d'un de ses destinataires. Les crochets passent par le vrai protocole
+du SDK, la CLI jouée par le test, sans modèle ni réseau, et les événements
+partent par la vraie boîte d'envoi vers une API simulée. Le kit juge ensuite ce
+que l'API a reçu, le journal au niveau le plus bavard, les sorties et les
+compteurs.
 
-La capture de l'adaptateur porte l'agent, ses sous-agents et ses appels
-d'outils, mais pas encore de chaîne complète : l'adaptateur ne décrit pas les
-lectures de ses outils, et la diffusion de la réponse viendra avec les
-destinataires pseudonymisés. Le kit le dit, et rien d'autre.
+La capture de l'adaptateur porte l'agent, ses sous-agents, ses appels d'outils,
+et la réponse diffusée à ses destinataires pseudonymisés ; il lui manque encore
+une lecture décrite pour faire une chaîne complète : l'adaptateur ne sait pas ce
+que ses outils lisent. Le kit le dit, et rien d'autre.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
 from adapters.tests.fake_cli import FakeCli
 from adapters.tests.test_claude_agent_sdk import (
+    SESSION,
     prompt_submitted,
     stopped,
     subagent_started,
@@ -39,8 +42,11 @@ from answerlineage_adapters.claude_agent_sdk import ClaudeAgentLineage
 from answerlineage_adapters.settings import AgentJob
 from answerlineage_conformance import cli
 from answerlineage_conformance.canaries import Searcher, canaries_document, new_canaries
+from answerlineage_emitter.delivery import SLACK, slack_message_ref
 from answerlineage_emitter.fingerprint import FingerprintKey
 from answerlineage_emitter.outbox import Outbox, OutboxSettings
+from answerlineage_emitter.pseudonym import PseudonymKey
+from answerlineage_workers.projection import project
 
 pytestmark = pytest.mark.anyio
 
@@ -74,6 +80,9 @@ async def test_three_canaries_cross_the_adapter_and_come_out_nowhere(
     result = [{"type": "text", "text": f"taux : 1,08 ({in_result})"}]
     error = f"Délai dépassé en lisant {in_result}"
     answer = f"Le taux de change du jour est de 1,08. {in_answer}"
+    # Les destinataires du fil Slack : un identifiant de membre, et une adresse qui porte le
+    # canari de la réponse.
+    members = ["U07AB12CD", f"camille.{in_answer}@exemple.fr"]
 
     api = Api()
     moments = iter(
@@ -88,6 +97,7 @@ async def test_three_canaries_cross_the_adapter_and_come_out_nowhere(
                 AGENT,
                 box,
                 fingerprint_key=FingerprintKey(bytes(range(32))),
+                pseudonym_key=PseudonymKey(bytes(range(32, 64))),
                 clock=lambda: next(moments),
             )
             cli_side = FakeCli()
@@ -106,9 +116,18 @@ async def test_three_canaries_cross_the_adapter_and_come_out_nowhere(
                         "SubagentStop", {**subagent_stopped(), "last_assistant_message": answer}
                     )
                     await cli_side.fire("Stop", stopped(answer))
+                # L'intégration a publié la réponse dans un fil Slack : elle la déclare.
+                adapter.record_delivery(
+                    SLACK,
+                    slack_message_ref("C024BE91L", "1355517523.000005"),
+                    members,
+                    answer=answer,
+                    session_id=SESSION,
+                )
     output = capfd.readouterr()
 
-    # Le parcours a bien eu lieu : l'agent, son sous-agent, deux appels, tout est arrivé.
+    # Le parcours a bien eu lieu : l'agent, son sous-agent, deux appels, la diffusion de la
+    # réponse, tout est arrivé.
     assert [event["eventType"] for event in api.events] == [
         "START",
         "COMPLETE",
@@ -116,8 +135,12 @@ async def test_three_canaries_cross_the_adapter_and_come_out_nowhere(
         "FAIL",
         "COMPLETE",
         "COMPLETE",
+        "OTHER",
     ]
-    assert box.stats.sent == 6
+    assert box.stats.sent == 7
+    (projected,) = project(api.events[-1]).answers
+    (delivery,) = projected.deliveries
+    assert (delivery.channel, len(delivery.recipients)) == (SLACK, 2)
     witness = "\n".join(
         [
             f"utilisateur : {prompt}",
@@ -125,6 +148,7 @@ async def test_three_canaries_cross_the_adapter_and_come_out_nowhere(
             f"résultat reçu par l'agent : {json.dumps(result, ensure_ascii=False)}",
             f"échec reçu par le sous-agent : {error}",
             f"réponse reçue par l'utilisateur : {answer}",
+            f"réponse publiée dans le fil Slack, à : {', '.join(members)}",
         ]
     )
     assert searcher.missing(witness) == []
@@ -171,8 +195,9 @@ async def test_three_canaries_cross_the_adapter_and_come_out_nowhere(
         ]
     )
     report = json.loads(capfd.readouterr().out)
-    # Forme, contexte, contenu, projection : seule manque la chaîne complète, que
-    # l'adaptateur ne porte pas encore (ni lecture décrite, ni diffusion de la réponse).
+    # Forme, contexte, contenu, projection : seule manque la chaîne complète. La diffusion
+    # y est, projetée avec ses destinataires ; il manque une lecture décrite, que
+    # l'adaptateur ne sait pas faire.
     assert [problem["code"] for problem in report["problems"]] == ["no_complete_chain"]
     assert (status, report["profile"]) == (1, "adapter")
     content = [control for control in report["controls"] if control["group"] == "content"]

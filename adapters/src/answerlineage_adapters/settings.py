@@ -1,4 +1,4 @@
-"""Réglages d'un adaptateur : l'agent qu'il décrit, l'API, la clé d'empreinte, le jeton.
+"""Réglages d'un adaptateur : l'agent qu'il décrit, l'API, les clés, le jeton.
 
 L'agent est nommé dans le code de l'application ; le reste se lit de
 l'environnement de son processus, sous des variables propres aux adaptateurs :
@@ -7,6 +7,7 @@ l'environnement de son processus, sous des variables propres aux adaptateurs :
 | --- | --- |
 | ``ANSWERLINEAGE_ADAPTER_API_URL`` | Adresse de l'API ; sans elle, rien n'est envoyé |
 | ``ANSWERLINEAGE_ADAPTER_FINGERPRINT_KEY`` | Clé d'empreinte, en hexadécimal ; ou ``…_FILE`` |
+| ``ANSWERLINEAGE_ADAPTER_PSEUDONYM_KEY`` | Clé des pseudonymes, en hexadécimal ; ou ``…_FILE`` |
 | ``ANSWERLINEAGE_ADAPTER_OIDC_ISSUER`` | Émetteur OIDC du jeton de l'adaptateur |
 | ``ANSWERLINEAGE_ADAPTER_OIDC_CLIENT_ID`` | Identifiant du client de l'adaptateur |
 | ``ANSWERLINEAGE_ADAPTER_OIDC_CLIENT_SECRET`` | Son secret ; ou ``…_FILE`` |
@@ -14,6 +15,8 @@ l'environnement de son processus, sous des variables propres aux adaptateurs :
 
 Un réglage refusé arrête l'adaptateur avec un message qui nomme le réglage,
 jamais sa valeur. Le jeton ne part qu'en https, ou en http vers la boucle locale.
+La clé des pseudonymes n'est pas celle des empreintes : l'API la tient pour
+révéler un destinataire, et ne doit pas pouvoir éprouver les arguments des appels.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ from answerlineage_emitter.outbox import (
     Outbox,
     OutboxSettings,
 )
+from answerlineage_emitter.pseudonym import PseudonymKey, read_pseudonym_key
 from answerlineage_emitter.sink import EventSink, NullSink
 
 LOGGER: Final = logging.getLogger("answerlineage_adapters")
@@ -46,6 +50,8 @@ LOGGER: Final = logging.getLogger("answerlineage_adapters")
 ENV_API_URL: Final = "ANSWERLINEAGE_ADAPTER_API_URL"
 ENV_FINGERPRINT_KEY: Final = "ANSWERLINEAGE_ADAPTER_FINGERPRINT_KEY"
 ENV_FINGERPRINT_KEY_FILE: Final = "ANSWERLINEAGE_ADAPTER_FINGERPRINT_KEY_FILE"
+ENV_PSEUDONYM_KEY: Final = "ANSWERLINEAGE_ADAPTER_PSEUDONYM_KEY"
+ENV_PSEUDONYM_KEY_FILE: Final = "ANSWERLINEAGE_ADAPTER_PSEUDONYM_KEY_FILE"
 ENV_OIDC_ISSUER: Final = "ANSWERLINEAGE_ADAPTER_OIDC_ISSUER"
 ENV_OIDC_CLIENT_ID: Final = "ANSWERLINEAGE_ADAPTER_OIDC_CLIENT_ID"
 # Le secret : d'un fichier ou de l'environnement, jamais du code ni de la ligne de commande.
@@ -82,12 +88,13 @@ class AgentJob:
 
 @dataclass(frozen=True)
 class AdapterSettings:
-    """Ce que l'adaptateur sait de son déploiement : l'agent, l'API, la clé, son identité."""
+    """Ce que l'adaptateur sait de son déploiement : l'agent, l'API, les clés, son identité."""
 
     agent: AgentJob
     outbox: OutboxSettings | None = None
     credentials: ClientCredentials | None = field(default=None, repr=False)
     fingerprint_key: FingerprintKey | None = field(default=None, repr=False)
+    pseudonym_key: PseudonymKey | None = field(default=None, repr=False)
 
     @classmethod
     def from_environment(
@@ -111,7 +118,16 @@ class AdapterSettings:
         key = read_key(
             environment, variable=ENV_FINGERPRINT_KEY, file_variable=ENV_FINGERPRINT_KEY_FILE
         )
-        return cls(agent, outbox, _credentials(environment, outbox), key)
+        pseudonyms = read_pseudonym_key(
+            environment, variable=ENV_PSEUDONYM_KEY, file_variable=ENV_PSEUDONYM_KEY_FILE
+        )
+        if key is not None and pseudonyms is not None and pseudonyms.shares_secret_with(key):
+            raise ConfigurationError(
+                f"La clé des pseudonymes ({ENV_PSEUDONYM_KEY}) doit différer de la clé "
+                f"d'empreinte ({ENV_FINGERPRINT_KEY}) : l'API tient la première, et ne doit pas "
+                "pouvoir éprouver les arguments des appels d'outils."
+            )
+        return cls(agent, outbox, _credentials(environment, outbox), key, pseudonyms)
 
     def sink(self, logger: logging.Logger = LOGGER) -> EventSink:
         """La destination des événements : la boîte d'envoi vers l'API, avec le jeton du
