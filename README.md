@@ -62,7 +62,8 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Déclaration d'un incident (périmètre, fenêtre, gravité) et analyse d'impact par les workers, sur le graphe tel qu'il était connu | Disponible |
 | Score d'exposition des jeux de données et des colonnes, selon les réponses et les destinataires qui en dépendent | Disponible |
 | Webhooks signés à chaque changement d'état d'un incident, format publié et fonction de vérification de référence | Disponible |
-| Quarantaine d'un incident et diffusion de son périmètre aux proxys | Disponible |
+| Quarantaine d'un incident et diffusion de son périmètre aux proxys, signée et datée | Disponible |
+| Quarantaine en mode avertir : le proxy HTTP insère en tête du résultat d'une lecture en quarantaine un avertissement à gabarit fixe, en retenant l'appel 50 ms au plus | Disponible |
 | Incident proposé par un test de qualité en échec (assertions OpenLineage, dbt, Great Expectations), confirmé par un humain | Disponible |
 | Authentification OIDC sur toutes les routes de l'API, six rôles et une matrice des droits publiée ; connexion PKCE de l'explorateur | Disponible |
 | Destinataires stockés sous pseudonyme HMAC, sans table de correspondance ; révélation par le gestionnaire d'incident, motivée et journalisée | Disponible |
