@@ -119,7 +119,7 @@ L'agent se nomme dans le code de l'application ; le reste se lit de l'environnem
 
 | Réglage | Où | Défaut |
 | --- | --- | --- |
-| Le job de l'agent : espace de noms et nom, 1 à 255 lettres, chiffres et signes `. _ : / @ -` | `AgentJob.create("agent://finance", "analyste-change")` | obligatoire |
+| Le job de l'agent : espace de noms et nom, 1 à 255 lettres, chiffres et signes `. _ : / @ -`, sans « utilisateur:motdepasse@ », que l'ingestion refuserait | `AgentJob.create("agent://finance", "analyste-change")` | obligatoire |
 | Adresse de l'API d'AnswerLineage | `ANSWERLINEAGE_ADAPTER_API_URL` | aucune : rien n'est envoyé, et le journal le dit |
 | Clé d'empreinte, en hexadécimal, de 32 à 64 octets | `ANSWERLINEAGE_ADAPTER_FINGERPRINT_KEY`, ou le fichier que nomme `ANSWERLINEAGE_ADAPTER_FINGERPRINT_KEY_FILE` | aucune : pas d'empreinte, et aucune diffusion |
 | Clé des pseudonymes, en hexadécimal, de 32 à 64 octets : la clé courante du [coffre à clés](securite/pseudonymes.md#la-clé-et-le-coffre-à-clés) de l'API | `ANSWERLINEAGE_ADAPTER_PSEUDONYM_KEY`, ou le fichier que nomme `ANSWERLINEAGE_ADAPTER_PSEUDONYM_KEY_FILE` | aucune : une diffusion part sans ses destinataires |

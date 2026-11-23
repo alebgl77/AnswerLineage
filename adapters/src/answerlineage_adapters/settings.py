@@ -63,6 +63,9 @@ ENV_OIDC_AUDIENCE: Final = "ANSWERLINEAGE_ADAPTER_OIDC_AUDIENCE"
 # L'espace de noms et le nom du job de l'agent : une forme que l'ingestion admet, sans
 # blanc ni balise, bornée. Le nom d'un sous-agent y ajoute « / » et son type.
 _JOB_PART: Final = re.compile(r"[A-Za-z0-9_.:/@-]{1,255}")
+# Une adresse qui porte « utilisateur:motdepasse@ » : l'ingestion la refuse, et ferait
+# rejeter tous les événements de l'agent.
+_CREDENTIALS: Final = re.compile(r"://[^/@]*:[^/@]*@")
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,10 @@ class AgentJob:
             if not _JOB_PART.fullmatch(value):
                 raise ConfigurationError(
                     f"Agent : {what} compte 1 à 255 lettres, chiffres et signes . _ : / @ -."
+                )
+            if _CREDENTIALS.search(value):
+                raise ConfigurationError(
+                    f"Agent : {what} s'écrit sans « utilisateur:motdepasse@ »."
                 )
         return cls(namespace, name)
 
