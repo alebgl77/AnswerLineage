@@ -25,15 +25,17 @@
           "enum": [
             "incident.declared",
             "incident.analysed",
-            "incident.analysis_failed"
+            "incident.analysis_failed",
+            "incident.quarantined",
+            "incident.quarantine_lifted"
           ],
-          "description": "Le changement d'état annoncé : l'incident est déclaré ; son analyse d'impact est faite ; son analyse est en échec pour de bon."
+          "description": "Le changement d'état annoncé : l'incident est déclaré ; son analyse d'impact est faite ; son analyse est en échec pour de bon ; il est mis en quarantaine ; sa quarantaine est levée."
         },
         "occurred_at": {
           "type": "string",
           "format": "date-time",
           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$",
-          "description": "Heure du changement d'état, à la microseconde, en UTC : la déclaration, ou la fin de l'analyse."
+          "description": "Heure du changement d'état, à la microseconde, en UTC : la déclaration, la fin de l'analyse, l'activation ou la levée de la quarantaine."
         },
         "incident": {
           "$ref": "#/$defs/Incident"
@@ -120,6 +122,56 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "incident.quarantined"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "incident": {
+                "properties": {
+                  "quarantine": {
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "const": "active"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "incident.quarantine_lifted"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "incident": {
+                "properties": {
+                  "quarantine": {
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "const": "lifted"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       ]
     },
@@ -148,13 +200,49 @@
         },
         "analysis": {
           "$ref": "#/$defs/Analysis"
+        },
+        "quarantine": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quarantine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "La dernière quarantaine de l'incident, active ou levée ; nulle quand l'incident n'a jamais été mis en quarantaine."
         }
       },
       "required": [
         "id",
         "state",
         "severity",
-        "analysis"
+        "analysis",
+        "quarantine"
+      ],
+      "additionalProperties": false
+    },
+    "Quarantine": {
+      "description": "La quarantaine de l'incident : son état et son mode. Ni son périmètre, ni ses jeux de données : le récepteur qui veut le détail le lit par l'API.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "active",
+            "lifted"
+          ],
+          "description": "Active : les proxys reçoivent son périmètre. Levée : ils ne le reçoivent plus."
+        },
+        "mode": {
+          "enum": [
+            "warn"
+          ],
+          "description": "Ce que les proxys feront des lectures du périmètre : les signaler."
+        }
+      },
+      "required": [
+        "state",
+        "mode"
       ],
       "additionalProperties": false
     },

@@ -15,8 +15,9 @@ service (``answerlineage_api.incidents.webhooks``). La boucle des webhooks tourn
   puis le retire de la file avec ses compteurs, dans une seule transaction ;
 - **ce qui part** est un message à gabarit fixe (``message``) : la version du
   format, l'identifiant de livraison, l'heure d'émission, la sorte d'événement
-  et son heure, l'incident par son identifiant, son état, sa gravité, et l'état
-  de son analyse avec ses décomptes. Aucun texte libre, aucun pseudonyme ;
+  et son heure, l'incident par son identifiant, son état, sa gravité, l'état
+  de son analyse avec ses décomptes, et sa quarantaine, son état et son mode.
+  Aucun texte libre, aucun pseudonyme, aucun nom de jeu de données ;
 - **signé** sous le secret partagé, et le précédent pendant une rotation, avec
   l'heure d'émission (``webhook_signature.py``) ;
 - **au moins une fois.** Un envoi dont l'issue n'est pas sûre est refait, avec
@@ -88,7 +89,8 @@ _SECRET = re.compile(rf"[\x21-\x7e]{{{MIN_SECRET_LENGTH},{MAX_SECRET_LENGTH}}}")
 _CLAIM = text(
     """
     SELECT id, delivery_id, event_type, incident_id, occurred_at, incident_state, severity,
-           analysis_state, analysis_error, answers, recipients, lower_bound
+           analysis_state, analysis_error, answers, recipients, lower_bound,
+           quarantine_state, quarantine_mode
     FROM webhook_queue
     ORDER BY id
     LIMIT :limit
@@ -215,6 +217,11 @@ def message(row: Mapping[str, Any], *, emitted_at: int) -> dict[str, Any]:
         if done
         else None
     )
+    quarantine = (
+        None
+        if row["quarantine_state"] is None
+        else {"state": row["quarantine_state"], "mode": row["quarantine_mode"]}
+    )
     return {
         "version": FORMAT_VERSION,
         "delivery_id": str(row["delivery_id"]),
@@ -230,6 +237,7 @@ def message(row: Mapping[str, Any], *, emitted_at: int) -> dict[str, Any]:
                 "error": row["analysis_error"],
                 "counts": counts,
             },
+            "quarantine": quarantine,
         },
     }
 

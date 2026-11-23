@@ -1,9 +1,18 @@
-"""Routes des incidents : déclarer, lire un incident, lister les incidents.
+"""Routes des incidents : déclarer, lire un incident, lister les incidents, mettre un
+incident en quarantaine et la lever, diffuser les périmètres en quarantaine.
 
 La déclaration lit son corps borné, comme l'ingestion, et le valide champ par
 champ ; l'incident et sa demande d'analyse s'enregistrent dans une seule
 transaction. Les lectures s'exécutent sous le délai maximal des lectures du
 graphe (``reading``).
+
+La quarantaine s'active et se lève par deux actions explicites, idempotentes
+(``quarantine.py``). La levée est une action, ``POST …/quarantine/lift``, et non
+un ``DELETE`` : la quarantaine levée reste, pour l'histoire de l'incident, et
+une levée pourra porter un corps (son motif, d'une liste fermée), ce que
+``DELETE`` ne promet pas. Les proxys lisent les périmètres en quarantaine
+active par ``GET /api/v1/quarantine``, sous un ETag qui leur évite de
+retélécharger une liste qui n'a pas changé.
 
 Ces routes n'authentifient pas encore leurs appelants : comme le reste de
 l'API, elles sont faites pour la boucle locale ou un accès déjà contrôlé.
@@ -14,16 +23,20 @@ from __future__ import annotations
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Path, Query, Request
+from fastapi import APIRouter, Header, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from answerlineage_api.incidents import store
+from answerlineage_api.incidents import quarantine, store
 from answerlineage_api.incidents.models import (
     MAX_DECLARATION_BYTES,
+    MAX_QUARANTINE_BYTES,
+    ActiveQuarantines,
     IncidentDetail,
     IncidentList,
+    QuarantineChange,
     validate_declaration,
+    validate_quarantine,
 )
 from answerlineage_api.incidents.models import Incident as IncidentModel
 from answerlineage_api.incidents.store import INCIDENT_CURSOR_PATTERN, IncidentCursor
@@ -167,3 +180,125 @@ async def incidents(
             return _cursor_refused()
     async with reading(request) as reader:
         return await store.incidents(reader, limit=limit, cursor=cursor)
+
+
+_UNKNOWN_INCIDENT: dict[int | str, dict[str, Any]] = {
+    404: {"model": RequestRefused, "description": "Aucun incident ne porte cet identifiant."}
+}
+
+
+def _changed(change: QuarantineChange) -> JSONResponse:
+    return JSONResponse(status_code=200, content=change.model_dump(mode="json"))
+
+
+@router.post(
+    "/incidents/{incident_id}/quarantine",
+    response_model=QuarantineChange,
+    summary="Met un incident en quarantaine : les proxys reçoivent son périmètre",
+    responses={
+        400: {"model": RequestRefused, "description": REFUSED_400},
+        409: {
+            "model": RequestRefused,
+            "description": (
+                "La borne des quarantaines actives est atteinte (« too_many_quarantines ») :"
+                " en lever une d'abord."
+            ),
+        },
+        413: {"model": RequestRefused, "description": REFUSED_413},
+        415: {"model": RequestRefused, "description": REFUSED_415},
+        422: {"model": RequestRejected, "description": "La demande est invalide."},
+        **_UNKNOWN_INCIDENT,
+    },
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/QuarantineRequest"}}
+            },
+        }
+    },
+)
+async def activate_quarantine(request: Request, incident_id: IncidentId) -> JSONResponse:
+    """Le périmètre de la quarantaine est celui de l'incident. Idempotent : un incident déjà
+    en quarantaine la garde telle quelle (``changed`` faux), sans nouvelle annonce. Les
+    heures sont posées par la base ; l'activation s'annonce par webhook dans sa transaction."""
+    body, refusal = await read_json(request, max_bytes=MAX_QUARANTINE_BYTES)
+    if refusal is not None:
+        return refusal
+    asked, errors = validate_quarantine(body)
+    if asked is None:
+        return JSONResponse(status_code=422, content=RequestRejected(errors=errors).model_dump())
+    engine: AsyncEngine = request.app.state.engine
+    try:
+        async with engine.begin() as conn:
+            change = await quarantine.activate(conn, UUID(incident_id), asked.mode)
+    except quarantine.QuarantineLimitError:
+        return refused(409, "too_many_quarantines")
+    return _changed(change) if change is not None else refused(404, "unknown_incident")
+
+
+@router.post(
+    "/incidents/{incident_id}/quarantine/lift",
+    response_model=QuarantineChange,
+    summary="Lève la quarantaine d'un incident : les proxys ne reçoivent plus son périmètre",
+    responses={
+        409: {
+            "model": RequestRefused,
+            "description": (
+                "L'incident n'a jamais été mis en quarantaine (« not_quarantined ») : il n'y a"
+                " rien à lever."
+            ),
+        },
+        **_INVALID,
+        **_UNKNOWN_INCIDENT,
+    },
+)
+async def lift_quarantine(request: Request, incident_id: IncidentId) -> JSONResponse:
+    """Idempotent : une quarantaine déjà levée est rendue telle quelle (``changed`` faux),
+    sans nouvelle annonce. La levée est définitive ; activer de nouveau ouvre une nouvelle
+    quarantaine. Elle s'annonce par webhook dans sa transaction."""
+    engine: AsyncEngine = request.app.state.engine
+    try:
+        async with engine.begin() as conn:
+            change = await quarantine.lift(conn, UUID(incident_id))
+    except quarantine.NotQuarantinedError:
+        return refused(409, "not_quarantined")
+    return _changed(change) if change is not None else refused(404, "unknown_incident")
+
+
+IfNoneMatch = Annotated[
+    str | None,
+    Header(
+        description=(
+            "La version déjà reçue, entre guillemets, telle que l'ETag la donne. Une valeur de"
+            f" plus de {quarantine.MAX_IF_NONE_MATCH} caractères n'est pas lue."
+        )
+    ),
+]
+
+
+@router.get(
+    "/quarantine",
+    response_model=ActiveQuarantines,
+    summary="Donne les périmètres en quarantaine active, tels que les proxys les reçoivent",
+    responses={
+        304: {
+            "description": (
+                "La version donnée dans If-None-Match est la version courante : rien n'a changé."
+            )
+        },
+        **TIMED_OUT,
+    },
+)
+async def active_quarantines(request: Request, if_none_match: IfNoneMatch = None) -> Response:
+    """Chaque quarantaine active, avec son mode et le périmètre de son incident, et la version
+    de la liste, qui est aussi l'ETag de la réponse. Une lecture bornée : l'activation tient
+    les quarantaines actives sous leur borne."""
+    async with reading(request) as reader:
+        diffusion = await quarantine.active_quarantines(reader)
+    headers = {"etag": diffusion.etag, "cache-control": "no-cache"}
+    if diffusion.matches(if_none_match):
+        return Response(status_code=304, headers=headers)
+    return JSONResponse(
+        status_code=200, content=diffusion.quarantines.model_dump(mode="json"), headers=headers
+    )

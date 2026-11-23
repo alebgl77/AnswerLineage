@@ -65,6 +65,7 @@ from answerlineage_proxy.inspection import (
     inspect_request,
 )
 from answerlineage_proxy.prefix import PREFIX_BYTES
+from answerlineage_proxy.quarantine import QuarantineStatus, QuarantineSync
 from answerlineage_proxy.rules import DeclaredReads, declared_reads
 from answerlineage_proxy.signals import (
     CallOutcome,
@@ -316,9 +317,13 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
         analyzer: SqlAnalyzer | None = None,
         coverage_window: timedelta = DEFAULT_WINDOW,
         retries: RetryMemory | None = None,
+        quarantine: QuarantineSync | None = None,
     ) -> None:
         self.settings = settings
         self.stats = ProxyStats()
+        # Les périmètres en quarantaine, appris de l'API hors du chemin des appels. Le proxy
+        # ne s'en sert pas encore ; sans adresse d'API, il reste en mode observer.
+        self.quarantine = quarantine
         # Compteurs par fenêtre, remis à la destination des événements comme relevés de
         # couverture. L'émetteur est l'espace de noms des jobs du proxy ; l'instance, réglée
         # ou tirée au démarrage, distingue les proxys placés devant un même serveur.
@@ -368,9 +373,20 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
             # main à la boucle, et leur rappel de fin n'aurait pas encore tourné.
             self._pending.difference_update(tasks)
 
+    def quarantine_status(self) -> QuarantineStatus:
+        """L'état de la synchronisation des quarantaines : sans elle, le mode observer."""
+        if self.quarantine is None:
+            return QuarantineStatus(
+                mode="observe", scopes=0, datasets=0, last_sync_age=None, failing=False
+            )
+        return self.quarantine.status()
+
     async def aclose(self) -> None:
-        """Termine les analyses en cours, remet la dernière fenêtre de couverture, arrête le
-        processus d'analyse, puis vide la destination à remise différée dans son délai."""
+        """Arrête la synchronisation des quarantaines, termine les analyses en cours, remet la
+        dernière fenêtre de couverture, arrête le processus d'analyse, puis vide la
+        destination à remise différée dans son délai."""
+        if self.quarantine is not None:
+            await self.quarantine.aclose()
         await self.drain()
         if self._reporting is not None:
             await _settle(self._reporting)
@@ -382,12 +398,15 @@ class CallCapture[SettingsT: CaptureSettings](ABC):
 
     async def _start_reporting(self) -> None:
         """Démarre la destination à remise différée, puis remet chaque fenêtre de couverture
-        close, hors du chemin des appels."""
+        close, hors du chemin des appels ; démarre la synchronisation des quarantaines, sans
+        attendre l'API."""
         if self._deferred is not None:
             await self._deferred.start()
         self._reporting = asyncio.ensure_future(
             report_periodically(self.coverage, self._clock, self._report)
         )
+        if self.quarantine is not None:
+            await self.quarantine.start()
 
     def _inspected(self, inspection: Inspection | None, *, untagged: bool = True) -> None:
         """Compte une requête que le proxy n'a pas pu lire sans ambiguïté ; journalise un
@@ -663,6 +682,7 @@ class McpProxy(CallCapture[ProxySettings]):
         analyzer: SqlAnalyzer | None = None,
         coverage_window: timedelta = DEFAULT_WINDOW,
         retries: RetryMemory | None = None,
+        quarantine: QuarantineSync | None = None,
     ) -> None:
         quiet_transport_logs()
         super().__init__(
@@ -672,6 +692,7 @@ class McpProxy(CallCapture[ProxySettings]):
             analyzer=analyzer,
             coverage_window=coverage_window,
             retries=retries,
+            quarantine=quarantine,
         )
         self._client = client
         self._owns_client = client is None

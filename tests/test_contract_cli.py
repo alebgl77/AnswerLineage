@@ -129,6 +129,24 @@ def test_the_incident_lists_and_bounds_of_the_command_are_those_of_the_api(
     assert parameters["incident_id"]["pattern"] == f"^{incident.INCIDENT_ID.pattern}$"
 
 
+def test_the_quarantine_lists_of_the_command_are_those_of_the_api(
+    contract: dict[str, Any],
+) -> None:
+    schemas = contract["components"]["schemas"]
+    assert enum(schemas["QuarantineRequest"]["properties"]["mode"]) == list(
+        incident.QUARANTINE_MODES
+    )
+    assert enum(schemas["Quarantine"]["properties"]["mode"]) == list(incident.QUARANTINE_MODES)
+    assert enum(schemas["Quarantine"]["properties"]["state"]) == list(incident.QUARANTINE_STATES)
+    assert set(incident.MODE_LABELS) == set(incident.QUARANTINE_MODES)
+    for path in (
+        "/api/v1/incidents/{incident_id}/quarantine",
+        "/api/v1/incidents/{incident_id}/quarantine/lift",
+    ):
+        (parameter,) = contract["paths"][path]["post"]["parameters"]
+        assert parameter["schema"]["pattern"] == f"^{incident.INCIDENT_ID.pattern}$"
+
+
 def test_the_dead_letter_reasons_and_bounds_of_the_command_are_those_of_the_api(
     contract: dict[str, Any],
 ) -> None:

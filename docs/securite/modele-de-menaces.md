@@ -47,6 +47,7 @@ Les menaces sont classées selon STRIDE :
 | Lecteur, API de lecture et explorateur | Un navigateur, la ligne de commande ou un script lit le lignage, déclare un incident ou ouvre une adresse partagée de l'explorateur. L'appelant n'est pas authentifié ; l'adresse, les paramètres et les corps sont hostiles, et les noms affichés viennent des émetteurs. |
 | Workers et catalogue externe | Les workers réémettent les événements projetés vers un consommateur OpenLineage externe (Marquez, DataHub, OpenMetadata, Dataplex), à l'adresse que règle l'exploitant. Le catalogue, le réseau qui y mène et ses réponses sont hors du contrôle d'AnswerLineage. |
 | Workers et récepteur de webhooks | Les workers annoncent les changements d'état des incidents, par des messages signés, au récepteur de webhooks que règle l'exploitant. Le récepteur, le réseau qui y mène et ses réponses sont hors du contrôle d'AnswerLineage ; quiconque joint le récepteur peut lui envoyer une requête, ou rejouer une requête captée. |
+| API et proxys | Chaque proxy interroge l'API d'AnswerLineage, à l'adresse que règle l'exploitant, pour apprendre les périmètres en quarantaine. Le proxy n'authentifie pas encore l'API : le réseau qui y mène et ce qu'elle répond sont hostiles. |
 | Pipeline et publication | Une merge request, écrite par un contributeur ou un agent de code, fait tourner le pipeline ; une étiquette de version publie l'image et les paquets. Le contenu de la merge request, les actions, les images et les dépendances tierces sont hors de confiance. |
 | Données au repos | PostgreSQL tient le graphe, les événements bruts, la file, les relevés et les incidents ; le poste ou le serveur du proxy tient la clé des empreintes et les règles de lecture. Qui y accède lit ce qui y est écrit. |
 
@@ -66,6 +67,7 @@ Les menaces sont classées selon STRIDE :
 | Mesures et jugements | Le corpus de vérité, le corpus d'abus et le kit de conformité, qui disent si le moteur rappelle ce qu'il doit, si une attaque est bloquée, si un émetteur ne fuit rien. |
 | Secret des webhooks | Le secret HMAC que les workers et le récepteur de webhooks partagent : qui le détient signe des messages que le récepteur accepte. |
 | Annonces d'incident | Les messages qui disent au récepteur de webhooks qu'un incident est déclaré, analysé ou en échec, avec ses décomptes : une alerte ou un rappel peut en partir. |
+| Périmètres en quarantaine | Les jeux de données qu'un incident met en quarantaine, que chaque proxy apprend de l'API : demain, l'annotation ou le blocage des lectures de ces jeux en dépendra. |
 
 ## Menaces par composant
 
@@ -80,13 +82,14 @@ Le détail de chaque menace, son scénario, ses parades avec leur code et leur t
 | `proxy/empreinte-retournee` | Une empreinte est retournée en valeur par dictionnaire | Divulgation | 3 parades |
 | `proxy/page-web-hostile` | Une page web ouverte sur le poste appelle des outils à travers le proxy local | Élévation de privilège | 2 parades |
 | `proxy/appel-cache-au-lignage` | Un appel d'outil échappe au lignage par des en-têtes ou un corps ambigus | Répudiation | 2 parades |
-| `proxy/agent-retarde` | La capture retarde ou bloque un appel d'agent | Déni de service | 4 parades |
+| `proxy/agent-retarde` | La capture retarde ou bloque un appel d'agent | Déni de service | 6 parades |
 | `proxy/entree-demesuree` | Une entrée démesurée épuise la mémoire ou le temps du proxy | Déni de service | 4 parades |
 | `proxy/sortie-du-prefixe` | Une requête sort du préfixe du serveur MCP | Élévation de privilège | 1 parade |
 | `proxy/requete-relayee-alteree` | La requête relayée est altérée par l'étiquetage de son run | Altération | 5 parades |
 | `proxy/nom-piege` | Un nom piégé entre dans l'événement | Altération | 2 parades |
 | `proxy/lecture-omise` | L'analyse du SQL omet une colonne lue | Altération | 2 parades |
 | `proxy/regle-de-lecture-trompee` | Un outil non SQL lit autre chose que ce que sa règle de lecture déclare | Altération | 1 parade, acceptation à signer |
+| `proxy/perimetre-usurpe` | Une API compromise ou usurpée pousse aux proxys un faux périmètre en quarantaine | Usurpation | 4 parades, acceptation à signer |
 
 ### API : ingestion, lecture, incidents, service de l'explorateur
 
@@ -189,9 +192,10 @@ Un risque accepté l'est par le mainteneur, pour un motif dit et une conséquenc
 | Menace | Motif | Conséquence | Signature |
 | --- | --- | --- | --- |
 | `proxy/regle-de-lecture-trompee` | Une règle de lecture se fie à l'outil : le proxy relaie l'appel sans en lire le résultat, et ne peut savoir ce que l'outil a lu au-delà de ce que déclare son exploitant. | Une réponse fondée sur une lecture non déclarée n'est pas rappelée, et la couverture ne le montre pas, puisque l'appel est vu. | à signer |
+| `proxy/perimetre-usurpe` | Le proxy n'authentifie pas encore l'API : il se fie au TLS de l'adresse que règle l'exploitant, et le périmètre n'agit encore sur aucun appel. Avant que le proxy annote ou bloque des lectures, la diffusion devra être authentifiée, par un périmètre signé ou l'identité vérifiée de l'API. | Qui compromet l'API, ou la joint en http sur un réseau qu'il écoute, fait croire aux proxys une quarantaine fausse ou en tait une vraie : aujourd'hui sans effet sur les appels ; le jour où le proxy agira, il annotera ou bloquera à tort, ou laissera passer des lectures en quarantaine. | à signer |
 | `api/emetteur-usurpe` | Les émetteurs ne sont pas encore authentifiés : l'API est faite pour la boucle locale ou un réseau de confiance, comme le dit la politique de sécurité. | Un tiers qui joint l'ingestion peut inventer des lectures, donc faire rappeler des réponses saines, et fausser le décompte des doublons d'un émetteur. | à signer |
 | `api/releve-usurpe` | Un relevé n'est pas authentifié plus qu'un événement, et deux relevés d'une même fenêtre se fusionnent au plus grand. | Un tiers qui joint l'ingestion peut faire croire à des appels que le graphe n'a pas : la couverture d'une fenêtre se lit alors partielle à tort. | à signer |
-| `api/appelant-non-authentifie` | L'API n'authentifie pas encore ses appelants : elle est faite pour la boucle locale ou derrière un contrôle d'accès. | Exposée sans contrôle d'accès, elle livre le lignage à qui la joint et le laisse déclarer des incidents, donc lancer des analyses. | à signer |
+| `api/appelant-non-authentifie` | L'API n'authentifie pas encore ses appelants : elle est faite pour la boucle locale ou derrière un contrôle d'accès. | Exposée sans contrôle d'accès, elle livre le lignage à qui la joint et le laisse déclarer des incidents, donc lancer des analyses, et mettre un incident en quarantaine ou la lever. | à signer |
 | `api/rejeu-non-authentifie` | Le rebut se lit et se rejoue sans authentification, comme le reste de l'API : elle est faite pour la boucle locale ou derrière un contrôle d'accès. Le rejeu reviendra à l'administrateur quand l'API distinguera les rôles de ses appelants. | Exposée sans contrôle d'accès, l'API laisse qui la joint lire les émetteurs et les identifiants des événements au rebut, et les remettre en file autant de fois qu'il le veut : les workers refont un travail sans effet sur le graphe, et un événement qui échoue encore revient au rebut. | à signer |
 | `api/debit-non-borne` | L'ingestion n'a pas de limite de débit par émetteur ; sans authentification, une telle limite se contournerait en changeant de nom d'émetteur. | Un tiers qui joint l'ingestion peut retarder la projection des événements légitimes et faire grossir la base jusqu'à sa purge. | à signer |
 | `api/donnees-au-repos` | AnswerLineage ne chiffre pas la base : son accès, le chiffrement du disque et des sauvegardes reviennent à l'exploitant. Le mot de passe de la démonstration est écrit dans compose.yaml, pour une base que la démonstration ne publie pas. | Qui obtient un accès à la base lit les noms des jeux de données, des agents et des outils, les empreintes et les pseudonymes, sans aucun contenu ; avec la clé des empreintes en plus, il peut éprouver des valeurs candidates. | à signer |

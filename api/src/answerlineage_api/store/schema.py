@@ -22,6 +22,10 @@ qu'elle a intégrés attendent d'être réémis vers un consommateur OpenLineage
 externe dans la file de réémission (``reemission_queue``), quand les workers en
 ont un ; ``reemission_stats`` compte ce qui est parti et ce qui s'est perdu.
 
+La quarantaine d'un incident (``incident_quarantine``) est un objet à part,
+rattaché à l'incident : une ligne par activation, active puis levée. Ses états
+et ses transitions forment une liste fermée que la base tient elle-même.
+
 Chaque changement d'état d'un incident attend d'être annoncé au récepteur de
 webhooks dans la file des webhooks (``webhook_queue``), quand un webhook est en
 service ; ``webhook_stats`` dit jusqu'à quand il l'est, et compte ce qui est
@@ -63,6 +67,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.engine import Connection
 
 from answerlineage_api.identifiers import INSTANCE_MAX
 from answerlineage_api.store.partitions import RECEPTION_MONTH, create_partitions_ahead
@@ -95,16 +100,46 @@ AnalysisError = Literal["query_timeout", "analysis_error"]
 ANALYSIS_ERRORS: Final[tuple[str, ...]] = get_args(AnalysisError)
 # Durée maximale de la fenêtre de validité d'un incident.
 INCIDENT_WINDOW_DAYS: Final = 31
+# Mode d'une quarantaine, d'une liste fermée : ce que les proxys feront des lectures
+# de son périmètre. « warn » : les signaler. Un mode nouveau s'ajoute par une
+# révision de la base et du contrat.
+QuarantineMode = Literal["warn"]
+QUARANTINE_MODES: Final[tuple[str, ...]] = get_args(QuarantineMode)
+# État d'une quarantaine : active, puis levée. Une quarantaine levée ne revient pas :
+# une nouvelle activation est une nouvelle quarantaine.
+QuarantineState = Literal["active", "lifted"]
+QUARANTINE_STATES: Final[tuple[str, ...]] = get_args(QuarantineState)
+# Les transitions admises, d'une liste fermée : la naissance d'une quarantaine
+# active, puis sa levée. La base refuse toute autre (``ck_incident_quarantine_transition``).
+QUARANTINE_TRANSITIONS: Final[tuple[tuple[str | None, str], ...]] = (
+    (None, "active"),
+    ("active", "lifted"),
+)
+# Quarantaines actives au plus, tous incidents confondus : les proxys les reçoivent
+# toutes, d'une seule lecture bornée.
+MAX_ACTIVE_QUARANTINES: Final = 100
 # Événement d'incident annoncé par webhook, d'une liste fermée : un par
 # changement d'état qui existe. La déclaration ; l'analyse faite ; l'analyse en
-# échec pour de bon. Une analyse remise à plus tard ne change pas d'état.
-WebhookEvent = Literal["incident.declared", "incident.analysed", "incident.analysis_failed"]
+# échec pour de bon ; la quarantaine activée ; la quarantaine levée. Une analyse
+# remise à plus tard ne change pas d'état.
+WebhookEvent = Literal[
+    "incident.declared",
+    "incident.analysed",
+    "incident.analysis_failed",
+    "incident.quarantined",
+    "incident.quarantine_lifted",
+]
 WEBHOOK_EVENTS: Final[tuple[str, ...]] = get_args(WebhookEvent)
-# L'état de l'analyse que chaque événement annonce.
+# L'état de l'analyse que chaque événement de l'analyse annonce.
 WEBHOOK_EVENT_ANALYSIS: Final[dict[str, str]] = {
     "incident.declared": "pending",
     "incident.analysed": "done",
     "incident.analysis_failed": "failed",
+}
+# L'état de la quarantaine que chaque événement de la quarantaine annonce.
+WEBHOOK_EVENT_QUARANTINE: Final[dict[str, str]] = {
+    "incident.quarantined": "active",
+    "incident.quarantine_lifted": "lifted",
 }
 # Motif de la mise au rebut d'un événement, d'une liste fermée : une classe
 # d'erreur, jamais le message d'une exception. Les quatre premiers ne se
@@ -640,12 +675,93 @@ incident_recipient = Table(
     ),
 )
 
+# Quarantaine d'un incident : une ligne par activation, rattachée à l'incident, sans
+# texte libre. Son périmètre est celui de l'incident (``incident_dataset``), que rien
+# ne modifie. Elle naît active, avec son mode, à l'heure de la base ; sa levée pose
+# l'heure de la levée, et la ligne ne change plus : une nouvelle activation est une
+# nouvelle ligne. Au plus une quarantaine active par incident, et
+# ``MAX_ACTIVE_QUARANTINES`` en tout, que l'activation vérifie sous verrou.
+incident_quarantine = Table(
+    "incident_quarantine",
+    metadata,
+    Column("id", BigInteger, Identity(always=True), primary_key=True),
+    Column("incident_id", Uuid, ForeignKey("incident.id"), nullable=False),
+    Column("mode", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default=text("'active'")),
+    Column("activated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("lifted_at", DateTime(timezone=True)),
+    CheckConstraint(_in("mode", QUARANTINE_MODES), name="mode"),
+    CheckConstraint(_in("state", QUARANTINE_STATES), name="state"),
+    CheckConstraint("(state = 'lifted') = (lifted_at IS NOT NULL)", name="lifted"),
+    CheckConstraint("lifted_at IS NULL OR activated_at <= lifted_at", name="lifted_after"),
+    # Les quarantaines d'un incident, la dernière d'abord.
+    Index(None, "incident_id", "id"),
+)
+# Une quarantaine active au plus par incident : deux activations concurrentes n'en
+# font qu'une.
+Index(
+    "uq_incident_quarantine_active",
+    incident_quarantine.c.incident_id,
+    unique=True,
+    postgresql_where=incident_quarantine.c.state == "active",
+)
+
+
+def _admitted_transitions() -> str:
+    """Les transitions admises, en PL/pgSQL, tirées de ``QUARANTINE_TRANSITIONS``."""
+    admitted = []
+    for before, after in QUARANTINE_TRANSITIONS:
+        if before is None:
+            admitted.append(f"(TG_OP = 'INSERT' AND NEW.state = '{after}')")
+        else:
+            admitted.append(
+                f"(TG_OP = 'UPDATE' AND OLD.state = '{before}' AND NEW.state = '{after}'"
+                " AND NEW.incident_id = OLD.incident_id AND NEW.mode = OLD.mode"
+                " AND NEW.activated_at = OLD.activated_at)"
+            )
+    return "\n        OR ".join(admitted)
+
+
+# Les transitions d'une quarantaine, tenues par une contrainte nommée que la base
+# vérifie à chaque écriture : une ligne naît active ; seule une quarantaine active se
+# lève, sans changer d'incident, de mode ni d'heure d'activation ; une levée est
+# définitive. La fonction et la contrainte sont créées avec la table.
+QUARANTINE_TRANSITION_FUNCTION: Final = f"""
+CREATE FUNCTION incident_quarantine_transition() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF {_admitted_transitions()} THEN
+        RETURN NULL;
+    END IF;
+    RAISE EXCEPTION 'transition de quarantaine refusée'
+        USING ERRCODE = 'check_violation',
+              CONSTRAINT = 'ck_incident_quarantine_transition',
+              TABLE = 'incident_quarantine';
+END
+$$
+"""
+QUARANTINE_TRANSITION_CONSTRAINT: Final = """
+CREATE CONSTRAINT TRIGGER ck_incident_quarantine_transition
+AFTER INSERT OR UPDATE ON incident_quarantine
+FOR EACH ROW EXECUTE FUNCTION incident_quarantine_transition()
+"""
+
+
+def create_quarantine_transitions(target: Table, connection: Connection, **_: object) -> None:
+    """Crée, avec la table, la fonction et la contrainte qui tiennent ses transitions."""
+    connection.exec_driver_sql(QUARANTINE_TRANSITION_FUNCTION)
+    connection.exec_driver_sql(QUARANTINE_TRANSITION_CONSTRAINT)
+
+
+event.listen(incident_quarantine, "after_create", create_quarantine_transitions)
+
 # File des webhooks : chaque changement d'état d'un incident, à annoncer au
 # récepteur que règlent les workers. Le message y entre dans la transaction qui
 # change l'état, quand un webhook est en service, et en sort dans celle qui
 # enregistre l'issue de son envoi. Il y est tel qu'il partira, figé à l'heure du
 # changement : des identifiants, des codes de listes fermées, des heures et des
-# décomptes, jamais un texte libre ni un pseudonyme. ``delivery_id`` reste le
+# décomptes, jamais un texte libre ni un pseudonyme. La quarantaine y est celle de
+# l'incident à cette heure : la dernière, active ou levée, ou aucune. ``delivery_id`` reste le
 # même d'un envoi à l'autre : le récepteur s'en sert pour écarter un doublon.
 # Bornée en âge et en nombre par les workers : ce qui déborde est compté dans
 # ``webhook_stats``.
@@ -671,14 +787,41 @@ webhook_queue = Table(
     Column("attempts", Integer, nullable=False, server_default="0"),
     # Classe de la dernière erreur, ou statut de la réponse : jamais un message.
     Column("last_error", Text),
+    # La dernière quarantaine de l'incident à l'heure du changement : son état et son
+    # mode, ou rien quand l'incident n'en a jamais eu.
+    Column("quarantine_state", Text),
+    Column("quarantine_mode", Text),
     UniqueConstraint("delivery_id"),
     CheckConstraint(_in("event_type", WEBHOOK_EVENTS), name="event_type"),
     CheckConstraint(
         " OR ".join(
-            f"(event_type = '{kind}' AND analysis_state = '{state}')"
-            for kind, state in WEBHOOK_EVENT_ANALYSIS.items()
+            [
+                *(
+                    f"(event_type = '{kind}' AND analysis_state = '{state}')"
+                    for kind, state in WEBHOOK_EVENT_ANALYSIS.items()
+                ),
+                _in("event_type", tuple(WEBHOOK_EVENT_QUARANTINE)),
+            ]
         ),
         name="analysis_state",
+    ),
+    CheckConstraint(
+        " AND ".join(
+            f"(event_type <> '{kind}' OR quarantine_state = '{state}')"
+            for kind, state in WEBHOOK_EVENT_QUARANTINE.items()
+        ),
+        name="quarantine_event",
+    ),
+    CheckConstraint(
+        f"quarantine_state IS NULL OR {_in('quarantine_state', QUARANTINE_STATES)}",
+        name="quarantine_state",
+    ),
+    CheckConstraint(
+        f"quarantine_mode IS NULL OR {_in('quarantine_mode', QUARANTINE_MODES)}",
+        name="quarantine_mode",
+    ),
+    CheckConstraint(
+        "(quarantine_state IS NULL) = (quarantine_mode IS NULL)", name="quarantine_given"
     ),
     CheckConstraint(_in("incident_state", INCIDENT_STATES), name="incident_state"),
     CheckConstraint(_in("severity", SEVERITIES), name="severity"),

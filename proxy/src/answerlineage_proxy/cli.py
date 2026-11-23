@@ -51,6 +51,12 @@ from answerlineage_proxy.outbox import (
     Outbox,
     OutboxSettings,
 )
+from answerlineage_proxy.quarantine import (
+    DEFAULT_INTERVAL,
+    INTERVAL_LIMITS,
+    QuarantineSettings,
+    QuarantineSync,
+)
 from answerlineage_proxy.sink import EventSink, NullSink
 
 logger = logging.getLogger("answerlineage_proxy")
@@ -61,6 +67,8 @@ ENV_API_URL = "ANSWERLINEAGE_PROXY_API_URL"
 ENV_OUTBOX_MAX_EVENTS = "ANSWERLINEAGE_PROXY_OUTBOX_MAX_EVENTS"
 ENV_OUTBOX_MAX_BYTES = "ANSWERLINEAGE_PROXY_OUTBOX_MAX_BYTES"
 ENV_OUTBOX_FLUSH_SECONDS = "ANSWERLINEAGE_PROXY_OUTBOX_FLUSH_SECONDS"
+# Synchronisation des périmètres en quarantaine, depuis la même API.
+ENV_QUARANTINE_INTERVAL = "ANSWERLINEAGE_PROXY_QUARANTINE_INTERVAL_SECONDS"
 
 # Réglages du serveur HTTP qui sert le proxy. Le journal d'accès contiendrait
 # chemins et paramètres de requête ; les en-têtes Server et Date du serveur MCP
@@ -233,6 +241,15 @@ def build_parser() -> argparse.ArgumentParser:
             f"{DEFAULT_FLUSH_SECONDS:g} s par défaut (ou {ENV_OUTBOX_FLUSH_SECONDS})"
         ),
     )
+    parser.add_argument(
+        "--quarantine-interval-seconds",
+        type=int,
+        help=(
+            "intervalle entre deux interrogations de l'API sur les périmètres en quarantaine, "
+            f"de {INTERVAL_LIMITS[0]} à {INTERVAL_LIMITS[1]} secondes, {DEFAULT_INTERVAL} par "
+            f"défaut (ou {ENV_QUARANTINE_INTERVAL})"
+        ),
+    )
     return parser
 
 
@@ -286,6 +303,20 @@ def outbox_settings_from_args(
             else _seconds(environment, ENV_OUTBOX_FLUSH_SECONDS, DEFAULT_FLUSH_SECONDS)
         ),
     )
+
+
+def quarantine_settings_from_args(
+    argv: Sequence[str] | None, environment: Mapping[str, str], outbox: OutboxSettings | None
+) -> QuarantineSettings | None:
+    """Réglages de la synchronisation des quarantaines : l'API de la boîte d'envoi, et
+    l'intervalle de l'option, sinon de l'environnement. Aucune sans adresse d'API."""
+    if outbox is None:
+        return None
+    args = build_parser().parse_args(argv)
+    interval = args.quarantine_interval_seconds
+    if interval is None:
+        interval = integer(environment, ENV_QUARANTINE_INTERVAL, DEFAULT_INTERVAL)
+    return QuarantineSettings.create(outbox.api_url, interval)
 
 
 def sql_tools_from_args(args: argparse.Namespace) -> dict[str, SqlTool]:
@@ -364,7 +395,8 @@ def event_sink(outbox: OutboxSettings | None) -> EventSink:
     if outbox is None:
         logger.warning(
             "Aucune adresse d'API (--api-url ou %s) : les appels d'outils et les relevés de "
-            "couverture sont comptés sans être envoyés.",
+            "couverture sont comptés sans être envoyés, et aucun périmètre en quarantaine "
+            "n'est reçu (mode observer).",
             ENV_API_URL,
         )
         return NullSink()
@@ -376,6 +408,12 @@ def event_sink(outbox: OutboxSettings | None) -> EventSink:
         outbox.flush_seconds,
     )
     return Outbox(outbox)
+
+
+def quarantine_sync(settings: QuarantineSettings | None) -> QuarantineSync | None:
+    """La synchronisation des quarantaines, la même pour les deux transports : aucune sans
+    adresse d'API, le proxy reste alors en mode observer."""
+    return None if settings is None else QuarantineSync(settings)
 
 
 def log_instance(instance: str) -> None:
@@ -397,6 +435,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = settings_from_args(argv, os.environ)
         coverage_window = coverage_window_from_args(argv, os.environ)
         outbox = outbox_settings_from_args(argv, os.environ)
+        quarantine = quarantine_settings_from_args(argv, os.environ, outbox)
     except ProxyConfigurationError as error:
         print(f"Configuration invalide : {error}", file=sys.stderr)
         return 2
@@ -429,7 +468,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if settings.read_rules:
         logger.info("Règles de lecture : %d outils décrits.", len(settings.read_rules))
     log_run_comments(settings.sql_tools)
-    proxy = McpProxy(settings, event_sink(outbox), coverage_window=coverage_window)
+    proxy = McpProxy(
+        settings,
+        event_sink(outbox),
+        coverage_window=coverage_window,
+        quarantine=quarantine_sync(quarantine),
+    )
     log_instance(proxy.instance)
     uvicorn.run(
         proxy,

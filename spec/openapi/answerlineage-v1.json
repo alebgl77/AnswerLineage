@@ -1,6 +1,71 @@
 {
   "components": {
     "schemas": {
+      "ActiveQuarantine": {
+        "description": "Le périmètre d'une quarantaine active : celui de son incident.",
+        "properties": {
+          "activated_at": {
+            "format": "date-time",
+            "title": "Activated At",
+            "type": "string"
+          },
+          "datasets": {
+            "description": "Par espace de noms, puis par nom.",
+            "items": {
+              "$ref": "#/components/schemas/QuarantinedDataset"
+            },
+            "maxItems": 20,
+            "title": "Datasets",
+            "type": "array"
+          },
+          "incident_id": {
+            "format": "uuid",
+            "title": "Incident Id",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "warn"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "incident_id",
+          "mode",
+          "activated_at",
+          "datasets"
+        ],
+        "title": "ActiveQuarantine",
+        "type": "object"
+      },
+      "ActiveQuarantines": {
+        "description": "Les périmètres en quarantaine active, tels que les proxys les reçoivent.",
+        "properties": {
+          "quarantines": {
+            "description": "Par heure d'activation, puis par incident.",
+            "items": {
+              "$ref": "#/components/schemas/ActiveQuarantine"
+            },
+            "maxItems": 100,
+            "title": "Quarantines",
+            "type": "array"
+          },
+          "version": {
+            "description": "Empreinte SHA-256 de la liste, en hexadécimal : la même tant que rien ne change. Elle est aussi l'ETag de la réponse : un proxy la rend dans If-None-Match et reçoit 304, sans corps, quand rien n'a changé.",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "quarantines"
+        ],
+        "title": "ActiveQuarantines",
+        "type": "object"
+      },
       "AgentName": {
         "properties": {
           "name": {
@@ -1505,6 +1570,19 @@
         "title": "GraphView",
         "type": "object"
       },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
       "Health": {
         "description": "L'état de l'installation : des états d'une liste fermée et des décomptes bornés.",
         "properties": {
@@ -1715,6 +1793,17 @@
             "title": "Id",
             "type": "string"
           },
+          "quarantine": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Quarantine"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "La dernière quarantaine de l'incident, active ou levée. Nulle quand l'incident n'a jamais été mis en quarantaine."
+          },
           "scope": {
             "$ref": "#/components/schemas/IncidentScope"
           },
@@ -1748,7 +1837,8 @@
           "scope",
           "window",
           "declared_at",
-          "analysis"
+          "analysis",
+          "quarantine"
         ],
         "title": "Incident",
         "type": "object"
@@ -1819,6 +1909,17 @@
             "title": "Id",
             "type": "string"
           },
+          "quarantine": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Quarantine"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "La dernière quarantaine de l'incident, active ou levée. Nulle quand l'incident n'a jamais été mis en quarantaine."
+          },
           "result": {
             "anyOf": [
               {
@@ -1864,6 +1965,7 @@
           "window",
           "declared_at",
           "analysis",
+          "quarantine",
           "result"
         ],
         "title": "IncidentDetail",
@@ -2055,6 +2157,118 @@
           "lower_bound"
         ],
         "title": "PartitionHealth",
+        "type": "object"
+      },
+      "Quarantine": {
+        "description": "Une quarantaine de l'incident : son mode, son état, ses heures, posées par la base.",
+        "properties": {
+          "activated_at": {
+            "description": "Activation, à l'heure de la base.",
+            "format": "date-time",
+            "title": "Activated At",
+            "type": "string"
+          },
+          "lifted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Levée, à l'heure de la base. Nulle tant que la quarantaine est active.",
+            "title": "Lifted At"
+          },
+          "mode": {
+            "description": "Ce que les proxys feront des lectures du périmètre. « warn » : les signaler.",
+            "enum": [
+              "warn"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "state": {
+            "description": "« active » : les proxys la reçoivent. « lifted » : levée, définitivement.",
+            "enum": [
+              "active",
+              "lifted"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "mode",
+          "activated_at",
+          "lifted_at"
+        ],
+        "title": "Quarantine",
+        "type": "object"
+      },
+      "QuarantineChange": {
+        "description": "L'issue d'une activation ou d'une levée : la quarantaine telle qu'elle est désormais.",
+        "properties": {
+          "changed": {
+            "description": "Vrai quand cette demande a changé l'état de la quarantaine ; faux quand elle était déjà dans l'état demandé, qui est alors rendu tel quel.",
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "incident_id": {
+            "format": "uuid",
+            "title": "Incident Id",
+            "type": "string"
+          },
+          "quarantine": {
+            "$ref": "#/components/schemas/Quarantine"
+          }
+        },
+        "required": [
+          "incident_id",
+          "changed",
+          "quarantine"
+        ],
+        "title": "QuarantineChange",
+        "type": "object"
+      },
+      "QuarantineRequest": {
+        "additionalProperties": false,
+        "description": "Ce que demande la mise en quarantaine d'un incident : son mode. Aucun texte libre.",
+        "properties": {
+          "mode": {
+            "description": "Ce que les proxys feront des lectures du périmètre, d'une liste fermée. « warn » : les signaler.",
+            "enum": [
+              "warn"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "QuarantineRequest",
+        "type": "object"
+      },
+      "QuarantinedDataset": {
+        "description": "Un jeu de données en quarantaine, par son espace de noms et son nom.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ],
+        "title": "QuarantinedDataset",
         "type": "object"
       },
       "QueueHealth": {
@@ -2584,6 +2798,46 @@
           "tools"
         ],
         "title": "UndescribedToolList",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
         "type": "object"
       },
       "WebhookHealth": {
@@ -3775,6 +4029,178 @@
         ]
       }
     },
+    "/api/v1/incidents/{incident_id}/quarantine": {
+      "post": {
+        "description": "Le périmètre de la quarantaine est celui de l'incident. Idempotent : un incident déjà\nen quarantaine la garde telle quelle (``changed`` faux), sans nouvelle annonce. Les\nheures sont posées par la base ; l'activation s'annonce par webhook dans sa transaction.",
+        "operationId": "activate_quarantine_api_v1_incidents__incident_id__quarantine_post",
+        "parameters": [
+          {
+            "description": "Identifiant de l'incident, tel que l'API le donne.",
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "description": "Identifiant de l'incident, tel que l'API le donne.",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuarantineRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuarantineChange"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Aucun incident ne porte cet identifiant."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La borne des quarantaines actives est atteinte (« too_many_quarantines ») : en lever une d'abord."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`)."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "La demande est invalide."
+          }
+        },
+        "summary": "Met un incident en quarantaine : les proxys reçoivent son périmètre",
+        "tags": [
+          "incidents"
+        ]
+      }
+    },
+    "/api/v1/incidents/{incident_id}/quarantine/lift": {
+      "post": {
+        "description": "Idempotent : une quarantaine déjà levée est rendue telle quelle (``changed`` faux),\nsans nouvelle annonce. La levée est définitive ; activer de nouveau ouvre une nouvelle\nquarantaine. Elle s'annonce par webhook dans sa transaction.",
+        "operationId": "lift_quarantine_api_v1_incidents__incident_id__quarantine_lift_post",
+        "parameters": [
+          {
+            "description": "Identifiant de l'incident, tel que l'API le donne.",
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "description": "Identifiant de l'incident, tel que l'API le donne.",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuarantineChange"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Aucun incident ne porte cet identifiant."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "L'incident n'a jamais été mis en quarantaine (« not_quarantined ») : il n'y a rien à lever."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          }
+        },
+        "summary": "Lève la quarantaine d'un incident : les proxys ne reçoivent plus son périmètre",
+        "tags": [
+          "incidents"
+        ]
+      }
+    },
     "/api/v1/ingestion/dead-letters": {
       "get": {
         "description": "Les plus récemment mis au rebut d'abord, chacun avec son émetteur, son motif, ses essais\net ses heures d'échec ; et les décomptes par motif. Aucun contenu d'événement.\n\nComme toute lecture, elle s'exécute sous le délai maximal des lectures.",
@@ -4254,6 +4680,71 @@
         "summary": "Envoie un lot de RunEvents OpenLineage",
         "tags": [
           "ingestion"
+        ]
+      }
+    },
+    "/api/v1/quarantine": {
+      "get": {
+        "description": "Chaque quarantaine active, avec son mode et le périmètre de son incident, et la version\nde la liste, qui est aussi l'ETag de la réponse. Une lecture bornée : l'activation tient\nles quarantaines actives sous leur borne.",
+        "operationId": "active_quarantines_api_v1_quarantine_get",
+        "parameters": [
+          {
+            "description": "La version déjà reçue, entre guillemets, telle que l'ETag la donne. Une valeur de plus de 1024 caractères n'est pas lue.",
+            "in": "header",
+            "name": "if-none-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "La version déjà reçue, entre guillemets, telle que l'ETag la donne. Une valeur de plus de 1024 caractères n'est pas lue.",
+              "title": "If-None-Match"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveQuarantines"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "304": {
+            "description": "La version donnée dans If-None-Match est la version courante : rien n'a changé."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Donne les périmètres en quarantaine active, tels que les proxys les reçoivent",
+        "tags": [
+          "incidents"
         ]
       }
     }

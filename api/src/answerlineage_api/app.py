@@ -21,7 +21,10 @@ from answerlineage_api.explorer import explorer_files
 from answerlineage_api.guard import HostOriginMiddleware, guard_from_settings
 from answerlineage_api.headers import SecurityHeadersMiddleware
 from answerlineage_api.health import router as health_router
-from answerlineage_api.incidents.models import declaration_json_schema
+from answerlineage_api.incidents.models import (
+    declaration_json_schema,
+    quarantine_request_json_schema,
+)
 from answerlineage_api.incidents.routes import router as incidents_router
 from answerlineage_api.ingest.body import max_body_bytes_from_settings
 from answerlineage_api.ingest.coverage import router as coverage_router
@@ -138,6 +141,7 @@ def create_app(
             declaration = declaration_json_schema()
             schemas.update(declaration.pop("$defs", {}))
             schemas["IncidentDeclaration"] = declaration
+            schemas["QuarantineRequest"] = quarantine_request_json_schema()
             schemas["DeadLetterReplay"] = replay_json_schema()
             app.openapi_schema = document
         return app.openapi_schema

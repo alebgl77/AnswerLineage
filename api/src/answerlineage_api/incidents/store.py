@@ -7,7 +7,8 @@ un incident sans sa demande. Les workers réclament ensuite la demande
 transaction met en file l'annonce de la déclaration (``webhooks.py``).
 
 Chaque lecture est bornée : une page d'incidents, une page des réponses
-touchées d'un incident, et les destinataires de ces réponses.
+touchées d'un incident, et les destinataires de ces réponses. Un incident se lit
+avec sa dernière quarantaine, active ou levée (``quarantine.py``).
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from answerlineage_api.incidents.models import (
     IncidentDetail,
     IncidentList,
     IncidentScope,
+    Quarantine,
     TouchedAnswer,
     in_utc,
 )
@@ -55,12 +57,20 @@ MAX_LINKS: Final = 200_000
 
 _COLUMNS = """i.id, i.state, i.severity, i.window_start, i.window_end, i.declared_at,
            s.state AS analysis_state, s.requested_at, s.attempts, s.error, s.known_at,
-           s.finished_at, s.answers, s.recipients, s.truncated"""
+           s.finished_at, s.answers, s.recipients, s.truncated,
+           q.state AS quarantine_state, q.mode AS quarantine_mode,
+           q.activated_at AS quarantine_activated_at, q.lifted_at AS quarantine_lifted_at"""
+# L'incident, son analyse et sa dernière quarantaine, s'il en a une.
+_FROM = """incident i JOIN incident_analysis s ON s.incident_id = i.id
+    LEFT JOIN LATERAL (
+        SELECT state, mode, activated_at, lifted_at FROM incident_quarantine
+        WHERE incident_id = i.id ORDER BY id DESC LIMIT 1
+    ) q ON true"""
 
 _ONE = text(
     f"""
     SELECT {_COLUMNS}, s.coverage, s.unknown_datasets
-    FROM incident i JOIN incident_analysis s ON s.incident_id = i.id
+    FROM {_FROM}
     WHERE i.id = :id
     LIMIT :limit
     """  # noqa: S608 — seules des colonnes constantes sont interpolées.
@@ -90,7 +100,7 @@ def _incidents(cursor: IncidentCursor | None) -> TextClause:
     return text(
         f"""
         SELECT {_COLUMNS}
-        FROM incident i JOIN incident_analysis s ON s.incident_id = i.id
+        FROM {_FROM}
         {after}
         ORDER BY i.declared_at DESC, i.id DESC
         LIMIT :limit
@@ -187,11 +197,23 @@ async def declare(conn: AsyncConnection, declaration: IncidentDeclaration) -> In
             counts=None,
             truncated=None,
         ),
+        quarantine=None,
     )
 
 
 def _optional(value: datetime | None) -> datetime | None:
     return None if value is None else in_utc(value)
+
+
+def _quarantine(row: Row[Any]) -> Quarantine | None:
+    if row.quarantine_state is None:
+        return None
+    return Quarantine(
+        state=row.quarantine_state,
+        mode=row.quarantine_mode,
+        activated_at=in_utc(row.quarantine_activated_at),
+        lifted_at=_optional(row.quarantine_lifted_at),
+    )
 
 
 def _incident(row: Row[Any], datasets: Sequence[IncidentDataset]) -> Incident:
@@ -217,6 +239,7 @@ def _incident(row: Row[Any], datasets: Sequence[IncidentDataset]) -> Incident:
             else None,
             truncated=row.truncated if done else None,
         ),
+        quarantine=_quarantine(row),
     )
 
 

@@ -3,7 +3,7 @@
 ``impact`` propage un incident de données jusqu'aux réponses et aux
 destinataires touchés ; ``exposure`` classe les jeux de données et leurs
 colonnes selon les réponses qui en dépendent ; ``incident`` déclare un
-incident et lit son analyse ;
+incident, lit son analyse, le met en quarantaine et la lève ;
 ``dead-letters`` consulte et rejoue la file de rebut des événements que la
 projection n'a pas pu intégrer ; ``doctor`` vérifie chaque composant d'une
 installation ; ``demo`` lance la
@@ -107,6 +107,14 @@ def _severity(value: str) -> str:
     if value not in incident.SEVERITIES:
         raise argparse.ArgumentTypeError(
             "une gravité de la liste : " + ", ".join(incident.SEVERITIES)
+        )
+    return value
+
+
+def _quarantine_mode(value: str) -> str:
+    if value not in incident.QUARANTINE_MODES:
+        raise argparse.ArgumentTypeError(
+            "un mode de la liste : " + ", ".join(incident.QUARANTINE_MODES)
         )
     return value
 
@@ -345,6 +353,37 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--cursor", type=_cursor, help="page suivante : la valeur de next_cursor")
     show.add_argument("--format", choices=("text", "json"), default="text")
     _common(show)
+    quarantine = actions.add_parser(
+        "quarantine",
+        help="met un incident en quarantaine, ou la lève : les proxys reçoivent son périmètre",
+        description=(
+            "Met un incident en quarantaine : les proxys reçoivent son périmètre à leur "
+            "prochaine synchronisation. --lift la lève. Les deux sont idempotents. Codes de "
+            "sortie : 0 incident en quarantaine, ou quarantaine levée, par cette commande ou "
+            "avant elle ; 2 usage ; 4 API injoignable ; 5 refus de l'API (incident inconnu, "
+            "borne des quarantaines actives atteinte, rien à lever)."
+        ),
+    )
+    quarantine.add_argument(
+        "incident_id",
+        metavar="IDENTIFIANT",
+        type=_incident_id,
+        help="l'identifiant de l'incident, tel que le rend answerlineage incident declare",
+    )
+    chosen = quarantine.add_mutually_exclusive_group()
+    chosen.add_argument(
+        "--mode",
+        type=_quarantine_mode,
+        default=incident.QUARANTINE_MODES[0],
+        help=(
+            "ce que les proxys feront des lectures du périmètre : "
+            + ", ".join(incident.QUARANTINE_MODES)
+            + f" (par défaut {incident.QUARANTINE_MODES[0]} : les signaler)"
+        ),
+    )
+    chosen.add_argument("--lift", action="store_true", help="lève la quarantaine de l'incident")
+    quarantine.add_argument("--format", choices=("text", "json"), default="text")
+    _common(quarantine)
 
     rejected = commands.add_parser(
         "dead-letters",
@@ -558,6 +597,14 @@ def _incident(api: Api, args: argparse.Namespace) -> Exit:
                 args.incident_id,
                 limit=args.limit,
                 cursor=args.cursor,
+                output=args.format,
+                write=out,
+            )
+        if args.action == "quarantine":
+            return incident.run_quarantine(
+                api,
+                args.incident_id,
+                mode=None if args.lift else args.mode,
                 output=args.format,
                 write=out,
             )

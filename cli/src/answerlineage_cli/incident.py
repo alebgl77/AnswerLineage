@@ -11,6 +11,12 @@ destinataires, la couverture du lignage et ses trous. Son code de sortie dit ce
 que l'analyse permet de conclure, comme celui de ``impact`` ; une analyse en
 attente ou en échec a le sien.
 
+``quarantine`` met l'incident en quarantaine
+(``POST /api/v1/incidents/{id}/quarantine``), ou la lève avec ``--lift``
+(``POST …/quarantine/lift``) : les proxys reçoivent son périmètre, ou cessent de
+le recevoir, à leur synchronisation suivante. Les deux sont idempotents : la
+commande dit si elle a changé quelque chose.
+
 Toute réponse de l'API est validée en entier avant d'être affichée, comme pour
 ``impact`` : un identifiant n'est affiché que s'il a la forme d'un nom, un état
 ou un code n'est lu que dans sa liste fermée.
@@ -44,6 +50,8 @@ SEVERITIES: Final = ("low", "medium", "high", "critical")
 INCIDENT_STATES: Final = ("qualified",)
 ANALYSIS_STATES: Final = ("pending", "done", "failed")
 ANALYSIS_ERRORS: Final = ("query_timeout", "analysis_error")
+QUARANTINE_MODES: Final = ("warn",)
+QUARANTINE_STATES: Final = ("active", "lifted")
 MAX_DATASETS: Final = 20
 MAX_WINDOW_DAYS: Final = 31
 # Un espace de noms ou un nom donné à --dataset, avant d'être contrôlé comme un nom.
@@ -66,6 +74,7 @@ ERROR_LABELS: Final = {
     "query_timeout": "une lecture a dépassé le délai de l'analyse",
     "analysis_error": "une erreur est survenue pendant l'analyse",
 }
+MODE_LABELS: Final = {"warn": "signaler les lectures"}
 
 
 @dataclass(frozen=True)
@@ -176,12 +185,30 @@ def _analysis(value: Any, where: str) -> dict[str, Any]:
     return validated
 
 
+def _quarantine(value: Any, where: str) -> dict[str, Any] | None:
+    """Une quarantaine : son état et son mode de leurs listes, ses heures ; nulle sinon."""
+    if value is None:
+        return None
+    quarantine = shape.obj(value, where, ("state", "mode", "activated_at", "lifted_at"))
+    state = shape.choice(quarantine["state"], f"{where}/state", QUARANTINE_STATES)
+    lifted_at = _optional_instant(quarantine["lifted_at"], f"{where}/lifted_at")
+    # Une quarantaine levée, et elle seule, a son heure de levée.
+    if (state == "lifted") != (lifted_at is not None):
+        raise shape.fault(f"{where}/lifted_at")
+    return {
+        "state": state,
+        "mode": shape.choice(quarantine["mode"], f"{where}/mode", QUARANTINE_MODES),
+        "activated_at": shape.instant(quarantine["activated_at"], f"{where}/activated_at"),
+        "lifted_at": lifted_at,
+    }
+
+
 _INCIDENT_FIELDS: Final = ("id", "state", "severity", "scope", "window", "declared_at", "analysis")
 
 
 def validate_incident(document: Any, where: str = "") -> dict[str, Any]:
     """Un incident rendu par l'API, validé, réduit aux champs de son contrat."""
-    incident = shape.obj(document, where, _INCIDENT_FIELDS)
+    incident = shape.obj(document, where, _INCIDENT_FIELDS, ("quarantine",))
     scope = shape.obj(incident["scope"], f"{where}/scope", ("datasets",))
     return {
         "id": shape.pattern(incident["id"], f"{where}/id", INCIDENT_ID),
@@ -191,6 +218,23 @@ def validate_incident(document: Any, where: str = "") -> dict[str, Any]:
         "window": _window(incident["window"], f"{where}/window"),
         "declared_at": shape.instant(incident["declared_at"], f"{where}/declared_at"),
         "analysis": _analysis(incident["analysis"], f"{where}/analysis"),
+        "quarantine": _quarantine(incident.get("quarantine"), f"{where}/quarantine"),
+    }
+
+
+def validate_change(document: Any, incident_id: str, *, lift: bool) -> dict[str, Any]:
+    """L'issue d'une activation ou d'une levée, validée : l'incident demandé, dans l'état
+    demandé."""
+    change = shape.obj(document, "", ("incident_id", "changed", "quarantine"))
+    if shape.pattern(change["incident_id"], "/incident_id", INCIDENT_ID) != incident_id:
+        raise shape.fault("/incident_id")
+    quarantine = _quarantine(change["quarantine"], "/quarantine")
+    if quarantine is None or quarantine["state"] != ("lifted" if lift else "active"):
+        raise shape.fault("/quarantine/state")
+    return {
+        "incident_id": incident_id,
+        "changed": shape.flag(change["changed"], "/changed"),
+        "quarantine": quarantine,
     }
 
 
@@ -255,6 +299,8 @@ class RefusedError(Exception):
 REFUSALS: Final = frozenset(
     {
         "unknown_incident",
+        "too_many_quarantines",
+        "not_quarantined",
         "query_timeout",
         "host_not_allowed",
         "origin_not_allowed",
@@ -268,6 +314,7 @@ OPTIONS_BY_PATH: Final = (
     ("/window/to", "--to"),
     ("/window", "--from et --to"),
     ("/severity", "--severity"),
+    ("/mode", "--mode"),
     ("/query/limit", "--limit"),
     ("/query/cursor", "--cursor"),
     ("/path/incident_id", "l'identifiant de l'incident"),
@@ -321,6 +368,29 @@ def fetch(api: Api, incident_id: str, limit: int | None, cursor: str | None) -> 
     return validate_detail(received.json(), incident_id)
 
 
+# L'issue d'une quarantaine tient en quelques centaines d'octets.
+MAX_CHANGE_BYTES: Final = 64 * 1024
+
+
+def quarantine(api: Api, incident_id: str, mode: str | None) -> dict[str, Any]:
+    """Met l'incident en quarantaine dans ``mode``, ou la lève sans mode ; ``RefusedError``
+    quand l'API refuse."""
+    lift = mode is None
+    if lift:
+        received = api.post(
+            f"{PATH}/{incident_id}/quarantine/lift", document=None, max_bytes=MAX_CHANGE_BYTES
+        )
+    else:
+        received = api.post(
+            f"{PATH}/{incident_id}/quarantine",
+            document={"mode": mode},
+            max_bytes=MAX_CHANGE_BYTES,
+        )
+    if received.status != 200:
+        raise _refusal(received)
+    return validate_change(received.json(), incident_id, lift=lift)
+
+
 def refusal_message(refused: RefusedError) -> tuple[Exit, str]:
     """Le message d'un refus de l'API, écrit d'avance ; le code de sortie qui va avec."""
     if refused.option is not None:
@@ -332,6 +402,11 @@ def refusal_message(refused: RefusedError) -> tuple[Exit, str]:
             "Aucun incident ne porte cet identifiant : reprendre celui que rend "
             "answerlineage incident declare."
         ),
+        "too_many_quarantines": (
+            "L'API tient déjà le nombre maximal de quarantaines actives : en lever une "
+            "d'abord, avec answerlineage incident quarantine <identifiant> --lift."
+        ),
+        "not_quarantined": "Cet incident n'a jamais été mis en quarantaine : rien n'est à lever.",
         "query_timeout": "La lecture a dépassé son délai maximal dans l'API : réessayer.",
         "host_not_allowed": (
             "L'API refuse le nom d'hôte de cette adresse : l'ajouter à "
@@ -490,9 +565,53 @@ def _conclusion(detail: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _mode(quarantine: Mapping[str, Any]) -> str:
+    return f"{MODE_LABELS[quarantine['mode']]} ({quarantine['mode']})"
+
+
+def _quarantine_line(quarantine: Mapping[str, Any] | None) -> str:
+    if quarantine is None:
+        return "  quarantaine : aucune"
+    if quarantine["state"] == "active":
+        return f"  quarantaine : active depuis le {quarantine['activated_at']}, {_mode(quarantine)}"
+    return (
+        f"  quarantaine : levée le {quarantine['lifted_at']}, active depuis le "
+        f"{quarantine['activated_at']}, {_mode(quarantine)}"
+    )
+
+
+def render_change(change: Mapping[str, Any]) -> str:
+    """Ce qu'une activation ou une levée a fait, ou que rien n'a changé."""
+    incident_id, quarantine = change["incident_id"], change["quarantine"]
+    if quarantine["state"] == "active":
+        lines = [
+            f"Incident {incident_id} mis en quarantaine le {quarantine['activated_at']}, "
+            f"{_mode(quarantine)}."
+            if change["changed"]
+            else f"Incident {incident_id} déjà en quarantaine depuis le "
+            f"{quarantine['activated_at']}, {_mode(quarantine)} : rien n'a changé.",
+            "Les proxys reçoivent son périmètre à leur prochaine synchronisation, 30 s au plus.",
+            f"Lever la quarantaine : answerlineage incident quarantine {incident_id} --lift",
+        ]
+    else:
+        lines = [
+            f"Quarantaine de l'incident {incident_id} levée le {quarantine['lifted_at']}."
+            if change["changed"]
+            else f"Quarantaine de l'incident {incident_id} déjà levée le "
+            f"{quarantine['lifted_at']} : rien n'a changé.",
+            "Les proxys cessent de recevoir son périmètre à leur prochaine synchronisation.",
+        ]
+    return "\n".join(lines) + "\n"
+
+
 def render_detail(detail: Mapping[str, Any]) -> str:
     analysis = detail["analysis"]
-    lines = [f"Incident {detail['id']}", *_summary(detail), _analysis_line(analysis)]
+    lines = [
+        f"Incident {detail['id']}",
+        *_summary(detail),
+        _quarantine_line(detail["quarantine"]),
+        _analysis_line(analysis),
+    ]
     if analysis["state"] == "done":
         lines += [*_result_lines(detail), "", *_conclusion(detail)]
     elif analysis["state"] == "pending":
@@ -533,3 +652,13 @@ def run_show(
     detail = fetch(api, incident_id, limit, cursor)
     write(render_json(detail) if output == "json" else render_detail(detail))
     return verdict(detail)
+
+
+def run_quarantine(
+    api: Api, incident_id: str, *, mode: str | None, output: str, write: Callable[[str], None]
+) -> Exit:
+    """Met l'incident en quarantaine, ou la lève sans mode ; un refus remonte en
+    ``RefusedError``."""
+    change = quarantine(api, incident_id, mode)
+    write(render_json(change) if output == "json" else render_change(change))
+    return Exit.OK

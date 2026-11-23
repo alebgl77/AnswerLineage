@@ -4,7 +4,9 @@ Un responsable de données constate qu'une donnée est fausse : une table mal ch
 
 La déclaration se fait par l'API (`POST /api/v1/incidents`) ou par la [ligne de commande](cli.md#answerlineage-incident) (`answerlineage incident declare`). Les [workers](workers.md#analyse-des-incidents) font l'analyse ; elle se lit sur l'incident (`GET /api/v1/incidents/{id}`, `answerlineage incident show`).
 
-Chaque changement d'état, la déclaration, l'analyse faite, l'analyse en échec, s'annonce aussi par un [webhook signé](webhooks.md) (`incident.declared`, `incident.analysed`, `incident.analysis_failed`) quand les workers en ont un, dans la transaction qui le fait.
+Pendant l'incident, le responsable peut aussi le [mettre en quarantaine](#quarantaine) : chaque proxy apprend alors le périmètre de l'incident, en moins de 30 secondes, pour agir sur les lectures de ces données.
+
+Chaque changement d'état, la déclaration, l'analyse faite, l'analyse en échec, la quarantaine activée, la quarantaine levée, s'annonce aussi par un [webhook signé](webhooks.md) (`incident.declared`, `incident.analysed`, `incident.analysis_failed`, `incident.quarantined`, `incident.quarantine_lifted`) quand les workers en ont un, dans la transaction qui le fait.
 
 ## Le modèle
 
@@ -17,6 +19,7 @@ Chaque changement d'état, la déclaration, l'analyse faite, l'analyse en échec
 | `state` | L'état de l'incident, d'une liste fermée ([plus bas](#états)) |
 | `declared_at` | L'heure de la déclaration, posée par la base |
 | `analysis` | L'état de l'analyse d'impact et ses décomptes ([plus bas](#lanalyse)) |
+| `quarantine` | La dernière quarantaine de l'incident, active ou levée, ou `null` ([plus bas](#quarantaine)) |
 
 Un incident ne porte aucun texte libre : ni titre, ni description, ni commentaire. Ce qu'écrirait un déclarant pourrait finir dans un message de rappel ; AnswerLineage ne produit que des textes écrits d'avance. Le périmètre se dit par des noms, que la déclaration contrôle comme l'[ingestion](ingestion.md#identifiants) : lettres, chiffres et ponctuation des noms de données, sans espace, sans caractère de contrôle ou invisible, sans balise ni mot de passe ; un espace de noms compte au plus 512 caractères, un nom 1 024. Ils sont gardés sous leur forme normalisée NFC : deux écritures d'une même table n'en font qu'une.
 
@@ -72,7 +75,8 @@ La réponse `201` est l'incident déclaré, à l'état `qualified`, son analyse 
     "finished_at": null,
     "counts": null,
     "truncated": null
-  }
+  },
+  "quarantine": null
 }
 ```
 
@@ -219,11 +223,113 @@ WHERE incident_id = '974e7c80-6643-4065-a541-e4c029abbdab';
 
 `known_at` reste : l'analyse rejouée lit le même graphe. Pour la faire porter sur le graphe d'aujourd'hui, mettre aussi `known_at = NULL`.
 
+## Quarantaine
+
+Mettre un incident en quarantaine, c'est dire aux proxys : les données de ce périmètre sont fausses, agissez sur leurs lectures. Chaque proxy apprend le périmètre des quarantaines actives en interrogeant l'API, 10 secondes par défaut, 30 au plus ([synchronisation](proxy.md#périmètres-en-quarantaine)) : moins de 30 secondes après l'activation, tous le connaissent. Aujourd'hui, ils le connaissent sans s'en servir encore : aucune lecture n'est annotée ni bloquée.
+
+Le périmètre est celui de l'incident, ses jeux de données, sans texte libre ; il ne se modifie pas, puisque l'incident ne se modifie pas.
+
+### Activer
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/incidents/974e7c80-6643-4065-a541-e4c029abbdab/quarantine \
+  -H 'content-type: application/json' -d '{"mode": "warn"}'
+```
+
+```json
+{
+  "incident_id": "974e7c80-6643-4065-a541-e4c029abbdab",
+  "changed": true,
+  "quarantine": {
+    "state": "active",
+    "mode": "warn",
+    "activated_at": "2026-11-16T08:55:01.204517Z",
+    "lifted_at": null
+  }
+}
+```
+
+| `mode` | Ce que les proxys feront des lectures du périmètre |
+| --- | --- |
+| `warn` | Les signaler. C'est le seul mode aujourd'hui ; la liste est fermée, dans l'API comme dans la base (`ck_incident_quarantine_mode`) |
+
+Le mode est obligatoire : le jour où d'autres modes existeront, aucune quarantaine ne prendra par défaut un mode plus fort que celui que l'on a demandé. Par la ligne de commande : [`answerlineage incident quarantine`](cli.md#answerlineage-incident).
+
+### Lever
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/incidents/974e7c80-6643-4065-a541-e4c029abbdab/quarantine/lift
+```
+
+La réponse a la même forme, la quarantaine à l'état `lifted` avec l'heure de sa levée. Les proxys cessent de recevoir le périmètre à leur synchronisation suivante.
+
+La levée est une action, `POST …/quarantine/lift`, et non un `DELETE` : la quarantaine levée n'est pas effacée, elle reste dans l'histoire de l'incident, avec ses heures ; et une levée pourra porter un corps, son motif d'une liste fermée, que `DELETE` ne promet pas de transmettre. Elle existe dès maintenant, sans attendre la clôture des incidents : une quarantaine qu'on ne pourrait pas lever deviendrait dangereuse le jour où les proxys agiront.
+
+### Idempotence et états
+
+Activer deux fois, lever deux fois : la seconde demande ne change rien, rend la quarantaine telle qu'elle est (`changed` vaut `false`) et n'annonce rien. Une quarantaine levée ne revient pas : activer de nouveau ouvre une nouvelle quarantaine, avec sa propre heure d'activation.
+
+| `state` | Sens |
+| --- | --- |
+| `active` | Les proxys reçoivent son périmètre. Au plus une par incident (`uq_incident_quarantine_active`) |
+| `lifted` | Levée, définitivement. Elle porte l'heure de sa levée, et elle seule (`ck_incident_quarantine_lifted`), qui suit l'activation (`ck_incident_quarantine_lifted_after`) |
+
+Les transitions forment elles aussi une liste fermée, que la base tient (`ck_incident_quarantine_transition`) : une quarantaine naît active ; seule une quarantaine active se lève, sans changer d'incident, de mode ni d'heure d'activation ; rien d'autre. Les heures sont celles de la base.
+
+### Un objet à part, rattaché à l'incident
+
+La quarantaine n'est pas un état de l'incident (`ck_incident_state`) : c'est un objet à part, une ligne par activation (`incident_quarantine`, [schéma](schema.md#incidents)). Ce qui vient après le demande :
+
+- **elle se croise avec le cycle de vie.** Un incident passera par les étapes de son rappel, et peut être en quarantaine à chacune : en faire un état de l'incident multiplierait ses états (qualifié, qualifié en quarantaine…) ;
+- **elle a ses propres attributs** : un mode, aujourd'hui `warn`, demain d'autres, qui n'ont pas de sens pour l'incident ;
+- **la levée à la clôture** se fera dans la transaction qui clôt l'incident, en levant sa quarantaine active ;
+- **le journal** des activations, avec leur auteur une fois l'authentification en place, leur mode, leur périmètre et leur durée (de `activated_at` à `lifted_at`), est déjà la liste de ces lignes.
+
+`GET /api/v1/incidents/{id}` et la liste des incidents rendent la dernière quarantaine de chaque incident (`quarantine`), active ou levée, ou `null`.
+
+### Refus
+
+| Statut | Code | Cas |
+| --- | --- | --- |
+| `404` | `unknown_incident` | Aucun incident ne porte cet identifiant ; il n'est pas recopié |
+| `409` | `too_many_quarantines` | 100 quarantaines sont déjà actives, tous incidents confondus : en lever une d'abord. La borne tient la liste que reçoivent les proxys dans une seule lecture bornée |
+| `409` | `not_quarantined` | Levée d'un incident qui n'a jamais été mis en quarantaine : rien n'est à lever |
+| `422` | `literal_error` (`/mode`), `missing`, `unknown_field`, `not_an_object` | Un mode hors de la liste, absent, un champ inconnu ; la valeur reçue n'est jamais recopiée. Un identifiant mal formé est refusé de même |
+| `400`, `413` | `invalid_json`, `body_too_large` | Le corps n'est pas du JSON, ou dépasse 4 Kio |
+
+Rien n'est enregistré ni annoncé pour une demande refusée. Une activation prend un verrou sur la table des quarantaines le temps de sa transaction : deux activations simultanées ne dépassent pas ensemble la borne, et les lectures ne l'attendent pas.
+
+### Ce que reçoivent les proxys
+
+`GET /api/v1/quarantine` rend les quarantaines actives, chacune avec le périmètre de son incident, et une version :
+
+```json
+{
+  "version": "5f0c…",
+  "quarantines": [
+    {
+      "incident_id": "974e7c80-6643-4065-a541-e4c029abbdab",
+      "mode": "warn",
+      "activated_at": "2026-11-16T08:55:01.204517Z",
+      "datasets": [{ "namespace": "bigquery", "name": "ventes.suivi.commandes" }]
+    }
+  ]
+}
+```
+
+- **La version** est l'empreinte SHA-256 de la liste : elle ne change que si la liste change. C'est aussi l'`ETag` de la réponse : un proxy la rend dans `If-None-Match` et reçoit `304`, sans corps, tant que rien n'a changé. Une valeur d'`If-None-Match` de plus de 1 024 caractères n'est pas lue, et n'est jamais recopiée.
+- **La lecture est bornée** : 100 quarantaines au plus, que l'activation garantit, de 20 jeux chacune, sous le [délai maximal des lectures](lecture.md#délai-maximal).
+- **Pas de `known_at`.** La route sert l'état d'aujourd'hui aux proxys ; une quarantaine telle qu'elle était à une date se lit dans les heures d'activation et de levée de l'incident. Le jour où le périmètre comprendra les tables dérivées connues du graphe, la question se posera de nouveau.
+
+Plusieurs proxys l'interrogent chacun de leur côté, sans s'accorder : la route est faite pour cela.
+
 ## Ce qui n'existe pas encore
 
-- **L'authentification.** Ces routes n'authentifient pas leurs appelants, pas plus que le reste de l'API : elles sont faites pour la boucle locale ou un accès déjà contrôlé, et refusent les hôtes et les origines qu'elles n'attendent pas ([réglages](ingestion.md#hôtes-et-origines-attendus)). Les rôles et ce que chacun peut déclarer ou lire viendront avec l'authentification.
+- **L'authentification.** Ces routes n'authentifient pas leurs appelants, pas plus que le reste de l'API : elles sont faites pour la boucle locale ou un accès déjà contrôlé, et refusent les hôtes et les origines qu'elles n'attendent pas ([réglages](ingestion.md#hôtes-et-origines-attendus)). Les rôles et ce que chacun peut déclarer ou lire viendront avec l'authentification ; d'ici là, qui joint l'API peut mettre un incident en quarantaine ou la lever, et les proxys n'authentifient pas l'API qui leur donne le périmètre ([modèle de menaces](securite/modele-de-menaces.md#acceptations)).
+- **Ce que la quarantaine fait des lectures.** Les proxys connaissent le périmètre, sans encore annoter ni bloquer une lecture. Le périmètre se limite aux jeux de l'incident, sans les vues ni les tables dérivées connues du graphe.
+- **Le journal des quarantaines** : qui a activé ou levé, faute d'authentification. Les heures, le mode et le périmètre sont déjà gardés.
 - **L'interface.** L'explorateur ne déclare pas encore d'incident ; l'API et la ligne de commande le font.
-- **La suite du cycle de vie.** Un incident reste `qualified` : ni modification, ni clôture, ni liste de rappel pour l'instant. Une déclaration fautive ne se corrige pas, elle se refait.
+- **La suite du cycle de vie.** Un incident reste `qualified` : ni modification, ni clôture, ni liste de rappel pour l'instant. Une déclaration fautive ne se corrige pas, elle se refait. Sa quarantaine se lève à la main.
 - **Les colonnes.** Le périmètre s'arrête aux tables, comme la propagation.
 - **Ce qu'un run touché a écrit.** Comme la propagation, l'analyse ne suit pas une table ou une note dérivée de la donnée fausse.
 - **Relancer une analyse par l'API**, par exemple quand des événements arrivent après elle : seule la base le permet ([plus haut](#rejouer-une-analyse)).

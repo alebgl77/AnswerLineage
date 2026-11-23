@@ -14,8 +14,8 @@
         "current"
       ],
       "timestamp": 1794819197,
-      "body": "{\"delivery_id\":\"5b0f3c1e-2d4a-4f6b-8c9d-0e1f2a3b4c5d\",\"emitted_at\":\"2026-11-16T08:53:17Z\",\"incident\":{\"analysis\":{\"counts\":null,\"error\":null,\"state\":\"pending\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.793908Z\",\"type\":\"incident.declared\",\"version\":1}",
-      "header": "t=1794819197,v1=94d0ead9b159ef4c48c3d379385ea94b0347fdb6a3472c578ed56ebfaf0d42bf"
+      "body": "{\"delivery_id\":\"5b0f3c1e-2d4a-4f6b-8c9d-0e1f2a3b4c5d\",\"emitted_at\":\"2026-11-16T08:53:17Z\",\"incident\":{\"analysis\":{\"counts\":null,\"error\":null,\"state\":\"pending\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.793908Z\",\"type\":\"incident.declared\",\"version\":1}",
+      "header": "t=1794819197,v1=7a905849f30f553f2ed41e22ab7243e26f84ca174864f5cceb11ea9bcd145458"
     },
     {
       "name": "analyse faite",
@@ -23,8 +23,8 @@
         "current"
       ],
       "timestamp": 1794819198,
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
-      "header": "t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80"
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843"
     },
     {
       "name": "analyse en échec",
@@ -32,8 +32,26 @@
         "current"
       ],
       "timestamp": 1794819199,
-      "body": "{\"delivery_id\":\"c4d6e8f0-a1b3-4c5d-8e7f-90a1b2c3d4e5\",\"emitted_at\":\"2026-11-16T08:53:19Z\",\"incident\":{\"analysis\":{\"counts\":null,\"error\":\"query_timeout\",\"state\":\"failed\"},\"id\":\"3d1f5b52-8c1e-4f0e-a0a6-6a8e1f0c2b77\",\"severity\":\"critical\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T09:12:41.005120Z\",\"type\":\"incident.analysis_failed\",\"version\":1}",
-      "header": "t=1794819199,v1=e3159d5fe286a513b671c90e60a735a04a8c1dad77f32240c861b2f01080d9f0"
+      "body": "{\"delivery_id\":\"c4d6e8f0-a1b3-4c5d-8e7f-90a1b2c3d4e5\",\"emitted_at\":\"2026-11-16T08:53:19Z\",\"incident\":{\"analysis\":{\"counts\":null,\"error\":\"query_timeout\",\"state\":\"failed\"},\"id\":\"3d1f5b52-8c1e-4f0e-a0a6-6a8e1f0c2b77\",\"quarantine\":null,\"severity\":\"critical\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T09:12:41.005120Z\",\"type\":\"incident.analysis_failed\",\"version\":1}",
+      "header": "t=1794819199,v1=f802cff78e519032fd00630db8a925f9d5e9bfc8739832ab69cf658d6d50ba0d"
+    },
+    {
+      "name": "quarantaine activée",
+      "secrets": [
+        "current"
+      ],
+      "timestamp": 1794819302,
+      "body": "{\"delivery_id\":\"1f7a9c3e-5b2d-4e8f-a6c4-0d2e4f6a8b1c\",\"emitted_at\":\"2026-11-16T08:55:02Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":{\"mode\":\"warn\",\"state\":\"active\"},\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:55:01.204517Z\",\"type\":\"incident.quarantined\",\"version\":1}",
+      "header": "t=1794819302,v1=2bf59d4b7b6c1f1d50e1616fe5fbc3f4eb9c153ce3aa8a51ed97ea7a99ddb4ce"
+    },
+    {
+      "name": "quarantaine levée",
+      "secrets": [
+        "current"
+      ],
+      "timestamp": 1794925812,
+      "body": "{\"delivery_id\":\"6d4b2f80-9e1c-4a3b-8f5d-7c2e1a0b9d43\",\"emitted_at\":\"2026-11-17T14:30:12Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":{\"mode\":\"warn\",\"state\":\"lifted\"},\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-17T14:30:11.517203Z\",\"type\":\"incident.quarantine_lifted\",\"version\":1}",
+      "header": "t=1794925812,v1=74a1e80aa14035dff3293095c5b0d46085a0e7a227ca523500f9eae99b09c094"
     },
     {
       "name": "pendant une rotation : signé sous le secret, puis sous le précédent",
@@ -42,8 +60,8 @@
         "previous"
       ],
       "timestamp": 1794819198,
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
-      "header": "t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80,v1=b8a69b6b5db2a56c7064d1e5ab838e8b298aee357e7c9ccd1f033729ad30d9e6"
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843,v1=302fb91fefe5f4ee8b9d70ddb6287ce9335fd340d9f3c484879fda0fa39465fc"
     }
   ],
   "verification": [
@@ -52,8 +70,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": true
     },
@@ -62,8 +80,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819498,
       "valid": true
     },
@@ -72,8 +90,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794818898,
       "valid": true
     },
@@ -82,8 +100,8 @@
       "secrets": [
         "previous"
       ],
-      "header": "t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80,v1=b8a69b6b5db2a56c7064d1e5ab838e8b298aee357e7c9ccd1f033729ad30d9e6",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843,v1=302fb91fefe5f4ee8b9d70ddb6287ce9335fd340d9f3c484879fda0fa39465fc",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": true
     },
@@ -93,8 +111,8 @@
         "previous",
         "current"
       ],
-      "header": "t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": true
     },
@@ -103,8 +121,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819198,v0=0000000000000000000000000000000000000000000000000000000000000000,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v0=0000000000000000000000000000000000000000000000000000000000000000,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": true
     },
@@ -113,8 +131,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819499,
       "valid": false,
       "error": "timestamp_outside_tolerance"
@@ -124,8 +142,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794818897,
       "valid": false,
       "error": "timestamp_outside_tolerance"
@@ -135,8 +153,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":0,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":0,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": false,
       "error": "signature_mismatch"
@@ -146,8 +164,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819198,v1=081fb2cf2a28245928916e6607eb0c63e5419351d04e3db31fa52249b48921e1",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=e36b2c4c34523f03faed1930a4f209c2b4235449dfdfab948c2869eca8e51821",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": false,
       "error": "signature_mismatch"
@@ -157,8 +175,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819258,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819258,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819258,
       "valid": false,
       "error": "signature_mismatch"
@@ -168,8 +186,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819198,v1=b8a69b6b5db2a56c7064d1e5ab838e8b298aee357e7c9ccd1f033729ad30d9e6",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=302fb91fefe5f4ee8b9d70ddb6287ce9335fd340d9f3c484879fda0fa39465fc",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": false,
       "error": "signature_mismatch"
@@ -180,7 +198,7 @@
         "current"
       ],
       "header": "",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": false,
       "error": "malformed_header"
@@ -190,8 +208,8 @@
       "secrets": [
         "current"
       ],
-      "header": "v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": false,
       "error": "malformed_header"
@@ -201,8 +219,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819198,t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": false,
       "error": "malformed_header"
@@ -212,8 +230,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=maintenant,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=maintenant,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": false,
       "error": "malformed_header"
@@ -224,7 +242,7 @@
         "current"
       ],
       "header": "t=1794819198",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": false,
       "error": "malformed_header"
@@ -234,8 +252,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819198,v1=E74B3B78774D48552D600BDBEC02D684E5184036BFE560FA346237EC73E41E80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=F05DFDDDF18743D47E37E5AC8804C0EAECB832237433E93A6E334E73F0E8E843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": false,
       "error": "malformed_header"
@@ -245,8 +263,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e8",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e84",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": false,
       "error": "malformed_header"
@@ -256,8 +274,8 @@
       "secrets": [
         "current"
       ],
-      "header": "t=1794819198, v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80",
-      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198, v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
       "now": 1794819198,
       "valid": false,
       "error": "malformed_header"

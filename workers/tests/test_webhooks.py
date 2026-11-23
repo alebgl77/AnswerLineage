@@ -19,7 +19,7 @@ import socket
 import time
 from collections import Counter
 from collections.abc import Mapping
-from datetime import timedelta
+from datetime import UTC, timedelta
 from pathlib import Path
 from random import Random
 from typing import Any
@@ -30,6 +30,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from answerlineage_api.incidents import quarantine
 from answerlineage_api.incidents.webhooks import announce
 from answerlineage_api.store.engine import create_engine
 from answerlineage_workers import cli, incidents
@@ -290,6 +291,7 @@ async def test_the_message_follows_the_published_format_signed_without_any_conte
         "state": "qualified",
         "severity": "critical",
         "analysis": {"state": "pending", "error": None, "counts": None},
+        "quarantine": None,
     }
     assert analysed_message["type"] == "incident.analysed"
     assert analysed_message["incident"]["analysis"] == {
@@ -309,6 +311,43 @@ async def test_the_message_follows_the_published_format_signed_without_any_conte
     assert declared_message["delivery_id"] != analysed_message["delivery_id"]
     assert await queued(engine) == []
     assert await stats(engine) == (2, 0, 0)
+
+
+async def test_the_quarantine_and_its_lift_leave_in_the_published_format_without_the_scope(
+    engine: AsyncEngine,
+) -> None:
+    secret = shared_secret()
+    receiver = FakeCatalog()
+    async with serving(receiver) as base:
+        webhook = webhook_to(base, secret)
+        await keep_in_service(engine, webhook)
+        incident_id = await declared(engine, RATES)
+        async with engine.begin() as conn:
+            assert await quarantine.activate(conn, incident_id, "warn") is not None
+        assert await process_analysis(engine) == Processed(incident_id, "done")
+        async with engine.begin() as conn:
+            assert await quarantine.lift(conn, incident_id) is not None
+        sender = Sender(webhook.destination, timeouts=FAST)
+        assert await drain(engine, sender, webhook) == WebhookResult(sent=4)
+        sender.close()
+
+    messages = [checked(request, secret) for request in receiver.received]
+    assert [(message["type"], message["incident"]["quarantine"]) for message in messages] == [
+        ("incident.declared", None),
+        ("incident.quarantined", {"state": "active", "mode": "warn"}),
+        # L'analyse faite pendant la quarantaine le dit, telle qu'elle était alors.
+        ("incident.analysed", {"state": "active", "mode": "warn"}),
+        ("incident.quarantine_lifted", {"state": "lifted", "mode": "warn"}),
+    ]
+    activated, lifted = (
+        await rows(engine, "SELECT activated_at, lifted_at FROM incident_quarantine")
+    )[0]
+    assert messages[1]["occurred_at"] == activated.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    assert messages[3]["occurred_at"] == lifted.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    # Le périmètre ne part pas : ni nom, ni espace de noms.
+    for request in receiver.received:
+        assert RATES.name.encode() not in request.body
+        assert RATES.namespace.encode() not in request.body
 
 
 async def test_a_receiver_down_then_back_loses_nothing_and_keeps_the_delivery_id(

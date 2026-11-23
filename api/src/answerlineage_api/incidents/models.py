@@ -26,9 +26,12 @@ from answerlineage_api.ingest.models import EventTime, FieldError, json_pointer
 from answerlineage_api.lineage.models import Coverage, ImpactCounts, Window
 from answerlineage_api.store.schema import (
     INCIDENT_WINDOW_DAYS,
+    MAX_ACTIVE_QUARANTINES,
     AnalysisError,
     AnalysisState,
     IncidentState,
+    QuarantineMode,
+    QuarantineState,
     Severity,
 )
 
@@ -44,6 +47,8 @@ WINDOW_EARLIEST: Final = datetime(1970, 1, 1, tzinfo=UTC)
 WINDOW_LATEST: Final = datetime(9999, 12, 30, tzinfo=UTC)
 
 UNKNOWN_FIELD: Final = "unknown_field"
+# Une demande de quarantaine ne porte qu'un mode : quelques octets.
+MAX_QUARANTINE_BYTES: Final = 4 * 1024
 
 
 class DeclaredDataset(BaseModel):
@@ -96,8 +101,22 @@ class IncidentDeclaration(BaseModel):
     )
 
 
+class QuarantineRequest(BaseModel):
+    """Ce que demande la mise en quarantaine d'un incident : son mode. Aucun texte libre."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: QuarantineMode = Field(
+        description=(
+            "Ce que les proxys feront des lectures du périmètre, d'une liste fermée."
+            " « warn » : les signaler."
+        )
+    )
+
+
 _DECLARATION: TypeAdapter[IncidentDeclaration] = TypeAdapter(IncidentDeclaration)
 _WINDOW: TypeAdapter[DeclaredWindow] = TypeAdapter(DeclaredWindow)
+_QUARANTINE: TypeAdapter[QuarantineRequest] = TypeAdapter(QuarantineRequest)
 
 
 def declaration_json_schema() -> dict[str, Any]:
@@ -105,6 +124,13 @@ def declaration_json_schema() -> dict[str, Any]:
     return IncidentDeclaration.model_json_schema(
         by_alias=True, ref_template="#/components/schemas/{model}"
     )
+
+
+def quarantine_request_json_schema() -> dict[str, Any]:
+    """Schéma JSON d'une demande de quarantaine, pour la spécification OpenAPI."""
+    schema = QuarantineRequest.model_json_schema(ref_template="#/components/schemas/{model}")
+    _closed_list(schema["properties"]["mode"])
+    return schema
 
 
 def _error(path: str, kind: str, message: str) -> FieldError:
@@ -246,6 +272,19 @@ def validate_declaration(raw: object) -> tuple[IncidentDeclaration | None, list[
     return declaration.model_copy(update={"scope": scope}), []
 
 
+def validate_quarantine(raw: object) -> tuple[QuarantineRequest | None, list[FieldError]]:
+    """Valide une demande de quarantaine : un objet, un mode de la liste, rien d'autre.
+
+    Une faute se dit par son chemin, un code et un motif fixe, jamais par la valeur reçue.
+    """
+    if not isinstance(raw, dict):
+        return None, [_error("", "not_an_object", "Une demande de quarantaine est un objet JSON.")]
+    try:
+        return _QUARANTINE.validate_python(raw), []
+    except ValidationError as error:
+        return None, _schema_errors(error)
+
+
 # Ce que les routes rendent : des identifiants, des heures, des décomptes.
 
 
@@ -304,6 +343,22 @@ def _closed_list(schema: dict[str, Any]) -> None:
         schema["enum"] = [schema.pop("const")]
 
 
+class Quarantine(BaseModel):
+    """Une quarantaine de l'incident : son mode, son état, ses heures, posées par la base."""
+
+    state: QuarantineState = Field(
+        description="« active » : les proxys la reçoivent. « lifted » : levée, définitivement."
+    )
+    mode: QuarantineMode = Field(
+        description="Ce que les proxys feront des lectures du périmètre. « warn » : les signaler.",
+        json_schema_extra=_closed_list,
+    )
+    activated_at: AwareDatetime = Field(description="Activation, à l'heure de la base.")
+    lifted_at: AwareDatetime | None = Field(
+        description="Levée, à l'heure de la base. Nulle tant que la quarantaine est active."
+    )
+
+
 class Incident(BaseModel):
     """Un incident déclaré et l'état de son analyse."""
 
@@ -320,6 +375,61 @@ class Incident(BaseModel):
     window: Window = Field(description="Fenêtre de validité : début inclus, fin exclue.")
     declared_at: AwareDatetime
     analysis: Analysis
+    quarantine: Quarantine | None = Field(
+        description=(
+            "La dernière quarantaine de l'incident, active ou levée. Nulle quand l'incident"
+            " n'a jamais été mis en quarantaine."
+        )
+    )
+
+
+class QuarantineChange(BaseModel):
+    """L'issue d'une activation ou d'une levée : la quarantaine telle qu'elle est désormais."""
+
+    incident_id: UUID
+    changed: bool = Field(
+        description=(
+            "Vrai quand cette demande a changé l'état de la quarantaine ; faux quand elle était"
+            " déjà dans l'état demandé, qui est alors rendu tel quel."
+        )
+    )
+    quarantine: Quarantine
+
+
+class QuarantinedDataset(BaseModel):
+    """Un jeu de données en quarantaine, par son espace de noms et son nom."""
+
+    namespace: str
+    name: str
+
+
+class ActiveQuarantine(BaseModel):
+    """Le périmètre d'une quarantaine active : celui de son incident."""
+
+    incident_id: UUID
+    mode: QuarantineMode = Field(json_schema_extra=_closed_list)
+    activated_at: AwareDatetime
+    datasets: list[QuarantinedDataset] = Field(
+        description="Par espace de noms, puis par nom.",
+        json_schema_extra={"maxItems": MAX_DATASETS},
+    )
+
+
+class ActiveQuarantines(BaseModel):
+    """Les périmètres en quarantaine active, tels que les proxys les reçoivent."""
+
+    version: str = Field(
+        description=(
+            "Empreinte SHA-256 de la liste, en hexadécimal : la même tant que rien ne change."
+            " Elle est aussi l'ETag de la réponse : un proxy la rend dans If-None-Match et"
+            " reçoit 304, sans corps, quand rien n'a changé."
+        ),
+        json_schema_extra={"pattern": "^[0-9a-f]{64}$"},
+    )
+    quarantines: list[ActiveQuarantine] = Field(
+        description="Par heure d'activation, puis par incident.",
+        json_schema_extra={"maxItems": MAX_ACTIVE_QUARANTINES},
+    )
 
 
 class TouchedAnswer(BaseModel):

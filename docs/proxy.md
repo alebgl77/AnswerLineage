@@ -7,7 +7,7 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrep
 uv run answerlineage-proxy --server-name fichiers --api-url http://127.0.0.1:8000 -- /opt/mcp/serveur-fichiers --racine /srv/partage
 ```
 
-La première ligne écoute devant un serveur HTTP. La seconde lance un serveur local en stdio et se place entre lui et le client : voir [Mode stdio](#mode-stdio). Sauf mention contraire, ce qui suit décrit le mode HTTP ; le mode stdio en reprend l'inspection, l'analyse du SQL, l'étiquetage des requêtes, les règles de lecture, les empreintes, la qualité de service, les relevés de couverture et la boîte d'envoi.
+La première ligne écoute devant un serveur HTTP. La seconde lance un serveur local en stdio et se place entre lui et le client : voir [Mode stdio](#mode-stdio). Sauf mention contraire, ce qui suit décrit le mode HTTP ; le mode stdio en reprend l'inspection, l'analyse du SQL, l'étiquetage des requêtes, les règles de lecture, les empreintes, la qualité de service, les relevés de couverture, la boîte d'envoi et la synchronisation des périmètres en quarantaine.
 
 | Réglage | Option | Variable | Défaut |
 | --- | --- | --- | --- |
@@ -29,10 +29,11 @@ La première ligne écoute devant un serveur HTTP. La seconde lance un serveur l
 | Durée d'une fenêtre des relevés de couverture | `--coverage-window-seconds` | `ANSWERLINEAGE_PROXY_COVERAGE_WINDOW_SECONDS` | 60 s (1 à 86 400) |
 | Identifiant d'instance des relevés de couverture | `--instance-id` | `ANSWERLINEAGE_PROXY_INSTANCE_ID` | tiré au démarrage |
 | Fichier des règles de lecture des outils non SQL | `--read-rules-file` | `ANSWERLINEAGE_PROXY_READ_RULES_FILE` | aucun : aucun outil non SQL n'est décrit |
-| Adresse de l'API d'AnswerLineage, où partent événements et relevés | `--api-url` | `ANSWERLINEAGE_PROXY_API_URL` | aucune : rien n'est envoyé |
+| Adresse de l'API d'AnswerLineage, où partent événements et relevés, et d'où viennent les périmètres en quarantaine | `--api-url` | `ANSWERLINEAGE_PROXY_API_URL` | aucune : rien n'est envoyé, aucun périmètre n'est reçu |
 | Événements gardés au plus dans la boîte d'envoi | `--outbox-max-events` | `ANSWERLINEAGE_PROXY_OUTBOX_MAX_EVENTS` | 10 000 (1 à 1 000 000) |
 | Octets gardés au plus dans la boîte d'envoi | `--outbox-max-bytes` | `ANSWERLINEAGE_PROXY_OUTBOX_MAX_BYTES` | 32 Mio (1 Mio à 1 Gio) |
 | Délai de vidage de la boîte d'envoi à l'arrêt | `--outbox-flush-seconds` | `ANSWERLINEAGE_PROXY_OUTBOX_FLUSH_SECONDS` | 5 s (0 à 300) |
+| Intervalle entre deux interrogations des [périmètres en quarantaine](#périmètres-en-quarantaine) | `--quarantine-interval-seconds` | `ANSWERLINEAGE_PROXY_QUARANTINE_INTERVAL_SECONDS` | 10 s (1 à 30) |
 
 L'adresse du serveur MCP ne porte ni identifiant ni paramètre : elle peut apparaître dans la configuration. Son hôte peut être une adresse IPv6, entre crochets (`http://[2001:db8::1]:9000`) ; une adresse IPv6 ne faisant pas un nom de serveur, `--server-name` est alors obligatoire. Un réglage invalide arrête le proxy avec le message « Configuration invalide : … » et le code de sortie 2.
 
@@ -390,6 +391,51 @@ En HTTP, l'arrêt est celui du serveur HTTP (SIGINT, SIGTERM). En stdio, il suit
 
 Le journal ne cite ni l'adresse de l'API, ni une réponse, ni rien d'un événement : un épisode d'indisponibilité se dit une fois, par la classe de son premier échec ou son statut, puis son retour ; une boîte pleine, une fois par épisode ; des rejets, par leur nombre.
 
+## Périmètres en quarantaine
+
+Quand un responsable de données [met un incident en quarantaine](incidents.md#quarantaine), chaque proxy apprend le périmètre de l'incident : il interroge l'API qu'il connaît déjà pour sa boîte d'envoi (`--api-url`), sur `GET /api/v1/quarantine`, toutes les 10 secondes par défaut (`--quarantine-interval-seconds`, de 1 à 30). Il le connaît sans encore s'en servir : aucun appel n'est annoté, bloqué ni modifié, et l'événement d'un appel reste le même.
+
+```bash
+uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --api-url https://answerlineage.interne --quarantine-interval-seconds 10
+```
+
+**En moins de 30 secondes.** Chaque attente entre deux interrogations est tirée entre 80 % et 100 % de l'intervalle, jamais au-delà, pour que des proxys démarrés ensemble ne reviennent pas ensemble ; une interrogation est coupée à 10 s. Au réglage par défaut, une quarantaine activée juste après une interrogation est connue 20 s plus tard au pire, et une levée de même ; un test le vérifie, et le test de bout en bout mesure le délai réel. Au réglage maximal, l'attente seule atteint 30 s. Chaque proxy interroge de son côté : plusieurs proxys, en HTTP comme en stdio, n'ont rien à s'accorder.
+
+**Rien ne retarde un appel.** La synchronisation tourne dans une tâche de fond, démarrée sans attendre la première réponse : le proxy démarre et relaie aussitôt, l'API joignable ou non. Elle n'envoie que `Accept` et, quand le proxy tient déjà une version, `If-None-Match` : une liste qui n'a pas changé ne se retélécharge pas (`304`). Son client suit les règles de celui de la boîte d'envoi : certificat vérifié, aucune redirection suivie, rien de l'environnement ; 5 s pour la connexion et chaque lecture.
+
+### Une réponse hostile est écartée
+
+Une réponse de l'API est une entrée comme une autre. Elle est écartée en entier, et le proxy garde son dernier état, quand :
+
+- elle n'est pas un `200` (ou un `304` pour la version tenue), pas du JSON, ou arrive compressée : elle n'est jamais décompressée ;
+- elle dépasse 2 Mio : sa lecture s'arrête là ;
+- elle n'est pas du JSON strict : clé répétée, constante non numérique, échappement (ni l'API ni un nom admis n'en écrivent) ;
+- elle compte plus de 20 000 éléments JSON : un premier passage les compte, fait de courtes recherches que l'interpréteur interrompt pour rendre la main aux appels, avant que l'analyseur JSON, qui ne la rend pas, ne lise une réponse ainsi bornée, dans un fil à part ;
+- un identifiant d'incident n'a pas la forme d'un UUID, ou revient deux fois ; un nom de jeu de données n'a pas la forme que l'[ingestion](ingestion.md#identifiants) admet (contrôle écrit dans le proxy, `names.py`) ; plus de 100 quarantaines, ou un périmètre vide ou de plus de 20 jeux.
+
+Le journal dit le motif par un code (`réponse écartée, invalid_identifier`), jamais la réponse ni un nom. Les champs que le proxy ne lit pas sont ignorés. Une quarantaine d'un mode que le proxy ne connaît pas, après une mise à jour de l'API, est comptée et laissée de côté, avec un avertissement : mettre le proxy à jour.
+
+### Une panne garde le dernier état connu, une heure
+
+API injoignable, lente (coupée à 10 s), en erreur ou hostile : le proxy garde le dernier périmètre connu, une heure au plus après la dernière synchronisation réussie. Une heure couvre un redémarrage, une mise à jour ou une bascule de l'API sans perdre une quarantaine en cours ; au-delà, le proxy ne peut plus savoir si elle tient encore. Il oublie alors ce périmètre et revient en mode observer : une quarantaine levée pendant une longue panne ne survit pas indéfiniment chez lui, et la capture reste ouverte en cas de panne, comme le reste du proxy. Aucune panne ne l'arrête.
+
+### Le mode observer
+
+Tant qu'aucune synchronisation n'a réussi (API injoignable au démarrage, sans `--api-url`, ou périmètre oublié après une heure de panne), le proxy est en mode observer : il relaie et décrit les appels comme toujours. Il le dit :
+
+- **au journal**, en nombres, à chaque changement : le démarrage en mode observer, chaque synchronisation qui change le périmètre, le premier échec d'un épisode avec l'âge de la dernière synchronisation, le retour de l'API, l'oubli du périmètre ;
+- **dans son état**, `McpProxy.quarantine_status()` (et `StdioProxy`), à côté de `ProxyStats` : `mode` (`observe` ou `synced`), le nombre de périmètres et de jeux connus, l'âge de la dernière synchronisation réussie (`last_sync_age`, nul sans aucune), et `failing` tant que les interrogations échouent.
+
+```text
+INFO answerlineage_proxy Quarantaine : mode observer jusqu'à la première synchronisation avec l'API, interrogée toutes les 10 s.
+WARNING answerlineage_proxy Quarantaine : synchronisation en échec (ConnectError) ; mode observer, aucun périmètre connu.
+INFO answerlineage_proxy Quarantaine : API de nouveau joignable.
+INFO answerlineage_proxy Quarantaine synchronisée : 1 périmètre(s) en quarantaine, 2 jeu(x) de données.
+WARNING answerlineage_proxy Quarantaine : synchronisation en échec (HTTP 503) ; le dernier état connu est gardé (1 périmètre(s), synchronisé il y a 12 s), 1 h au plus.
+```
+
+L'état ne passe pas par les relevés de couverture : ils mesurent ce que le lignage a capté, et leur format est un contrat de l'ingestion. Le proxy n'a pas non plus de route à lui : en HTTP, tout chemin appartient au serveur MCP qu'il relaie, et en stdio il n'écoute pas.
+
 ## Identifiant de run et contexte de trace
 
 L'identifiant de run d'un appel d'outil vient de son contexte de trace W3C ([Trace Context](https://www.w3.org/TR/trace-context/), en-tête `traceparent`). Lignage et traces se corrèlent sans nouvel en-tête, et tout émetteur qui voit le même contexte (deux proxys en série, un proxy et un adaptateur d'agent) émet pour le même run : les écritures du graphe, idempotentes, fusionnent leurs événements.
@@ -722,7 +768,7 @@ Dans la configuration d'un client MCP, la commande devient `answerlineage-proxy`
 - Sa sortie d'erreur est celle du proxy : le proxy ne la lit pas et ne la recopie pas, ce sont les journaux du serveur. Le journal du proxy y passe aussi. Sur sa sortie standard, le proxy n'écrit que ce que l'enfant écrit.
 - Une commande qui ne démarre pas arrête le proxy avec un message fixe, qui ne cite ni la commande ni ses arguments : « Serveur MCP non lancé : commande introuvable. » (code 127) ou « Serveur MCP non lancé : commande non exécutable. » (code 126), comme un shell POSIX.
 - Sans `--server-name` ni `ANSWERLINEAGE_PROXY_SERVER_NAME`, le nom du serveur dans le lignage est celui du programme lancé, sans son chemin (`serveur-fichiers` pour `/opt/mcp/serveur-fichiers`). Un lanceur (`npx`, `uvx`, `docker`, `python`) n'est pas un nom de serveur : il confondrait tous les serveurs qu'il lance, d'où `--server-name`.
-- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-run-comment`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, `--instance-id`, l'adresse de l'API et les bornes de la [boîte d'envoi](#boîte-denvoi), et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin` et `--no-preserve-host` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
+- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-run-comment`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, `--instance-id`, l'adresse de l'API et les bornes de la [boîte d'envoi](#boîte-denvoi), l'intervalle des [périmètres en quarantaine](#périmètres-en-quarantaine), et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin` et `--no-preserve-host` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
 
 ### Le relais
 
@@ -803,6 +849,9 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - La boîte d'envoi est en mémoire : un arrêt brutal ou un redémarrage perd ce qui n'était pas parti. La perte se voit (silence, événements manquants au graphe), sans être comptée parmi les perdus.
 - Un lot interrompu à l'arrêt est compté perdu même si l'API l'a reçu : le trou est surestimé.
 - La boîte ne s'authentifie pas auprès de l'API, comme tout émetteur aujourd'hui, et ne lit ni mandataire ni autorité de certification de l'environnement : une API derrière une autorité de certification privée n'est pas encore joignable.
+- Le proxy n'authentifie pas l'API qui lui donne les périmètres en quarantaine : il se fie au TLS de l'adresse réglée. C'est sans effet tant qu'il ne fait rien des lectures ; c'est une acceptation à signer du [modèle de menaces](securite/modele-de-menaces.md#acceptations) (`proxy/perimetre-usurpe`).
+- Une liste de périmètres de plus de 2 Mio est écartée : cent quarantaines de vingt jeux aux noms de plusieurs centaines de caractères. Le proxy garde alors son dernier état, puis revient en mode observer au bout d'une heure, et le journal dit `too_large`.
+- L'état de la synchronisation ne se lit qu'au journal et dans le processus (`quarantine_status()`) : ni relevé, ni route.
 - Le seuil de 5 ms au p99 ne se vérifie qu'au banc de chaque nuit ; l'intégration continue, sur une machine partagée, n'en garde qu'un seuil tolérant.
 - Deux proxys réglés par erreur sur le même identifiant d'instance se confondent : l'API fusionne leurs relevés d'une même fenêtre au plus grand.
 - Un client qui réutilise le même span pour deux appels d'outil leur donne le même identifiant de run : le graphe fusionne alors les deux appels en un seul run, qui porte les lectures des deux mais l'outil du premier événement projeté, donc selon l'ordre d'arrivée (`tests/test_trace_context_graph.py` le constate).

@@ -47,6 +47,11 @@ name = "Workers et récepteur de webhooks"
 description = "Les workers annoncent les changements d'état des incidents, par des messages signés, au récepteur de webhooks que règle l'exploitant. Le récepteur, le réseau qui y mène et ses réponses sont hors du contrôle d'AnswerLineage ; quiconque joint le récepteur peut lui envoyer une requête, ou rejouer une requête captée."
 
 [[boundary]]
+id = "api-proxy"
+name = "API et proxys"
+description = "Chaque proxy interroge l'API d'AnswerLineage, à l'adresse que règle l'exploitant, pour apprendre les périmètres en quarantaine. Le proxy n'authentifie pas encore l'API : le réseau qui y mène et ce qu'elle répond sont hostiles."
+
+[[boundary]]
 id = "pipeline-publication"
 name = "Pipeline et publication"
 description = "Une merge request, écrite par un contributeur ou un agent de code, fait tourner le pipeline ; une étiquette de version publie l'image et les paquets. Le contenu de la merge request, les actions, les images et les dépendances tierces sont hors de confiance."
@@ -117,6 +122,11 @@ description = "Le secret HMAC que les workers et le récepteur de webhooks parta
 id = "annonces-d-incident"
 name = "Annonces d'incident"
 description = "Les messages qui disent au récepteur de webhooks qu'un incident est déclaré, analysé ou en échec, avec ses décomptes : une alerte ou un rappel peut en partir."
+
+[[asset]]
+id = "perimetres-en-quarantaine"
+name = "Périmètres en quarantaine"
+description = "Les jeux de données qu'un incident met en quarantaine, que chaque proxy apprend de l'API : demain, l'annotation ou le blocage des lectures de ces jeux en dépendra."
 
 # Composants du dépôt : les membres de l'espace de travail uv, les paquets npm, le pipeline.
 
@@ -293,6 +303,16 @@ code = "proxy/src/answerlineage_proxy/outbox.py"
 test = "tests/test_outbox_chaos.py::test_ten_thousand_calls_pass_while_the_api_is_down_then_reach_the_graph_once"
 
 [[threat.mitigation]]
+description = "La synchronisation des quarantaines tourne à part : une API lente, muette ou hostile ne retarde aucun appel."
+code = "proxy/src/answerlineage_proxy/quarantine.py"
+test = "proxy/tests/test_quarantine.py::test_calls_are_relayed_without_delay_while_the_api_answers_with_hostile_responses"
+
+[[threat.mitigation]]
+description = "L'API injoignable au démarrage, le proxy démarre, relaie et reste en mode observer jusqu'à son retour."
+code = "proxy/src/answerlineage_proxy/quarantine.py"
+test = "tests/test_quarantine_end_to_end.py::test_an_api_down_at_startup_leaves_each_proxy_relaying_in_observe_mode_until_it_is_back"
+
+[[threat.mitigation]]
 description = "En stdio, le relais n'attend jamais l'inspection."
 code = "proxy/src/answerlineage_proxy/stdio.py"
 test = "proxy/tests/test_stdio.py::test_the_relay_never_waits_for_the_inspection"
@@ -426,6 +446,38 @@ test = "proxy/tests/test_rules.py::test_a_hostile_or_invalid_file_is_refused_wit
 reason = "Une règle de lecture se fie à l'outil : le proxy relaie l'appel sans en lire le résultat, et ne peut savoir ce que l'outil a lu au-delà de ce que déclare son exploitant."
 consequence = "Une réponse fondée sur une lecture non déclarée n'est pas rappelée, et la couverture ne le montre pas, puisque l'appel est vu."
 
+[[threat]]
+id = "proxy/perimetre-usurpe"
+name = "Une API compromise ou usurpée pousse aux proxys un faux périmètre en quarantaine"
+category = "spoofing"
+boundary = "api-proxy"
+assets = ["perimetres-en-quarantaine", "continuite-des-agents"]
+description = "Qui compromet l'API, ou se place sur le chemin qui y mène, répond aux proxys qui l'interrogent : il fait croire à une quarantaine qui n'existe pas, en tait une active, ou sert une réponse faite pour épuiser le proxy. Aujourd'hui le proxy ne fait rien des lectures du périmètre ; demain, il les annotera, puis pourra les bloquer."
+
+[[threat.mitigation]]
+description = "Seule l'adresse que règle l'exploitant est jointe : TLS vérifié, aucune redirection suivie, aucun mandataire lu de l'environnement."
+code = "proxy/src/answerlineage_proxy/quarantine.py"
+test = "proxy/tests/test_quarantine.py::test_a_redirect_of_the_api_is_not_followed"
+
+[[threat.mitigation]]
+description = "Une réponse est hostile : lue bornée et sans décompression, contrôlée en entier (JSON strict, identifiants de la forme de l'ingestion, nombre de quarantaines et de jeux bornés), écartée en entier sans être journalisée."
+code = "proxy/src/answerlineage_proxy/quarantine.py::parse"
+test = "proxy/tests/test_quarantine.py::test_a_hostile_response_is_refused_with_a_code_never_with_its_content"
+
+[[threat.mitigation]]
+description = "Une réponse écartée ou une panne gardent le dernier état connu, une heure au plus ; au-delà, le proxy revient en mode observer."
+code = "proxy/src/answerlineage_proxy/quarantine.py"
+test = "proxy/tests/test_quarantine.py::test_a_failure_keeps_the_last_state_for_an_hour_then_the_proxy_observes_again"
+
+[[threat.mitigation]]
+description = "Le proxy connaît le périmètre sans s'en servir : un faux périmètre ne change ni l'appel relayé ni son événement."
+code = "proxy/src/answerlineage_proxy/app.py"
+test = "proxy/tests/test_quarantine.py::test_a_known_perimeter_changes_nothing_of_the_call_nor_of_its_event"
+
+[threat.acceptance]
+reason = "Le proxy n'authentifie pas encore l'API : il se fie au TLS de l'adresse que règle l'exploitant, et le périmètre n'agit encore sur aucun appel. Avant que le proxy annote ou bloque des lectures, la diffusion devra être authentifiée, par un périmètre signé ou l'identité vérifiée de l'API."
+consequence = "Qui compromet l'API, ou la joint en http sur un réseau qu'il écoute, fait croire aux proxys une quarantaine fausse ou en tait une vraie : aujourd'hui sans effet sur les appels ; le jour où le proxy agira, il annotera ou bloquera à tort, ou laissera passer des lectures en quarantaine."
+
 # API
 
 [[threat]]
@@ -465,7 +517,7 @@ name = "Un appelant qui joint l'API lit le lignage et déclare des incidents"
 category = "information-disclosure"
 boundary = "lecteur-lecture"
 assets = ["lignage", "destinataires"]
-description = "L'API de lecture, la déclaration d'incidents et l'explorateur n'authentifient pas leurs appelants : qui les joint lit les noms des jeux de données, des agents et des outils, les empreintes des réponses et les pseudonymes des destinataires."
+description = "L'API de lecture, la déclaration d'incidents, leur quarantaine et l'explorateur n'authentifient pas leurs appelants : qui les joint lit les noms des jeux de données, des agents et des outils, les empreintes des réponses et les pseudonymes des destinataires, met un incident en quarantaine ou la lève."
 
 [[threat.mitigation]]
 description = "La démonstration ne publie son seul port que sur la boucle locale."
@@ -474,7 +526,7 @@ test = "tests/test_policy.py::test_a_port_published_beyond_the_loopback_fails"
 
 [threat.acceptance]
 reason = "L'API n'authentifie pas encore ses appelants : elle est faite pour la boucle locale ou derrière un contrôle d'accès."
-consequence = "Exposée sans contrôle d'accès, elle livre le lignage à qui la joint et le laisse déclarer des incidents, donc lancer des analyses."
+consequence = "Exposée sans contrôle d'accès, elle livre le lignage à qui la joint et le laisse déclarer des incidents, donc lancer des analyses, et mettre un incident en quarantaine ou la lever."
 
 [[threat]]
 id = "api/rejeu-non-authentifie"

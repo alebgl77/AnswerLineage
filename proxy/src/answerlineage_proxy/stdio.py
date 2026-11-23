@@ -79,6 +79,7 @@ from answerlineage_proxy.inspection import (
     parse_message,
 )
 from answerlineage_proxy.prefix import PREFIX_BYTES, read_message_prefix, read_reply_prefix
+from answerlineage_proxy.quarantine import QuarantineSync
 from answerlineage_proxy.signals import (
     CallOutcome,
     CallTiming,
@@ -484,6 +485,7 @@ class StdioProxy(CallCapture[StdioSettings]):
         backlog_bytes: int | None = None,
         pending_requests: int = PENDING_REQUESTS,
         pending_bytes: int | None = None,
+        quarantine: QuarantineSync | None = None,
     ) -> None:
         super().__init__(
             settings,
@@ -492,6 +494,7 @@ class StdioProxy(CallCapture[StdioSettings]):
             analyzer=analyzer,
             coverage_window=coverage_window,
             retries=retries,
+            quarantine=quarantine,
         )
         self._input = input_fd
         self._output = output_fd
@@ -1128,11 +1131,15 @@ def main(arguments: Sequence[str], environment: Mapping[str, str]) -> int:
         log_instance,
         log_run_comments,
         outbox_settings_from_args,
+        quarantine_settings_from_args,
+        quarantine_sync,
     )
 
     try:
         settings, coverage_window = settings_from_args(arguments, environment)
-        outbox = outbox_settings_from_args(_split(arguments)[0], environment)
+        options = _split(arguments)[0]
+        outbox = outbox_settings_from_args(options, environment)
+        quarantine = quarantine_settings_from_args(options, environment, outbox)
     except ProxyConfigurationError as error:
         print(f"Configuration invalide : {error}", file=sys.stderr)
         return 2
@@ -1151,6 +1158,11 @@ def main(arguments: Sequence[str], environment: Mapping[str, str]) -> int:
             tool,
         )
     log_run_comments(settings.sql_tools)
-    proxy = StdioProxy(settings, event_sink(outbox), coverage_window=coverage_window)
+    proxy = StdioProxy(
+        settings,
+        event_sink(outbox),
+        coverage_window=coverage_window,
+        quarantine=quarantine_sync(quarantine),
+    )
     log_instance(proxy.instance)
     return asyncio.run(proxy.run())

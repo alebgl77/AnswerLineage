@@ -193,7 +193,7 @@ Ce sont les paramètres de `GET /api/v1/exposure`. La réponse est validée comm
 
 ## `answerlineage incident`
 
-Un [incident de données](incidents.md) se déclare avec son périmètre, sa fenêtre de validité et sa gravité ; l'API le crée à l'état « qualifié » et en demande l'analyse d'impact, que les workers font. `declare` déclare, `show` lit l'incident et son analyse.
+Un [incident de données](incidents.md) se déclare avec son périmètre, sa fenêtre de validité et sa gravité ; l'API le crée à l'état « qualifié » et en demande l'analyse d'impact, que les workers font. `declare` déclare, `show` lit l'incident et son analyse, `quarantine` le met en quarantaine ou la lève.
 
 ### `answerlineage incident declare`
 
@@ -245,6 +245,7 @@ Incident 974e7c80-6643-4065-a541-e4c029abbdab
   périmètre : ventes.suivi.commandes (espace de noms bigquery)
   fenêtre : du 2026-11-11T06:00:00Z au 2026-11-12T12:00:00Z, fin exclue
   déclaré le 2026-11-16T08:53:16.793908Z
+  quarantaine : aucune
 Analyse : faite le 2026-11-16T08:53:16.849328Z, sur le graphe tel que connu le 2026-11-16T08:53:16.814594Z
 
 16 réponses touchées, 13 destinataires
@@ -282,7 +283,38 @@ C'est le premier incident de la démonstration : l'analyse trouve exactement sa 
 | `6` | L'analyse attend un worker, ou a été remise à plus tard après un échec : relancer plus tard |
 | `7` | L'analyse est en échec ; la sortie dit pourquoi, par un message écrit d'avance |
 
-La réponse est validée comme celle d'`impact` ([une réponse de l'API est hostile](#une-réponse-de-lapi-est-hostile)), et un peu plus : l'incident rendu est celui demandé, un état et ce qu'il porte vont ensemble (un résultat pour une analyse faite, et seulement pour elle ; un code d'échec pour une analyse en échec), et chaque état, gravité ou code d'échec appartient à sa liste fermée.
+La réponse est validée comme celle d'`impact` ([une réponse de l'API est hostile](#une-réponse-de-lapi-est-hostile)), et un peu plus : l'incident rendu est celui demandé, un état et ce qu'il porte vont ensemble (un résultat pour une analyse faite, et seulement pour elle ; un code d'échec pour une analyse en échec ; une heure de levée pour une quarantaine levée, et seulement pour elle), et chaque état, gravité, mode ou code d'échec appartient à sa liste fermée. La ligne `quarantaine` dit la dernière quarantaine de l'incident : `aucune`, `active depuis le …` avec son mode, ou `levée le …`.
+
+### `answerlineage incident quarantine`
+
+```bash
+answerlineage incident quarantine 974e7c80-6643-4065-a541-e4c029abbdab
+answerlineage incident quarantine 974e7c80-6643-4065-a541-e4c029abbdab --lift
+```
+
+```text
+Incident 974e7c80-6643-4065-a541-e4c029abbdab mis en quarantaine le 2026-11-16T08:55:01.204517Z, signaler les lectures (warn).
+Les proxys reçoivent son périmètre à leur prochaine synchronisation, 30 s au plus.
+Lever la quarantaine : answerlineage incident quarantine 974e7c80-6643-4065-a541-e4c029abbdab --lift
+```
+
+Met l'incident en [quarantaine](incidents.md#quarantaine) (`POST /api/v1/incidents/{id}/quarantine`) : chaque proxy reçoit son périmètre, ses jeux de données, à sa synchronisation suivante. `--lift` la lève (`POST …/quarantine/lift`). Les deux sont idempotents : une quarantaine déjà active, ou déjà levée, est rendue telle quelle, et la commande dit que rien n'a changé.
+
+| Option | Rôle | Défaut |
+| --- | --- | --- |
+| `IDENTIFIANT` | L'identifiant de l'incident, tel que le rend `declare` | obligatoire |
+| `--mode` | Ce que les proxys feront des lectures du périmètre, d'une liste fermée : `warn`, les signaler, le seul mode aujourd'hui | `warn` |
+| `--lift` | Lève la quarantaine, au lieu de l'activer ; ne se donne pas avec `--mode` | |
+| `--format` | `text` ou `json` ; en JSON, la réponse de l'API : l'incident, `changed`, et la quarantaine telle qu'elle est désormais | `text` |
+
+| Code | Sens |
+| --- | --- |
+| `0` | L'incident est en quarantaine, ou sa quarantaine est levée, par cette commande ou avant elle |
+| `2` | Usage fautif : identifiant mal formé, mode hors de la liste, `--mode` avec `--lift` ; ou mode refusé par l'API (`422`) |
+| `4` | L'API ne répond pas, ou pas dans le délai |
+| `5` | L'API a refusé la requête (incident inconnu, 100 quarantaines déjà actives, levée d'un incident jamais mis en quarantaine) ou rendu une réponse invalide |
+
+La réponse est validée en entier : l'incident est celui demandé, la quarantaine est dans l'état demandé, active ou levée, avec ses heures, et son mode appartient à sa liste.
 
 ## `answerlineage dead-letters`
 
@@ -564,16 +596,16 @@ Le paquet `answerlineage-cli` ne dépend pas du proxy. Sans le paquet `answerlin
 
 ## Tous les codes de sortie
 
-| Code | `impact` | `exposure` | `incident declare` | `incident show` | `dead-letters list` | `dead-letters replay` | `doctor` | `demo` |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `0` | Réponses touchées, liste complète | Classement complet | Incident déclaré | Réponses touchées, liste complète | Rebut vide | Tout est remis en file | Aucune anomalie | La démonstration répond |
-| `1` | Aucune réponse touchée, résultat complet | | | Aucune réponse touchée, résultat complet | Des événements attendent | Rien à rejouer | Au moins une anomalie | Docker absent ou en échec |
-| `2` | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif, hors d'un clone |
-| `3` | Résultat incomplet | Classement incomplet | | Résultat incomplet | | D'autres restent, relancer | | |
-| `4` | API injoignable | API injoignable | API injoignable | API injoignable | API injoignable | API injoignable | | La démonstration ne répond pas |
-| `5` | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | | |
-| `6` | | | | Analyse en attente | | | | |
-| `7` | | | | Analyse en échec | | | | |
+| Code | `impact` | `exposure` | `incident declare` | `incident show` | `incident quarantine` | `dead-letters list` | `dead-letters replay` | `doctor` | `demo` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `0` | Réponses touchées, liste complète | Classement complet | Incident déclaré | Réponses touchées, liste complète | Quarantaine active, ou levée | Rebut vide | Tout est remis en file | Aucune anomalie | La démonstration répond |
+| `1` | Aucune réponse touchée, résultat complet | | | Aucune réponse touchée, résultat complet | | Des événements attendent | Rien à rejouer | Au moins une anomalie | Docker absent ou en échec |
+| `2` | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif, hors d'un clone |
+| `3` | Résultat incomplet | Classement incomplet | | Résultat incomplet | | | D'autres restent, relancer | | |
+| `4` | API injoignable | API injoignable | API injoignable | API injoignable | API injoignable | API injoignable | API injoignable | | La démonstration ne répond pas |
+| `5` | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | | |
+| `6` | | | | Analyse en attente | | | | | |
+| `7` | | | | Analyse en échec | | | | | |
 
 `answerlineage proxy` rend les codes du proxy, et `2` quand le proxy n'est pas installé.
 

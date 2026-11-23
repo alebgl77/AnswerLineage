@@ -213,6 +213,17 @@ def incident(
             else None,
             "truncated": truncated if done else None,
         },
+        "quarantine": None,
+    }
+
+
+def quarantine(state: str = "active") -> dict[str, Any]:
+    """Une quarantaine telle que l'API la rend, active ou levée."""
+    return {
+        "state": state,
+        "mode": "warn",
+        "activated_at": "2026-11-12T14:00:00.123456Z",
+        "lifted_at": "2026-11-13T09:30:00.654321Z" if state == "lifted" else None,
     }
 
 

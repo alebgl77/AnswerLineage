@@ -1,6 +1,6 @@
 # Webhooks signés
 
-Les workers annoncent chaque changement d'état d'un [incident](incidents.md) au récepteur que règle l'exploitant : l'incident est déclaré, son analyse d'impact est faite, son analyse est en échec. Chaque annonce est un message JSON à gabarit fixe, envoyé par une requête `POST` et signé avec son heure d'émission. Le récepteur vérifie la signature avec le secret qu'il partage avec les workers, puis déclenche ce qu'il veut : une alerte, un ticket, la suite d'un rappel.
+Les workers annoncent chaque changement d'état d'un [incident](incidents.md) au récepteur que règle l'exploitant : l'incident est déclaré, son analyse d'impact est faite, son analyse est en échec, il est mis en quarantaine, sa quarantaine est levée. Chaque annonce est un message JSON à gabarit fixe, envoyé par une requête `POST` et signé avec son heure d'émission. Le récepteur vérifie la signature avec le secret qu'il partage avec les workers, puis déclenche ce qu'il veut : une alerte, un ticket, la suite d'un rappel.
 
 ```bash
 export ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base
@@ -27,7 +27,7 @@ Le webhook n'est pas une dépendance : sans lui, rien n'est mis en file, rien n'
 
 ### En service
 
-L'API déclare les incidents, les workers les analysent : les deux mettent des messages en file, et l'API ne lit pas le réglage des workers. Un worker qui a un webhook le dit donc dans la base : à son démarrage, puis toutes les dix secondes, il repousse l'échéance de la mise en service (`webhook_stats.in_service_until`) de la borne d'âge de sa file. Tant qu'elle n'est pas passée, un changement d'état met son message en file ; au-delà, ou sans aucun worker qui ait jamais eu de webhook, rien n'est mis en file.
+L'API déclare les incidents et les met en quarantaine, les workers les analysent : les deux mettent des messages en file, et l'API ne lit pas le réglage des workers. Un worker qui a un webhook le dit donc dans la base : à son démarrage, puis toutes les dix secondes, il repousse l'échéance de la mise en service (`webhook_stats.in_service_until`) de la borne d'âge de sa file. Tant qu'elle n'est pas passée, un changement d'état met son message en file ; au-delà, ou sans aucun worker qui ait jamais eu de webhook, rien n'est mis en file.
 
 - **Un worker dédié suffit.** Les workers sans webhook n'y touchent pas : ils mettent en file les analyses qu'ils font, et un seul worker, ou quelques-uns, envoient. Tous ceux qui ont un webhook portent le même réglage.
 - **Une panne des workers ne fait rien perdre.** Arrêtés quelques heures ou quelques jours, moins que la borne d'âge, ils retrouvent en file ce qui s'est passé entre-temps.
@@ -42,25 +42,27 @@ L'API déclare les incidents, les workers les analysent : les deux mettent des m
 
 Un message par changement d'état, d'une liste fermée : celle des états qui existent aujourd'hui.
 
-| `type` | Quand | `incident.analysis.state` |
-| --- | --- | --- |
-| `incident.declared` | L'incident est déclaré, par l'API ou la ligne de commande | `pending` |
-| `incident.analysed` | Son analyse d'impact est faite : les décomptes se lisent | `done` |
-| `incident.analysis_failed` | Son analyse est en échec pour de bon, après ses essais : le code dit pourquoi | `failed` |
+| `type` | Quand | `incident.analysis.state` | `incident.quarantine.state` |
+| --- | --- | --- | --- |
+| `incident.declared` | L'incident est déclaré, par l'API ou la ligne de commande | `pending` | nul |
+| `incident.analysed` | Son analyse d'impact est faite : les décomptes se lisent | `done` | celui de l'heure |
+| `incident.analysis_failed` | Son analyse est en échec pour de bon, après ses essais : le code dit pourquoi | `failed` | celui de l'heure |
+| `incident.quarantined` | Il est [mis en quarantaine](incidents.md#quarantaine) : les proxys reçoivent son périmètre | celui de l'heure | `active` |
+| `incident.quarantine_lifted` | Sa quarantaine est levée | celui de l'heure | `lifted` |
 
-Une analyse remise à plus tard après un échec ne change pas d'état et n'annonce rien. Une analyse [rejouée](incidents.md#rejouer-une-analyse) annonce de nouveau sa fin, sous un nouvel identifiant de livraison.
+Une analyse remise à plus tard après un échec ne change pas d'état et n'annonce rien. Une analyse [rejouée](incidents.md#rejouer-une-analyse) annonce de nouveau sa fin, sous un nouvel identifiant de livraison. Une activation ou une levée qui ne change rien, parce que l'incident était déjà dans l'état demandé, n'annonce rien.
 
 ```http
 POST /answerlineage HTTP/1.1
 Host: alertes.interne
 Content-Type: application/json
-AnswerLineage-Signature: t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80
+AnswerLineage-Signature: t=1794819302,v1=2bf59d4b7b6c1f1d50e1616fe5fbc3f4eb9c153ce3aa8a51ed97ea7a99ddb4ce
 ```
 
 ```json
 {
-  "delivery_id": "8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12",
-  "emitted_at": "2026-11-16T08:53:18Z",
+  "delivery_id": "1f7a9c3e-5b2d-4e8f-a6c4-0d2e4f6a8b1c",
+  "emitted_at": "2026-11-16T08:55:02Z",
   "incident": {
     "analysis": {
       "counts": { "answers": 16, "lower_bound": false, "recipients": 13 },
@@ -68,16 +70,17 @@ AnswerLineage-Signature: t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e518403
       "state": "done"
     },
     "id": "974e7c80-6643-4065-a541-e4c029abbdab",
+    "quarantine": { "mode": "warn", "state": "active" },
     "severity": "high",
     "state": "qualified"
   },
-  "occurred_at": "2026-11-16T08:53:16.849328Z",
-  "type": "incident.analysed",
+  "occurred_at": "2026-11-16T08:55:01.204517Z",
+  "type": "incident.quarantined",
   "version": 1
 }
 ```
 
-Le corps envoyé est ce message en JSON compact, clés triées, en ASCII ; il est présenté ici mis en forme. C'est le deuxième exemple des [vecteurs](#les-vecteurs), avec sa signature.
+Le corps envoyé est ce message en JSON compact, clés triées, en ASCII ; il est présenté ici mis en forme. C'est l'exemple « quarantaine activée » des [vecteurs](#les-vecteurs), avec sa signature.
 
 | Champ | Contenu |
 | --- | --- |
@@ -85,28 +88,29 @@ Le corps envoyé est ce message en JSON compact, clés triées, en ASCII ; il es
 | `delivery_id` | Identifiant de livraison, unique par message et le même d'un envoi à l'autre : il écarte un doublon ou un rejeu |
 | `emitted_at` | Heure d'émission de cet envoi, à la seconde, en UTC : celle que porte et que signe l'en-tête. Elle change d'un envoi à l'autre |
 | `type` | Le changement d'état, de la liste ci-dessus |
-| `occurred_at` | Heure du changement d'état, à la microseconde, en UTC : la déclaration, ou la fin de l'analyse |
+| `occurred_at` | Heure du changement d'état, à la microseconde, en UTC : la déclaration, la fin de l'analyse, l'activation ou la levée de la quarantaine |
 | `incident.id` | L'identifiant de l'incident, celui de `GET /api/v1/incidents/{id}` |
 | `incident.state` | L'état de l'incident : `qualified` |
 | `incident.severity` | La gravité déclarée : `low`, `medium`, `high`, `critical` |
 | `incident.analysis.state` | `pending`, `done` ou `failed` |
 | `incident.analysis.error` | Le code d'une analyse en échec, `query_timeout` ou `analysis_error` ; nul sinon |
 | `incident.analysis.counts` | Pour une analyse faite : les réponses touchées, leurs destinataires distincts, et `lower_bound`, vrai quand une borne a été dépassée et que ces nombres sont des minimums ; nul sinon |
+| `incident.quarantine` | La dernière quarantaine de l'incident à l'heure du changement : son état, `active` ou `lifted`, et son mode, `warn` ; nulle quand l'incident n'a jamais été mis en quarantaine |
 
-**Aucun texte libre, aucun contenu.** Des identifiants, des codes de listes fermées, des heures et des nombres : ni le périmètre de l'incident, ni les réponses touchées, ni les pseudonymes de leurs destinataires, qui ne sont que comptés. Le récepteur qui veut le détail le lit par l'API, `GET /api/v1/incidents/{id}`. Le message est figé à l'heure du changement d'état : un envoi tardif annonce ce qui était vrai alors.
+**Aucun texte libre, aucun contenu.** Des identifiants, des codes de listes fermées, des heures et des nombres : ni le périmètre de l'incident, ni celui de sa quarantaine, ni les réponses touchées, ni les pseudonymes de leurs destinataires, qui ne sont que comptés. Le récepteur qui veut le détail le lit par l'API, `GET /api/v1/incidents/{id}`. Le message est figé à l'heure du changement d'état : un envoi tardif annonce ce qui était vrai alors.
 
 **Seul ce qui est signé compte.** La requête ne porte que `Content-Type` et la signature ; tout ce que le récepteur doit savoir est dans le corps, que la signature couvre. L'adresse appelée est celle que règle l'exploitant.
 
-Le format est publié : [`spec/webhooks/v1/Message.json`](../spec/webhooks/v1/Message.json), en JSON Schema 2020-12, objets fermés. Un fichier publié ne change plus : `make contract` refuse qu'il change ou disparaisse. Un nouvel état d'incident, une nouvelle sorte d'événement, comme les écarts, feront une nouvelle version, dans un autre dossier, avec son numéro dans `version`.
+Le format est décrit dans [`spec/webhooks/v1/Message.json`](../spec/webhooks/v1/Message.json), en JSON Schema 2020-12, objets fermés. La version 1 n'est pas encore publiée sur la branche principale : la quarantaine y est entrée, ses deux événements et le champ `incident.quarantine`, et ses vecteurs ont été signés de nouveau. Une fois publié, un fichier ne change plus : `make contract` refuse qu'il change ou disparaisse. Un nouvel état d'incident, une nouvelle sorte d'événement, comme les écarts, feront alors une nouvelle version, dans un autre dossier, avec son numéro dans `version`.
 
 ## La signature
 
 ```text
-AnswerLineage-Signature: t=1794819198,v1=e74b3b78774d48552d600bdbec02d684e5184036bfe560fa346237ec73e41e80
+AnswerLineage-Signature: t=1794819302,v1=2bf59d4b7b6c1f1d50e1616fe5fbc3f4eb9c153ce3aa8a51ed97ea7a99ddb4ce
 ```
 
 - `t` est l'heure d'émission, en secondes depuis le 1er janvier 1970 (UTC), en décimal ;
-- `v1` est HMAC-SHA-256, en hexadécimal minuscule, sous le secret partagé encodé en UTF-8, de `t`, d'un point, puis du corps tel qu'il est envoyé, octet pour octet : `HMAC-SHA-256(secret, "1794819198." + corps)` ;
+- `v1` est HMAC-SHA-256, en hexadécimal minuscule, sous le secret partagé encodé en UTF-8, de `t`, d'un point, puis du corps tel qu'il est envoyé, octet pour octet : `HMAC-SHA-256(secret, "1794819302." + corps)` ;
 - pendant une [rotation](#rotation-du-secret), l'en-tête porte une signature `v1` par secret, le nouveau d'abord : `t=…,v1=…,v1=…`.
 
 Chaque envoi est signé à son heure : un message renvoyé après une panne porte une nouvelle heure et une nouvelle signature, et le même identifiant de livraison.
@@ -245,7 +249,7 @@ WARNING answerlineage_workers Webhook : 3 message(s) abandonné(s), les plus anc
 ## Les tests
 
 - `workers/tests/test_webhook_signature.py` rejoue les vecteurs publiés contre la fonction de référence, refuse une signature rejouée hors de la fenêtre, une signature fausse et un corps altéré, accepte deux secrets pendant une rotation, et vérifie que le module n'importe que la bibliothèque standard.
-- `workers/tests/test_webhooks.py`, devant un faux récepteur : rien en file sans webhook en service ni pour un changement annulé ; le message figé à l'heure du changement et conforme au format publié ; un récepteur en panne puis de retour, sans perte et sous le même identifiant de livraison ; un refus, le débordement, deux workers ; un récepteur qui ne répond pas ne retarde ni la projection ni l'analyse ; ni le secret, ni l'adresse, ni un contenu au journal ou en base ; le réglage refusé au démarrage sans être cité.
+- `workers/tests/test_webhooks.py`, devant un faux récepteur : rien en file sans webhook en service ni pour un changement annulé ; le message figé à l'heure du changement et conforme au format publié ; la quarantaine activée puis levée, annoncée sans son périmètre ; un récepteur en panne puis de retour, sans perte et sous le même identifiant de livraison ; un refus, le débordement, deux workers ; un récepteur qui ne répond pas ne retarde ni la projection ni l'analyse ; ni le secret, ni l'adresse, ni un contenu au journal ou en base ; le réglage refusé au démarrage sans être cité.
 - `tests/test_webhooks_end_to_end.py` : l'incident déclaré par l'API, analysé par la boucle d'un worker ; les deux annonces arrivent signées au récepteur, qui les vérifie avec la fonction de référence, en moins d'une minute ; le récepteur refuse ensuite l'un des appels rejoué six minutes plus tard, une signature fausse et un corps altéré.
 
 ## Limites connues
