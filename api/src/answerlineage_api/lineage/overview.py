@@ -84,7 +84,7 @@ def _recent_answers(cursor: Cursor | None) -> TextClause:
 
 # UNION, et non UNION ALL : des runs qui se désignent l'un l'autre comme parent
 # ne font pas tourner la recherche sans fin.
-_RUN_TREES = text(
+RUN_TREES = text(
     f"""
     WITH RECURSIVE tree(root, run_id) AS (
         SELECT root, root FROM unnest(CAST(:roots AS uuid[])) AS root
@@ -181,7 +181,7 @@ async def view_of(
     """
     roots: list[UUID] = sorted({row.run_id for row in picked}, key=lambda run_id: run_id.hex)
 
-    trees = await reader.fetch(_RUN_TREES, {"roots": roots, "known_at": known_at}, limit=MAX_RUNS)
+    trees = await reader.fetch(RUN_TREES, {"roots": roots, "known_at": known_at}, limit=MAX_RUNS)
     roots_of: dict[UUID, set[UUID]] = {}
     for row in trees.rows:
         roots_of.setdefault(row.run_id, set()).add(row.root)

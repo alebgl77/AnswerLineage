@@ -20,7 +20,8 @@ import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, Final
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -52,6 +53,11 @@ TIMED_OUT: dict[int | str, dict[str, Any]] = {
 }
 
 _STATEMENT_TIMEOUT = text("SELECT set_config('statement_timeout', :timeout, true)")
+
+# Les dates qu'une lecture admet : rien n'est enregistré avant 1970, et au-delà
+# de l'an 9999, une date ne se relit plus.
+EARLIEST: Final = datetime(1970, 1, 1, tzinfo=UTC)
+LATEST: Final = datetime(9999, 12, 30, tzinfo=UTC)
 
 
 def known(alias: str) -> str:

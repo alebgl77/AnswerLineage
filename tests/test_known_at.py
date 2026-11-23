@@ -167,6 +167,27 @@ async def test_the_overview_the_search_and_the_datasets_as_known_at_a_date(
     assert "known_at" not in await get(engine, "/api/v1/datasets")
 
 
+async def test_the_exposure_as_known_at_a_date_is_scored_at_that_date(
+    engine: AsyncEngine, received: datetime
+) -> None:
+    at = (T0 + timedelta(hours=1)).isoformat()
+    today = await get(engine, "/api/v1/exposure", at=at)
+    assert [(item["name"], item["answers"]) for item in today["datasets"]] == [
+        (RATES[1], 2),
+        (ORDERS[1], 1),
+    ]
+    assert "known_at" not in today
+
+    then = await get(engine, "/api/v1/exposure", at=at, known_at=received.isoformat())
+    assert [(item["name"], item["answers"]) for item in then["datasets"]] == [(RATES[1], 1)]
+    assert datetime.fromisoformat(then["known_at"]) == received
+    assert datetime.fromisoformat(then["at"]) == T0 + timedelta(hours=1)
+
+    # Sans heure de référence, le score se prend à la date demandée.
+    dated = await get(engine, "/api/v1/exposure", known_at=received.isoformat())
+    assert datetime.fromisoformat(dated["at"]) == received
+
+
 async def test_events_sent_again_change_no_recorded_time(
     engine: AsyncEngine, received: datetime
 ) -> None:
@@ -201,6 +222,7 @@ ROUTES = (
     "/api/v1/graph",
     "/api/v1/datasets",
     "/api/v1/answers",
+    "/api/v1/exposure",
     f"/api/v1/answers/{answer_key(KNOWN, f'sha256:{1:064x}')}/sources",
 )
 

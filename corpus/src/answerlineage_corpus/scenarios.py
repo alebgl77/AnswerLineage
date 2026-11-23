@@ -6,6 +6,10 @@ vérité : les réponses touchées, les réponses écartées et celles qui n'ont
 à mesurer le moteur d'impact comme on mesure un modèle : rappel sur les
 réponses touchées, précision sur les réponses écartées.
 
+Un scénario peut aussi tenir l'ordre d'exposition attendu de ses jeux de
+données, et de leurs colonnes, à une heure de référence : la vérité du score
+d'exposition, écrite à la main elle aussi.
+
 Le contrôle du corpus refuse un scénario sans vérité, une vérité qui oublie une
 réponse, et une vérité que la description du scénario contredit.
 """
@@ -14,9 +18,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterator, Mapping, Sequence
+import math
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from importlib import resources
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -34,8 +39,11 @@ from answerlineage_corpus.events import (
 
 # Change dès qu'un scénario ou sa vérité change : deux mesures ne se comparent
 # que sur la même version du corpus.
-CORPUS_VERSION = "1"
-_DIGESTS = {"1": "793e14c268cb1f1e9ebee171a9a8798ceeb467d67b27a9d3792308d139bdfa0e"}
+CORPUS_VERSION = "2"
+_DIGESTS = {
+    "1": "793e14c268cb1f1e9ebee171a9a8798ceeb467d67b27a9d3792308d139bdfa0e",
+    "2": "bbb83390c22d1dd9dd5c721f20278a8876bf4309bc436287d3ac36405a7183c7",
+}
 
 Level = Literal["table", "columns", "subset", "keys"]
 Confidence = Literal["certaine", "probable", "possible"]
@@ -138,6 +146,16 @@ class Expected:
 
 
 @dataclass(frozen=True)
+class Exposure:
+    """L'ordre d'exposition attendu à une heure de référence, le plus exposé d'abord."""
+
+    at: datetime
+    datasets: tuple[Dataset, ...]
+    # Pour un jeu dont des lectures nomment des colonnes : l'ordre de ses colonnes.
+    columns: tuple[tuple[Dataset, tuple[str, ...]], ...] = ()
+
+
+@dataclass(frozen=True)
 class Scenario:
     name: str
     title: str
@@ -148,6 +166,7 @@ class Scenario:
     # Réponses qui ont lu la table pendant la fenêtre sans dépendre de ce qui est faux.
     discarded: tuple[tuple[Answer, str], ...]
     untouched: tuple[Answer, ...]
+    exposure: Exposure | None = None
 
     @property
     def answers(self) -> tuple[Answer, ...]:
@@ -249,6 +268,21 @@ def _keys(value: object) -> tuple[str, ...] | None:
     return None if value is None else _texts(value)
 
 
+def _exposure(value: object, datasets: Mapping[str, Dataset]) -> Exposure | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise TypeError("un ordre d'exposition se décrit par un objet")
+    columns = value.get("columns", {})
+    if not isinstance(columns, dict):
+        raise TypeError("les colonnes se décrivent par jeu de données")
+    return Exposure(
+        at=_instant(value["at"]),
+        datasets=tuple(datasets[alias] for alias in _texts(value["datasets"])),
+        columns=tuple((datasets[alias], _texts(names)) for alias, names in columns.items()),
+    )
+
+
 def _build(name: str, raw: Mapping[str, Any]) -> Scenario:
     """Construit le scénario. Une forme invalide lève KeyError, TypeError ou ValueError."""
     datasets = {alias: Dataset(**described) for alias, described in raw["datasets"].items()}
@@ -343,6 +377,7 @@ def _build(name: str, raw: Mapping[str, Any]) -> Scenario:
             (answers[item["answer"]], str(item["reason"])) for item in truth["discarded"]
         ),
         untouched=tuple(answers[key] for key in truth["untouched"]),
+        exposure=_exposure(truth.get("exposure"), datasets),
     )
 
 
@@ -470,6 +505,90 @@ def _inconsistencies(scenario: Scenario) -> list[str]:
     return problems
 
 
+# La règle du score d'exposition, écrite ici sans passer par le produit : chaque
+# réponse pèse 1 plus un par destinataire, moitié moins tous les 30 jours.
+_HALF_LIFE = timedelta(days=30)
+
+
+def _weight(answer: Answer, at: datetime) -> float:
+    age = max(at - answer.at, timedelta(0))
+    return math.pow(2.0, -(age / _HALF_LIFE)) * (1 + len(set(answer.recipients)))
+
+
+def _exposed(
+    scenario: Scenario, at: datetime
+) -> tuple[dict[Dataset, float], dict[Dataset, dict[str, float]]]:
+    """Le score de chaque jeu de données dont une réponse dépend, et de ses colonnes nommées.
+
+    Une réponse dépend de ce que son run et ses runs enfants ont lu. Une lecture
+    de la table entière compte pour chaque colonne qu'une autre lecture nomme.
+    """
+    weights: dict[Dataset, list[float]] = {}
+    whole: dict[Dataset, list[float]] = {}
+    named: dict[Dataset, dict[str, list[float]]] = {}
+    for run in scenario.runs:
+        if run.answer is None:
+            continue
+        weight = _weight(run.answer, at)
+        reads = [
+            read for below in _subtree(scenario, run) for call in below.calls for read in call.reads
+        ]
+        read_whole = {read.dataset for read in reads if not read.columns}
+        for dataset in {read.dataset for read in reads}:
+            weights.setdefault(dataset, []).append(weight)
+            if dataset in read_whole:
+                whole.setdefault(dataset, []).append(weight)
+        for dataset, column in {(read.dataset, c) for read in reads for c in read.columns}:
+            counted = named.setdefault(dataset, {}).setdefault(column, [])
+            if dataset not in read_whole:
+                counted.append(weight)
+    scores = {dataset: math.fsum(found) for dataset, found in weights.items()}
+    columns = {
+        dataset: {
+            column: math.fsum([*whole.get(dataset, []), *found]) for column, found in by.items()
+        }
+        for dataset, by in named.items()
+    }
+    return scores, columns
+
+
+def _ranked[K](scores: Mapping[K, float], natural: Callable[[K], tuple[str, ...]]) -> list[K]:
+    """Le plus exposé d'abord, au millionième ; à égalité, par identifiant naturel."""
+    return sorted(scores, key=lambda key: (-round(scores[key] * 1_000_000), natural(key)))
+
+
+def _exposure_inconsistencies(scenario: Scenario) -> list[str]:
+    expected = scenario.exposure
+    if expected is None:
+        return []
+    problems: list[str] = []
+    scores, columns = _exposed(scenario, expected.at)
+    listed = list(expected.datasets)
+    if len(set(listed)) != len(listed):
+        problems.append("un jeu de données figure deux fois dans l'ordre d'exposition")
+    elif set(listed) != set(scores):
+        problems.append(
+            "l'ordre d'exposition ne nomme pas exactement les jeux de données dont une réponse "
+            "dépend"
+        )
+    elif listed != _ranked(scores, lambda dataset: (dataset.namespace, dataset.name)):
+        problems.append("l'ordre d'exposition des jeux de données contredit la description")
+    given = dict(expected.columns)
+    for dataset in sorted(set(given) | set(columns), key=lambda found: found.name):
+        names = list(given.get(dataset, ()))
+        found = columns.get(dataset, {})
+        if sorted(names) != sorted(found):
+            problems.append(
+                f"les colonnes attendues de « {dataset.name} » ne sont pas celles que ses "
+                "lectures nomment"
+            )
+        elif names != _ranked(found, lambda column: (column,)):
+            problems.append(
+                f"l'ordre d'exposition des colonnes de « {dataset.name} » contredit la description"
+            )
+    return problems
+
+
 def check_scenario(name: str, raw: object) -> list[str]:
     """Problèmes d'un scénario ; la liste est vide quand il est cohérent."""
     if not isinstance(raw, dict):
@@ -480,7 +599,8 @@ def check_scenario(name: str, raw: object) -> list[str]:
         scenario = _build(name, raw)
     except (KeyError, TypeError, ValueError) as error:
         return [f"{name} : forme invalide ({type(error).__name__} : {error})"]
-    return [f"{name} : {problem}" for problem in _inconsistencies(scenario)]
+    problems = _inconsistencies(scenario) + _exposure_inconsistencies(scenario)
+    return [f"{name} : {problem}" for problem in problems]
 
 
 def _coverage(scenarios: Sequence[Scenario]) -> list[str]:
@@ -493,6 +613,8 @@ def _coverage(scenarios: Sequence[Scenario]) -> list[str]:
         problems.append("aucun scénario de transitivité")
     if not any(scenario.discarded for scenario in scenarios):
         problems.append("aucun scénario avec une réponse écartée")
+    if not any(scenario.exposure is not None for scenario in scenarios):
+        problems.append("aucun scénario avec un ordre d'exposition")
     return problems
 
 

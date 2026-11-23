@@ -74,6 +74,15 @@ def rate(value: Any, where: str) -> float | None:
     return float(value)
 
 
+def score(value: Any, where: str) -> float:
+    """Un score d'exposition : un nombre fini, positif ou nul."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise fault(where)
+    if not math.isfinite(value) or value < 0:
+        raise fault(where)
+    return float(value)
+
+
 def choice(value: Any, where: str, admitted: Collection[str]) -> str:
     if not isinstance(value, str) or value not in admitted:
         raise fault(where)

@@ -7,8 +7,9 @@ elles le lisent alors tel qu'il était connu à cette date.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Annotated, Any, Final
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Query, Request
 from fastapi.responses import JSONResponse
@@ -16,18 +17,21 @@ from pydantic import AfterValidator, AwareDatetime
 from pydantic_core import PydanticCustomError
 
 from answerlineage_api.ingest.models import FieldError
-from answerlineage_api.lineage import coverage, impact, overview, trace
+from answerlineage_api.lineage import coverage, exposure, impact, overview, trace
 from answerlineage_api.lineage.models import (
     AnswerList,
+    ColumnExposure,
     CoverageList,
+    DatasetExposure,
     DatasetList,
+    ExposureList,
     GraphView,
     ImpactResult,
     Sources,
     Window,
 )
 from answerlineage_api.lineage.paging import CURSOR_PATTERN, Cursor, CursorError
-from answerlineage_api.lineage.reading import TIMED_OUT, reading
+from answerlineage_api.lineage.reading import EARLIEST, LATEST, TIMED_OUT, reading
 from answerlineage_api.responses import RequestRefused, RequestRejected, refused
 
 router = APIRouter(prefix="/api/v1", tags=["lignage"])
@@ -65,21 +69,20 @@ MessageRef = Annotated[
 ]
 Limit = Annotated[int, Query(ge=1, le=100, description="Nombre maximal de réponses renvoyées.")]
 
-# Rien n'est enregistré avant 1970 ; au-delà de l'an 9999, une date ne se relit plus.
-KNOWN_AT_EARLIEST: Final = datetime(1970, 1, 1, tzinfo=UTC)
-KNOWN_AT_LATEST: Final = datetime(9999, 12, 30, tzinfo=UTC)
 
+def _within_range(code: str) -> Callable[[datetime], datetime]:
+    """Refuse une date hors des bornes, sous ce code d'erreur, sans la recopier."""
 
-def _within_range(value: datetime) -> datetime:
-    if not KNOWN_AT_EARLIEST <= value <= KNOWN_AT_LATEST:
-        raise PydanticCustomError(
-            "known_at_out_of_range", "La date tombe entre le 1er janvier 1970 et l'an 9999."
-        )
-    return value
+    def check(value: datetime) -> datetime:
+        if not EARLIEST <= value <= LATEST:
+            raise PydanticCustomError(code, "La date tombe entre le 1er janvier 1970 et l'an 9999.")
+        return value
+
+    return check
 
 
 KnownAt = Annotated[
-    Annotated[AwareDatetime, AfterValidator(_within_range)] | None,
+    Annotated[AwareDatetime, AfterValidator(_within_range("known_at_out_of_range"))] | None,
     Query(
         description=(
             "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) :"
@@ -313,3 +316,99 @@ async def coverage_by_emitter(
             reader, start=start, end=end, now=datetime.now(UTC), limit=limit
         )
     return CoverageList(window=Window(start=start, end=end), emitters=emitters, more=more)
+
+
+ExposureLimit = Annotated[
+    int, Query(ge=1, le=200, description="Nombre maximal de jeux de données renvoyés.")
+]
+ExposureCursorParam = Annotated[
+    str | None,
+    Query(
+        alias="cursor",
+        pattern=exposure.CURSOR_PATTERN,
+        description=(
+            "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor » :"
+            " il garde l'heure de référence de la première page."
+        ),
+    ),
+]
+ReferenceTime = Annotated[
+    Annotated[AwareDatetime, AfterValidator(_within_range("at_out_of_range"))] | None,
+    Query(
+        description=(
+            "Heure de référence du score (RFC 3339, avec fuseau) : l'âge de chaque réponse se"
+            " compte jusqu'à elle. Par défaut, la date de « known_at », sinon l'heure de la base."
+        ),
+    ),
+]
+
+
+def _exposed(ranking: exposure.Ranking, item: exposure.DatasetScore) -> DatasetExposure:
+    shown = item.columns[: exposure.MAX_COLUMNS]
+    return DatasetExposure(
+        namespace=item.namespace,
+        name=item.name,
+        kind=item.kind,
+        score=item.score,
+        answers=item.answers,
+        recipients=ranking.recipients(item),
+        columns=[
+            ColumnExposure(
+                name=column.name,
+                score=column.units / exposure.SCORE_SCALE,
+                answers=column.answers,
+            )
+            for column in shown
+        ],
+        more_columns=len(item.columns) > len(shown),
+    )
+
+
+@router.get(
+    "/exposure",
+    response_model=ExposureList,
+    summary="Classe les jeux de données et leurs colonnes par exposition",
+    responses={**_INVALID, **TIMED_OUT},
+)
+async def exposure_ranking(
+    request: Request,
+    limit: ExposureLimit = 50,
+    cursor_value: ExposureCursorParam = None,
+    at: ReferenceTime = None,
+    known_at: KnownAt = None,
+) -> ExposureList | JSONResponse:
+    """Un score par jeu de données et par colonne, selon les réponses et les destinataires.
+
+    Chaque réponse qui dépend d'un jeu de données y pèse 1 plus un par
+    destinataire distinct, et ce poids diminue de moitié tous les 30 jours.
+    """
+    cursor = None
+    if cursor_value is not None:
+        try:
+            cursor = exposure.ExposureCursor.decode(cursor_value)
+        except CursorError:
+            cursor = None
+        if cursor is None or (at is not None and at != cursor.at):
+            return _rejected(
+                "/query/cursor", "cursor_invalid", "Ce curseur ne désigne aucune page."
+            )
+    async with reading(request) as reader:
+        ranking = await exposure.rank(
+            reader, at=at if cursor is None else cursor.at, known_at=known_at
+        )
+    try:
+        page, more = ranking.page(limit, cursor)
+    except CursorError:
+        return _rejected("/query/cursor", "cursor_invalid", "Ce curseur ne désigne aucune page.")
+    return ExposureList(
+        at=ranking.at,
+        datasets=[_exposed(ranking, item) for item in page],
+        more=more,
+        next_cursor=(
+            exposure.ExposureCursor(ranking.at, page[-1].units, page[-1].dataset_id).encode()
+            if more
+            else None
+        ),
+        truncated=ranking.truncated,
+        known_at=known_at,
+    )

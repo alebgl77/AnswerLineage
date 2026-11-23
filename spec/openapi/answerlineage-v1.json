@@ -403,6 +403,32 @@
         "title": "BatchResult",
         "type": "object"
       },
+      "ColumnExposure": {
+        "description": "Une colonne nommée par une lecture, et les réponses qui en dépendent.",
+        "properties": {
+          "answers": {
+            "description": "Réponses qui dépendent de la colonne.",
+            "title": "Answers",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "score": {
+            "description": "Score de la colonne, au millionième : les réponses qui l'ont lue, et celles qui ont lu la table entière.",
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "name",
+          "score",
+          "answers"
+        ],
+        "title": "ColumnExposure",
+        "type": "object"
+      },
       "Coverage": {
         "description": "Part des appels relayés présents dans le graphe, et trous connus, sur une période.",
         "properties": {
@@ -619,6 +645,63 @@
           "events_lost"
         ],
         "title": "CoverageReport",
+        "type": "object"
+      },
+      "DatasetExposure": {
+        "description": "Un jeu de données, son score d'exposition et celui de ses colonnes.",
+        "properties": {
+          "answers": {
+            "description": "Réponses qui en dépendent.",
+            "title": "Answers",
+            "type": "integer"
+          },
+          "columns": {
+            "description": "Les colonnes nommées par une lecture, les plus exposées d'abord ; à égalité, par nom. Vide quand toutes les lectures portent sur la table entière.",
+            "items": {
+              "$ref": "#/components/schemas/ColumnExposure"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "more_columns": {
+            "description": "Vrai quand d'autres colonnes, moins exposées, suivent.",
+            "title": "More Columns",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          },
+          "recipients": {
+            "description": "Destinataires distincts de ces réponses.",
+            "title": "Recipients",
+            "type": "integer"
+          },
+          "score": {
+            "description": "Somme, sur les réponses qui en dépendent, de 2 ** (-âge / 30 jours) * (1 + leurs destinataires distincts), au millionième.",
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "namespace",
+          "name",
+          "kind",
+          "score",
+          "answers",
+          "recipients",
+          "columns",
+          "more_columns"
+        ],
+        "title": "DatasetExposure",
         "type": "object"
       },
       "DatasetList": {
@@ -1219,6 +1302,69 @@
           "duplicate"
         ],
         "title": "EventResult",
+        "type": "object"
+      },
+      "ExposureList": {
+        "description": "Les jeux de données dont une réponse dépend, les plus exposés d'abord.",
+        "properties": {
+          "at": {
+            "description": "Heure de référence du score, en UTC : l'âge de chaque réponse se compte jusqu'à elle.",
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "datasets": {
+            "description": "Par score décroissant ; à égalité, par espace de noms puis par nom.",
+            "items": {
+              "$ref": "#/components/schemas/DatasetExposure"
+            },
+            "title": "Datasets",
+            "type": "array"
+          },
+          "known_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Date à laquelle le graphe est lu, telle que demandée : ce qui a été enregistré après en est exclu. Absente quand la lecture porte sur le graphe tel qu'il est.",
+            "title": "Known At"
+          },
+          "more": {
+            "description": "Vrai quand des jeux de données moins exposés suivent.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor » : il garde l'heure de référence. Nul quand il n'y a plus de jeu de données.",
+            "title": "Next Cursor"
+          },
+          "truncated": {
+            "description": "Vrai quand une lecture du graphe dépasse sa borne : les scores sont des minimums, et l'ordre peut différer de celui du graphe entier.",
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "at",
+          "datasets",
+          "more",
+          "next_cursor",
+          "truncated"
+        ],
+        "title": "ExposureList",
         "type": "object"
       },
       "Facet": {
@@ -2872,6 +3018,121 @@
           }
         },
         "summary": "Liste les jeux de données connus du graphe",
+        "tags": [
+          "lignage"
+        ]
+      }
+    },
+    "/api/v1/exposure": {
+      "get": {
+        "description": "Un score par jeu de données et par colonne, selon les réponses et les destinataires.\n\nChaque réponse qui dépend d'un jeu de données y pèse 1 plus un par\ndestinataire distinct, et ce poids diminue de moitié tous les 30 jours.",
+        "operationId": "exposure_ranking_api_v1_exposure_get",
+        "parameters": [
+          {
+            "description": "Nombre maximal de jeux de données renvoyés.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "description": "Nombre maximal de jeux de données renvoyés.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor » : il garde l'heure de référence de la première page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{1,18}\\.[0-9]{1,18}\\.[0-9]{1,19}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor » : il garde l'heure de référence de la première page.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "description": "Heure de référence du score (RFC 3339, avec fuseau) : l'âge de chaque réponse se compte jusqu'à elle. Par défaut, la date de « known_at », sinon l'heure de la base.",
+            "in": "query",
+            "name": "at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Heure de référence du score (RFC 3339, avec fuseau) : l'âge de chaque réponse se compte jusqu'à elle. Par défaut, la date de « known_at », sinon l'heure de la base.",
+              "title": "At"
+            }
+          },
+          {
+            "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+            "in": "query",
+            "name": "known_at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau) : ce qui a été enregistré après en est exclu. Sans elle, le graphe tel qu'il est.",
+              "title": "Known At"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExposureList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Classe les jeux de données et leurs colonnes par exposition",
         "tags": [
           "lignage"
         ]

@@ -1,7 +1,9 @@
-"""Ligne de commande : ``answerlineage impact | incident | dead-letters | doctor | demo | proxy``.
+"""Ligne de commande : ``answerlineage impact | exposure | incident | dead-letters | …``.
 
 ``impact`` propage un incident de données jusqu'aux réponses et aux
-destinataires touchés ; ``incident`` déclare un incident et lit son analyse ;
+destinataires touchés ; ``exposure`` classe les jeux de données et leurs
+colonnes selon les réponses qui en dépendent ; ``incident`` déclare un
+incident et lit son analyse ;
 ``dead-letters`` consulte et rejoue la file de rebut des événements que la
 projection n'a pas pu intégrer ; ``doctor`` vérifie chaque composant d'une
 installation ; ``demo`` lance la
@@ -13,8 +15,8 @@ avec ses arguments (``proxy.py``).
 Codes de sortie (``exits.py``) : 0 succès ; 1 rien de touché (impact,
 incident show), une anomalie (doctor), un échec de Docker (demo), des
 événements au rebut (dead-letters list) ou rien à rejouer (dead-letters
-replay) ; 2 usage fautif ; 3 résultat incomplet (impact, incident show) ou
-rejeu à poursuivre (dead-letters replay) ; 4 API injoignable ; 5 refus de l'API
+replay) ; 2 usage fautif ; 3 résultat incomplet (impact, exposure, incident
+show) ou rejeu à poursuivre (dead-letters replay) ; 4 API injoignable ; 5 refus de l'API
 ou réponse invalide ; 6 analyse en attente et 7 analyse en échec (incident
 show).
 """
@@ -32,7 +34,7 @@ from typing import TextIO
 
 import httpx
 
-from answerlineage_cli import dead_letters, demo, doctor, impact, incident, proxy
+from answerlineage_cli import dead_letters, demo, doctor, exposure, impact, incident, proxy
 from answerlineage_cli.client import (
     DEFAULT_TIMEOUT,
     DEFAULT_URL,
@@ -91,6 +93,12 @@ def _dataset_parameter(value: str) -> str:
 
 def _cursor(value: str) -> str:
     if not impact.CURSOR.fullmatch(value):
+        raise argparse.ArgumentTypeError("la valeur de next_cursor d'une page précédente")
+    return value
+
+
+def _exposure_cursor(value: str) -> str:
+    if not exposure.CURSOR.fullmatch(value):
         raise argparse.ArgumentTypeError("la valeur de next_cursor d'une page précédente")
     return value
 
@@ -166,8 +174,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="answerlineage",
         description=(
-            "AnswerLineage depuis le terminal : propager un incident, consulter et rejouer la "
-            "file de rebut, vérifier une installation, lancer la démonstration."
+            "AnswerLineage depuis le terminal : propager un incident, classer les jeux de "
+            "données par exposition, consulter et rejouer la file de rebut, vérifier une "
+            "installation, lancer la démonstration."
         ),
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -220,6 +229,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     propagate.add_argument("--format", choices=("text", "json"), default="text")
     _common(propagate)
+
+    ranking = commands.add_parser(
+        "exposure",
+        help="jeux de données et colonnes classés selon les réponses qui en dépendent",
+        description=(
+            "Classe les jeux de données, et leurs colonnes, par score d'exposition : chaque "
+            "réponse qui en dépend y pèse 1 plus un par destinataire, moitié moins tous les "
+            "30 jours. Codes de sortie : 0 classement complet ; 3 classement incomplet (une "
+            "borne est dépassée, les scores sont des minimums) ; 2 usage ; 4 API injoignable ; "
+            "5 refus de l'API."
+        ),
+    )
+    ranking.add_argument(
+        "--limit",
+        type=_bounded(1, exposure.MAX_LIMIT, "de jeux de données"),
+        help=f"jeux de données par page, de 1 à {exposure.MAX_LIMIT}, 50 par défaut",
+    )
+    ranking.add_argument(
+        "--cursor", type=_exposure_cursor, help="page suivante : la valeur de next_cursor"
+    )
+    ranking.add_argument(
+        "--at",
+        type=instant,
+        help=(
+            "heure de référence du score (RFC 3339, avec fuseau) ; par défaut, la date de "
+            "--known-at, sinon l'heure de la base"
+        ),
+    )
+    ranking.add_argument(
+        "--known-at",
+        type=instant,
+        help="lit le graphe tel qu'il était connu à cette date (RFC 3339, avec fuseau)",
+    )
+    ranking.add_argument("--format", choices=("text", "json"), default="text")
+    _common(ranking)
 
     incidents = commands.add_parser(
         "incident",
@@ -483,6 +527,20 @@ def _impact(api: Api, args: argparse.Namespace) -> Exit:
         return code
 
 
+def _exposure(api: Api, args: argparse.Namespace) -> Exit:
+    for option, value in (("--at", args.at), ("--known-at", args.known_at)):
+        if value is not None and not _EARLIEST <= datetime.fromisoformat(value) <= _LATEST:
+            err(f"Usage fautif : {option} tombe entre le 1er janvier 1970 et l'an 9999.")
+            return Exit.USAGE
+    query = exposure.Query(limit=args.limit, cursor=args.cursor, at=args.at, known_at=args.known_at)
+    try:
+        return exposure.run(api, query, args.format, out)
+    except exposure.RefusedError as refused:
+        code, message = exposure.refusal_message(refused)
+        err(message)
+        return code
+
+
 def _incident(api: Api, args: argparse.Namespace) -> Exit:
     try:
         if args.action == "show":
@@ -568,6 +626,7 @@ def _demo(api: Api, args: argparse.Namespace) -> Exit:
 
 _COMMANDS = {
     "impact": _impact,
+    "exposure": _exposure,
     "incident": _incident,
     "dead-letters": _dead_letters,
     "doctor": _doctor,

@@ -9,13 +9,14 @@ L'API de lecture interroge le graphe de lignage. Elle est versionnée sous `/api
 | `GET /api/v1/impact?namespace=…&name=…&from=…&to=…` | Les réponses et les destinataires touchés par un jeu de données faux pendant une fenêtre |
 | `GET /api/v1/graph` | Le graphe en cinq colonnes des réponses les plus récentes, ou d'une réponse |
 | `GET /api/v1/datasets` | Les jeux de données connus du graphe |
+| `GET /api/v1/exposure` | Les jeux de données et leurs colonnes, les plus exposés d'abord : un score selon les réponses qui en dépendent et leurs destinataires |
 | `GET /api/v1/coverage?from=…&to=…` | La couverture du lignage de chaque émetteur sur une période |
 | `GET /api/v1/incidents` | Les incidents déclarés, les plus récents d'abord, et l'état de leur analyse |
 | `GET /api/v1/incidents/{id}` | Un incident déclaré, l'état de son analyse d'impact et, quand elle est faite, les réponses touchées et leurs destinataires |
 
-Les cinq premières routes lisent aussi le graphe tel qu'il était connu à une date, avec `known_at` ([plus bas](#le-graphe-tel-que-connu-à-une-date)). Les incidents se déclarent par `POST /api/v1/incidents` ; leurs deux routes de lecture sont décrites avec eux, dans [Incidents de données](incidents.md).
+Les six premières routes lisent aussi le graphe tel qu'il était connu à une date, avec `known_at` ([plus bas](#le-graphe-tel-que-connu-à-une-date)). Les incidents se déclarent par `POST /api/v1/incidents` ; leurs deux routes de lecture sont décrites avec eux, dans [Incidents de données](incidents.md).
 
-Depuis le terminal, `answerlineage impact` propage un incident et dit par son code de sortie si l'on peut conclure, `answerlineage incident` déclare un incident et lit son analyse, et `answerlineage doctor` lit l'état de l'installation sur `GET /api/v1/health` : voir la [ligne de commande](cli.md).
+Depuis le terminal, `answerlineage impact` propage un incident et dit par son code de sortie si l'on peut conclure, `answerlineage exposure` classe les jeux de données par exposition, `answerlineage incident` déclare un incident et lit son analyse, et `answerlineage doctor` lit l'état de l'installation sur `GET /api/v1/health` : voir la [ligne de commande](cli.md).
 
 ## Remonter d'une réponse à ses sources
 
@@ -165,6 +166,108 @@ Une réponse est touchée quand un run de son arbre a lu le jeu de données pend
 ### Mesure
 
 La propagation est mesurée sur un [corpus de vérité](corpus.md#mesure-du-moteur-dimpact), comme un modèle : rappel et précision, scénario par scénario puis en tout. À chaque merge request, le rappel au niveau table sur l'ensemble du corpus doit atteindre 0,99, et aucune réponse hors d'atteinte ne doit être renvoyée ; sinon le pipeline échoue et nomme les réponses manquées. `make measure` rejoue la mesure et imprime son tableau. Sur les incidents de l'entreprise synthétique, le résultat est exactement la vérité.
+
+## Score d'exposition
+
+Quelles données faudrait-il surveiller d'abord, parce qu'une erreur y toucherait le plus de réponses et de personnes ? Le score d'exposition le dit pour chaque jeu de données et chaque colonne que les réponses lisent, selon les réponses qui en dépendent et leurs destinataires.
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/exposure?at=2026-11-01T12:00:00Z"
+```
+
+```json
+{
+  "at": "2026-11-01T12:00:00Z",
+  "datasets": [
+    {
+      "namespace": "bigquery",
+      "name": "finance.ref.taux_change",
+      "kind": "table",
+      "score": 10.192078,
+      "answers": 5,
+      "recipients": 6,
+      "columns": [
+        { "name": "date_valeur", "score": 6.423125, "answers": 2 },
+        { "name": "devise", "score": 5.315637, "answers": 4 },
+        { "name": "taux", "score": 5.315637, "answers": 4 }
+      ],
+      "more_columns": false
+    },
+    {
+      "namespace": "bigquery",
+      "name": "finance.compta.factures",
+      "kind": "table",
+      "score": 4.380814,
+      "answers": 2,
+      "recipients": 3,
+      "columns": [
+        { "name": "montant", "score": 2.604141, "answers": 1 },
+        { "name": "client_id", "score": 1.776673, "answers": 1 }
+      ],
+      "more_columns": false
+    }
+  ],
+  "more": false,
+  "next_cursor": null,
+  "truncated": false
+}
+```
+
+Cet exemple est le scénario `exposition-colonne-unique` du [corpus de vérité](corpus.md#corpus-de-vérité) : la date de valeur, lue par une seule réponse récente envoyée à quatre personnes, est plus exposée que la devise et le taux, lus par trois réponses de vingt jours.
+
+### La formule
+
+Chaque réponse qui dépend d'un jeu de données y pèse 1, plus un par destinataire distinct, et ce poids diminue de moitié tous les 30 jours depuis l'heure de la réponse :
+
+```text
+poids d'une réponse = 2^(−âge / 30 jours) × (1 + destinataires distincts)
+score               = somme des poids des réponses qui en dépendent
+```
+
+À 30 jours, une réponse pèse la moitié d'une réponse de l'instant ; à 60 jours, le quart ; au-delà de deux ans environ, elle ne compte plus au millionième. Une réponse sans destinataire connu pèse 1 : diffusée dans un canal ou gardée, elle existe encore. Un destinataire qui a reçu deux réponses compte deux fois : il y a deux réponses à lui rappeler. Le même destinataire touché par deux canaux pour une même réponse ne compte qu'une fois.
+
+La formule est faite pour être expliquée plutôt que fine : le score ne fait que croître avec une réponse ou un destinataire de plus, une réponse récente y pèse plus qu'une ancienne, et `answers` et `recipients` donnent les décomptes dont il est fait. Avancer l'heure de référence divise tous les scores par le même facteur : le temps seul ne change pas l'ordre, seules de nouvelles réponses le changent (à l'arrondi près, et hors réponses postérieures à l'heure de référence).
+
+### Ce qui compte comme dépendance
+
+- **Les sources d'une réponse**, comme pour la [remontée](#ce-qui-compte-comme-source) : les lectures de son run et de tous ses runs enfants, à toute profondeur, quelle que soit leur heure. Un run qui a lu sans répondre n'expose rien.
+- **Une colonne** dépend des réponses dont une lecture la nomme, et de celles qui ont lu la table entière : une colonne fausse touche aussi ceux qui ont tout lu. C'est le côté sûr, celui de la [propagation](#propager-un-incident). Les colonnes d'un jeu sont celles qu'une lecture a nommées : un jeu toujours lu en entier n'en montre aucune. Une colonne ne pèse donc jamais plus que son jeu de données.
+- **Pas de transitivité** : une réponse fondée sur une note ou une table dérivée d'un jeu n'en dépend pas, comme pour la propagation ([limites](#limites-connues)).
+- Seuls les jeux dont au moins une réponse dépend sont classés ; un jeu absent du classement a un score nul.
+
+### Une heure de référence, un même score
+
+Le score se calcule à la lecture, à une heure de référence : l'âge de chaque réponse se compte jusqu'à elle. Par défaut, c'est la date de `known_at` quand elle est donnée (le score tel qu'on l'aurait lu ce jour-là), sinon l'heure de la base. Le résultat la rappelle dans `at`, en UTC. Une réponse postérieure à l'heure de référence pèse comme une réponse de cet instant.
+
+Le calcul est déterministe : la même base et la même heure de référence donnent le même score, octet pour octet. Le poids de chaque réponse se compte en billionièmes entiers ; leur somme est donc exacte et ne dépend pas de l'ordre des réponses. Le score s'arrondit ensuite au millionième, la moitié vers le haut. Une réponse d'exactement 30 jours pèse exactement la moitié d'une réponse de l'instant, sans arrondi.
+
+Les jeux de données vont du plus exposé au moins exposé, au millionième ; à égalité, par espace de noms puis par nom. Les colonnes d'un jeu de même, à égalité par leur nom.
+
+| Champ | Contenu |
+| --- | --- |
+| `at` | L'heure de référence retenue, en UTC |
+| `datasets[].score` | Le score du jeu de données, au millionième |
+| `datasets[].answers` | Les réponses qui en dépendent |
+| `datasets[].recipients` | Les destinataires distincts de ces réponses, tous canaux confondus |
+| `datasets[].columns` | Les colonnes nommées par une lecture, les plus exposées d'abord, 100 au plus : `name`, `score` et `answers` |
+| `datasets[].more_columns` | `true` quand d'autres colonnes, moins exposées, suivent les 100 rendues |
+| `more`, `next_cursor` | Des jeux moins exposés suivent ; le curseur de la page suivante |
+| `truncated` | `true` quand une lecture du graphe dépasse sa borne : les scores sont des minimums, et l'ordre peut différer de celui du graphe entier |
+
+| Paramètre | Rôle | Défaut |
+| --- | --- | --- |
+| `limit` | Jeux de données par page, de 1 à 200 | 50 |
+| `cursor` | La page suivante : la valeur de `next_cursor`, rendue telle quelle | aucun |
+| `at` | Heure de référence (RFC 3339, avec fuseau), du 1er janvier 1970 à l'an 9999 | `known_at`, sinon l'heure de la base |
+| `known_at` | Lit le graphe tel qu'il était connu à cette date ([plus bas](#le-graphe-tel-que-connu-à-une-date)) | aucune |
+
+Le curseur garde l'heure de référence de la première page : les suivantes se calculent à la même heure, et `at`, s'il est redonné, doit être le même. `known_at` se redonne à chaque page, comme pour les autres routes. Un curseur mal formé est refusé en `422`, comme un curseur d'une autre heure de référence ou qui ne désigne aucun jeu du classement (`cursor_invalid`), et une heure de référence sans fuseau ou hors de ses bornes (`at_out_of_range`). Le refus donne le chemin du paramètre, jamais la valeur reçue. Sans `known_at`, une réponse reçue entre deux pages peut changer les scores : un jeu peut alors manquer ou revenir.
+
+`answerlineage exposure` lit la même route depuis le terminal ([ligne de commande](cli.md#answerlineage-exposure)).
+
+### Mesure de l'ordre
+
+L'ordre d'exposition se mesure sur le [corpus de vérité](corpus.md#lordre-dexposition) : trois scénarios au moins écrivent à la main l'ordre attendu de leurs jeux de données et de leurs colonnes, à une heure de référence. `tests/test_truth_corpus_exposure.py` charge chacun par le chemin réel, dans sa propre base, et compare le classement de l'API à cet ordre.
 
 ## Couverture du lignage
 
@@ -316,6 +419,7 @@ curl "http://127.0.0.1:8000/api/v1/impact?namespace=bigquery&name=ventes.suivi.c
 | `GET /api/v1/graph` | Les réponses connues à cette date et leurs chaînes ; avec `answer`, `404` pour une réponse enregistrée après |
 | `GET /api/v1/answers` | Les réponses que le message portait à cette date |
 | `GET /api/v1/datasets` | Les jeux de données connus à cette date |
+| `GET /api/v1/exposure` | Le score des réponses et des lectures enregistrées à cette date ; l'heure de référence est cette date, sauf si `at` en donne une autre |
 
 Le résultat rappelle la date retenue dans son champ `known_at`, tel qu'il a été demandé ; le graphe d'un résultat d'impact le rappelle aussi. Sans le paramètre, rien ne change : la lecture porte sur le graphe tel qu'il est, et le champ est absent. Pour parcourir les pages, `cursor` se rend avec la même date.
 
@@ -356,6 +460,7 @@ Toute requête porte une borne sur les lignes qu'elle lit. Un dépassement se di
 | Graphe en cinq colonnes | 200 réponses par page ; pour leurs chaînes, 20 000 runs, 50 000 couples run et jeu de données lu, 50 000 liens de diffusion |
 | Propagation | 20 000 lectures du jeu de données dans la fenêtre, 20 000 runs parents, 100 000 réponses et 200 000 liens de diffusion comptés |
 | Jeux de données connus | 500 par page |
+| Score d'exposition | 200 jeux de données par page, 100 colonnes rendues par jeu ; 20 000 réponses, les plus récentes d'abord, 100 000 liens vers leurs destinataires, 50 000 runs dans leurs arbres, 50 000 couples run et jeu de données lu, 100 000 colonnes nommées par ces lectures |
 | Incidents | 100 par page ; pour un incident, 200 réponses touchées par page et 200 000 liens vers leurs destinataires |
 | File de rebut | 500 événements par page ; décomptes par motif sur 100 000 événements au plus ; un rejeu remet en file 10 000 événements au plus |
 | Couverture | 1 000 émetteurs pour un résultat d'impact ou une remontée, 500 par page ; 50 000 relevés lus ; 1 000 trous rendus ; dans chaque fenêtre, les événements comptés au plus jusqu'aux appels vus |
@@ -382,6 +487,7 @@ Les réponses vont des plus récentes aux plus anciennes. Plusieurs réponses pe
 - Un appel d'outil n'est rattaché à une réponse que si son événement désigne le run de l'agent comme parent.
 - La propagation s'arrête au niveau table : elle renvoie tout lecteur de la fenêtre, y compris ceux qui n'ont lu que des colonnes, des lignes ou une version saines.
 - Elle ne suit pas encore ce qu'un run touché a écrit : une réponse fondée sur une note ou une table dérivée de la donnée fausse n'est pas renvoyée.
+- Le score d'exposition suit les mêmes dépendances : ni ce qu'un run a écrit, ni ce qu'un appel non capté a lu. Au-delà de 20 000 réponses, les plus anciennes, qui pèsent le moins, n'y comptent pas, et le classement le dit (`truncated`). Une colonne y porte son score et ses réponses, pas ses destinataires. Deux lectures d'un même jeu, dans une même version, par un même run se fusionnent en une, la plus précise ([schéma](schema.md#écrire-dans-le-graphe)) : un run qui a lu la table entière et nommé des colonnes ne compte que pour celles-ci. Le score n'ordonne pas encore les réponses d'un incident à rappeler.
 - La couverture du lignage ne voit que ce que voient les émetteurs qui publient des relevés : un appel qui ne passe par aucun d'eux n'est compté nulle part. Elle compte les appels d'outils, pas les runs d'agents.
 - La couverture d'une remontée ne regarde que les émetteurs qui ont vu le run : si un émetteur a perdu le seul événement de ce run qu'il ait porté, rien ne le relie à la réponse, et son trou n'apparaît pas dans sa couverture. La couverture de chaque émetteur sur la période (`GET /api/v1/coverage`) le montre.
 - Un émetteur retiré pour de bon reste connu : rien ne permet encore de le déclarer retiré, et son silence rend partielle la couverture de toute période qui suit son dernier relevé.

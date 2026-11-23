@@ -81,7 +81,7 @@ Le générateur établit cette liste lui-même, à partir de ce qu'il a génér�
 
 ## Corpus de vérité
 
-À côté de l'entreprise générée, le corpus tient des scénarios d'incident écrits à la main, chacun avec sa vérité. Ils servent à mesurer le moteur d'impact comme on mesure un modèle : rappel sur les réponses touchées, précision sur les réponses écartées.
+À côté de l'entreprise générée, le corpus tient des scénarios d'incident écrits à la main, chacun avec sa vérité. Ils servent à mesurer le moteur d'impact comme on mesure un modèle : rappel sur les réponses touchées, précision sur les réponses écartées. Certains tiennent aussi l'[ordre d'exposition](#lordre-dexposition) attendu de leurs jeux de données.
 
 ```bash
 uv run answerlineage-corpus check
@@ -98,6 +98,9 @@ uv run answerlineage-corpus check
 | `cles` | clés | Quelques lignes fausses : clés communes, disjointes, inconnues |
 | `transitivite-memoire` | table | Une réponse fondée sur une note écrite à partir de la table fausse |
 | `transitivite-chaine` | table | La table fausse alimente une table dérivée, puis une note, puis une réponse |
+| `exposition-anciennes-recentes` | table | Six réponses de trois mois contre une réponse de la veille, trois d'un mois ; un run sans réponse |
+| `exposition-destinataires` | table | Une réponse à dix destinataires contre trois réponses à un seul, cinq à aucun |
+| `exposition-colonne-unique` | colonnes | Une colonne lue par une seule réponse récente, deux lues par trois réponses plus anciennes, la table lue en entier |
 
 Un scénario est un fichier JSON de `corpus/src/answerlineage_corpus/scenario_data/`. Il décrit quelques runs d'agents, un incident et sa vérité :
 
@@ -106,12 +109,45 @@ Un scénario est un fichier JSON de `corpus/src/answerlineage_corpus/scenario_da
 | `touched` | Réponses à rappeler, avec la confiance attendue (`certaine`, `probable`, `possible`). `path` vaut `indirect` quand la réponse dépend d'une sortie d'un run touché et non de la table elle-même |
 | `discarded` | Réponses qui ont lu la table pendant la fenêtre sans dépendre de ce qui est faux, avec le motif : colonnes, sous-ensembles, clés ou version disjoints |
 | `untouched` | Réponses sans rapport avec l'incident |
+| `exposure` | Facultatif : l'ordre d'exposition attendu des jeux de données, et de leurs colonnes, à une heure de référence ([plus bas](#lordre-dexposition)) |
 
-Le contrôle refuse un scénario sans vérité, une réponse que la vérité oublie ou classe deux fois, et une vérité que la description contredit : une réponse dite touchée alors que rien n'a lu la table pendant la fenêtre, une dépendance indirecte qui remonterait le temps. Il exige que le corpus couvre les quatre niveaux de précision, la transitivité et les réponses écartées.
+Le contrôle refuse un scénario sans vérité, une réponse que la vérité oublie ou classe deux fois, et une vérité que la description contredit : une réponse dite touchée alors que rien n'a lu la table pendant la fenêtre, une dépendance indirecte qui remonterait le temps. Il exige que le corpus couvre les quatre niveaux de précision, la transitivité, les réponses écartées et un ordre d'exposition.
 
-Le corpus porte un numéro de version, lié à son contenu : changer un scénario ou sa vérité demande une nouvelle version, pour que deux mesures restent comparables.
+Le corpus porte un numéro de version, lié à son contenu : changer un scénario ou sa vérité demande une nouvelle version, pour que deux mesures restent comparables. L'empreinte de chaque version est enregistrée (`_DIGESTS` dans `scenarios.py`) ; un contenu changé sans nouvelle version fait échouer les tests.
+
+| Version | Ce qui a changé |
+| --- | --- |
+| 1 | Les neuf scénarios d'incident : table, colonnes, sous-ensemble, clés, transitivité |
+| 2 | Trois scénarios d'exposition, et la vérité de leur ordre d'exposition |
 
 Les sous-ensembles et les clés d'une lecture sont décrits dans le scénario, mais pas encore dans ses événements : le contrat d'événements ne les porte pas.
+
+### L'ordre d'exposition
+
+Un scénario peut écrire, dans sa vérité, l'ordre attendu du [score d'exposition](lecture.md#score-dexposition) : ses jeux de données, du plus exposé au moins exposé, à une heure de référence, et pour chaque jeu dont des lectures nomment des colonnes, l'ordre de ces colonnes.
+
+```json
+"exposure": {
+  "at": "2026-11-01T12:00:00Z",
+  "datasets": ["taux", "factures"],
+  "columns": {
+    "taux": ["date_valeur", "devise", "taux"],
+    "factures": ["montant", "client_id"]
+  }
+}
+```
+
+Les jeux de données se nomment par leur alias dans le scénario. Trois scénarios tiennent un ordre qui ne va pas de soi :
+
+| Scénario | Ordre attendu | Ce qu'il éprouve |
+| --- | --- | --- |
+| `exposition-anciennes-recentes` | stocks, commandes, factures | Les factures ont le plus de réponses, les commandes la plus récente : ni l'une ni l'autre n'est en tête. Six réponses de trois mois pèsent moins qu'une réponse de la veille. Les encaissements, lus par un run qui n'a pas répondu, ne sont pas classés |
+| `exposition-destinataires` | effectifs, commandes, tickets | Une seule réponse, à dix destinataires, passe devant trois réponses à un destinataire et cinq à aucun : l'ordre inverse du nombre de réponses |
+| `exposition-colonne-unique` | taux, factures ; date de valeur, devise, taux | La date de valeur, lue par une seule réponse, est la colonne la plus exposée ; la réponse qui a lu la table entière compte pour chaque colonne ; la devise et le taux, à égalité, se suivent par leur nom |
+
+Le contrôle recoupe cet ordre avec la description du scénario, sans passer par le produit : il recalcule le score de chaque jeu et de chaque colonne à partir des runs, des lectures, des heures et des destinataires que le scénario décrit, selon la règle publiée. Il refuse un ordre qui oublie un jeu dont une réponse dépend, qui en nomme un dont aucune ne dépend, qui en nomme un deux fois ou qui les range autrement ; de même pour les colonnes, dont la liste doit être exactement celle que les lectures nomment. L'ordre écrit à la main reste la vérité : le contrôle n'en est qu'une relecture.
+
+`tests/test_truth_corpus_exposure.py` charge chaque scénario qui tient un ordre d'exposition par le chemin réel, dans sa propre base, puis demande le classement à l'API à l'heure de référence du scénario. L'ordre des jeux de données et de leurs colonnes doit être celui de la vérité, sans troncature ; la commande `answerlineage exposure` doit lire le même classement.
 
 ### Mesure du moteur d'impact
 

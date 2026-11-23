@@ -74,6 +74,7 @@ async def test_three_canaries_cross_the_whole_path_and_come_out_nowhere(
                 for path in (
                     "/api/v1/graph",
                     "/api/v1/datasets",
+                    "/api/v1/exposure",
                     "/api/v1/ingestion/duplicates",
                     "/api/v1/ingestion/dead-letters",
                 )

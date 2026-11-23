@@ -1,10 +1,11 @@
 # Ligne de commande
 
-`answerlineage` fait depuis le terminal ce que fait l'explorateur, et un peu plus : propager un incident jusqu'aux réponses et aux destinataires touchés, déclarer un incident et lire son analyse, consulter et rejouer la file de rebut, vérifier une installation, lancer la démonstration. Elle parle à l'API par HTTP, comme l'explorateur, et ne lit jamais la base. Elle lance aussi le proxy MCP.
+`answerlineage` fait depuis le terminal ce que fait l'explorateur, et un peu plus : propager un incident jusqu'aux réponses et aux destinataires touchés, classer les jeux de données par exposition, déclarer un incident et lire son analyse, consulter et rejouer la file de rebut, vérifier une installation, lancer la démonstration. Elle parle à l'API par HTTP, comme l'explorateur, et ne lit jamais la base. Elle lance aussi le proxy MCP.
 
 | Sous-commande | Ce qu'elle fait |
 | --- | --- |
 | [`answerlineage impact`](#answerlineage-impact) | Les réponses et les destinataires touchés par un jeu de données faux pendant une fenêtre ; le code de sortie dit si l'on peut conclure |
+| [`answerlineage exposure`](#answerlineage-exposure) | Les jeux de données et leurs colonnes, les plus exposés d'abord, selon les réponses qui en dépendent et leurs destinataires |
 | [`answerlineage incident`](#answerlineage-incident) | Déclare un incident de données, puis lit l'analyse d'impact que les workers en font ; le code de sortie de `show` dit si l'on peut conclure |
 | [`answerlineage dead-letters`](#answerlineage-dead-letters) | Consulte la file de rebut, les événements que la projection n'a pas pu intégrer au graphe, et les remet en file une fois le correctif déployé |
 | [`answerlineage doctor`](#answerlineage-doctor) | Vérifie chaque composant d'une installation et liste les anomalies, chacune avec son remède |
@@ -146,6 +147,49 @@ Réponse de l'API invalide en /graph/tools/0/name : un champ manque ou n'a pas l
 ```
 
 Un refus de l'API est dit par un message écrit d'avance, choisi d'après son code (`unknown_dataset`, `query_timeout`, `host_not_allowed`…) ; un code inconnu n'est pas recopié, seul le statut HTTP l'est.
+
+## `answerlineage exposure`
+
+Les jeux de données dont dépendent le plus de réponses et de destinataires, et leurs colonnes, les plus exposés d'abord : le [score d'exposition](lecture.md#score-dexposition). L'exemple est un scénario du corpus de vérité, `exposition-colonne-unique` :
+
+```bash
+answerlineage exposure --at 2026-11-01T12:00:00Z
+```
+
+```text
+Exposition des jeux de données au 2026-11-01T12:00:00Z
+Score : chaque réponse qui dépend d'un jeu de données y pèse 1 plus un par destinataire, moitié moins tous les 30 jours.
+
+Jeux de données, les plus exposés d'abord (2 sur cette page) :
+  10,192078  finance.ref.taux_change (espace de noms bigquery, table)
+    5 réponses, 6 destinataires
+    colonnes : date_valeur 6,423125 (2 réponses), devise 5,315637 (4 réponses), taux 5,315637 (4 réponses)
+  4,380814  finance.compta.factures (espace de noms bigquery, table)
+    2 réponses, 3 destinataires
+    colonnes : montant 2,604141 (1 réponse), client_id 1,776673 (1 réponse)
+
+Classement complet : chaque réponse qui dépend d'un jeu de données y est comptée.
+```
+
+La sortie lisible dit l'heure de référence et la règle du score, puis chaque jeu de données : son score au millionième, sans zéro inutile, ses réponses et ses destinataires distincts, ses colonnes les plus exposées, et s'il en a d'autres. Elle finit par ce que vaut le classement.
+
+| Option | Rôle | Défaut |
+| --- | --- | --- |
+| `--limit` | Jeux de données par page, de 1 à 200 | 50 |
+| `--cursor` | La page suivante : la valeur de `next_cursor`, que la sortie lisible rappelle ; elle garde l'heure de référence | aucun |
+| `--at` | L'heure de référence du score, en RFC 3339 avec fuseau | la date de `--known-at`, sinon l'heure de la base |
+| `--known-at` | Lit le graphe tel qu'il était connu à cette date ([graphe à une date](lecture.md#le-graphe-tel-que-connu-à-une-date)) | aucune |
+| `--format` | `text` ou `json` ; en JSON, la réponse de `GET /api/v1/exposure`, réduite aux champs du contrat (`ExposureList`) | `text` |
+
+Ce sont les paramètres de `GET /api/v1/exposure`. La réponse est validée comme celle d'`impact` ([une réponse de l'API est hostile](#une-réponse-de-lapi-est-hostile)) : un nom de jeu de données ou de colonne a la forme d'un nom, un score est un nombre fini et positif, un décompte un entier positif, une page qui annonce une suite donne son curseur.
+
+| Code | Sens |
+| --- | --- |
+| `0` | Classement complet, vide compris quand aucune réponse ne dépend d'un jeu de données |
+| `2` | Usage fautif : option mal formée, date hors des bornes ; ou paramètre refusé par l'API (`422`), qui nomme l'option |
+| `3` | Classement incomplet : une lecture du graphe a dépassé sa borne. Les scores sont des minimums, et l'ordre peut différer de celui du graphe entier |
+| `4` | L'API ne répond pas, ou pas dans le délai |
+| `5` | L'API a refusé la requête (délai de lecture dépassé, adresse refusée) ou rendu une réponse invalide |
 
 ## `answerlineage incident`
 
@@ -511,16 +555,16 @@ Le paquet `answerlineage-cli` ne dépend pas du proxy. Sans le paquet `answerlin
 
 ## Tous les codes de sortie
 
-| Code | `impact` | `incident declare` | `incident show` | `dead-letters list` | `dead-letters replay` | `doctor` | `demo` |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `0` | Réponses touchées, liste complète | Incident déclaré | Réponses touchées, liste complète | Rebut vide | Tout est remis en file | Aucune anomalie | La démonstration répond |
-| `1` | Aucune réponse touchée, résultat complet | | Aucune réponse touchée, résultat complet | Des événements attendent | Rien à rejouer | Au moins une anomalie | Docker absent ou en échec |
-| `2` | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif, hors d'un clone |
-| `3` | Résultat incomplet | | Résultat incomplet | | D'autres restent, relancer | | |
-| `4` | API injoignable | API injoignable | API injoignable | API injoignable | API injoignable | | La démonstration ne répond pas |
-| `5` | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | | |
-| `6` | | | Analyse en attente | | | | |
-| `7` | | | Analyse en échec | | | | |
+| Code | `impact` | `exposure` | `incident declare` | `incident show` | `dead-letters list` | `dead-letters replay` | `doctor` | `demo` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `0` | Réponses touchées, liste complète | Classement complet | Incident déclaré | Réponses touchées, liste complète | Rebut vide | Tout est remis en file | Aucune anomalie | La démonstration répond |
+| `1` | Aucune réponse touchée, résultat complet | | | Aucune réponse touchée, résultat complet | Des événements attendent | Rien à rejouer | Au moins une anomalie | Docker absent ou en échec |
+| `2` | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif | Usage fautif, hors d'un clone |
+| `3` | Résultat incomplet | Classement incomplet | | Résultat incomplet | | D'autres restent, relancer | | |
+| `4` | API injoignable | API injoignable | API injoignable | API injoignable | API injoignable | API injoignable | | La démonstration ne répond pas |
+| `5` | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | Refus de l'API ou réponse invalide | | |
+| `6` | | | | Analyse en attente | | | | |
+| `7` | | | | Analyse en échec | | | | |
 
 `answerlineage proxy` rend les codes du proxy, et `2` quand le proxy n'est pas installé.
 
@@ -532,6 +576,7 @@ La commande n'écrit dans aucun journal. Le client HTTP qu'elle emploie, httpx, 
 
 - L'API n'authentifie pas ses appelants : la commande non plus. Elle est faite pour une API sur la boucle locale ou derrière un contrôle d'accès.
 - `impact` lit une page de réponses à la fois, 200 au plus ; les décomptes sont ceux de tout l'incident, et `--cursor` donne la suite. `incident show` de même.
+- `exposure` lit une page de jeux de données à la fois, 200 au plus, et 100 colonnes par jeu ; au-delà, la sortie le dit, sans moyen de lire les suivantes.
 - `incident declare` n'attend pas l'analyse : `incident show` la lit quand un worker l'a faite.
 - `doctor` ne voit pas les workers : une file vide ne dit pas qu'un worker tourne, et sans worker, aucun émetteur n'est signalé muet.
 - `demo` attend la démonstration sur le port que publie `compose.yaml`, 8000 : il doit être libre.

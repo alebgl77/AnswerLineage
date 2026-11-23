@@ -42,6 +42,7 @@ READS = [
     ("/api/v1/graph", {"answer": "0" * 48}),
     ("/api/v1/datasets", {}),
     ("/api/v1/impact", IMPACT),
+    ("/api/v1/exposure", {}),
     ("/api/v1/ingestion/duplicates", {}),
     ("/api/v1/ingestion/dead-letters", {"emitter": "mcp://entrepot"}),
 ]

@@ -15,6 +15,7 @@ from answerlineage_corpus import cli
 from answerlineage_corpus.scenarios import (
     CORPUS_VERSION,
     LEVELS,
+    Answer,
     CorpusError,
     check_corpus,
     check_scenario,
@@ -23,6 +24,7 @@ from answerlineage_corpus.scenarios import (
     recorded_digest,
     scenario_files,
 )
+from answerlineage_corpus.scenarios import Scenario as Built
 
 Scenario = dict[str, Any]
 
@@ -44,8 +46,60 @@ def test_the_corpus_is_coherent() -> None:
     assert check_corpus() == []
     corpus = load_corpus()
     assert corpus.version == CORPUS_VERSION
-    assert len(corpus.scenarios) >= 9
+    assert len(corpus.scenarios) >= 12
     assert [item.name for item in corpus] == sorted(item.name for item in corpus)
+
+
+def exposed(name: str) -> tuple[Built, list[str]]:
+    """Un scénario d'exposition, et l'ordre attendu de ses jeux de données par leur nom."""
+    item = next(found for found in load_corpus() if found.name == name)
+    assert item.exposure is not None
+    return item, [dataset.name for dataset in item.exposure.datasets]
+
+
+def readers(item: Built, dataset: str) -> list[Answer]:
+    """Les réponses dont un appel a lu ce jeu de données : ces scénarios n'ont pas de sous-agent."""
+    return [
+        run.answer
+        for run in item.runs
+        if run.answer is not None
+        and any(read.dataset.name == dataset for call in run.calls for read in call.reads)
+    ]
+
+
+def test_at_least_three_scenarios_hold_an_exposure_order_that_is_not_trivial() -> None:
+    assert sum(1 for item in load_corpus() if item.exposure is not None) >= 3
+
+    # Beaucoup de réponses anciennes : ni le jeu le plus lu, ni le plus récemment lu n'est en tête.
+    item, order = exposed("exposition-anciennes-recentes")
+    most_read = max(order, key=lambda name: len(readers(item, name)))
+    latest = max(order, key=lambda name: max(answer.at for answer in readers(item, name)))
+    assert order[0] not in (most_read, latest)
+    assert order[-1] == most_read
+
+    # Une réponse à beaucoup de destinataires passe devant plusieurs réponses à peu.
+    item, order = exposed("exposition-destinataires")
+    assert [len(readers(item, name)) for name in order] == sorted(
+        len(readers(item, name)) for name in order
+    )
+    (first,) = readers(item, order[0])
+    assert len(first.recipients) >= 10
+
+    # Une colonne lue par une seule réponse est la plus exposée de sa table.
+    item, order = exposed("exposition-colonne-unique")
+    assert item.exposure is not None
+    columns = dict(item.exposure.columns)
+    rates = next(dataset for dataset in columns if dataset.name == order[0])
+    top = columns[rates][0]
+    named = [
+        run.answer
+        for run in item.runs
+        if run.answer is not None
+        and any(top in read.columns for call in run.calls for read in call.reads)
+    ]
+    assert len(named) == 1
+    # Les colonnes à égalité se suivent par leur nom.
+    assert list(columns[rates][1:]) == sorted(columns[rates][1:])
 
 
 def test_it_covers_the_four_precision_levels_transitivity_and_discarded_answers() -> None:
@@ -279,6 +333,131 @@ def test_a_malformed_scenario_fails_the_check(
     assert any(problem in found for found in problems), problems
 
 
+def swap_the_two_first_datasets(raw: Scenario) -> None:
+    order = raw["truth"]["exposure"]["datasets"]
+    order[0], order[1] = order[1], order[0]
+
+
+def forget_an_exposed_dataset(raw: Scenario) -> None:
+    raw["truth"]["exposure"]["datasets"].pop()
+
+
+def name_a_dataset_twice(raw: Scenario) -> None:
+    raw["truth"]["exposure"]["datasets"].append(raw["truth"]["exposure"]["datasets"][0])
+
+
+def rank_a_dataset_no_answer_depends_on(raw: Scenario) -> None:
+    # Seul un run qui n'a pas répondu lit les encaissements.
+    raw["truth"]["exposure"]["datasets"].append("encaissements")
+
+
+def score_at_the_time_of_the_old_answers(raw: Scenario) -> None:
+    # Le lendemain des réponses anciennes, ce sont elles qui pèsent le plus.
+    raw["truth"]["exposure"]["at"] = "2026-08-04T12:00:00Z"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "problem"),
+    [
+        (swap_the_two_first_datasets, "l'ordre d'exposition des jeux de données contredit"),
+        (forget_an_exposed_dataset, "ne nomme pas exactement les jeux de données"),
+        (name_a_dataset_twice, "figure deux fois dans l'ordre d'exposition"),
+        (rank_a_dataset_no_answer_depends_on, "ne nomme pas exactement les jeux de données"),
+        (
+            score_at_the_time_of_the_old_answers,
+            "l'ordre d'exposition des jeux de données contredit",
+        ),
+    ],
+)
+def test_an_exposure_order_the_scenario_contradicts_fails_the_check(
+    mutate: Callable[[Scenario], None], problem: str
+) -> None:
+    raw = scenario("exposition-anciennes-recentes")
+    assert check_scenario("essai", raw) == []
+    mutate(raw)
+    problems = check_scenario("essai", raw)
+    assert any(problem in found for found in problems), problems
+
+
+def swap_two_columns(raw: Scenario) -> None:
+    order = raw["truth"]["exposure"]["columns"]["taux"]
+    order[0], order[1] = order[1], order[0]
+
+
+def put_the_tied_columns_out_of_their_name_order(raw: Scenario) -> None:
+    order = raw["truth"]["exposure"]["columns"]["taux"]
+    order[1], order[2] = order[2], order[1]
+
+
+def forget_the_columns_of_a_dataset(raw: Scenario) -> None:
+    del raw["truth"]["exposure"]["columns"]["factures"]
+
+
+def forget_a_column(raw: Scenario) -> None:
+    raw["truth"]["exposure"]["columns"]["factures"].pop()
+
+
+def invent_a_column(raw: Scenario) -> None:
+    raw["truth"]["exposure"]["columns"]["factures"].append("echeance")
+
+
+@pytest.mark.parametrize(
+    ("mutate", "problem"),
+    [
+        (swap_two_columns, "l'ordre d'exposition des colonnes de « finance.ref.taux_change »"),
+        (
+            put_the_tied_columns_out_of_their_name_order,
+            "l'ordre d'exposition des colonnes de « finance.ref.taux_change »",
+        ),
+        (forget_the_columns_of_a_dataset, "les colonnes attendues de « finance.compta.factures »"),
+        (forget_a_column, "les colonnes attendues de « finance.compta.factures »"),
+        (invent_a_column, "les colonnes attendues de « finance.compta.factures »"),
+    ],
+)
+def test_a_column_order_the_scenario_contradicts_fails_the_check(
+    mutate: Callable[[Scenario], None], problem: str
+) -> None:
+    raw = scenario("exposition-colonne-unique")
+    assert check_scenario("essai", raw) == []
+    mutate(raw)
+    problems = check_scenario("essai", raw)
+    assert any(problem in found for found in problems), problems
+
+
+def give_the_order_as_text(raw: Scenario) -> None:
+    raw["truth"]["exposure"] = "stocks, commandes, factures"
+
+
+def give_the_columns_as_a_list(raw: Scenario) -> None:
+    raw["truth"]["exposure"]["columns"] = ["montant"]
+
+
+def drop_the_time_zone_of_the_reference(raw: Scenario) -> None:
+    raw["truth"]["exposure"]["at"] = "2026-11-01T12:00:00"
+
+
+def rank_an_unknown_dataset(raw: Scenario) -> None:
+    raw["truth"]["exposure"]["datasets"].append("fantome")
+
+
+@pytest.mark.parametrize(
+    ("mutate", "problem"),
+    [
+        (give_the_order_as_text, "forme invalide (TypeError"),
+        (give_the_columns_as_a_list, "forme invalide (TypeError"),
+        (drop_the_time_zone_of_the_reference, "forme invalide (ValueError"),
+        (rank_an_unknown_dataset, "forme invalide (KeyError"),
+    ],
+)
+def test_a_malformed_exposure_order_fails_the_check(
+    mutate: Callable[[Scenario], None], problem: str
+) -> None:
+    raw = scenario("exposition-anciennes-recentes")
+    mutate(raw)
+    problems = check_scenario("essai", raw)
+    assert any(problem in found for found in problems), problems
+
+
 def test_a_scenario_is_a_json_object_and_a_corpus_is_readable(tmp_path: Path) -> None:
     assert check_scenario("essai", ["pas", "un", "objet"]) == [
         "essai : un scénario est un objet JSON"
@@ -297,6 +476,7 @@ def test_a_corpus_must_cover_every_level_transitivity_and_discarded_answers(
         "aucun scénario au niveau « keys »",
         "aucun scénario de transitivité",
         "aucun scénario avec une réponse écartée",
+        "aucun scénario avec un ordre d'exposition",
     ]
 
 
@@ -372,7 +552,11 @@ def test_the_command_line_checks_the_corpus(
 ) -> None:
     assert cli.main(["check"]) == 0
     printed = capsys.readouterr().out
-    assert "colonnes : niveau columns, 3 touchée(s), 1 écartée(s), 1 hors d'atteinte" in printed
+    assert "colonnes : niveau columns, 3 touchée(s), 1 écartée(s), 1 hors d'atteinte\n" in printed
+    assert (
+        "exposition-destinataires : niveau table, 3 touchée(s), 0 écartée(s), 6 hors d'atteinte,"
+        " ordre d'exposition de 3 jeu(x) de données\n"
+    ) in printed
     assert f"scénarios, version {CORPUS_VERSION}.\n" in printed
     assert cli.main(["check", "--directory", str(directory)]) == 0
     capsys.readouterr()

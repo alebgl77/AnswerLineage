@@ -1,0 +1,285 @@
+{
+  "title": "Une colonne lue par une seule réponse, et une table lue en entier",
+  "level": "columns",
+  "agents": {
+    "tresorerie": {
+      "namespace": "agent://finance",
+      "name": "analyste-tresorerie"
+    },
+    "commercial": {
+      "namespace": "agent://ventes",
+      "name": "assistant-commercial"
+    },
+    "direction": {
+      "namespace": "agent://direction",
+      "name": "synthese-hebdomadaire"
+    }
+  },
+  "tools": {
+    "sql": {
+      "server": "entrepot",
+      "name": "execute_sql"
+    }
+  },
+  "datasets": {
+    "taux": {
+      "namespace": "bigquery",
+      "name": "finance.ref.taux_change"
+    },
+    "factures": {
+      "namespace": "bigquery",
+      "name": "finance.compta.factures"
+    }
+  },
+  "runs": [
+    {
+      "id": "devise-et-taux-1",
+      "agent": "tresorerie",
+      "start": "2026-10-12T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-12T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "devise",
+                "taux"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "devise-et-taux-1",
+        "at": "2026-10-12T09:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "devise-et-taux-2",
+      "agent": "tresorerie",
+      "start": "2026-10-12T09:01:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-12T09:01:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "devise",
+                "taux"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "devise-et-taux-2",
+        "at": "2026-10-12T09:01:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "devise-et-taux-3",
+      "agent": "tresorerie",
+      "start": "2026-10-12T09:02:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-12T09:02:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "devise",
+                "taux"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "devise-et-taux-3",
+        "at": "2026-10-12T09:02:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "date-de-valeur",
+      "agent": "direction",
+      "start": "2026-10-31T10:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-31T10:00:05Z",
+          "reads": [
+            {
+              "dataset": "taux",
+              "columns": [
+                "date_valeur"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "date-de-valeur",
+        "at": "2026-10-31T10:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "d2",
+          "d3",
+          "d4",
+          "d5"
+        ]
+      }
+    },
+    {
+      "id": "table-entiere",
+      "agent": "commercial",
+      "start": "2026-10-21T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-21T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "taux"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "table-entiere",
+        "at": "2026-10-21T09:00:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d6"
+        ]
+      }
+    },
+    {
+      "id": "montant",
+      "agent": "tresorerie",
+      "start": "2026-10-26T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-26T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "factures",
+              "columns": [
+                "montant"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "montant",
+        "at": "2026-10-26T09:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1",
+          "d7"
+        ]
+      }
+    },
+    {
+      "id": "client",
+      "agent": "commercial",
+      "start": "2026-10-27T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-27T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "factures",
+              "columns": [
+                "client_id"
+              ]
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "client",
+        "at": "2026-10-27T09:00:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d6"
+        ]
+      }
+    }
+  ],
+  "incident": {
+    "dataset": "taux",
+    "from": "2026-10-12T06:00:00Z",
+    "to": "2026-11-01T00:00:00Z",
+    "columns": [
+      "taux"
+    ]
+  },
+  "truth": {
+    "touched": [
+      {
+        "answer": "devise-et-taux-1",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "devise-et-taux-2",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "devise-et-taux-3",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "table-entiere",
+        "confidence": "possible"
+      }
+    ],
+    "discarded": [
+      {
+        "answer": "date-de-valeur",
+        "reason": "colonnes disjointes"
+      }
+    ],
+    "untouched": [
+      "montant",
+      "client"
+    ],
+    "exposure": {
+      "at": "2026-11-01T12:00:00Z",
+      "datasets": [
+        "taux",
+        "factures"
+      ],
+      "columns": {
+        "taux": [
+          "date_valeur",
+          "devise",
+          "taux"
+        ],
+        "factures": [
+          "montant",
+          "client_id"
+        ]
+      }
+    }
+  }
+}

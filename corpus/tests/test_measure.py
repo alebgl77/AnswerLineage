@@ -73,7 +73,10 @@ def test_the_answers_the_corpus_discards_count_against_the_declared_precision() 
     assert result.declared.precision < 1
     by_level = result.declared_by_level()
     assert list(by_level) == ["table", "columns", "subset", "keys"]
-    assert by_level["columns"].extra == {"colonnes/autres-colonnes"}
+    assert by_level["columns"].extra == {
+        "colonnes/autres-colonnes",
+        "exposition-colonne-unique/date-de-valeur",
+    }
     assert by_level["subset"].precision == Fraction(3, 5)
     # La version saine d'une table rechargée s'écarte dans un scénario de niveau table.
     assert by_level["table"].extra == {"version-corrigee/version-saine"}

@@ -71,10 +71,16 @@ def _check(directory: Path | None) -> int:
         return 1
     corpus = load_corpus(directory)
     for scenario in corpus:
+        exposure = scenario.exposure
+        ranked = (
+            ""
+            if exposure is None
+            else (f", ordre d'exposition de {len(exposure.datasets)} jeu(x) de données")
+        )
         print(
             f"{scenario.name} : niveau {scenario.level}, "
             f"{len(scenario.touched)} touchée(s), {len(scenario.discarded)} écartée(s), "
-            f"{len(scenario.untouched)} hors d'atteinte"
+            f"{len(scenario.untouched)} hors d'atteinte{ranked}"
         )
     print(
         f"Corpus de vérité cohérent : {len(corpus.scenarios)} scénarios, version {CORPUS_VERSION}."

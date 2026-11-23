@@ -103,8 +103,8 @@ def test_the_synthetic_enterprise_is_conformant_as_an_adapter() -> None:
 SCENARIOS = load_corpus().scenarios
 
 
-def test_the_truth_corpus_holds_nine_scenarios() -> None:
-    assert len(SCENARIOS) == 9
+def test_the_truth_corpus_holds_twelve_scenarios() -> None:
+    assert len(SCENARIOS) == 12
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda scenario: scenario.name)

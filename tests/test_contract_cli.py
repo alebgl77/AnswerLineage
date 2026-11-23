@@ -18,8 +18,9 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from answerlineage_api import identifiers as api
+from answerlineage_api.lineage import exposure as ranking
 from answerlineage_api.store.schema import INCIDENT_WINDOW_DAYS
-from answerlineage_cli import dead_letters, doctor, impact, incident, names
+from answerlineage_cli import dead_letters, doctor, exposure, impact, incident, names
 from answerlineage_cli.names import is_identifier
 from tests.test_contract_identifiers import SAMPLES
 
@@ -29,6 +30,7 @@ BOUNDS = [
     (names.DATASET_NAME_MAX, api.DATASET_NAME_MAX),
     (names.JOB_NAME_MAX, api.JOB_NAME_MAX),
     (names.TOOL_MAX, api.TOOL_MAX),
+    (names.COLUMN_MAX, api.COLUMN_MAX),
     (names.CHANNEL_MAX, api.CHANNEL_MAX),
     (names.RECIPIENT_MAX, api.RECIPIENT_MAX),
     (names.FINGERPRINT_MAX, api.FINGERPRINT_MAX),
@@ -93,6 +95,17 @@ def test_the_parameters_the_command_accepts_are_those_of_the_route(
     for name in ("namespace", "name"):
         assert parameters[name]["maxLength"] == impact.MAX_DATASET_PARAMETER
     assert parameters["cursor"]["anyOf"][0]["pattern"] == f"^{impact.CURSOR.pattern}$"
+
+
+def test_the_exposure_parameters_and_bounds_of_the_command_are_those_of_the_route(
+    contract: dict[str, Any],
+) -> None:
+    route = contract["paths"]["/api/v1/exposure"]["get"]
+    parameters = {parameter["name"]: parameter["schema"] for parameter in route["parameters"]}
+    assert set(parameters) == set(exposure.OPTIONS_BY_PARAMETER)
+    assert parameters["limit"]["maximum"] == exposure.MAX_LIMIT
+    assert parameters["cursor"]["anyOf"][0]["pattern"] == f"^{exposure.CURSOR.pattern}$"
+    assert exposure.MAX_COLUMNS == ranking.MAX_COLUMNS
 
 
 def test_the_incident_lists_and_bounds_of_the_command_are_those_of_the_api(

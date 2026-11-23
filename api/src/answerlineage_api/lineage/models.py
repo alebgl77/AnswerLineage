@@ -318,3 +318,66 @@ class DatasetList(BaseModel):
     datasets: list[DatasetName]
     more: bool = Field(description="Vrai quand la liste dépasse la borne demandée.")
     known_at: KnownAt = None
+
+
+class ColumnExposure(BaseModel):
+    """Une colonne nommée par une lecture, et les réponses qui en dépendent."""
+
+    name: str
+    score: float = Field(
+        description=(
+            "Score de la colonne, au millionième : les réponses qui l'ont lue, et celles qui ont"
+            " lu la table entière."
+        )
+    )
+    answers: int = Field(description="Réponses qui dépendent de la colonne.")
+
+
+class DatasetExposure(BaseModel):
+    """Un jeu de données, son score d'exposition et celui de ses colonnes."""
+
+    namespace: str
+    name: str
+    kind: str
+    score: float = Field(
+        description=(
+            "Somme, sur les réponses qui en dépendent, de 2 ** (-âge / 30 jours) * (1 + leurs"
+            " destinataires distincts), au millionième."
+        )
+    )
+    answers: int = Field(description="Réponses qui en dépendent.")
+    recipients: int = Field(description="Destinataires distincts de ces réponses.")
+    columns: list[ColumnExposure] = Field(
+        description=(
+            "Les colonnes nommées par une lecture, les plus exposées d'abord ; à égalité, par nom."
+            " Vide quand toutes les lectures portent sur la table entière."
+        )
+    )
+    more_columns: bool = Field(description="Vrai quand d'autres colonnes, moins exposées, suivent.")
+
+
+class ExposureList(BaseModel):
+    """Les jeux de données dont une réponse dépend, les plus exposés d'abord."""
+
+    at: AwareDatetime = Field(
+        description=(
+            "Heure de référence du score, en UTC : l'âge de chaque réponse se compte jusqu'à elle."
+        )
+    )
+    datasets: list[DatasetExposure] = Field(
+        description="Par score décroissant ; à égalité, par espace de noms puis par nom."
+    )
+    more: bool = Field(description="Vrai quand des jeux de données moins exposés suivent.")
+    next_cursor: str | None = Field(
+        description=(
+            "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor » : il"
+            " garde l'heure de référence. Nul quand il n'y a plus de jeu de données."
+        )
+    )
+    truncated: bool = Field(
+        description=(
+            "Vrai quand une lecture du graphe dépasse sa borne : les scores sont des minimums,"
+            " et l'ordre peut différer de celui du graphe entier."
+        )
+    )
+    known_at: KnownAt = None

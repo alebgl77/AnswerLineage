@@ -135,6 +135,51 @@ def impact_result(
     return result
 
 
+EXPOSURE_CURSOR = "638974224000000000.1954320.42"
+
+
+def exposure_result(
+    *,
+    truncated: bool = False,
+    more: bool = False,
+    known_at: str | None = None,
+) -> dict[str, Any]:
+    """Un classement tel que l'API le rend : deux jeux de données, des colonnes pour l'un."""
+    result: dict[str, Any] = {
+        "at": "2026-11-01T12:00:00Z",
+        "datasets": [
+            {
+                **{key: DATASET[key] for key in ("namespace", "kind")},
+                "name": "finance.ref.taux_change",
+                "score": 10.192078,
+                "answers": 5,
+                "recipients": 6,
+                "columns": [
+                    {"name": "date_valeur", "score": 6.423125, "answers": 2},
+                    {"name": "devise", "score": 5.315637, "answers": 4},
+                ],
+                "more_columns": True,
+            },
+            {
+                "namespace": "postgres://crm:5432",
+                "name": "crm.public.comptes",
+                "kind": "table",
+                "score": 4,
+                "answers": 1,
+                "recipients": 3,
+                "columns": [],
+                "more_columns": False,
+            },
+        ],
+        "more": more,
+        "next_cursor": EXPOSURE_CURSOR if more else None,
+        "truncated": truncated,
+    }
+    if known_at is not None:
+        result["known_at"] = known_at
+    return result
+
+
 INCIDENT_ID = "3f0c6a52-9d1e-4b7a-8c2f-5e6d7a8b9c0d"
 
 
