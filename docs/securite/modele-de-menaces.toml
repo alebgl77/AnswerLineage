@@ -578,12 +578,17 @@ name = "Un émetteur envoie des événements au nom d'un autre"
 category = "spoofing"
 boundary = "emetteur-ingestion"
 assets = ["lignage"]
-description = "L'ingestion n'authentifie pas les émetteurs : quiconque la joint peut déclarer une lecture au nom du proxy, ou des rejeux au nom d'un autre émetteur, et la lecture inventée entre dans le graphe."
+description = "L'ingestion n'authentifie pas les émetteurs : quiconque la joint peut déclarer une lecture au nom du proxy, ou des rejeux au nom d'un autre émetteur, et la lecture inventée entre dans le graphe. Il peut aussi envoyer de faux tests de qualité en échec, qui proposent des incidents."
 abuse_cases = ["emetteur/evenement-au-nom-du-proxy", "emetteur/doublons-au-nom-d-un-autre"]
+
+[[threat.mitigation]]
+description = "Un test en échec ne fait que proposer un incident : ni incident, ni analyse, ni annonce, ni quarantaine sans un humain."
+code = "workers/src/answerlineage_workers/proposals.py::process_signals"
+test = "workers/tests/test_proposals.py::test_a_failing_quality_test_proposes_a_signaled_incident_bound_to_its_column"
 
 [threat.acceptance]
 reason = "Les émetteurs ne sont pas encore authentifiés : l'API est faite pour la boucle locale ou un réseau de confiance, comme le dit la politique de sécurité."
-consequence = "Un tiers qui joint l'ingestion peut inventer des lectures, donc faire rappeler des réponses saines, et fausser le décompte des doublons d'un émetteur."
+consequence = "Un tiers qui joint l'ingestion peut inventer des lectures, donc faire rappeler des réponses saines, fausser le décompte des doublons d'un émetteur, et faire proposer des incidents qu'un humain devra écarter."
 
 [[threat]]
 id = "api/releve-usurpe"
@@ -1241,6 +1246,53 @@ test = "workers/tests/test_destination.py::test_each_connection_checks_what_the_
 [threat.acceptance]
 reason = "Comme pour la réémission, les adresses internes autres que les métadonnées et le lien local sont admises : le récepteur d'une entreprise est souvent sur son réseau privé, et l'adresse ne vient que de l'exploitant."
 consequence = "Un exploitant qui règle par erreur l'adresse d'un service interne y envoie les annonces d'incident, signées, sans contenu ; le contrôle ne le distingue pas d'un récepteur."
+
+[[threat]]
+id = "workers/assertion-texte-libre"
+name = "Le texte libre d'une assertion de qualité gagne la base, l'API, le journal ou un message"
+category = "information-disclosure"
+boundary = "emetteur-ingestion"
+assets = ["contenus", "destinataires"]
+description = "Une assertion de la facette dataQualityAssertions porte du texte libre : son nom, sa description, son corps SQL avec ses littéraux, les valeurs attendue et observée, qui peuvent citer une donnée d'un client, ses paramètres. Recopié, il entrerait dans la base, les réponses de l'API, le journal des workers, et de là dans un message ou un modèle. L'événement brut, archivé tel qu'il a été reçu comme tout événement, le garde."
+abuse_cases = ["champs/assertion-nom-texte-libre", "champs/assertion-description-texte-libre", "champs/assertion-corps-sql", "champs/assertion-type-de-corps", "champs/assertion-valeur-attendue", "champs/assertion-valeur-observee", "champs/assertion-parametres", "identifiants/assertion-colonne-piegee", "identifiants/assertion-classe-piegee", "identifiants/assertion-gravite-piegee"]
+
+[[threat.mitigation]]
+description = "L'extraction ne lit que la réussite, la classe, la gravité et la colonne d'une assertion : la classe et la gravité sont ramenées à des listes fermées, la colonne est contrôlée comme un nom, sinon l'échec porte sur la table."
+code = "workers/src/answerlineage_workers/quality.py::assess"
+test = "workers/tests/test_quality.py::test_no_free_text_of_an_assertion_is_ever_read"
+
+[[threat.mitigation]]
+description = "Un canari dans chaque champ libre, la colonne, la classe ou la gravité d'une assertion ne se retrouve ni dans la base hors de l'archive des événements, ni dans la réponse, ni au journal."
+code = "workers/src/answerlineage_workers/quality.py::record"
+test = "tests/test_abuse_corpus.py::test_every_case_of_the_abuse_corpus_is_blocked"
+
+[[threat]]
+id = "workers/propositions-inondees"
+name = "Un émetteur inonde les workers de tests en échec et masque les vraies propositions"
+category = "denial-of-service"
+boundary = "emetteur-ingestion"
+assets = ["disponibilite", "lignage"]
+description = "L'ingestion n'authentifie pas les émetteurs : un tiers envoie des événements de test aux assertions sans nombre, sur des colonnes et des jeux sans nombre, ou vieux d'années. Les lots grossiraient, la base se remplirait de signaux, et les propositions ouvertes masqueraient les vraies."
+abuse_cases = ["lots/assertions-en-rafale"]
+
+[[threat.mitigation]]
+description = "1 000 assertions lues par jeu, 10 000 par événement, 1 000 colonnes relevées par événement, 100 000 signaux en attente, 100 000 colonnes suivies : le reste est compté, jamais cité."
+code = "workers/src/answerlineage_workers/quality.py::assess"
+test = "workers/tests/test_quality.py::test_beyond_its_bound_an_event_keeps_its_failures_first_and_counts_the_rest"
+
+[[threat.mitigation]]
+description = "Au-delà de 100 propositions ouvertes, un signal est refusé, compté et dit une fois par épisode ; une proposition existante s'enrichit encore, sous sa borne de 100 colonnes."
+code = "workers/src/answerlineage_workers/proposals.py::process_signals"
+test = "workers/tests/test_proposals.py::test_beyond_the_bound_of_open_proposals_a_signal_is_refused_and_said_once"
+
+[[threat.mitigation]]
+description = "Un événement reçu ou daté de plus de 31 jours ne propose rien : un vieil événement rejoué ne fait pas naître de proposition."
+code = "workers/src/answerlineage_workers/quality.py::record"
+test = "workers/tests/test_proposals.py::test_an_old_failure_proposes_nothing"
+
+[threat.acceptance]
+reason = "Les émetteurs ne sont pas authentifiés, et une borne par émetteur se contournerait en changeant d'espace de noms : seule la borne globale des propositions ouvertes tient la table et la liste."
+consequence = "Un émetteur hostile peut remplir les 100 propositions ouvertes et faire refuser les signaux des vrais tests en échec, jusqu'à ce que des propositions soient décidées ; le refus se compte et se dit au journal."
 
 # Ligne de commande
 

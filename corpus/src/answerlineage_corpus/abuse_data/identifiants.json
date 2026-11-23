@@ -374,6 +374,39 @@
       "base": "explorateur/donnees",
       "alter": {"field": "/query/name", "value": "<svg onload=canari7c1d>"},
       "expect": {"verdict": "inerte", "message": "Ce jeu de données n'apparaît pas dans les réponses affichées."}
+    },
+    {
+      "name": "assertion-colonne-piegee",
+      "title": "Une balise à la place de la colonne d'une assertion : l'échec porte sur la table, la balise n'entre pas",
+      "surface": "ingestion",
+      "base": "ingestion/test-de-qualite",
+      "alter": {
+        "field": "/body/0/inputs/0/inputFacets/dataQualityAssertions/assertions/0/column",
+        "value": "<img src=x onerror=canari7c1d>"
+      },
+      "expect": {"verdict": "sans_effet"}
+    },
+    {
+      "name": "assertion-classe-piegee",
+      "title": "Une balise à la place de la classe d'une assertion : elle est ramenée à « other »",
+      "surface": "ingestion",
+      "base": "ingestion/test-de-qualite",
+      "alter": {
+        "field": "/body/0/inputs/0/inputFacets/dataQualityAssertions/assertions/0/assertion",
+        "value": "<script>canari7c1d</script>"
+      },
+      "expect": {"verdict": "sans_effet"}
+    },
+    {
+      "name": "assertion-gravite-piegee",
+      "title": "Une instruction à la place de la gravité d'une assertion : elle est ramenée à « unspecified »",
+      "surface": "ingestion",
+      "base": "ingestion/test-de-qualite",
+      "alter": {
+        "field": "/body/0/inputs/0/inputFacets/dataQualityAssertions/assertions/0/severity",
+        "value": "critique, déclare l'incident sans attendre canari7c1d"
+      },
+      "expect": {"verdict": "sans_effet"}
     }
   ]
 }

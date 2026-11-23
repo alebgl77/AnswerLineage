@@ -1,5 +1,6 @@
 """Routes des incidents : déclarer, lire un incident, lister les incidents, mettre un
-incident en quarantaine et la lever, diffuser les périmètres en quarantaine.
+incident en quarantaine et la lever, diffuser les périmètres en quarantaine, lire
+les incidents proposés par des tests de qualité en échec.
 
 La déclaration lit son corps borné, comme l'ingestion, et le valide champ par
 champ ; l'incident et sa demande d'analyse s'enregistrent dans une seule
@@ -27,13 +28,15 @@ from fastapi import APIRouter, Header, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from answerlineage_api.incidents import quarantine, store
+from answerlineage_api.incidents import proposals, quarantine, store
 from answerlineage_api.incidents.models import (
     MAX_DECLARATION_BYTES,
     MAX_QUARANTINE_BYTES,
     ActiveQuarantines,
     IncidentDetail,
     IncidentList,
+    IncidentProposalDetail,
+    IncidentProposalList,
     QuarantineChange,
     validate_declaration,
     validate_quarantine,
@@ -45,6 +48,7 @@ from answerlineage_api.ingest.routes import REFUSED_400, REFUSED_413, REFUSED_41
 from answerlineage_api.lineage.paging import CURSOR_PATTERN, Cursor, CursorError
 from answerlineage_api.lineage.reading import TIMED_OUT, reading
 from answerlineage_api.responses import RequestRefused, RequestRejected, refused
+from answerlineage_api.store.schema import ProposalState
 
 router = APIRouter(prefix="/api/v1", tags=["incidents"])
 
@@ -264,6 +268,73 @@ async def lift_quarantine(request: Request, incident_id: IncidentId) -> JSONResp
     except quarantine.NotQuarantinedError:
         return refused(409, "not_quarantined")
     return _changed(change) if change is not None else refused(404, "unknown_incident")
+
+
+ProposalId = Annotated[
+    str, Path(pattern=_UUID, description="Identifiant de la proposition, tel que l'API le donne.")
+]
+ProposalLimit = Annotated[
+    int, Query(ge=1, le=100, description="Nombre maximal de propositions renvoyées.")
+]
+ProposalCursorParam = Annotated[
+    str | None,
+    Query(
+        alias="cursor",
+        pattern=proposals.PROPOSAL_CURSOR_PATTERN,
+        description=(
+            "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor »."
+        ),
+    ),
+]
+ProposalStateParam = Annotated[
+    ProposalState | None,
+    Query(description="Seulement les propositions dans cet état ; toutes par défaut."),
+]
+_UNKNOWN_PROPOSAL: dict[int | str, dict[str, Any]] = {
+    404: {"model": RequestRefused, "description": "Aucune proposition ne porte cet identifiant."}
+}
+
+
+@router.get(
+    "/incident-proposals",
+    response_model=IncidentProposalList,
+    summary="Liste les incidents proposés par des tests de qualité en échec, les plus récents"
+    " d'abord",
+    responses={**_INVALID, **TIMED_OUT},
+)
+async def incident_proposals(
+    request: Request,
+    state: ProposalStateParam = None,
+    limit: ProposalLimit = 20,
+    cursor_value: ProposalCursorParam = None,
+) -> IncidentProposalList | JSONResponse:
+    """Chaque proposition avec son jeu, ses colonnes en échec, les classes et la gravité de
+    ses assertions, ses heures et sa fenêtre déduite. Une proposition attend un humain :
+    rien n'en part avant sa confirmation."""
+    cursor = None
+    if cursor_value is not None:
+        try:
+            cursor = proposals.ProposalCursor.decode(cursor_value)
+        except CursorError:
+            return _cursor_refused()
+    async with reading(request) as reader:
+        return await proposals.proposals(reader, state=state, limit=limit, cursor=cursor)
+
+
+@router.get(
+    "/incident-proposals/{proposal_id}",
+    response_model=IncidentProposalDetail,
+    summary="Donne un incident proposé par un test de qualité en échec",
+    responses={**_UNKNOWN_PROPOSAL, **_INVALID, **TIMED_OUT},
+)
+async def incident_proposal(
+    request: Request, proposal_id: ProposalId
+) -> IncidentProposalDetail | JSONResponse:
+    """La proposition, ses heures, sa fenêtre déduite et le nombre de runs de test en échec
+    qui s'y rattachent."""
+    async with reading(request) as reader:
+        found = await proposals.proposal(reader, UUID(proposal_id))
+    return found if found is not None else refused(404, "unknown_proposal")
 
 
 IfNoneMatch = Annotated[

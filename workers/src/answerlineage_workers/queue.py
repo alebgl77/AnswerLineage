@@ -33,9 +33,10 @@ est déjà parti : il n'y entre pas. La boucle de réémission tourne à côté 
 celle du worker, sans la retarder.
 
 Entre deux lots, la boucle du worker analyse aussi un incident déclaré, quand
-une demande attend (``incidents.py``). Quand le worker a un webhook, une autre
-boucle annonce les changements d'état des incidents au récepteur
-(``webhooks.py``), sans retarder la projection.
+une demande attend (``incidents.py``), puis fait des propositions d'incident des
+signaux de qualité que la projection a relevés (``quality.py``, ``proposals.py``).
+Quand le worker a un webhook, une autre boucle annonce les changements d'état
+des incidents au récepteur (``webhooks.py``), sans retarder la projection.
 
 Pendant une reconstruction du graphe (``rebuild.py``), le worker ne réclame ni
 lot ni analyse : la reconstruction tient la barrière du graphe et projette la
@@ -60,7 +61,7 @@ from answerlineage_api.identifiers import InvalidIdentifierError
 from answerlineage_api.ingest.dead_letters import bury
 from answerlineage_api.store.graph import PreparedRuns, RunRecord, prepare_runs, record_run
 from answerlineage_api.store.schema import DeadLetterReason
-from answerlineage_workers import gate
+from answerlineage_workers import gate, quality
 from answerlineage_workers.incidents import DEFAULT_ANALYSIS_TIMEOUT, process_analysis
 from answerlineage_workers.partitions import (
     DEFAULT_MAINTENANCE_EVERY,
@@ -69,6 +70,7 @@ from answerlineage_workers.partitions import (
     maintain_partitions,
 )
 from answerlineage_workers.projection import project
+from answerlineage_workers.proposals import process_signals
 from answerlineage_workers.reemission import Reemission, run_reemission
 from answerlineage_workers.silence import DEFAULT_SILENCE, check_silent_emitters
 from answerlineage_workers.webhooks import Webhook, run_webhooks
@@ -204,12 +206,37 @@ def failure_reason(error: Exception) -> DeadLetterReason:
 async def record_event(
     conn: AsyncConnection, payload: Mapping[str, Any], received_at: datetime
 ) -> None:
-    """Projette un événement dans le graphe, daté de sa réception.
+    """Projette un événement dans le graphe, daté de sa réception, puis relève les
+    signaux de ses tests de qualité (``quality.py``).
 
     Dans un lot, l'écriture reprend ce que le lot a posé d'avance (``_prepared``).
     """
     record = replace(project(payload), recorded_at=received_at)
     await record_run(conn, record, _prepared.get())
+    await record_quality(conn, payload, received_at)
+
+
+async def record_quality(
+    conn: AsyncConnection, payload: Mapping[str, Any], received_at: datetime
+) -> None:
+    """Relève les signaux de qualité de l'événement, sous leur propre point de reprise.
+
+    Un interblocage ou un échec de sérialisation remonte et fait reprendre le lot,
+    comme pour le graphe. Toute autre erreur est comptée et journalisée par sa
+    classe, sans faire échouer l'événement : la qualité n'envoie jamais un
+    événement au rebut, ni ne prive le graphe de ses lectures.
+    """
+    assessment = quality.assess(payload)
+    if assessment is None or assessment.empty:
+        return
+    try:
+        async with conn.begin_nested():
+            await quality.record(conn, assessment, received_at)
+    except Exception as error:
+        if transient(error):
+            raise
+        logger.error("Signaux de qualité non relevés (%s).", type(error).__name__)
+        await quality.lost(conn, assessment)
 
 
 async def process_batch(
@@ -550,13 +577,14 @@ async def _project_loop(
                 reemit=reemit,
             )
             analysed = await process_analysis(engine, timeout=analysis_timeout)
+            signalled = await process_signals(engine)
         except Exception as error:
-            # Base injoignable, interblocage au-delà des reprises : le lot ou la demande
-            # est resté dans la file, sans essai compté.
+            # Base injoignable, interblocage au-delà des reprises : le lot, la demande ou
+            # les signaux sont restés en attente, sans essai compté.
             logger.error("Lot non traité (%s), nouvel essai à suivre.", type(error).__name__)
             delay = error_delay
         else:
-            if result.empty and analysed is None:
+            if result.empty and analysed is None and not signalled:
                 delay = idle_delay
         if delay:
             try:

@@ -27,12 +27,18 @@ from answerlineage_api.lineage.models import Coverage, ImpactCounts, Window
 from answerlineage_api.store.schema import (
     INCIDENT_WINDOW_DAYS,
     MAX_ACTIVE_QUARANTINES,
+    MAX_PROPOSAL_COLUMNS,
+    MAX_SIGNAL_CLASSES,
     AnalysisError,
     AnalysisState,
+    AssertionClass,
     IncidentState,
+    ProposalState,
+    QualitySeverity,
     QuarantineMode,
     QuarantineState,
     Severity,
+    WindowBasis,
 )
 
 # Un incident touche une table, parfois les quelques tables d'un même chargement.
@@ -490,3 +496,111 @@ class IncidentList(BaseModel):
 def in_utc(value: datetime) -> datetime:
     """Une heure lue dans la base, rendue en UTC."""
     return value.astimezone(UTC)
+
+
+# Les propositions d'incident nées des tests de qualité en échec.
+
+
+class ProposedWindow(BaseModel):
+    """Le début de la fenêtre déduite d'une proposition, et ce qui le fonde."""
+
+    start: AwareDatetime = Field(
+        serialization_alias="from",
+        description="Début de la fenêtre déduite, inclus : la donnée y est tenue pour juste.",
+    )
+    basis: WindowBasis = Field(
+        description=(
+            "« last_pass » : la dernière réussite connue des assertions de la colonne avant le"
+            " premier échec, au plus 31 jours avant lui. « lookback » : aucune réussite connue"
+            " avant le premier échec ; le début est pris 7 jours avant lui."
+        )
+    )
+
+
+class ProposalCounts(BaseModel):
+    """Décomptes d'une proposition, lus sur ses signaux."""
+
+    failed_runs: int = Field(description="Runs de test en échec rattachés à la proposition.")
+    lower_bound: bool = Field(
+        description="Vrai au-delà de la borne : « failed_runs » est un minimum."
+    )
+
+
+class IncidentProposal(BaseModel):
+    """Un incident proposé par un test de qualité en échec, en attente d'un humain ou décidé.
+
+    Aucun texte libre : le jeu et ses colonnes par leur nom, contrôlé ; les assertions
+    par leur classe, d'une liste fermée ; des heures.
+    """
+
+    id: UUID = Field(description="Identifiant de la proposition, tiré par la base.")
+    state: ProposalState = Field(
+        description=(
+            "« signaled » : signalée, en attente d'un humain ; elle s'enrichit des échecs"
+            " suivants. « confirmed » : confirmée, l'incident est déclaré (« incident_id »)."
+            " « dismissed » : écartée. « expired » : expirée sans nouvel échec. Les trois"
+            " dernières sont définitives."
+        )
+    )
+    dataset: IncidentDataset = Field(description="Le jeu de données dont un test échoue.")
+    whole_table: bool = Field(
+        description=(
+            "Vrai quand un échec porte sur la table entière : une assertion sans colonne, une"
+            f" colonne qui n'a pas la forme d'un nom, ou plus de {MAX_PROPOSAL_COLUMNS}"
+            " colonnes en échec."
+        )
+    )
+    columns: list[str] = Field(
+        description="Les colonnes en échec, nommées, dans l'ordre de leur nom.",
+        json_schema_extra={"maxItems": MAX_PROPOSAL_COLUMNS},
+    )
+    assertions: list[AssertionClass] = Field(
+        description="Les classes des assertions en échec, d'une liste fermée.",
+        json_schema_extra={"minItems": 1, "maxItems": MAX_SIGNAL_CLASSES},
+    )
+    severity: QualitySeverity = Field(
+        description=(
+            "La plus forte gravité réglée par l'émetteur sur les assertions en échec :"
+            " « error », « warn », ou « unspecified » quand il n'en dit rien de connu."
+            " Ce n'est pas la gravité de l'incident, que donne l'humain qui le confirme."
+        )
+    )
+    emitter: str = Field(description="L'émetteur du premier échec : l'espace de noms de son job.")
+    first_failed_at: AwareDatetime = Field(
+        description="Le premier échec, à l'heure de l'événement."
+    )
+    last_failed_at: AwareDatetime = Field(description="Le dernier échec, à l'heure de l'événement.")
+    resolved_at: AwareDatetime | None = Field(
+        description=(
+            "Quand toutes les colonnes en échec sont de nouveau en réussite : la plus récente"
+            " de leurs réussites. Nulle tant que l'une échoue encore, ou que les colonnes en"
+            " échec ne sont pas toutes connues."
+        )
+    )
+    window: ProposedWindow
+    proposed_at: AwareDatetime = Field(description="Proposition, à l'heure de la base.")
+    decided_at: AwareDatetime | None = Field(
+        description="Confirmation, écartement ou expiration ; nulle tant qu'elle est signalée."
+    )
+    incident_id: UUID | None = Field(
+        description="L'incident déclaré à la confirmation ; nul sinon."
+    )
+
+
+class IncidentProposalDetail(IncidentProposal):
+    """Une proposition et ses décomptes."""
+
+    counts: ProposalCounts
+
+
+class IncidentProposalList(BaseModel):
+    """Les propositions d'incident, les plus récentes d'abord."""
+
+    proposals: list[IncidentProposal]
+    more: bool = Field(description="Vrai quand des propositions plus anciennes suivent.")
+    next_cursor: str | None = Field(
+        description=(
+            "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor »."
+            " Nul quand il n'y en a plus."
+        )
+    )

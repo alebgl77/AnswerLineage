@@ -6,7 +6,7 @@ Un worker lit la file de traitement et projette chaque événement reçu dans le
 ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run answerlineage-worker
 ```
 
-Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Un événement qu'il ne parvient pas à projeter va à la [file de rebut](#file-de-rebut), où il se consulte et se rejoue. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés, contrôle les [émetteurs muets](#émetteurs-muets), entretient les [partitions mensuelles](#partitions-mensuelles) et, quand une destination est réglée, [réémet les événements](#réémission) vers un catalogue OpenLineage ; quand un webhook est réglé, il [annonce les changements d'état des incidents](#webhooks) à son récepteur. La même commande [reconstruit le graphe](#reconstruire-le-graphe) depuis les événements bruts, quand il est corrompu.
+Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Un événement qu'il ne parvient pas à projeter va à la [file de rebut](#file-de-rebut), où il se consulte et se rejoue. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés, des [propositions d'incident](#propositions-dincident) des tests de qualité en échec, contrôle les [émetteurs muets](#émetteurs-muets), entretient les [partitions mensuelles](#partitions-mensuelles) et, quand une destination est réglée, [réémet les événements](#réémission) vers un catalogue OpenLineage ; quand un webhook est réglé, il [annonce les changements d'état des incidents](#webhooks) à son récepteur. La même commande [reconstruit le graphe](#reconstruire-le-graphe) depuis les événements bruts, quand il est corrompu.
 
 ## Garanties
 
@@ -30,6 +30,9 @@ Les événements bruts restent dans `event_raw` : le graphe peut être [reconstr
 | `inputs` | Lectures ; les champs de la facette `schema` sont les colonnes lues, la facette `version` donne la version |
 | `outputs` avec la facette `answerlineage_delivery` | Réponse (son empreinte) et sa diffusion : canal, référence du message, destinataires pseudonymisés |
 | Autres `outputs` | Écritures |
+| Facette standard `dataQualityAssertions` d'un `input` | Hors du graphe : les signaux d'échec des tests de qualité (`quality_signal`), la dernière réussite et le dernier échec de chaque colonne testée (`quality_column`), d'où naissent les [propositions d'incident](#propositions-dincident) |
+
+La facette `dataQualityAssertions` est lue avec tolérance, comme les facettes propres, et fermée : de chaque assertion, sa réussite, sa classe, sa gravité et sa colonne, jamais son texte libre ([ce qui est lu](incidents.md#ce-qui-est-lu)). Ses signaux s'écrivent dans la transaction du lot, sous leur propre point de reprise : un interblocage fait reprendre le lot, comme pour le graphe ; toute autre erreur est comptée (`quality_stats`) et dite au journal par sa classe, sans faire échouer l'événement. La qualité n'envoie jamais un événement au rebut, ni ne prive le graphe de ses lectures.
 
 Un événement venu d'un autre émetteur OpenLineage, sans ces facettes, est enregistré comme un job ordinaire avec ses lectures et ses écritures. Une facette propre mal formée est ignorée, sans empêcher d'enregistrer le reste de l'événement. Les schémas de ces facettes sont décrits dans [Facettes OpenLineage](facettes.md).
 
@@ -196,6 +199,22 @@ Les garanties sont celles de la file d'ingestion :
   ```
 
 Une analyse dispose d'une minute : chaque lecture part sous le temps qui en reste, et PostgreSQL l'annule au-delà, comme les [lectures de l'API](lecture.md#délai-maximal). Le journal ne nomme un incident que par son identifiant, tiré par l'API.
+
+## Propositions d'incident
+
+Après les lots et l'analyse, la boucle du worker fait des [propositions d'incident](incidents.md#incidents-proposés-par-un-test-de-qualité) des signaux d'échec que la projection a relevés, dans une transaction à elle :
+
+1. elle réclame au plus 500 signaux en attente, les plus anciens d'abord (`FOR UPDATE SKIP LOCKED`) ;
+2. elle verrouille la table des propositions le temps de la transaction (`SHARE ROW EXCLUSIVE`, comme l'activation d'une quarantaine) : deux workers ne créent pas deux propositions pour un même jeu, et la borne des 100 propositions ouvertes se vérifie seule ; les lectures ne l'attendent pas ;
+3. elle rattache chaque signal à la proposition signalée de son jeu, qu'il enrichit, ou en crée une, avec sa fenêtre déduite ; au-delà de la borne, elle le refuse.
+
+Un signal reçu ou daté de plus de 31 jours ne propose rien (`stale`). Pendant une [reconstruction du graphe](#reconstruire-le-graphe), la boucle ne fait aucune proposition, comme elle ne réclame aucun lot. Une proposition n'écrit ni demande d'analyse, ni annonce de webhook, ni quarantaine : elle attend un humain. Le journal ne nomme une proposition que par son identifiant, tiré par la base :
+
+```text
+INFO answerlineage_workers Incident proposé par un test de qualité en échec : proposition 5b0f6a52-2c1e-4f0e-9d7b-8b4ea1d0c3f2.
+```
+
+Les signaux, les colonnes suivies et les propositions sont hors du graphe : une reconstruction ne les vide pas, et rejoue les événements sans rien proposer deux fois.
 
 ## Émetteurs muets
 

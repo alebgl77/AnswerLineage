@@ -55,13 +55,15 @@ from answerlineage_corpus.scenarios import CorpusError
 
 # Change dès qu'un cas, une base ou une exception change : affaiblir le corpus
 # sans le dire échoue au contrôle.
-ABUSE_VERSION = "3"
+ABUSE_VERSION = "4"
 _DIGESTS = {
     "1": "a6e3bdbb6724874d86cde209f8549640b68bce9d76e097da185ea54284a05619",
     # La lecture antidatée est bloquée : son exception est retirée.
     "2": "36e95e6e85984cee01b5119f779dab4892af6f1e69f9b6423da8efb46ecc1a95",
     # Les routes des incidents et de la file de rebut, et la famille des champs hors contrat.
     "3": "feeb955f996d665683a30ecc02987288744a689548c0e1f42fd0be76f7b92864",
+    # Les assertions de qualité : texte libre, colonne piégée, rafale.
+    "4": "ec1645fa0933f776efa965e554e6f14ee5bfeb403d7b0bc6f625fe737120665a",
 }
 
 # Marque que porte toute valeur hostile, cherchée ensuite partout : réponses,

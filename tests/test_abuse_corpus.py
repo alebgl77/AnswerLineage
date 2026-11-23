@@ -54,9 +54,10 @@ RESULT = b'{"jsonrpc":"2.0","id":1,"result":{"content":[],"isError":false}}'
 # Au-delà, la surface n'a pas répondu : le cas échoue au lieu d'attendre.
 PATIENCE = 20.0
 CHUNK = 64 * 1024
-# Tables qui ne sont pas le graphe : version du schéma, archive des événements reçus, file.
+# Tables qui ne sont pas le graphe : version du schéma, archive des événements reçus, file,
+# compteurs des signaux de qualité (une borne atteinte les fait grandir, sans autre effet).
 ARCHIVE, QUEUE = "event_raw", "ingest_queue"
-BOOKKEEPING = ("alembic_version", ARCHIVE, QUEUE)
+BOOKKEEPING = ("alembic_version", ARCHIVE, QUEUE, "quality_stats")
 
 
 def by_surface(item: Case | Base) -> Any:

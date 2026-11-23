@@ -2007,6 +2007,354 @@
         "title": "IncidentList",
         "type": "object"
       },
+      "IncidentProposal": {
+        "description": "Un incident proposé par un test de qualité en échec, en attente d'un humain ou décidé.\n\nAucun texte libre : le jeu et ses colonnes par leur nom, contrôlé ; les assertions\npar leur classe, d'une liste fermée ; des heures.",
+        "properties": {
+          "assertions": {
+            "description": "Les classes des assertions en échec, d'une liste fermée.",
+            "items": {
+              "enum": [
+                "not_null",
+                "unique",
+                "accepted_values",
+                "relationships",
+                "row_count",
+                "freshness",
+                "custom_sql",
+                "other"
+              ],
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Assertions",
+            "type": "array"
+          },
+          "columns": {
+            "description": "Les colonnes en échec, nommées, dans l'ordre de leur nom.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Columns",
+            "type": "array"
+          },
+          "dataset": {
+            "$ref": "#/components/schemas/IncidentDataset",
+            "description": "Le jeu de données dont un test échoue."
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Confirmation, écartement ou expiration ; nulle tant qu'elle est signalée.",
+            "title": "Decided At"
+          },
+          "emitter": {
+            "description": "L'émetteur du premier échec : l'espace de noms de son job.",
+            "title": "Emitter",
+            "type": "string"
+          },
+          "first_failed_at": {
+            "description": "Le premier échec, à l'heure de l'événement.",
+            "format": "date-time",
+            "title": "First Failed At",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifiant de la proposition, tiré par la base.",
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "incident_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "L'incident déclaré à la confirmation ; nul sinon.",
+            "title": "Incident Id"
+          },
+          "last_failed_at": {
+            "description": "Le dernier échec, à l'heure de l'événement.",
+            "format": "date-time",
+            "title": "Last Failed At",
+            "type": "string"
+          },
+          "proposed_at": {
+            "description": "Proposition, à l'heure de la base.",
+            "format": "date-time",
+            "title": "Proposed At",
+            "type": "string"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Quand toutes les colonnes en échec sont de nouveau en réussite : la plus récente de leurs réussites. Nulle tant que l'une échoue encore, ou que les colonnes en échec ne sont pas toutes connues.",
+            "title": "Resolved At"
+          },
+          "severity": {
+            "description": "La plus forte gravité réglée par l'émetteur sur les assertions en échec : « error », « warn », ou « unspecified » quand il n'en dit rien de connu. Ce n'est pas la gravité de l'incident, que donne l'humain qui le confirme.",
+            "enum": [
+              "unspecified",
+              "warn",
+              "error"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "state": {
+            "description": "« signaled » : signalée, en attente d'un humain ; elle s'enrichit des échecs suivants. « confirmed » : confirmée, l'incident est déclaré (« incident_id »). « dismissed » : écartée. « expired » : expirée sans nouvel échec. Les trois dernières sont définitives.",
+            "enum": [
+              "signaled",
+              "confirmed",
+              "dismissed",
+              "expired"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "whole_table": {
+            "description": "Vrai quand un échec porte sur la table entière : une assertion sans colonne, une colonne qui n'a pas la forme d'un nom, ou plus de 100 colonnes en échec.",
+            "title": "Whole Table",
+            "type": "boolean"
+          },
+          "window": {
+            "$ref": "#/components/schemas/ProposedWindow"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "dataset",
+          "whole_table",
+          "columns",
+          "assertions",
+          "severity",
+          "emitter",
+          "first_failed_at",
+          "last_failed_at",
+          "resolved_at",
+          "window",
+          "proposed_at",
+          "decided_at",
+          "incident_id"
+        ],
+        "title": "IncidentProposal",
+        "type": "object"
+      },
+      "IncidentProposalDetail": {
+        "description": "Une proposition et ses décomptes.",
+        "properties": {
+          "assertions": {
+            "description": "Les classes des assertions en échec, d'une liste fermée.",
+            "items": {
+              "enum": [
+                "not_null",
+                "unique",
+                "accepted_values",
+                "relationships",
+                "row_count",
+                "freshness",
+                "custom_sql",
+                "other"
+              ],
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Assertions",
+            "type": "array"
+          },
+          "columns": {
+            "description": "Les colonnes en échec, nommées, dans l'ordre de leur nom.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Columns",
+            "type": "array"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/ProposalCounts"
+          },
+          "dataset": {
+            "$ref": "#/components/schemas/IncidentDataset",
+            "description": "Le jeu de données dont un test échoue."
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Confirmation, écartement ou expiration ; nulle tant qu'elle est signalée.",
+            "title": "Decided At"
+          },
+          "emitter": {
+            "description": "L'émetteur du premier échec : l'espace de noms de son job.",
+            "title": "Emitter",
+            "type": "string"
+          },
+          "first_failed_at": {
+            "description": "Le premier échec, à l'heure de l'événement.",
+            "format": "date-time",
+            "title": "First Failed At",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifiant de la proposition, tiré par la base.",
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "incident_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "L'incident déclaré à la confirmation ; nul sinon.",
+            "title": "Incident Id"
+          },
+          "last_failed_at": {
+            "description": "Le dernier échec, à l'heure de l'événement.",
+            "format": "date-time",
+            "title": "Last Failed At",
+            "type": "string"
+          },
+          "proposed_at": {
+            "description": "Proposition, à l'heure de la base.",
+            "format": "date-time",
+            "title": "Proposed At",
+            "type": "string"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Quand toutes les colonnes en échec sont de nouveau en réussite : la plus récente de leurs réussites. Nulle tant que l'une échoue encore, ou que les colonnes en échec ne sont pas toutes connues.",
+            "title": "Resolved At"
+          },
+          "severity": {
+            "description": "La plus forte gravité réglée par l'émetteur sur les assertions en échec : « error », « warn », ou « unspecified » quand il n'en dit rien de connu. Ce n'est pas la gravité de l'incident, que donne l'humain qui le confirme.",
+            "enum": [
+              "unspecified",
+              "warn",
+              "error"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "state": {
+            "description": "« signaled » : signalée, en attente d'un humain ; elle s'enrichit des échecs suivants. « confirmed » : confirmée, l'incident est déclaré (« incident_id »). « dismissed » : écartée. « expired » : expirée sans nouvel échec. Les trois dernières sont définitives.",
+            "enum": [
+              "signaled",
+              "confirmed",
+              "dismissed",
+              "expired"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "whole_table": {
+            "description": "Vrai quand un échec porte sur la table entière : une assertion sans colonne, une colonne qui n'a pas la forme d'un nom, ou plus de 100 colonnes en échec.",
+            "title": "Whole Table",
+            "type": "boolean"
+          },
+          "window": {
+            "$ref": "#/components/schemas/ProposedWindow"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "dataset",
+          "whole_table",
+          "columns",
+          "assertions",
+          "severity",
+          "emitter",
+          "first_failed_at",
+          "last_failed_at",
+          "resolved_at",
+          "window",
+          "proposed_at",
+          "decided_at",
+          "incident_id",
+          "counts"
+        ],
+        "title": "IncidentProposalDetail",
+        "type": "object"
+      },
+      "IncidentProposalList": {
+        "description": "Les propositions d'incident, les plus récentes d'abord.",
+        "properties": {
+          "more": {
+            "description": "Vrai quand des propositions plus anciennes suivent.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor ». Nul quand il n'y en a plus.",
+            "title": "Next Cursor"
+          },
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/IncidentProposal"
+            },
+            "title": "Proposals",
+            "type": "array"
+          }
+        },
+        "required": [
+          "proposals",
+          "more",
+          "next_cursor"
+        ],
+        "title": "IncidentProposalList",
+        "type": "object"
+      },
       "IncidentScope": {
         "properties": {
           "datasets": {
@@ -2157,6 +2505,53 @@
           "lower_bound"
         ],
         "title": "PartitionHealth",
+        "type": "object"
+      },
+      "ProposalCounts": {
+        "description": "Décomptes d'une proposition, lus sur ses signaux.",
+        "properties": {
+          "failed_runs": {
+            "description": "Runs de test en échec rattachés à la proposition.",
+            "title": "Failed Runs",
+            "type": "integer"
+          },
+          "lower_bound": {
+            "description": "Vrai au-delà de la borne : « failed_runs » est un minimum.",
+            "title": "Lower Bound",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "failed_runs",
+          "lower_bound"
+        ],
+        "title": "ProposalCounts",
+        "type": "object"
+      },
+      "ProposedWindow": {
+        "description": "Le début de la fenêtre déduite d'une proposition, et ce qui le fonde.",
+        "properties": {
+          "basis": {
+            "description": "« last_pass » : la dernière réussite connue des assertions de la colonne avant le premier échec, au plus 31 jours avant lui. « lookback » : aucune réussite connue avant le premier échec ; le début est pris 7 jours avant lui.",
+            "enum": [
+              "last_pass",
+              "lookback"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
+          "from": {
+            "description": "Début de la fenêtre déduite, inclus : la donnée y est tenue pour juste.",
+            "format": "date-time",
+            "title": "From",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "basis"
+        ],
+        "title": "ProposedWindow",
         "type": "object"
       },
       "Quarantine": {
@@ -3780,6 +4175,173 @@
         "summary": "Propage un incident de données jusqu'aux réponses et aux destinataires",
         "tags": [
           "lignage"
+        ]
+      }
+    },
+    "/api/v1/incident-proposals": {
+      "get": {
+        "description": "Chaque proposition avec son jeu, ses colonnes en échec, les classes et la gravité de\nses assertions, ses heures et sa fenêtre déduite. Une proposition attend un humain :\nrien n'en part avant sa confirmation.",
+        "operationId": "incident_proposals_api_v1_incident_proposals_get",
+        "parameters": [
+          {
+            "description": "Seulement les propositions dans cet état ; toutes par défaut.",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "signaled",
+                    "confirmed",
+                    "dismissed",
+                    "expired"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Seulement les propositions dans cet état ; toutes par défaut.",
+              "title": "State"
+            }
+          },
+          {
+            "description": "Nombre maximal de propositions renvoyées.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "description": "Nombre maximal de propositions renvoyées.",
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{1,18}\\.[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentProposalList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Liste les incidents proposés par des tests de qualité en échec, les plus récents d'abord",
+        "tags": [
+          "incidents"
+        ]
+      }
+    },
+    "/api/v1/incident-proposals/{proposal_id}": {
+      "get": {
+        "description": "La proposition, ses heures, sa fenêtre déduite et le nombre de runs de test en échec\nqui s'y rattachent.",
+        "operationId": "incident_proposal_api_v1_incident_proposals__proposal_id__get",
+        "parameters": [
+          {
+            "description": "Identifiant de la proposition, tel que l'API le donne.",
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "description": "Identifiant de la proposition, tel que l'API le donne.",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentProposalDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Aucune proposition ne porte cet identifiant."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »)."
+          }
+        },
+        "summary": "Donne un incident proposé par un test de qualité en échec",
+        "tags": [
+          "incidents"
         ]
       }
     },

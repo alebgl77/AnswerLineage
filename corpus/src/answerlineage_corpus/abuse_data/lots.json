@@ -225,6 +225,18 @@
       "base": "lecture/rebut",
       "alter": {"recipe": "ralentir", "timeout_ms": 50},
       "expect": {"verdict": "borne", "status": 503, "code": "query_timeout"}
+    },
+    {
+      "name": "assertions-en-rafale",
+      "title": "Une rafale de 5 000 assertions en échec sur un jeu : 1 000 sont lues, un seul signal, le reste compté",
+      "surface": "ingestion",
+      "base": "ingestion/test-de-qualite",
+      "alter": {
+        "recipe": "repeter",
+        "field": "/body/0/inputs/0/inputFacets/dataQualityAssertions/assertions",
+        "count": 5000
+      },
+      "expect": {"verdict": "sans_effet"}
     }
   ]
 }

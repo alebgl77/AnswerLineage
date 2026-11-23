@@ -31,6 +31,13 @@ webhooks dans la file des webhooks (``webhook_queue``), quand un webhook est en
 service ; ``webhook_stats`` dit jusqu'à quand il l'est, et compte ce qui est
 parti et ce qui s'est perdu.
 
+Un test de qualité en échec, que la projection relève dans un événement
+(``quality_signal``), propose un incident (``incident_proposal``) qu'un humain
+confirme ou écarte : des identifiants, des classes d'assertions d'une liste
+fermée, des heures, jamais le texte libre d'une assertion. ``quality_column``
+garde la dernière réussite et le dernier échec connus de chaque colonne testée,
+``quality_stats`` compte ce que les bornes ont écarté.
+
 Les tables du graphe (``GRAPH``) se déduisent toutes des événements bruts : la
 reconstruction les vide et les rejoue, et garde la trace de chaque
 reconstruction (``graph_rebuild``).
@@ -141,6 +148,55 @@ WEBHOOK_EVENT_QUARANTINE: Final[dict[str, str]] = {
     "incident.quarantined": "active",
     "incident.quarantine_lifted": "lifted",
 }
+# Classe d'une assertion de qualité, d'une liste fermée : le nom que l'émetteur donne
+# à son test y est ramené, jamais recopié. « other » pour tout le reste.
+AssertionClass = Literal[
+    "not_null",
+    "unique",
+    "accepted_values",
+    "relationships",
+    "row_count",
+    "freshness",
+    "custom_sql",
+    "other",
+]
+ASSERTION_CLASSES: Final[tuple[str, ...]] = get_args(AssertionClass)
+# Gravité d'une assertion telle que l'émetteur l'a réglée, de la plus faible à la plus
+# forte : « unspecified » quand il n'en dit rien ou rien de connu.
+QualitySeverity = Literal["unspecified", "warn", "error"]
+QUALITY_SEVERITIES: Final[tuple[str, ...]] = get_args(QualitySeverity)
+# Sort d'un signal d'échec : en attente d'un worker ; rattaché à une proposition
+# ouverte ; mis en sourdine, rattaché à une proposition décidée il y a peu ; refusé,
+# la borne des propositions ouvertes atteinte ; trop ancien pour proposer.
+SignalState = Literal["pending", "attached", "muted", "refused", "stale"]
+SIGNAL_STATES: Final[tuple[str, ...]] = get_args(SignalState)
+# État d'une proposition d'incident : signalée, en attente d'un humain ; confirmée,
+# l'incident déclaré ; écartée par un humain ; expirée, sans nouvel échec.
+ProposalState = Literal["signaled", "confirmed", "dismissed", "expired"]
+PROPOSAL_STATES: Final[tuple[str, ...]] = get_args(ProposalState)
+# Les transitions admises : une proposition naît signalée, se complète tant qu'elle
+# l'est, puis est confirmée, écartée ou expire, définitivement. La base refuse toute
+# autre (``ck_incident_proposal_transition``).
+PROPOSAL_TRANSITIONS: Final[tuple[tuple[str | None, str], ...]] = (
+    (None, "signaled"),
+    ("signaled", "signaled"),
+    ("signaled", "confirmed"),
+    ("signaled", "dismissed"),
+    ("signaled", "expired"),
+)
+# Ce que dit le début de la fenêtre déduite : la dernière réussite connue avant le
+# premier échec, ou, à défaut, un repli fixe avant lui.
+WindowBasis = Literal["last_pass", "lookback"]
+WINDOW_BASES: Final[tuple[str, ...]] = get_args(WindowBasis)
+# Qui compte : la projection des événements, ou le pas qui fait les propositions.
+QualityStage = Literal["projection", "proposals"]
+QUALITY_STAGES: Final[tuple[str, ...]] = get_args(QualityStage)
+# Propositions ouvertes au plus, tous jeux confondus ; colonnes nommées au plus par
+# proposition, au-delà desquelles elle porte sur la table entière.
+MAX_OPEN_PROPOSALS: Final = 100
+MAX_PROPOSAL_COLUMNS: Final = 100
+# Classes d'assertions au plus par signal : toute la liste fermée.
+MAX_SIGNAL_CLASSES: Final = len(ASSERTION_CLASSES)
 # Motif de la mise au rebut d'un événement, d'une liste fermée : une classe
 # d'erreur, jamais le message d'une exception. Les quatre premiers ne se
 # corrigent pas en réessayant ; les deux derniers sont réessayés d'abord.
@@ -863,6 +919,220 @@ webhook_stats = Table(
     Column("dropped", BigInteger, nullable=False, server_default="0"),
     CheckConstraint("id", name="single_row"),
     CheckConstraint("sent >= 0 AND rejected >= 0 AND dropped >= 0", name="counts"),
+)
+
+
+def _classes(column: str) -> str:
+    """Une liste de classes d'assertions : de une à toutes, prises dans la liste fermée."""
+    admitted = ", ".join(repr(value) for value in ASSERTION_CLASSES)
+    return (
+        f"cardinality({column}) BETWEEN 1 AND {MAX_SIGNAL_CLASSES}"
+        f" AND {column} <@ ARRAY[{admitted}]::text[]"
+    )
+
+
+# Proposition d'incident, née d'un test de qualité en échec : un jeu de données, ses
+# colonnes en échec (``incident_proposal_column``) ou la table entière, les classes
+# d'assertions et la plus forte gravité vues, les heures du premier et du dernier
+# échec, le début de la fenêtre déduite et ce qui le fonde, l'émetteur. Aucun texte
+# libre. Elle attend un humain : confirmée, elle devient un incident déclaré
+# (``incident_id``) ; écartée ou expirée, elle n'a aucun effet. Au plus une
+# proposition signalée par jeu, et ``MAX_OPEN_PROPOSALS`` en tout, que les workers
+# vérifient sous verrou. ``signaled_at`` : le dernier échec rattaché, par l'heure de
+# la base, d'où part l'expiration.
+incident_proposal = Table(
+    "incident_proposal",
+    metadata,
+    Column("id", Uuid, primary_key=True, server_default=func.gen_random_uuid()),
+    Column("state", Text, nullable=False, server_default=text("'signaled'")),
+    Column("namespace", Text, nullable=False),
+    Column("name", Text, nullable=False),
+    Column("whole_table", Boolean, nullable=False),
+    Column("classes", ARRAY(Text), nullable=False),
+    Column("severity", Text, nullable=False),
+    Column("first_failed_at", DateTime(timezone=True), nullable=False),
+    Column("last_failed_at", DateTime(timezone=True), nullable=False),
+    Column("window_start", DateTime(timezone=True), nullable=False),
+    Column("window_basis", Text, nullable=False),
+    Column("emitter", Text, nullable=False),
+    Column("proposed_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("signaled_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("decided_at", DateTime(timezone=True)),
+    Column("incident_id", Uuid, ForeignKey("incident.id")),
+    UniqueConstraint("incident_id"),
+    CheckConstraint(_in("state", PROPOSAL_STATES), name="state"),
+    CheckConstraint(_in("severity", QUALITY_SEVERITIES), name="severity"),
+    CheckConstraint(_in("window_basis", WINDOW_BASES), name="window_basis"),
+    CheckConstraint(_classes("classes"), name="classes"),
+    CheckConstraint("first_failed_at <= last_failed_at", name="failed"),
+    CheckConstraint("window_start < first_failed_at", name="window"),
+    CheckConstraint("(state = 'signaled') = (decided_at IS NULL)", name="decided"),
+    CheckConstraint("decided_at IS NULL OR proposed_at <= decided_at", name="decided_after"),
+    CheckConstraint("(state = 'confirmed') = (incident_id IS NOT NULL)", name="confirmed"),
+    # Les propositions les plus récentes d'abord, pour la liste.
+    Index(None, "proposed_at", "id"),
+    # Les décisions récentes d'un jeu, pour la sourdine.
+    Index(None, "namespace", "name", "decided_at"),
+)
+# Une proposition signalée au plus par jeu de données : deux workers n'en font qu'une.
+Index(
+    "uq_incident_proposal_open",
+    incident_proposal.c.namespace,
+    incident_proposal.c.name,
+    unique=True,
+    postgresql_where=incident_proposal.c.state == "signaled",
+)
+
+
+def _admitted_proposal_transitions() -> str:
+    """Les transitions admises, en PL/pgSQL, tirées de ``PROPOSAL_TRANSITIONS``."""
+    admitted = []
+    for before, after in PROPOSAL_TRANSITIONS:
+        if before is None:
+            admitted.append(f"(TG_OP = 'INSERT' AND NEW.state = '{after}')")
+        else:
+            admitted.append(
+                f"(TG_OP = 'UPDATE' AND OLD.state = '{before}' AND NEW.state = '{after}'"
+                " AND NEW.namespace = OLD.namespace AND NEW.name = OLD.name"
+                " AND NEW.proposed_at = OLD.proposed_at"
+                " AND NEW.first_failed_at = OLD.first_failed_at"
+                " AND NEW.window_start = OLD.window_start)"
+            )
+    return "\n        OR ".join(admitted)
+
+
+# Les transitions d'une proposition, tenues par une contrainte nommée que la base
+# vérifie à chaque écriture : une ligne naît signalée ; seule une proposition signalée
+# change, sans changer de jeu, d'heure de proposition, de premier échec ni de début de
+# fenêtre ; une décision est définitive. La fonction et la contrainte sont créées avec
+# la table.
+PROPOSAL_TRANSITION_FUNCTION: Final = f"""
+CREATE FUNCTION incident_proposal_transition() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF {_admitted_proposal_transitions()} THEN
+        RETURN NULL;
+    END IF;
+    RAISE EXCEPTION 'transition de proposition refusée'
+        USING ERRCODE = 'check_violation',
+              CONSTRAINT = 'ck_incident_proposal_transition',
+              TABLE = 'incident_proposal';
+END
+$$
+"""
+PROPOSAL_TRANSITION_CONSTRAINT: Final = """
+CREATE CONSTRAINT TRIGGER ck_incident_proposal_transition
+AFTER INSERT OR UPDATE ON incident_proposal
+FOR EACH ROW EXECUTE FUNCTION incident_proposal_transition()
+"""
+
+
+def create_proposal_transitions(target: Table, connection: Connection, **_: object) -> None:
+    """Crée, avec la table, la fonction et la contrainte qui tiennent ses transitions."""
+    connection.exec_driver_sql(PROPOSAL_TRANSITION_FUNCTION)
+    connection.exec_driver_sql(PROPOSAL_TRANSITION_CONSTRAINT)
+
+
+event.listen(incident_proposal, "after_create", create_proposal_transitions)
+
+# Les colonnes en échec d'une proposition, nommées, ``MAX_PROPOSAL_COLUMNS`` au plus.
+# Une assertion sur la table entière, ou sur une colonne qui n'a pas la forme d'un
+# nom, ne nomme rien : la proposition porte alors sur la table (``whole_table``).
+incident_proposal_column = Table(
+    "incident_proposal_column",
+    metadata,
+    Column("proposal_id", Uuid, ForeignKey("incident_proposal.id"), nullable=False),
+    Column("column_name", Text, nullable=False),
+    PrimaryKeyConstraint("proposal_id", "column_name"),
+    CheckConstraint("column_name <> ''", name="named"),
+)
+
+# Signal d'échec d'un test de qualité, relevé par la projection d'un événement : un
+# par run, jeu de données et colonne (``''`` : la table). Les classes d'assertions et
+# la plus forte gravité réunissent les assertions en échec du run sur cette colonne.
+# L'écriture est idempotente et commutative : rejouer l'événement, ou recevoir ceux
+# d'un run dans le désordre, ne relève rien deux fois. Un worker réclame les signaux
+# en attente (``FOR UPDATE SKIP LOCKED``) pour en faire des propositions. Hors du
+# graphe : une reconstruction ne les vide pas. Purgés après leur borne d'âge.
+quality_signal = Table(
+    "quality_signal",
+    metadata,
+    Column("run_id", Uuid, nullable=False),
+    Column("namespace", Text, nullable=False),
+    Column("name", Text, nullable=False),
+    Column("column_name", Text, nullable=False),
+    Column("classes", ARRAY(Text), nullable=False),
+    Column("severity", Text, nullable=False),
+    Column("emitter", Text, nullable=False),
+    Column("event_time", DateTime(timezone=True), nullable=False),
+    # La réception de l'événement par l'API (``event_raw.recorded_at``).
+    Column("recorded_at", DateTime(timezone=True), nullable=False),
+    Column("state", Text, nullable=False, server_default=text("'pending'")),
+    Column("proposal_id", Uuid, ForeignKey("incident_proposal.id")),
+    PrimaryKeyConstraint("run_id", "namespace", "name", "column_name"),
+    CheckConstraint(_classes("classes"), name="classes"),
+    CheckConstraint(_in("severity", QUALITY_SEVERITIES), name="severity"),
+    CheckConstraint(_in("state", SIGNAL_STATES), name="state"),
+    CheckConstraint(
+        "(state IN ('attached', 'muted')) = (proposal_id IS NOT NULL)", name="proposal"
+    ),
+    # Les plus anciens d'abord, pour la purge.
+    Index(None, "recorded_at"),
+)
+# Les signaux en attente, les plus anciens d'abord : ce que les workers réclament.
+Index(
+    "ix_quality_signal_pending",
+    quality_signal.c.event_time,
+    quality_signal.c.run_id,
+    postgresql_where=quality_signal.c.state == "pending",
+)
+# Les signaux d'une proposition, pour compter ses runs en échec.
+Index(
+    "ix_quality_signal_proposal_id",
+    quality_signal.c.proposal_id,
+    quality_signal.c.run_id,
+    postgresql_where=quality_signal.c.proposal_id.is_not(None),
+)
+
+# Dernière réussite et dernier échec connus des assertions de chaque colonne d'un jeu
+# de données (``''`` : la table), par l'heure des événements. Écrite au plus grand :
+# l'ordre d'arrivée ne compte pas. Elle fonde le début de la fenêtre déduite d'une
+# proposition, et dit quand toutes ses colonnes sont de nouveau en réussite.
+quality_column = Table(
+    "quality_column",
+    metadata,
+    Column("namespace", Text, nullable=False),
+    Column("name", Text, nullable=False),
+    Column("column_name", Text, nullable=False),
+    Column("last_passed_at", DateTime(timezone=True)),
+    Column("last_failed_at", DateTime(timezone=True)),
+    PrimaryKeyConstraint("namespace", "name", "column_name"),
+    CheckConstraint("last_passed_at IS NOT NULL OR last_failed_at IS NOT NULL", name="known"),
+)
+
+# Compteurs des signaux de qualité depuis la mise en service, une ligne par étape :
+# celle de la projection, celle des propositions. Deux lignes, pour que la projection
+# et les propositions ne s'attendent pas l'une l'autre. Signaux perdus par une borne,
+# refusés par la borne des propositions ouvertes, trop anciens pour proposer ;
+# colonnes qui n'ont pas la forme d'un nom ; assertions non lues au-delà de leur
+# borne. ``refused_since`` : le début de l'épisode de refus en cours, dit une fois au
+# journal.
+quality_stats = Table(
+    "quality_stats",
+    metadata,
+    Column("stage", Text, primary_key=True),
+    Column("dropped", BigInteger, nullable=False, server_default="0"),
+    Column("refused", BigInteger, nullable=False, server_default="0"),
+    Column("stale", BigInteger, nullable=False, server_default="0"),
+    Column("invalid_columns", BigInteger, nullable=False, server_default="0"),
+    Column("assertions_truncated", BigInteger, nullable=False, server_default="0"),
+    Column("refused_since", DateTime(timezone=True)),
+    CheckConstraint(_in("stage", QUALITY_STAGES), name="stage"),
+    CheckConstraint(
+        "dropped >= 0 AND refused >= 0 AND stale >= 0 AND invalid_columns >= 0"
+        " AND assertions_truncated >= 0",
+        name="counts",
+    ),
 )
 
 # Reconstructions du graphe depuis les événements bruts, une ligne chacune : tant

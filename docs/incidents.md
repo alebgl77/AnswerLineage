@@ -2,6 +2,8 @@
 
 Un responsable de données constate qu'une donnée est fausse : une table mal chargée, une référence périmée. Il déclare l'incident : quels jeux de données, pendant quelle fenêtre, avec quelle gravité. AnswerLineage enregistre l'incident et lance aussitôt son analyse d'impact : les réponses d'agents qui s'appuient sur ces données pendant la fenêtre, et leurs destinataires.
 
+Un test de données en échec, émis en OpenLineage par dbt ou un autre outil, [propose un incident](#incidents-proposés-par-un-test-de-qualité) sur la table et la colonne qu'il accuse : la proposition attend un humain, rien n'en part.
+
 La déclaration se fait par l'API (`POST /api/v1/incidents`) ou par la [ligne de commande](cli.md#answerlineage-incident) (`answerlineage incident declare`). Les [workers](workers.md#analyse-des-incidents) font l'analyse ; elle se lit sur l'incident (`GET /api/v1/incidents/{id}`, `answerlineage incident show`).
 
 Pendant l'incident, le responsable peut aussi le [mettre en quarantaine](#quarantaine) : chaque proxy apprend alors le périmètre de l'incident, en moins de 30 secondes, pour agir sur les lectures de ces données.
@@ -323,6 +325,78 @@ Rien n'est enregistré ni annoncé pour une demande refusée. Une activation pre
 
 Plusieurs proxys l'interrogent chacun de leur côté, sans s'accorder : la route est faite pour cela.
 
+## Incidents proposés par un test de qualité
+
+Une donnée fausse se voit souvent d'abord dans les tests de données : un `not_null` qui échoue sur la colonne `email` des clients, un `unique` sur un identifiant. Quand l'outil de tests émet ses résultats en OpenLineage, dbt par exemple (dbt-ol), AnswerLineage en fait une **proposition d'incident** : un incident signalé, sur la table et la colonne en échec, qu'un humain examine. Rien ne part d'une proposition : ni analyse, ni annonce, ni quarantaine.
+
+### Ce qui est lu
+
+L'outil de tests émet un run par modèle testé ; son entrée est le jeu de données testé, et la facette standard d'OpenLineage `dataQualityAssertions` (version 1-1-0, [copiée dans le dépôt](../spec/openlineage/README.md)) y liste les assertions, chacune avec sa réussite. Les [workers](workers.md#ce-que-la-projection-lit) en lisent quatre champs, et rien d'autre :
+
+| Champ de l'assertion | Ce qu'il devient |
+| --- | --- |
+| `success` | Un booléen strict ; une assertion dont la réussite n'en est pas un est ignorée. `false` est un échec, quelle que soit la gravité : dbt met `false` aussi pour un test en `warn`, en erreur ou sauté |
+| `assertion` | Sa classe, d'une liste fermée : `not_null`, `unique`, `accepted_values`, `relationships`, `row_count`, `freshness`, `custom_sql`, et `other` pour tout le reste, un test singulier par exemple |
+| `severity` | `error`, `warn`, ou `unspecified` quand l'émetteur n'en dit rien de connu |
+| `column` | La colonne, contrôlée comme un [nom](ingestion.md#identifiants) ; sans colonne, ou quand elle n'a pas la forme d'un nom (une expression comme `lower(email)`), l'échec porte sur la table entière |
+
+Le nom du test, sa description, son corps SQL, les valeurs attendue et observée, ses paramètres ne sont jamais lus : aucun texte libre d'un émetteur n'entre dans la base, le journal, les compteurs ni les réponses de l'API. L'événement brut, archivé tel qu'il a été reçu comme tout événement, les garde. La facette est lue dans `inputFacets`, sinon dans `facets` (dbt écrit les deux) ; mal formée, elle est ignorée, et l'événement est projeté dans le graphe comme les autres : le run de test y lit le modèle qu'il teste. `TestRunFacet` n'est pas lue : elle n'attribue un test ni à un jeu ni à une colonne, et un test qui joint plusieurs modèles les accuserait tous.
+
+### Une proposition par jeu de données
+
+- **Plusieurs assertions d'un même run sur une même colonne** font un seul signal, qui réunit leurs classes et garde la plus forte gravité.
+- **Plusieurs colonnes, plusieurs runs sur un même jeu** : une seule proposition ouverte, qui s'enrichit de leurs colonnes, de leurs classes et de leur dernier échec.
+- **Plusieurs jeux** : une proposition par jeu.
+- **Rejouer** un événement, [reconstruire le graphe](workers.md#reconstruire-le-graphe), rejouer le rebut, ou recevoir le début et la fin d'un run dans le désordre ne propose rien deux fois.
+
+### La proposition
+
+| Champ | Contenu |
+| --- | --- |
+| `id` | Identifiant de la proposition, tiré par la base |
+| `state` | `signaled` : signalée, elle attend un humain et s'enrichit des échecs suivants |
+| `dataset` | Le jeu de données, par son espace de noms et son nom |
+| `columns`, `whole_table` | Les colonnes en échec, nommées, 100 au plus ; `whole_table` vaut `true` quand un échec porte sur la table entière, ou au-delà de 100 colonnes |
+| `assertions`, `severity` | Les classes des assertions en échec, et leur plus forte gravité. Ce n'est pas la gravité d'un incident, que seul un humain donne |
+| `emitter` | L'émetteur du premier échec : l'espace de noms de son job |
+| `first_failed_at`, `last_failed_at` | Le premier et le dernier échec, à l'heure des événements |
+| `resolved_at` | Quand toutes les colonnes en échec réussissent de nouveau : la plus récente de leurs réussites. Nulle tant que l'une échoue encore, ou au-delà de 100 colonnes, quand toutes ne sont pas connues |
+| `window` | Le début de la fenêtre déduite (`from`) et ce qui le fonde (`basis`, plus bas) |
+| `proposed_at`, `decided_at`, `incident_id` | L'heure de la proposition, posée par la base ; les deux autres sont nuls tant qu'elle est signalée |
+| `counts` | Sur `GET /api/v1/incident-proposals/{id}` seulement : les runs de test en échec qui s'y rattachent (`failed_runs`), comptés jusqu'à 10 000 (`lower_bound`) |
+
+**La fenêtre déduite** commence à la dernière réussite connue des assertions de la colonne avant le premier échec (`basis` vaut `last_pass`) : la donnée était juste alors. Elle remonte au plus 31 jours avant le premier échec. Sans réussite connue avant lui, ou quand la seule connue le suit (des événements reçus dans le désordre), elle commence 7 jours avant le premier échec (`lookback`) : ce repli peut être trop court ou trop long, et `basis` le dit. Elle finit à la fin de l'échec, `resolved_at`, quand elle est connue. Ni la dernière écriture du jeu, lue dans le graphe, ni la valeur observée d'une assertion ne la fondent : la première manquerait des écritures faites sans test, la seconde est du texte libre.
+
+**Colonne et table.** La proposition nomme ses colonnes ; la [propagation](lecture.md#propager-un-incident), elle, s'arrête aux tables : un incident déclaré sur la table rappelle toute réponse qui l'a lue, celles qui ont lu la colonne fausse comprises.
+
+### Lire les propositions
+
+```bash
+curl http://127.0.0.1:8000/api/v1/incident-proposals
+curl http://127.0.0.1:8000/api/v1/incident-proposals/5b0f6a52-2c1e-4f0e-9d7b-8b4ea1d0c3f2
+```
+
+| Paramètre | Rôle | Défaut |
+| --- | --- | --- |
+| `state` | Seulement les propositions dans cet état | toutes |
+| `limit` | Propositions par page, de 1 à 100 ; `more` vaut `true` quand d'autres suivent | 20 |
+| `cursor` | La page suivante : la valeur de `next_cursor`, rendue telle quelle | aucun |
+
+La liste rend les plus récentes d'abord ; comme toute lecture du graphe, ces routes s'exécutent sous le [délai maximal des lectures](lecture.md#délai-maximal). Un identifiant inconnu répond `404` (`unknown_proposal`), un identifiant, un état ou un curseur mal formés `422`, sans être recopiés.
+
+### Bornes
+
+Un émetteur n'est pas authentifié : il peut envoyer des échecs en nombre. Chaque borne dit ce qu'elle écarte, par un compteur, jamais par une valeur.
+
+| Borne | Au-delà |
+| --- | --- |
+| 1 000 assertions lues par jeu d'entrée, 10 000 par événement | Les suivantes ne sont pas lues, comptées (`assertions_truncated`) |
+| 1 000 colonnes relevées par événement, échecs d'abord | Perdues, comptées (`dropped`) |
+| 100 000 signaux en attente d'un worker | Les nouveaux sont perdus, comptés (`dropped`) |
+| 100 000 colonnes suivies (dernière réussite, dernier échec) | Seules celles déjà suivies sont mises à jour : la fenêtre d'une colonne nouvelle se replie sur `lookback` |
+| 100 propositions signalées à la fois | Le signal est refusé (`refused`), et l'épisode dit une fois au journal des workers, jusqu'à ce qu'une proposition soit décidée. Un émetteur hostile peut ainsi masquer les vraies : c'est une [acceptation du modèle de menaces](securite/modele-de-menaces.md#acceptations) |
+| Un événement reçu ou daté de plus de 31 jours | Il ne propose rien (`stale`) |
+
 ## Ce qui n'existe pas encore
 
 - **L'authentification.** Ces routes n'authentifient pas leurs appelants, pas plus que le reste de l'API : elles sont faites pour la boucle locale ou un accès déjà contrôlé, et refusent les hôtes et les origines qu'elles n'attendent pas ([réglages](ingestion.md#hôtes-et-origines-attendus)). Les rôles et ce que chacun peut déclarer ou lire viendront avec l'authentification ; d'ici là, qui joint l'API peut mettre un incident en quarantaine ou la lever, et les proxys n'authentifient pas l'API qui leur donne le périmètre ([modèle de menaces](securite/modele-de-menaces.md#acceptations)).
@@ -330,6 +404,7 @@ Plusieurs proxys l'interrogent chacun de leur côté, sans s'accorder : la route
 - **Le journal des quarantaines** : qui a activé ou levé, faute d'authentification. Les heures, le mode et le périmètre sont déjà gardés.
 - **L'interface.** L'explorateur ne déclare pas encore d'incident ; l'API et la ligne de commande le font.
 - **La suite du cycle de vie.** Un incident reste `qualified` : ni modification, ni clôture, ni liste de rappel pour l'instant. Une déclaration fautive ne se corrige pas, elle se refait. Sa quarantaine se lève à la main.
-- **Les colonnes.** Le périmètre s'arrête aux tables, comme la propagation.
+- **Les colonnes.** Le périmètre s'arrête aux tables, comme la propagation. Une [proposition](#incidents-proposés-par-un-test-de-qualité) nomme ses colonnes en échec, sans que la propagation s'en serve.
+- **Décider d'une proposition.** Une proposition se lit, elle ne se confirme ni ne s'écarte encore : un incident se déclare à la main, sur la table qu'elle désigne.
 - **Ce qu'un run touché a écrit.** Comme la propagation, l'analyse ne suit pas une table ou une note dérivée de la donnée fausse.
 - **Relancer une analyse par l'API**, par exemple quand des événements arrivent après elle : seule la base le permet ([plus haut](#rejouer-une-analyse)).

@@ -223,6 +223,24 @@ La [quarantaine](incidents.md#quarantaine) est un objet à part, rattaché à l'
 
 Les incidents ne sont ni partitionnés ni purgés : ils sont rares, et un rappel s'appuie sur eux. La migration `0010` crée ces tables ; sa descente les retire, incidents compris. La migration `0015` crée `incident_quarantine`, sa contrainte de transitions et sa fonction ; sa descente les retire, les quarantaines perdues, les incidents inchangés.
 
+## Propositions d'incident et signaux de qualité
+
+Les [propositions d'incident](incidents.md#incidents-proposés-par-un-test-de-qualité) et les signaux de qualité d'où elles naissent se rangent à côté des incidents, hors du graphe : une reconstruction ne les vide pas, et rejoue les événements sans rien relever deux fois. Aucune de ces tables ne porte de texte libre : des identifiants contrôlés, des classes d'assertions et des gravités de listes fermées, des heures et des décomptes.
+
+| Table | Contraintes |
+| --- | --- |
+| `quality_signal` | Un signal par run, jeu de données et colonne (`''` pour la table entière) : la clé rend l'écriture idempotente, et deux écritures du même signal réunissent leurs classes et gardent la plus forte gravité. Classes d'une à huit, prises dans la liste fermée (`ck_quality_signal_classes`) ; gravité et état de leurs listes fermées (`ck_quality_signal_severity`, `ck_quality_signal_state`) ; un signal rattaché ou en sourdine, et lui seul, désigne sa proposition (`ck_quality_signal_proposal`) |
+| `quality_column` | La dernière réussite et le dernier échec connus de chaque colonne testée, écrits au plus grand (`ck_quality_column_known`) |
+| `quality_stats` | Une ligne par étape, `projection` et `proposals` (`ck_quality_stats_stage`), pour que l'une n'attende pas l'autre ; des compteurs positifs (`ck_quality_stats_counts`) |
+| `incident_proposal` | État, gravité, base de la fenêtre et classes de leurs listes fermées (`ck_incident_proposal_state`, `ck_incident_proposal_severity`, `ck_incident_proposal_window_basis`, `ck_incident_proposal_classes`) ; le premier échec précède le dernier (`ck_incident_proposal_failed`), la fenêtre déduite commence avant lui (`ck_incident_proposal_window`) ; seule une proposition signalée n'a pas d'heure de décision (`ck_incident_proposal_decided`), qui suit la proposition (`ck_incident_proposal_decided_after`) ; une proposition confirmée, et elle seule, désigne son incident (`ck_incident_proposal_confirmed`), un incident au plus une proposition (`uq_incident_proposal_incident_id`) ; une proposition signalée au plus par jeu (`uq_incident_proposal_open`, un index unique partiel) ; les transitions d'une liste fermée (`ck_incident_proposal_transition`) |
+| `incident_proposal_column` | Les colonnes en échec d'une proposition, nommées (`ck_incident_proposal_column_named`), clé étrangère vers elle |
+
+Un index partiel range les signaux en attente par heure, pour les workers ; un autre ceux d'une proposition, pour compter ses runs ; un troisième les signaux par heure de réception. Les propositions se rangent par heure de proposition, pour la liste, et par jeu et heure de décision, pour la sourdine.
+
+Comme la quarantaine, les transitions d'une proposition sont tenues par une contrainte de déclencheur nommée et sa fonction `incident_proposal_transition()` : une ligne naît signalée ; seule une proposition signalée change, sans changer de jeu, d'heure de proposition, de premier échec ni de début de fenêtre ; une décision est définitive. Les colonnes s'appellent `column_name` : `column` est un mot réservé de SQL.
+
+La migration `0016` crée ces tables, leur contrainte de transitions et sa fonction ; sa descente les retire : propositions et signaux perdus, incidents inchangés.
+
 ## File des webhooks
 
 Quand un [webhook](webhooks.md) est en service, chaque changement d'état d'un incident écrit son message dans `webhook_queue`, dans la transaction qui le fait : celle de la déclaration, celle qui enregistre la fin de l'analyse, celle qui active ou lève la quarantaine. Le message y est tel qu'il partira, figé à l'heure du changement : la sorte d'événement, l'incident, son état, sa gravité, l'état de son analyse, son code d'échec et ses décomptes, l'état et le mode de sa dernière quarantaine. Il en sort dans la transaction qui enregistre l'issue de son envoi, avec les compteurs de `webhook_stats`.
