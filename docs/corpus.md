@@ -204,6 +204,7 @@ uv run pytest "tests/test_abuse_corpus.py::test_every_case_of_the_abuse_corpus_i
 | `entetes` | Un en-tête MCP contredit par le corps : le corps décide, l'écart est signalé |
 | `capture` | Une requête que le proxy ne peut pas lire sans ambiguïté : elle passe, sans événement, et se compte |
 | `champs` | Un champ que le contrat ne prévoit pas : du texte libre dans un incident, qui n'en porte aucun ; des colonnes dans son périmètre ; un filtre de rejeu mal orthographié, qui ne doit pas rejouer tout le rebut ; un champ au nom piégé, que le refus ne nomme pas ; un paramètre inconnu d'une lecture, ignoré |
+| `jetons` | L'[authentification](securite/authentification.md) de l'API : aucun jeton ; un jeton sans signature, signé en HMAC avec la clé publique, d'un autre émetteur ou d'une autre audience, expiré, pas encore valide, d'une clé que l'émetteur ne publie pas, à la signature altérée, démesuré ; le rôle de lecteur sur une route qu'il n'ouvre pas |
 
 ### Lire un cas
 
@@ -242,6 +243,7 @@ Les recettes forment une liste fermée :
 | `encoder-base64` | Donne à un en-tête MCP une valeur sous sa forme `=?base64?…?=` |
 | `ralentir` | Retient la lecture par un verrou et abaisse son délai maximal à `timeout_ms` : le cas ne dépend pas de la machine |
 | `rejouer` | Renvoie un événement ou un relevé déjà envoyé, tel quel ou avec un champ changé |
+| `forger-jeton` | Présente à l'API, à la place du jeton de l'appelant, la contrefaçon `forge`, dont le sujet est `subject` (le canari) : `absent`, `alg-none`, `hs256-cle-publique`, `emetteur-etranger`, `audience-etrangere`, `expire`, `pas-encore-valide`, `kid-inconnu`, `signature-alteree`, `demesure`, `lecteur-seul`. Le corpus ne fabrique pas le jeton : celui qui joue la requête le forge avec l'émetteur OIDC de test |
 
 « Bloqué » ne veut pas dire la même chose partout :
 
@@ -250,10 +252,10 @@ Les recettes forment une liste fermée :
 | `proxy` | `neutralise` | L'appel est relayé octet pour octet, parce que la capture ne bloque jamais un agent ; un seul événement, émis après la réponse, marque l'anomalie (`invalidToolName`, `headerMismatch` et ses en-têtes, `unresolved` et son motif) sans porter la valeur |
 | `proxy` | `compte` | La requête est relayée, aucun événement ne la décrit, et elle est comptée comme non inspectée |
 | `proxy` | `refuse` | `403` et son code, rien n'atteint le serveur MCP. Seulement pour `Host`, `Origin` et les requêtes d'une autre page : le contrôle du corpus refuse tout autre refus du proxy |
-| `ingestion` | `refuse` | Le statut et le code ; aucun événement enregistré, la file reste vide, aucune table ne change après le passage d'un worker, ni le graphe ni celles des incidents. `read: partial` : le corps n'a pas été lu en entier |
+| `ingestion` | `refuse` | Le statut et le code, dont `401` et `403` pour un jeton refusé ; aucun événement enregistré, la file reste vide, aucune table ne change après le passage d'un worker, ni le graphe ni celles des incidents. `read: partial` : le corps n'a pas été lu en entier |
 | `ingestion` | `rejete` | Le rang de l'événement, le chemin du champ et le code ; rien n'entre de cet événement. Sans rang, pour un événement envoyé seul, un relevé, une déclaration d'incident ou une demande de rejeu : rien n'est enregistré |
 | `ingestion`, `lecture` | `sans_effet` | La requête altérée obtient exactement ce qu'obtient la requête saine : même réponse, même graphe. L'archive des événements reçus, qui garde un événement accepté tel qu'il est arrivé, n'est alors pas fouillée |
-| `lecture` | `refuse` | `404` et son code, ou `422` avec le chemin du paramètre ; jamais la valeur reçue |
+| `lecture` | `refuse` | `401` ou `403` et son code pour un jeton refusé, `404` et son code, ou `422` avec le chemin du paramètre ; jamais la valeur reçue |
 | `lecture` | `borne` | Une réponse `200` dans le délai, qui dit si elle est tronquée et, complète, rend ce que rend la requête saine ; ou le refus `503` du délai. Jamais de `500` |
 | `explorateur` | `inerte` | Aucun nœud ne porte la valeur, la page ne l'affiche pas et n'en tire aucun élément, aucune erreur de script ni refus de la politique de contenu, et le message fixe attendu s'affiche |
 
@@ -269,18 +271,23 @@ Les recettes forment une liste fermée :
 | 1 | Le corpus : le proxy, l'ingestion, la lecture et l'explorateur |
 | 2 | La lecture antidatée est bloquée : son exception est retirée |
 | 3 | Les routes des incidents (déclarer, lister, lire) et de la file de rebut (lister, rejouer), et la famille `champs` |
+| 4 | Les assertions de qualité : texte libre, colonne piégée, rafale |
+| 5 | La confirmation d'un incident proposé, et les tests en échec qui le font naître |
+| 6 | La famille `jetons` et la recette `forger-jeton` ; chaque requête porte désormais le jeton d'un appelant qui a tous les rôles, y compris celui d'émetteur, et les cas ouverts des émetteurs se jouent ainsi |
 
 Un cas qui révèle une attaque que le produit laisse passer ne se retire pas et ne se corrige pas en passant : il devient un cas ouvert.
 
 ### Cas ouverts
 
+Les trois cas ouverts des émetteurs se jouent avec le jeton d'un émetteur authentifié : un appelant sans jeton, ou avec un jeton forgé, est refusé avant l'ingestion (famille `jetons`). Ce qui reste ouvert est le lien entre un émetteur et l'espace de noms de ses événements : un client qui a le rôle d'émetteur écrit encore au nom d'un autre.
+
 Un cas que le produit ne bloque pas encore reste au corpus, déclaré avec son motif dans `corpus/src/answerlineage_corpus/abuse_open.json`. À l'exécution, c'est un échec attendu, nommé à chaque passage avec ce qui a été obtenu. Le jour où il se trouve bloqué, le pipeline échoue tant que son exception n'est pas retirée. Ce fichier est un chemin protégé : ouvrir un cas demande la revue d'un mainteneur. « Tous les cas sont bloqués » se lit sur les cas qui ne sont pas ouverts, et un cas ouvert ne compte pas dans les trois qu'une famille exige.
 
 | Cas ouvert | Motif |
 | --- | --- |
-| `emetteur/evenement-au-nom-du-proxy` | Les émetteurs ne sont pas authentifiés : l'ingestion accepte de quiconque un événement au nom du proxy, et la lecture inventée entre dans le graphe. |
-| `emetteur/doublons-au-nom-d-un-autre` | Les émetteurs ne sont pas authentifiés : un rejeu est compté au nom de l'émetteur que l'événement déclare, pas de celui qui l'envoie. |
-| `emetteur/releve-au-nom-d-un-autre` | Un relevé de couverture n'est pas authentifié plus qu'un événement : quiconque en publie un au nom d'un autre émetteur gonfle les appels vus d'une fenêtre, et la fusion au plus grand ne le défait pas. |
+| `emetteur/evenement-au-nom-du-proxy` | Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements : tout client qui a le rôle d'émetteur envoie un événement au nom du proxy, et la lecture inventée entre dans le graphe. |
+| `emetteur/doublons-au-nom-d-un-autre` | Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements : un rejeu est compté au nom de l'émetteur que l'événement déclare, pas du client qui l'envoie. |
+| `emetteur/releve-au-nom-d-un-autre` | Un relevé de couverture n'est pas lié à son émetteur plus qu'un événement : tout client qui a le rôle d'émetteur en publie un au nom d'un autre, gonfle les appels vus d'une fenêtre, et la fusion au plus grand ne le défait pas. |
 
 ### Ce que le corpus ne dit pas
 

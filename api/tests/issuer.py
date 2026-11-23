@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import secrets
 import time
@@ -182,6 +183,44 @@ class LocalIssuer:
 
 # L'émetteur de la session de tests, lu en mémoire.
 TEST_ISSUER: Final = LocalIssuer()
+
+
+def forged(forge: str, subject: str = "personne-essai", issuer: LocalIssuer = TEST_ISSUER) -> str:
+    """Le jeton d'une contrefaçon du corpus d'abus (``FORGES``), qui porte ce sujet.
+
+    Chacun ressemble à un jeton d'émetteur, qui ouvrirait l'ingestion s'il était juste."""
+    now = int(time.time())
+    claims = {**issuer.claims(PERSONS, client=EMITTER_CLIENT), "sub": subject}
+    if forge == "alg-none":
+        header = {"alg": "none", "typ": "JWT", "kid": KIDS["RS256"]}
+        parts = (json.dumps(header).encode(), json.dumps(claims).encode())
+        return ".".join(b64(part) for part in parts) + "."
+    if forge == "hs256-cle-publique":
+        # À la main : la bibliothèque refuse elle-même une clé publique comme secret HMAC.
+        header = {"alg": "HS256", "typ": "JWT", "kid": KIDS["RS256"]}
+        signing = ".".join(b64(json.dumps(part).encode()) for part in (header, claims))
+        signature = hmac.new(public_pem(), signing.encode(), hashlib.sha256).digest()
+        return f"{signing}.{b64(signature)}"
+    if forge == "emetteur-etranger":
+        return issuer.sign({**claims, "iss": "https://attaquant.example/realms/lignage"})
+    if forge == "audience-etrangere":
+        return issuer.sign({**claims, "aud": "une-autre-api"})
+    if forge == "expire":
+        return issuer.sign({**claims, "iat": now - 7200, "exp": now - 3600})
+    if forge == "pas-encore-valide":
+        return issuer.sign({**claims, "nbf": now + 600})
+    if forge == "kid-inconnu":
+        return issuer.sign(claims, kid="cle-inconnue", key=FORGER_KEY)
+    if forge == "signature-alteree":
+        head, payload, mark = issuer.sign(claims).split(".")
+        flipped = bytearray(base64.urlsafe_b64decode(mark + "=="))
+        flipped[-1] ^= 0x01
+        return f"{head}.{payload}.{b64(bytes(flipped))}"
+    if forge == "demesure":
+        return issuer.sign({**claims, "remplissage": "x" * (17 * 1024)})
+    if forge == "lecteur-seul":
+        return issuer.sign({**issuer.claims((Role.READER.value,)), "sub": subject})
+    raise ValueError("contrefaçon inconnue")
 
 
 @dataclass

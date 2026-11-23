@@ -61,6 +61,9 @@ class Play:
     settings: Mapping[str, Any] = field(default_factory=dict)
     # Vrai : la lecture est retenue par un verrou, pour dépasser son délai sans charge énorme.
     slow: bool = False
+    # Le jeton à présenter à la place de celui d'un appelant légitime : sa contrefaçon, d'une
+    # liste fermée (``FORGES``), et la marque qu'il porte. Celui qui joue la requête le forge.
+    token: Mapping[str, str] | None = None
 
 
 class AlterationError(ValueError):
@@ -130,6 +133,7 @@ class _Draft:
     settings: dict[str, Any]
     announced: bool = True
     slow: bool = False
+    token: dict[str, str] | None = None
     # Rend le corps à partir du document, quand le JSON ordinaire ne le peut pas.
     render: Callable[[Any], bytes] | None = None
     # Transformations des octets du corps, dans l'ordre.
@@ -276,6 +280,42 @@ def _slow_down(draft: _Draft, params: Mapping[str, Any]) -> None:
     draft.slow = True
 
 
+# Les jetons qu'un appelant peut présenter à l'API à la place du sien, en liste fermée.
+# Rien ici ne les fabrique : le corpus ne connaît ni l'émetteur ni ses clés.
+FORGES: Final = (
+    # Aucun en-tête Authorization.
+    "absent",
+    # Un jeton sans signature (« alg: none »).
+    "alg-none",
+    # Un HMAC signé avec la clé publique de l'émetteur : la confusion d'algorithme.
+    "hs256-cle-publique",
+    # Un jeton juste, signé par l'émetteur, pour un autre émetteur (iss) ou une autre audience.
+    "emetteur-etranger",
+    "audience-etrangere",
+    # Un jeton juste, mais expiré, ou pas encore valide (nbf).
+    "expire",
+    "pas-encore-valide",
+    # Un jeton signé d'une clé que l'émetteur ne publie pas (kid inconnu).
+    "kid-inconnu",
+    # Un jeton juste dont la signature est altérée.
+    "signature-alteree",
+    # Un jeton juste de plus de 16 Kio.
+    "demesure",
+    # Un jeton juste, d'une personne qui n'a que le rôle de lecteur.
+    "lecteur-seul",
+)
+
+
+def _forge_token(draft: _Draft, params: Mapping[str, Any]) -> None:
+    forge = params["forge"]
+    if forge not in FORGES:
+        raise AlterationError("contrefaçon inconnue : " + ", ".join(FORGES) + " sont admises")
+    token = {"forge": str(forge)}
+    if "subject" in params:
+        token["subject"] = _text(params, "subject")
+    draft.token = token
+
+
 def _replay(draft: _Draft, params: Mapping[str, Any]) -> None:
     tokens = _tokens(params["event"])
     if len(tokens) != 2 or tokens[0] not in ("seed", "reports"):
@@ -321,6 +361,9 @@ RECIPES: Final[Mapping[str, Recipe]] = {
     "ralentir": Recipe(_slow_down, ("timeout_ms",)),
     # Renvoie un événement ou un relevé déjà envoyé, tel quel ou avec un champ changé.
     "rejouer": Recipe(_replay, ("event",), ("field", "value")),
+    # Présente un jeton contrefait à la place de celui de l'appelant ; ``subject`` en est le
+    # sujet, porteur du canari.
+    "forger-jeton": Recipe(_forge_token, ("forge",), ("subject",), hostile="subject"),
 }
 
 
@@ -343,7 +386,7 @@ def hostile_text(alter: Mapping[str, Any]) -> str | None:
     kind = kind_of(alter)
     if kind == "recipe":
         recipe = RECIPES.get(alter["recipe"]) if isinstance(alter["recipe"], str) else None
-        if recipe is None or recipe.hostile is None:
+        if recipe is None or recipe.hostile is None or recipe.hostile not in alter:
             return None
         return _dumps(alter.get(recipe.hostile))
     value = alter.get("value")
@@ -462,4 +505,5 @@ def build(
         proposals=tuple(document["proposals"]),
         settings=draft.settings,
         slow=draft.slow,
+        token=draft.token,
     )

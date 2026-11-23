@@ -97,7 +97,7 @@ def test_the_abuse_corpus_is_coherent() -> None:
 def test_it_covers_the_required_families_with_three_blocked_cases_each() -> None:
     """Injections dans les identifiants, SQL pathologique, lots surdimensionnés, caractères
     invisibles, usurpation d'émetteur, écart entre en-têtes et corps, sorties du lignage,
-    champs hors contrat."""
+    champs hors contrat, jetons absents, forgés ou d'un rôle insuffisant."""
     assert FAMILIES == (
         "identifiants",
         "sql",
@@ -107,6 +107,7 @@ def test_it_covers_the_required_families_with_three_blocked_cases_each() -> None
         "entetes",
         "capture",
         "champs",
+        "jetons",
     )
     for family in FAMILIES:
         blocked = [case for case in CORPUS if case.family == family and not case.is_open]
@@ -296,7 +297,7 @@ def test_a_malformed_case_fails_the_check(mutate: Callable[[Raw], None], problem
         (
             "lots/lot-1001",
             {"verdict": "refuse", "status": 500, "code": "batch_too_large"},
-            "un refus de la surface « ingestion » porte l'un des statuts 400, 403, 413, 415",
+            "un refus de la surface « ingestion » porte l'un des statuts 400, 401, 403, 413, 415",
         ),
         (
             "lots/lot-1001",
@@ -851,12 +852,37 @@ def test_recipes_duplicate_a_key_move_the_host_encode_slow_down_and_replay() -> 
         ({"recipe": "deplacer-hote", "host": "a.example", "to": "via"}, "un en-tête de relais"),
         ({"recipe": "rejouer", "event": "/body"}, "envoyé avant la lecture"),
         ({"recipe": "rejouer", "event": "/seed/4"}, "le pointeur sort d'un tableau"),
+        ({"recipe": "forger-jeton", "forge": "jeton-magique"}, "contrefaçon inconnue"),
+        ({"recipe": "forger-jeton", "forge": "expire", "subject": ""}, "« subject » est un texte"),
         ({"recipe": 3}, "recette inconnue"),
     ],
 )
 def test_an_alteration_that_does_not_apply_says_why(alter: Raw, reason: str) -> None:
     with pytest.raises(AlterationError, match=reason):
         altered(alter)
+
+
+def test_a_forged_token_is_named_for_whoever_plays_the_request() -> None:
+    """Le corpus ne fabrique pas le jeton : il dit la contrefaçon et la marque qu'elle porte."""
+    forged = altered({"recipe": "forger-jeton", "forge": "alg-none", "subject": "canari7c1d"})
+    assert forged.token == {"forge": "alg-none", "subject": "canari7c1d"}
+    # Le reste de la requête est celui de la requête saine.
+    healthy = build(REQUEST)
+    assert (forged.path, forged.headers, forged.body) == (
+        healthy.path,
+        healthy.headers,
+        healthy.body,
+    )
+    assert altered({"recipe": "forger-jeton", "forge": "absent"}).token == {"forge": "absent"}
+    assert healthy.token is None
+
+
+def test_a_forged_token_aims_at_the_api_only() -> None:
+    raw = raw_case("emetteur/hote-relaye-proxy")
+    raw["alter"] = {"recipe": "forger-jeton", "forge": "expire", "subject": "canari7c1d"}
+    raw["expect"] = {"verdict": "refuse", "status": 403, "code": "host_not_allowed"}
+    problems = check_case("essai", raw, bases())
+    assert problems == ["essai/hote-relaye-proxy : un jeton contrefait ne se présente qu'à l'API"]
 
 
 def test_every_recipe_of_the_closed_list_is_played_by_a_case() -> None:

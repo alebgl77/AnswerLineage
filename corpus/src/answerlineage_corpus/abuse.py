@@ -56,7 +56,7 @@ from answerlineage_corpus.scenarios import CorpusError
 
 # Change dès qu'un cas, une base ou une exception change : affaiblir le corpus
 # sans le dire échoue au contrôle.
-ABUSE_VERSION = "5"
+ABUSE_VERSION = "6"
 _DIGESTS = {
     "1": "a6e3bdbb6724874d86cde209f8549640b68bce9d76e097da185ea54284a05619",
     # La lecture antidatée est bloquée : son exception est retirée.
@@ -67,6 +67,9 @@ _DIGESTS = {
     "4": "ec1645fa0933f776efa965e554e6f14ee5bfeb403d7b0bc6f625fe737120665a",
     # La confirmation d'un incident proposé, et les tests en échec qui le font naître.
     "5": "e0fb2e4f92a7e12debc394cd943d9c5bdcd5e3dbf5cdd9f13c416d4b539a2a54",
+    # Les jetons absents, forgés ou d'un rôle insuffisant ; les cas ouverts des émetteurs
+    # se jouent désormais avec le jeton d'un émetteur authentifié.
+    "6": "d9fe17bf7e0da7b52b399eb86b28dcf7cde1b16596aac1212654c4381fefe629",
 }
 
 # Marque que porte toute valeur hostile, cherchée ensuite partout : réponses,
@@ -90,6 +93,7 @@ FAMILIES: Final = (
     "entetes",
     "capture",
     "champs",
+    "jetons",
 )
 MIN_BLOCKED: Final = 3
 
@@ -100,9 +104,11 @@ UNINSPECTED: Final = "uninspected"
 PROXY_REFUSALS: Final = ("host_not_allowed", "origin_not_allowed", "cross_site_not_allowed")
 _REFUSAL_STATUSES: Final[Mapping[str, tuple[int, ...]]] = {
     "proxy": (403,),
-    "ingestion": (400, 403, 413, 415),
-    "lecture": (403, 404, 422),
+    "ingestion": (400, 401, 403, 413, 415),
+    "lecture": (401, 403, 404, 422),
 }
+# Un jeton se présente à l'API : la recette qui le contrefait ne vise qu'elle.
+_TOKEN_SURFACES: Final = ("ingestion", "lecture")
 
 BASES_FILE: Final = "abuse_bases.json"
 OPEN_FILE: Final = "abuse_open.json"
@@ -510,6 +516,8 @@ def check_case(family: str, raw: object, bases: Mapping[str, Base]) -> list[str]
         else:
             if hostile is not None and canary not in hostile:
                 problems.append("la valeur hostile ne porte pas le canari du cas")
+            if alter.get("recipe") == "forger-jeton" and surface not in _TOKEN_SURFACES:
+                problems.append("un jeton contrefait ne se présente qu'à l'API")
     return [f"{family}/{name} : {problem}" for problem in problems]
 
 

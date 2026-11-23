@@ -43,7 +43,7 @@ from answerlineage_proxy.config import ProxySettings, SqlTool
 from answerlineage_proxy.sink import MemorySink
 from answerlineage_workers.proposals import process_signals
 from answerlineage_workers.queue import process_batch
-from api.tests.issuer import authentication, signed_in
+from api.tests.issuer import authentication, forged, signed_in
 from proxy.tests.conftest import exchange, running
 
 pytestmark = pytest.mark.anyio
@@ -311,6 +311,12 @@ async def observe_api(
                 headers=list(play.headers),
                 content=play.body if play.announced else in_chunks(play.body),
             )
+            if play.token is not None:
+                # Le jeton contrefait remplace celui de l'appelant, ou son absence.
+                del request.headers["authorization"]
+                if play.token["forge"] != "absent":
+                    token = forged(play.token["forge"], play.token.get("subject", "personne"))
+                    request.headers["authorization"] = f"Bearer {token}"
             answered: httpx.Response | None = None
             try:
                 if play.slow:
