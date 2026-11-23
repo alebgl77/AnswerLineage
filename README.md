@@ -65,6 +65,7 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Quarantaine d'un incident et diffusion de son périmètre aux proxys | Disponible |
 | Incident proposé par un test de qualité en échec (assertions OpenLineage, dbt, Great Expectations), confirmé par un humain | Disponible |
 | Authentification OIDC sur toutes les routes de l'API, six rôles et une matrice des droits publiée ; connexion PKCE de l'explorateur | Disponible |
+| Destinataires stockés sous pseudonyme HMAC, sans table de correspondance ; révélation par le gestionnaire d'incident, motivée et journalisée | Disponible |
 | Réémission des événements vers un catalogue par le protocole HTTP d'OpenLineage, éprouvée sur Marquez | Disponible |
 | Étiquetage des requêtes de l'entrepôt par l'identifiant du run, pour rejoindre ses journaux | Disponible |
 | File de rebut des événements que la projection n'intègre pas, et reconstruction du graphe depuis les événements reçus | Disponible |
@@ -82,7 +83,7 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Couverture du lignage : part des appels captés, trous connus, émetteurs muets, instances additionnées | Disponible |
 | Signaux de qualité de service de chaque appel (latence, latence ajoutée, issue, reprises) et banc de latence du proxy, chaque nuit | Disponible |
 | Kit de conformité des émetteurs, avec preuve de non-fuite par canari | Disponible |
-| Corpus d'abus rejoué à chaque merge request : 171 attaques, par famille, contre le proxy, l'API et l'explorateur | Disponible |
+| Corpus d'abus rejoué à chaque merge request : 175 attaques, par famille, contre le proxy, l'API et l'explorateur | Disponible |
 | Image analysée à chaque merge request : SBOM, vulnérabilités hautes et critiques bloquantes | Disponible |
 | Chaîne de publication d'une version : image et paquets signés sans clé et attestés, éprouvée à chaque merge request sans rien publier | Disponible |
 | Modèle de menaces tenu à jour et contrôlé : une version ne sort pas tant qu'une acceptation reste à signer | Disponible |
@@ -259,6 +260,7 @@ Chaque composant :
 - [Extension A2A](docs/a2a.md) : le lignage entre agents qui s'appellent
 - [Modèle de menaces](docs/securite/modele-de-menaces.md) : frontières de confiance, menaces, parades et acceptations
 - [Authentification et rôles](docs/securite/authentification.md) : régler un fournisseur OIDC, les rôles, la matrice des droits, les jetons du proxy et de la ligne de commande
+- [Pseudonymes des destinataires](docs/securite/pseudonymes.md) : le calcul du pseudonyme, la clé et sa rotation, la révélation et son journal, les limites
 - [Facettes](docs/facettes.md) : les schémas JSON versionnés des facettes propres à AnswerLineage
 - [Kit de conformité](docs/conformite.md) : vérifier un émetteur, lire son rapport
 - [Workers](docs/workers.md) : file de traitement, garanties, projection dans le graphe, émetteurs muets, partitions

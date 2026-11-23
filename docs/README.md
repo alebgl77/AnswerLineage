@@ -18,6 +18,7 @@
 - [Extension A2A de lignage](a2a.md)
 - [Modèle de menaces](securite/modele-de-menaces.md) : frontières de confiance, actifs, menaces de chaque composant, parades et acceptations, revu à chaque version
 - [Authentification et rôles](securite/authentification.md) : fournisseur OIDC, rôles, matrice des droits, jetons des clients, explorateur et démonstration
+- [Pseudonymes des destinataires](securite/pseudonymes.md) : calcul, clé et rotation, révélation tracée, journal en ajout seul, limites
 - [Incidents](incidents.md) : déclaration, analyse d'impact, états
 - [Workers](workers.md)
 - [Schéma du graphe](schema.md)
