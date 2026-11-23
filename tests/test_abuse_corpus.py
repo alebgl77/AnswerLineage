@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,7 @@ from sqlalchemy.pool import NullPool
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from answerlineage_api.app import create_app
+from answerlineage_api.pseudonyms.vault import LocalVault, PseudonymKey
 from answerlineage_api.store.engine import create_engine
 from answerlineage_corpus.abuse import Base, Case, healthy_play, load_abuse_corpus, play_of
 from answerlineage_corpus.abuse_requests import INCIDENT, PROPOSAL, Play
@@ -277,7 +279,14 @@ async def observe_api(
     que les événements, les relevés et les incidents préalables ont rempli par le même
     chemin."""
     app = Counted(
-        create_app(engine, **{**play.settings, **weakened}, authentication=authentication())
+        create_app(
+            engine,
+            **{**play.settings, **weakened},
+            authentication=authentication(),
+            # Un coffre à clés réglé, d'une clé tirée pour le jeu : aucune identité candidate
+            # n'a le pseudonyme d'un destinataire du corpus.
+            pseudonym_vault=LocalVault([PseudonymKey(secrets.token_bytes(32))]),
+        )
     )
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     quiet_client(caplog)

@@ -566,6 +566,196 @@ def test_the_dead_letters_lose_nothing_on_the_way_up_or_down(empty_database: URL
         engine.dispose()
 
 
+# Un pseudonyme gardé, et ce qu'un émetteur a pu envoyer avant que la forme soit exigée.
+_PSEUDONYM = "hmac-sha256:" + "ab" * 32
+_IN_CLEAR = ("camille.martin@exemple.fr", "p-1")
+
+
+_RECIPIENTS_BEFORE_0017 = """
+    INSERT INTO run (run_id, kind, state, state_time)
+        VALUES (:run, 'agent', 'COMPLETE', now());
+    INSERT INTO answer (run_id, fingerprint, event_time) VALUES (:run, 'sha256:f1', now());
+    INSERT INTO delivery (answer_id, channel, message_ref, event_time)
+        VALUES (1, 'slack', 'm-1', now());
+    INSERT INTO recipient (pseudonym) VALUES (:kept), (:clear), (:short);
+    INSERT INTO delivery_recipient (delivery_id, recipient_id, event_time)
+        VALUES (1, 1, now()), (1, 2, now()), (1, 3, now());
+    INSERT INTO incident (id, state, severity, window_start, window_end)
+        VALUES (:run, 'qualified', 'high', now() - interval '1 hour', now());
+    INSERT INTO incident_answer (incident_id, run_id, fingerprint, produced_at)
+        VALUES (:run, :run, 'sha256:f1', now());
+    INSERT INTO incident_recipient (incident_id, run_id, fingerprint, pseudonym)
+        VALUES (:run, :run, 'sha256:f1', :kept), (:run, :run, 'sha256:f1', :clear)
+"""
+
+
+def _delivery_event(*recipients: object, beside: object = None) -> dict[str, Any]:
+    """Le payload d'un événement d'agent qui diffuse sa réponse à ces destinataires."""
+    delivery = {"fingerprint": "sha256:f1", "channel": "slack", "messageRef": "m-1"}
+    return {
+        "outputs": [
+            "pas un objet",
+            {
+                "namespace": "agent://ventes",
+                "name": "assistant-commercial/reponses",
+                "facets": {"answerlineage_delivery": {**delivery, "recipients": beside}},
+                "outputFacets": {
+                    "answerlineage_delivery": {**delivery, "recipients": list(recipients)}
+                },
+            },
+        ]
+    }
+
+
+def test_recipients_that_are_not_pseudonyms_leave_the_base_on_the_way_up(
+    empty_database: URL,
+) -> None:
+    """Une valeur reçue avant que la forme du pseudonyme soit exigée est peut-être une identité
+    en clair : la montée la retire des événements bruts, du graphe et des incidents."""
+    upgrade(empty_database, "0016")
+    engine = create_engine(empty_database)
+    raw = text(
+        """
+        INSERT INTO event_raw (event_id, run_id, event_type, event_time, producer, payload,
+                               emitter, tool_call)
+        VALUES (:id, :run, 'COMPLETE', now(), 'p', :payload, 'agent://ventes', false)
+        """
+    ).bindparams(bindparam("payload", type_=JSONB))
+    events = {
+        "mêlé": _delivery_event(_PSEUDONYM, _IN_CLEAR[0], 33612345678, None, beside=_IN_CLEAR[1]),
+        "nul": _delivery_event(_PSEUDONYM, beside=None),
+        "sain": _delivery_event(_PSEUDONYM),
+        "sans sortie": {"outputs": "aucune"},
+    }
+    try:
+        with engine.begin() as connection:
+            for event_id, payload in events.items():
+                connection.execute(raw, {"id": event_id, "run": AGENT_RUN, "payload": payload})
+            values = {
+                "run": AGENT_RUN,
+                "kept": _PSEUDONYM,
+                "clear": _IN_CLEAR[0],
+                "short": _IN_CLEAR[1],
+            }
+            for statement in _RECIPIENTS_BEFORE_0017.split(";"):
+                connection.execute(text(statement), values)
+        upgrade(empty_database, "0017")
+        with engine.connect() as connection:
+            payloads: dict[str, Any] = dict(
+                connection.execute(text("SELECT event_id, payload FROM event_raw")).all()
+            )
+            graph = connection.execute(
+                text(
+                    "SELECT c.pseudonym FROM delivery_recipient l"
+                    " JOIN recipient c ON c.id = l.recipient_id ORDER BY 1"
+                )
+            ).scalars()
+            assert list(graph) == [_PSEUDONYM]
+            assert list(connection.execute(text("SELECT pseudonym FROM recipient")).scalars()) == [
+                _PSEUDONYM
+            ]
+            assert list(
+                connection.execute(text("SELECT pseudonym FROM incident_recipient")).scalars()
+            ) == [_PSEUDONYM]
+        mixed = payloads["mêlé"]["outputs"][1]
+        assert mixed["outputFacets"]["answerlineage_delivery"]["recipients"] == [_PSEUDONYM]
+        assert mixed["facets"]["answerlineage_delivery"]["recipients"] == []
+        assert mixed["outputFacets"]["answerlineage_delivery"]["fingerprint"] == "sha256:f1"
+        assert payloads["mêlé"]["outputs"][0] == "pas un objet"
+        for unchanged in ("nul", "sain", "sans sortie"):
+            assert payloads[unchanged] == events[unchanged]
+        dumped = str(payloads)
+        for clear in _IN_CLEAR:
+            assert clear not in dumped
+        assert "33612345678" not in dumped
+
+        downgrade(empty_database, "0016")
+        with engine.connect() as connection:
+            assert list(connection.execute(text("SELECT pseudonym FROM recipient")).scalars()) == [
+                _PSEUDONYM
+            ]
+    finally:
+        engine.dispose()
+
+
+_REVEALED = text(
+    """
+    INSERT INTO recipient_revelation (revealed_at, author_issuer, author_subject, reason,
+                                      pseudonym, candidates, result)
+    VALUES (:at, 'https://idp.exemple.fr', 'personne-1', :reason, :pseudonym, :candidates,
+            'matched')
+    RETURNING id, revealed_at
+    """
+)
+
+
+def test_the_revelation_journal_is_appended_to_never_changed(database: URL) -> None:
+    """Critère : le journal est en ajout seul. L'heure est celle de la base, et ni une
+    modification, ni une suppression, ni une troncature ne passent, même pour le propriétaire
+    de la table, à qui ces droits sont aussi retirés."""
+    engine = create_engine(database)
+    entry = {"at": T0, "reason": "recall", "pseudonym": _PSEUDONYM, "candidates": 3}
+    try:
+        with engine.begin() as connection:
+            before = connection.execute(text("SELECT now()")).scalar_one()
+            _, revealed_at = connection.execute(_REVEALED, entry).one()
+        # L'heure donnée à l'insertion est ignorée : c'est celle de la transaction.
+        assert revealed_at == before
+        for change in (
+            "UPDATE recipient_revelation SET reason = 'legal_obligation'",
+            "UPDATE recipient_revelation SET revealed_at = now() - interval '1 day'",
+            "DELETE FROM recipient_revelation",
+            "TRUNCATE recipient_revelation",
+        ):
+            with pytest.raises(IntegrityError) as refused, engine.begin() as connection:
+                connection.execute(text(change))
+            diagnostic = getattr(refused.value.orig, "diag", None)
+            assert getattr(diagnostic, "constraint_name", None) == (
+                "ck_recipient_revelation_append_only"
+            )
+        with engine.connect() as connection:
+            kept = connection.execute(text("SELECT count(*) FROM recipient_revelation"))
+            assert kept.scalar() == 1
+            granted = connection.execute(
+                text(
+                    "SELECT a.privilege_type FROM pg_class c, aclexplode(c.relacl) a"
+                    " WHERE c.relname = 'recipient_revelation' AND a.grantee = c.relowner"
+                )
+            ).scalars()
+            assert {"SELECT", "INSERT"} <= set(granted)
+            withdrawn = connection.execute(
+                text(
+                    "SELECT a.privilege_type FROM pg_class c, aclexplode(c.relacl) a"
+                    " WHERE c.relname = 'recipient_revelation'"
+                    " AND a.privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')"
+                )
+            ).scalars()
+            assert list(withdrawn) == []
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("change", "constraint"),
+    [
+        ({"reason": "curiosite"}, "ck_recipient_revelation_reason"),
+        ({"pseudonym": "camille.martin@exemple.fr"}, "ck_recipient_revelation_pseudonym"),
+        ({"candidates": 0}, "ck_recipient_revelation_candidates"),
+        ({"candidates": 101}, "ck_recipient_revelation_candidates"),
+    ],
+)
+def test_the_revelation_journal_holds_only_closed_lists_and_pseudonyms(
+    database: URL, change: dict[str, Any], constraint: str
+) -> None:
+    engine = create_engine(database)
+    entry = {"at": T0, "reason": "recall", "pseudonym": _PSEUDONYM, "candidates": 3, **change}
+    try:
+        with pytest.raises(IntegrityError, match=constraint), engine.begin() as connection:
+            connection.execute(_REVEALED, entry)
+    finally:
+        engine.dispose()
+
+
 def test_the_partition_key_follows_the_reception(database: URL) -> None:
     """Le mois de partition est celui de la réception : un autre est refusé."""
     engine = create_engine(database)

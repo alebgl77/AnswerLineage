@@ -38,6 +38,10 @@ fermée, des heures, jamais le texte libre d'une assertion. ``quality_column``
 garde la dernière réussite et le dernier échec connus de chaque colonne testée,
 ``quality_stats`` compte ce que les bornes ont écarté.
 
+Chaque révélation d'un destinataire est journalisée (``recipient_revelation``), en
+ajout seul : son auteur, son heure, son motif d'une liste fermée, le pseudonyme visé
+et le résultat, jamais l'identité. Aucune table ne relie un pseudonyme à une personne.
+
 Les tables du graphe (``GRAPH``) se déduisent toutes des événements bruts : la
 reconstruction les vide et les rejoue, et garde la trace de chaque
 reconstruction (``graph_rebuild``).
@@ -209,6 +213,29 @@ DeadLetterReason = Literal[
     "projection_error",
 ]
 DEAD_LETTER_REASONS: Final[tuple[str, ...]] = get_args(DeadLetterReason)
+
+# Motif de la révélation d'un destinataire, d'une liste fermée, jamais un texte libre :
+# prévenir le destinataire d'un rappel ; répondre à une demande de la personne
+# concernée ; répondre à une obligation légale ; instruire un incident.
+RevealReason = Literal[
+    "recall",
+    "data_subject_request",
+    "legal_obligation",
+    "incident_investigation",
+]
+REVEAL_REASONS: Final[tuple[str, ...]] = get_args(RevealReason)
+# Ce qu'a donné une révélation : une identité candidate a ce pseudonyme ; aucune ;
+# aucun destinataire connu ne porte ce pseudonyme.
+RevealResult = Literal["matched", "no_match", "unknown_recipient"]
+REVEAL_RESULTS: Final[tuple[str, ...]] = get_args(RevealResult)
+# Identités candidates au plus par révélation.
+MAX_REVEAL_CANDIDATES: Final = 100
+# La forme d'un pseudonyme, que la base tient pour le journal des révélations.
+PSEUDONYM_FORM: Final = "^hmac-sha256:[0-9a-f]{64}$"
+# Bornes de l'auteur d'une révélation : l'émetteur OIDC, tel qu'il est réglé, et le
+# sujet de son jeton, qu'OpenID Connect borne à 255 caractères.
+AUTHOR_ISSUER_MAX: Final = 1024
+AUTHOR_SUBJECT_MAX: Final = 255
 
 READ_EDGE_KEY = "uq_read_edge_run_id_dataset_id_dataset_version_id"
 WRITE_EDGE_KEY = "uq_write_edge_run_id_dataset_id_dataset_version_id"
@@ -1169,6 +1196,89 @@ graph_rebuild = Table(
         name="received",
     ),
 )
+
+# Journal des révélations de destinataires, en ajout seul : qui a révélé (l'émetteur
+# OIDC et le sujet de son jeton), quand (l'heure de la base), pourquoi (un motif de la
+# liste fermée), quel pseudonyme, avec combien d'identités candidates, et ce qu'il en
+# est sorti. Jamais l'identité révélée ni les candidates : aucune ligne ne relie un
+# pseudonyme à une personne. Le pseudonyme est une valeur, sans clé étrangère : le
+# journal survit à la reconstruction du graphe, qui vide ``recipient``.
+#
+# La base tient l'ajout seul : l'heure est posée par elle à l'insertion, quoi que
+# l'insertion porte ; une modification, une suppression ou une troncature est refusée
+# comme une contrainte (``ck_recipient_revelation_append_only``), même pour le
+# propriétaire de la table, à qui ces droits sont aussi retirés.
+recipient_revelation = Table(
+    "recipient_revelation",
+    metadata,
+    Column("id", BigInteger, Identity(always=True), primary_key=True),
+    Column("revealed_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("author_issuer", Text, nullable=False),
+    Column("author_subject", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("pseudonym", Text, nullable=False),
+    # Le nombre d'identités candidates, jamais les candidates.
+    Column("candidates", Integer, nullable=False),
+    Column("result", Text, nullable=False),
+    CheckConstraint(_in("reason", REVEAL_REASONS), name="reason"),
+    CheckConstraint(_in("result", REVEAL_RESULTS), name="result"),
+    CheckConstraint(f"pseudonym ~ '{PSEUDONYM_FORM}'", name="pseudonym"),
+    CheckConstraint(f"candidates BETWEEN 1 AND {MAX_REVEAL_CANDIDATES}", name="candidates"),
+    CheckConstraint(
+        f"char_length(author_issuer) BETWEEN 1 AND {AUTHOR_ISSUER_MAX}"
+        f" AND char_length(author_subject) BETWEEN 1 AND {AUTHOR_SUBJECT_MAX}",
+        name="author",
+    ),
+    # Les révélations d'un auteur dans l'heure : ce que compte la borne de débit.
+    Index("ix_recipient_revelation_author", "author_issuer", "author_subject", "revealed_at"),
+)
+
+REVELATION_APPEND_ONLY_FUNCTION: Final = """
+CREATE FUNCTION recipient_revelation_append_only() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        NEW.revealed_at := now();
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'le journal des révélations ne se modifie pas'
+        USING ERRCODE = 'check_violation',
+              CONSTRAINT = 'ck_recipient_revelation_append_only',
+              TABLE = 'recipient_revelation';
+END
+$$
+"""
+REVELATION_APPEND_ONLY_TRIGGERS: Final = (
+    """
+CREATE TRIGGER recipient_revelation_stamped
+BEFORE INSERT ON recipient_revelation
+FOR EACH ROW EXECUTE FUNCTION recipient_revelation_append_only()
+""",
+    """
+CREATE TRIGGER recipient_revelation_append_only
+BEFORE UPDATE OR DELETE ON recipient_revelation
+FOR EACH ROW EXECUTE FUNCTION recipient_revelation_append_only()
+""",
+    """
+CREATE TRIGGER recipient_revelation_not_truncated
+BEFORE TRUNCATE ON recipient_revelation
+FOR EACH STATEMENT EXECUTE FUNCTION recipient_revelation_append_only()
+""",
+    # Même le propriétaire de la table, celui de l'API dans la démonstration, n'a plus le
+    # droit de modifier, supprimer ni tronquer : il lui faudrait se le rendre d'abord.
+    "REVOKE UPDATE, DELETE, TRUNCATE ON TABLE recipient_revelation FROM PUBLIC, CURRENT_USER",
+)
+
+
+def create_revelation_append_only(target: Table, connection: Connection, **_: object) -> None:
+    """Crée, avec la table, ce qui la tient en ajout seul : la fonction, ses déclencheurs, et
+    le retrait des droits de modifier."""
+    connection.exec_driver_sql(REVELATION_APPEND_ONLY_FUNCTION)
+    for statement in REVELATION_APPEND_ONLY_TRIGGERS:
+        connection.exec_driver_sql(statement)
+
+
+event.listen(recipient_revelation, "after_create", create_revelation_append_only)
 
 # Une table partitionnée naît avec la partition du mois courant et des mois à venir.
 for _partitioned in (event_raw, coverage_report, ingest_duplicate):

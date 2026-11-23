@@ -56,7 +56,7 @@ from answerlineage_corpus.scenarios import CorpusError
 
 # Change dès qu'un cas, une base ou une exception change : affaiblir le corpus
 # sans le dire échoue au contrôle.
-ABUSE_VERSION = "6"
+ABUSE_VERSION = "7"
 _DIGESTS = {
     "1": "a6e3bdbb6724874d86cde209f8549640b68bce9d76e097da185ea54284a05619",
     # La lecture antidatée est bloquée : son exception est retirée.
@@ -70,6 +70,9 @@ _DIGESTS = {
     # Les jetons absents, forgés ou d'un rôle insuffisant ; les cas ouverts des émetteurs
     # se jouent désormais avec le jeton d'un émetteur authentifié.
     "6": "d9fe17bf7e0da7b52b399eb86b28dcf7cde1b16596aac1212654c4381fefe629",
+    # Les destinataires ne sont admis que sous un pseudonyme HMAC ; la révélation d'un
+    # destinataire, refusée au lecteur, ne garde aucune identité candidate.
+    "7": "f74d1534722cad951761bd0cf7853fb3541ff4a4d88fdfef776aaff9d3ed61fb",
 }
 
 # Marque que porte toute valeur hostile, cherchée ensuite partout : réponses,

@@ -1,0 +1,74 @@
+{
+  "description": "Pseudonymes des destinataires d'AnswerLineage. pseudonyme = « hmac-sha256: » suivi de HMAC-SHA-256(clé, étiquette || 0x00 || octets) en hexadécimal minuscule, où étiquette est l'encodage ASCII de « label » et octets la forme canonique de l'identité en UTF-8 : l'identité mise en minuscules (correspondance par défaut d'Unicode), puis normalisée en NFC. Une identité vide, de plus de 320 caractères une fois canonique, ou qui contient un blanc, un séparateur, un caractère de contrôle, de formatage ou un demi-codet n'a pas de pseudonyme (« refused »).",
+  "algorithm": "HMAC-SHA-256",
+  "label": "answerlineage/pseudonym/recipient/v1",
+  "keys": {
+    "locataireA": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "locataireB": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+  },
+  "identities": [
+    {
+      "name": "adresse électronique",
+      "identity": "camille.martin@exemple.fr",
+      "canonical": "camille.martin@exemple.fr",
+      "pseudonyms": {
+        "locataireA": "hmac-sha256:95ed34146f303882fcaf60a3490bf4e89eb0875290df1c636d9c4849016557a1",
+        "locataireB": "hmac-sha256:6c06e6044e8453dfecc5e9dea7b096106a25f52eb90d0664123f6971289818aa"
+      }
+    },
+    {
+      "name": "même adresse, autre casse",
+      "identity": "Camille.Martin@Exemple.FR",
+      "canonical": "camille.martin@exemple.fr",
+      "pseudonyms": {
+        "locataireA": "hmac-sha256:95ed34146f303882fcaf60a3490bf4e89eb0875290df1c636d9c4849016557a1",
+        "locataireB": "hmac-sha256:6c06e6044e8453dfecc5e9dea7b096106a25f52eb90d0664123f6971289818aa"
+      }
+    },
+    {
+      "name": "accents composés",
+      "identity": "h\u00e9l\u00e8ne.durand@exemple.fr",
+      "canonical": "h\u00e9l\u00e8ne.durand@exemple.fr",
+      "pseudonyms": {
+        "locataireA": "hmac-sha256:f7d88e7e38b26d09fb674b64fa245138edeead483fcb56f54b8f019a68a30990",
+        "locataireB": "hmac-sha256:6e7c3c3e1848f41b4119e9ea0589fe759cd1574f0b7bfcb04cc642bac3b23c1f"
+      }
+    },
+    {
+      "name": "mêmes accents, décomposés",
+      "identity": "he\u0301le\u0300ne.durand@exemple.fr",
+      "canonical": "h\u00e9l\u00e8ne.durand@exemple.fr",
+      "pseudonyms": {
+        "locataireA": "hmac-sha256:f7d88e7e38b26d09fb674b64fa245138edeead483fcb56f54b8f019a68a30990",
+        "locataireB": "hmac-sha256:6e7c3c3e1848f41b4119e9ea0589fe759cd1574f0b7bfcb04cc642bac3b23c1f"
+      }
+    },
+    {
+      "name": "identifiant de messagerie",
+      "identity": "U07AB12CD",
+      "canonical": "u07ab12cd",
+      "pseudonyms": {
+        "locataireA": "hmac-sha256:ff8309c0059522f2e848d5f1dd5717656f865f50e286cd7fb9d2740fac9daad3",
+        "locataireB": "hmac-sha256:1ec406015c152870abfa8ad1a8106e4d7a547e76cd59ebc5eecea6dbfb7950d0"
+      }
+    },
+    {
+      "name": "numéro de téléphone",
+      "identity": "+33612345678",
+      "canonical": "+33612345678",
+      "pseudonyms": {
+        "locataireA": "hmac-sha256:6c7251ef4fb7cbc5b18cc63d19d3df94d20a150471f23d65d3efb03fa066f061",
+        "locataireB": "hmac-sha256:b21166a6f602c588c31e7c2795af0ae7fc4aac0148946dac6a72fd5efbdc824d"
+      }
+    }
+  ],
+  "refused": [
+    {"name": "identité vide", "identity": ""},
+    {"name": "blanc en tête", "identity": " camille.martin@exemple.fr"},
+    {"name": "nom et adresse", "identity": "Camille Martin <camille.martin@exemple.fr>"},
+    {"name": "espace insécable", "identity": "camille\u00a0martin"},
+    {"name": "caractère de largeur nulle", "identity": "camille\u200b.martin@exemple.fr"},
+    {"name": "caractère de contrôle", "identity": "camille\u0000martin"},
+    {"name": "trop longue", "identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@exemple.fr"}
+  ]
+}

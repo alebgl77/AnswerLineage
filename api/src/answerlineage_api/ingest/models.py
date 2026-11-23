@@ -29,6 +29,7 @@ from pydantic_core import PydanticCustomError
 
 from answerlineage_api import identifiers
 from answerlineage_api.identifiers import identifier_fault
+from answerlineage_api.pseudonyms.vault import is_pseudonym
 
 # Facettes propres à AnswerLineage, lues par la projection.
 AGENT_FACET: Final = "answerlineage_agent"
@@ -78,6 +79,8 @@ SCHEMA_FIELDS_MAX: Final = 10_000
 # La borne du schéma publié de la facette de diffusion.
 RECIPIENTS_MAX: Final = 10_000
 TOO_MANY_ITEMS: Final = "too_many_items"
+# Un destinataire n'entre que sous son pseudonyme : toute autre valeur est refusée.
+RECIPIENT_NOT_PSEUDONYM: Final = "recipient_not_pseudonym"
 
 _RFC_3339 = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})"
@@ -286,6 +289,51 @@ def identifier_errors(raw: Mapping[str, Any]) -> list[FieldError]:
     return errors
 
 
+def _recipients(raw: Mapping[str, Any]) -> Iterator[tuple[Location, object]]:
+    """Ce que les facettes de diffusion d'un événement disent des destinataires : chaque
+    destinataire, ou la valeur entière quand elle n'est pas une liste ; emplacement, valeur."""
+    for index, item in enumerate(_items(raw.get("outputs"))):
+        dataset = _mapping(item)
+        for container in ("facets", "outputFacets"):
+            delivery = _mapping(_mapping(dataset.get(container)).get(DELIVERY_FACET))
+            listed = delivery.get("recipients")
+            at: Location = ("outputs", index, container, DELIVERY_FACET, "recipients")
+            if listed is None:
+                continue
+            if not isinstance(listed, list):
+                yield at, listed
+                continue
+            for rank, recipient in enumerate(listed):
+                yield (*at, rank), recipient
+
+
+def recipient_errors(raw: Mapping[str, Any]) -> list[FieldError]:
+    """Destinataires qui n'ont pas la forme d'un pseudonyme.
+
+    Un destinataire n'entre que sous son pseudonyme HMAC : une adresse, un nom, un
+    numéro ou un identifiant en clair est refusé, et l'événement avec lui, sans que la
+    valeur soit recopiée nulle part ; de même une liste de destinataires qui n'en est
+    pas une. Un destinataire qui n'a déjà pas la forme d'un nom est rapporté par
+    ``identifier_errors``, une seule fois.
+    """
+    return [
+        FieldError(
+            path=json_pointer(location),
+            type=RECIPIENT_NOT_PSEUDONYM,
+            message=(
+                "Un destinataire n'entre que sous son pseudonyme : « hmac-sha256: » suivi de "
+                "64 chiffres hexadécimaux minuscules, dans une liste ; jamais son identité."
+            ),
+        )
+        for location, value in _recipients(raw)
+        if not is_pseudonym(value)
+        and not (
+            isinstance(value, str)
+            and identifier_fault(value, max_length=identifiers.RECIPIENT_MAX) is not None
+        )
+    ]
+
+
 def _facet_containers(raw: Mapping[str, Any]) -> Iterator[tuple[Location, object]]:
     """Les objets d'un événement dont les clés sont des noms de facette."""
     yield ("run", "facets"), _mapping(raw.get("run")).get("facets")
@@ -446,6 +494,7 @@ def validate_event(
         ]
     errors.extend(facet_name_errors(raw))
     errors.extend(identifier_errors(raw))
+    errors.extend(recipient_errors(raw))
     errors.extend(signal_errors(raw))
     if errors:
         return None, errors

@@ -18,8 +18,11 @@ accepté quand :
 
 Les rôles se lisent ensuite dans la revendication réglée, à travers la table de
 correspondance ; le rôle d'émetteur, de l'identifiant du client (``azp``, à
-défaut ``client_id``). Aucun refus ne dit pourquoi au-delà de son code, et rien
-du jeton n'est gardé ni journalisé.
+défaut ``client_id``). Le sujet (``sub``) est l'identité de la personne, qu'une
+action tracée garde comme auteur : il n'est lu que s'il a la forme qu'OpenID
+Connect lui donne, 255 caractères ASCII imprimables au plus, sans rien qui forme
+une balise. Aucun refus ne dit pourquoi au-delà de son code, et rien du jeton
+n'est gardé ni journalisé.
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ from typing import Any, Final
 import jwt
 
 from answerlineage_api.auth.fetch import Fetch, IssuerUnavailableError, fetch_document, secure_url
-from answerlineage_api.auth.roles import PERSON_ROLES, Role
+from answerlineage_api.auth.roles import PERSON_ROLES, Caller, Role
 
 ALGORITHMS: Final = ("RS256", "ES256", "EdDSA")
 # Tolérance d'horloge entre l'émetteur et l'API, pour exp, nbf et iat.
@@ -60,6 +63,9 @@ _KEY_TYPES: Final = {"RS256": "RSA", "ES256": "EC", "EdDSA": "OKP"}
 _PRIVATE_MEMBERS: Final = ("d", "p", "q", "dp", "dq", "qi", "k")
 _CLAIM_PATH: Final = re.compile(r"[A-Za-z0-9_:/-]{1,64}(\.[A-Za-z0-9_:/-]{1,64}){0,7}")
 _PRINTABLE: Final = re.compile(r"[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?")
+# Le sujet d'un jeton (OpenID Connect Core, 2) : 255 caractères ASCII au plus. Ni blanc, ni
+# chevron, guillemet, apostrophe, accent grave ou barre oblique inverse.
+_SUBJECT: Final = re.compile(r"[A-Za-z0-9!#$%&()*+,\-./:;=?@\[\]^_{|}~]{1,255}")
 
 
 class TokenRefusedError(Exception):
@@ -324,6 +330,10 @@ class OidcVerifier:
     async def roles(self, token: str) -> frozenset[Role]:
         """Les rôles du porteur ; ``TokenRefusedError`` pour un jeton refusé,
         ``IssuerUnavailableError`` quand aucune clé de l'émetteur n'est connue."""
+        return (await self.caller(token)).roles
+
+    async def caller(self, token: str) -> Caller:
+        """Le porteur : ses rôles et son identité, comme ``roles`` les vérifie."""
         if token.count(".") != 2:
             raise TokenRefusedError("invalid_token")
         try:
@@ -352,7 +362,12 @@ class OidcVerifier:
             raise TokenRefusedError("expired_token") from None
         except (jwt.PyJWTError, ValueError, TypeError):
             raise TokenRefusedError("invalid_token") from None
-        return self._roles_of(claims)
+        subject = claims.get("sub")
+        return Caller(
+            self._roles_of(claims),
+            issuer=self.settings.issuer,
+            subject=subject if isinstance(subject, str) and _SUBJECT.fullmatch(subject) else None,
+        )
 
     def _roles_of(self, claims: Mapping[str, Any]) -> frozenset[Role]:
         values = _values(_claim(claims, self.settings.roles_claim))

@@ -9,6 +9,7 @@ réglable ; le rôle d'émetteur ne se lit que de l'identifiant du client
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
@@ -37,3 +38,15 @@ LABELS: Final = {
     Role.ADMINISTRATOR: "administrateur",
     Role.EMITTER: "émetteur",
 }
+
+
+@dataclass(frozen=True)
+class Caller:
+    """L'appelant d'une route : ses rôles, et l'identité OIDC d'une personne quand le jeton
+    en porte une admise. Une action tracée la garde comme auteur ; rien d'autre ne la lit."""
+
+    roles: frozenset[Role]
+    # L'émetteur OIDC qui a signé le jeton, et le sujet du jeton (« sub ») : ``None`` quand
+    # l'authentification est désactivée, ou que le jeton ne porte pas de sujet admis.
+    issuer: str | None = None
+    subject: str | None = None

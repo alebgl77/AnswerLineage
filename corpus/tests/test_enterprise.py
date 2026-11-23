@@ -115,7 +115,7 @@ def test_most_requests_end_with_an_answer_sent_to_the_agent_audience(
 def test_recipients_are_pseudonyms_never_names(enterprise: Enterprise) -> None:
     assert len(set(enterprise.recipients)) == len(enterprise.recipients)
     for pseudonym in enterprise.recipients:
-        assert re.fullmatch(r"[0-9a-f]{32}", pseudonym)
+        assert re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", pseudonym)
     assert {pseudonym for agent in enterprise.agents for pseudonym in agent.audience} == set(
         enterprise.recipients
     )

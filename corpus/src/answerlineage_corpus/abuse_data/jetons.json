@@ -114,6 +114,14 @@
       "expect": {"verdict": "refuse", "status": 403, "code": "insufficient_role"}
     },
     {
+      "name": "lecteur-revele",
+      "title": "Une personne qui n'a que le rôle de lecteur révèle un destinataire parmi des identités candidates",
+      "surface": "ingestion",
+      "base": "ingestion/revelation-d-un-destinataire",
+      "alter": {"recipe": "forger-jeton", "forge": "lecteur-seul", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "insufficient_role"}
+    },
+    {
       "name": "lecteur-lit-les-doublons",
       "title": "Une personne qui n'a que le rôle de lecteur lit les doublons par émetteur",
       "surface": "lecture",

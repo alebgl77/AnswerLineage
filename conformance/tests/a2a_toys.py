@@ -363,7 +363,7 @@ def lineage_events(
                     fingerprint="sha256:" + "5b1d" * 16,
                     channel="mail",
                     messageRef="m-1",
-                    recipients=["8f3a"],
+                    recipients=["hmac-sha256:" + "8f3a" * 16],
                 )
             },
         }

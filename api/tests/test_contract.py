@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from sqlalchemy.pool import NullPool
 
 from answerlineage_api.app import create_app
 from answerlineage_api.openapi import render
+from answerlineage_api.pseudonyms.vault import LocalVault, PseudonymKey
 from api.tests.issuer import authentication, signed_in
 
 PUBLISHED = Path(__file__).resolve().parents[2] / "spec" / "openapi" / "answerlineage-v1.json"
@@ -45,8 +47,14 @@ def api_schema(database: URL) -> Iterator[Any]:
     # Une connexion par requête : chaque appel généré tourne dans sa propre boucle.
     engine = create_async_engine(database, poolclass=NullPool, hide_parameters=True)
     try:
-        # Le client de test se présente sous le nom « testserver ».
-        app = create_app(engine, allowed_hosts=["testserver"], authentication=authentication())
+        # Le client de test se présente sous le nom « testserver ». Le coffre à clés est réglé,
+        # comme en production, d'une clé tirée pour le test.
+        app = create_app(
+            engine,
+            allowed_hosts=["testserver"],
+            authentication=authentication(),
+            pseudonym_vault=LocalVault([PseudonymKey(secrets.token_bytes(32))]),
+        )
         loaded = schemathesis.openapi.from_asgi("/api/v1/openapi.json", app)
         # Le jeton d'un appelant qui a tous les rôles est posé par le test : aucun autre
         # en-tête d'autorisation n'est généré.

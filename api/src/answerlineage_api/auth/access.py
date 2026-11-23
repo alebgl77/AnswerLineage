@@ -36,7 +36,7 @@ from fastapi.responses import JSONResponse
 from answerlineage_api.auth.fetch import Fetch, IssuerUnavailableError, fetch_document
 from answerlineage_api.auth.matrix import access_of
 from answerlineage_api.auth.oidc import OidcSettings, OidcVerifier, TokenRefusedError
-from answerlineage_api.auth.roles import Role
+from answerlineage_api.auth.roles import Caller, Role
 from answerlineage_api.guard import LOOPBACK_HOSTS, RequestGuard
 
 ENV_MODE: Final = "ANSWERLINEAGE_AUTH"
@@ -115,12 +115,14 @@ class Authentication:
     def mode(self) -> str:
         return DISABLED if self.verifier is None else "oidc"
 
-    async def roles(self, authorization: Sequence[str]) -> frozenset[Role]:
-        """Les rôles de l'appelant, d'après ses en-têtes ``Authorization``."""
+    async def caller(self, authorization: Sequence[str]) -> Caller:
+        """L'appelant, d'après ses en-têtes ``Authorization`` : ses rôles et son identité.
+
+        Désactivée, l'authentification donne tous les rôles et aucune identité."""
         if self.verifier is None:
-            return frozenset(Role)
+            return Caller(frozenset(Role))
         try:
-            return await self.verifier.roles(bearer_token(authorization))
+            return await self.verifier.caller(bearer_token(authorization))
         except TokenRefusedError as refused:
             raise AccessRefusedError(401, refused.code) from None
         except IssuerUnavailableError:
@@ -159,9 +161,17 @@ async def authorize(request: Request) -> None:
     if access.public:
         return
     authentication: Authentication = request.app.state.authentication
-    roles = await authentication.roles(request.headers.getlist("authorization"))
-    if not roles & access.roles:
+    caller = await authentication.caller(request.headers.getlist("authorization"))
+    if not caller.roles & access.roles:
         raise AccessRefusedError(403, "insufficient_role")
+    # Une action tracée lit son auteur ici ; rien du jeton n'est gardé au-delà de la requête.
+    request.state.caller = caller
+
+
+def caller_of(request: Request) -> Caller | None:
+    """L'appelant de la requête, tel que l'accès l'a reconnu ; ``None`` pour une route ouverte."""
+    found = getattr(request.state, "caller", None)
+    return found if isinstance(found, Caller) else None
 
 
 def _listed(environment: Mapping[str, str], name: str) -> tuple[str, ...]:

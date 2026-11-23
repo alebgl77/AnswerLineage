@@ -25,7 +25,7 @@ Devant une API qui demande un jeton porteur, `load` envoie celui de `ANSWERLINEA
 | Agents | 5 : assistant commercial, assistant du support, analyste de trésorerie, planificateur de stocks, synthèse hebdomadaire |
 | Outils | 4, sur 3 serveurs MCP : `entrepot/execute_sql`, `crm/rechercher_comptes`, `crm/lister_opportunites`, `support/lister_tickets` |
 | Jeux de données | 13 tables : 10 dans l'entrepôt (`bigquery`), 3 dans des bases opérationnelles (`postgres://…`) |
-| Destinataires | Une vingtaine de pseudonymes, répartis entre les audiences des agents |
+| Destinataires | Une vingtaine de pseudonymes, répartis entre les audiences des agents : la forme d'un [pseudonyme](securite/pseudonymes.md) HMAC, tirée de la graine, sans personne derrière |
 
 Une demande est un run d'agent. L'agent appelle un à trois outils, chaque appel lit une ou plusieurs tables, puis l'agent répond à un, deux ou trois destinataires de son audience. Environ une demande sur douze échoue avant de répondre.
 

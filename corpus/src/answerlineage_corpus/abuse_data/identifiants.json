@@ -170,6 +170,30 @@
       "expect": {"verdict": "rejete", "index": 0, "path": "/outputs/0/outputFacets/answerlineage_delivery/recipients/1", "code": "identifier_markup"}
     },
     {
+      "name": "destinataire-en-clair",
+      "title": "Une adresse électronique en clair à la place du pseudonyme d'un destinataire",
+      "surface": "ingestion",
+      "base": "ingestion/reponse",
+      "alter": {"field": "/body/0/outputs/0/outputFacets/answerlineage_delivery/recipients/0", "value": "camille.canari7c1d@exemple.fr"},
+      "expect": {"verdict": "rejete", "index": 0, "path": "/outputs/0/outputFacets/answerlineage_delivery/recipients/0", "code": "recipient_not_pseudonym"}
+    },
+    {
+      "name": "identite-candidate",
+      "title": "Une identité candidate marquée, à la révélation d'un destinataire : elle ne laisse aucune trace",
+      "surface": "ingestion",
+      "base": "ingestion/revelation-d-un-destinataire",
+      "alter": {"field": "/body/candidates/1", "value": "camille.canari7c1d@exemple.fr"},
+      "expect": {"verdict": "sans_effet"}
+    },
+    {
+      "name": "revelation-pseudonyme-en-clair",
+      "title": "Une adresse électronique à la place du pseudonyme visé par une révélation",
+      "surface": "ingestion",
+      "base": "ingestion/revelation-d-un-destinataire",
+      "alter": {"field": "/body/pseudonym", "value": "camille.canari7c1d@exemple.fr"},
+      "expect": {"verdict": "rejete", "path": "/pseudonym", "code": "pseudonym_malformed"}
+    },
+    {
       "name": "facette-nom-balise",
       "title": "Une balise en guise de nom de facette : le chemin du rejet ne la cite pas",
       "surface": "ingestion",

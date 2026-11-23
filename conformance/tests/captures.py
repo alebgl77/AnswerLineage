@@ -103,13 +103,17 @@ def tool_call(run_id: str = TOOL_RUN, **facet_fields: Any) -> dict[str, Any]:
     return event("COMPLETE", 1, run, job, inputs=[table_read()])
 
 
+# Deux destinataires, sous la seule forme admise : un pseudonyme HMAC.
+PSEUDONYMS = ("hmac-sha256:" + "8f3a" * 16, "hmac-sha256:" + "c41d" * 16)
+
+
 def answer(**fields: Any) -> dict[str, Any]:
     """La réponse de l'agent : une sortie décrite par son empreinte et sa diffusion."""
     described = {
         "fingerprint": "sha256:" + "5b" * 32,
         "channel": "mail",
         "messageRef": "m-1",
-        "recipients": ["8f3a" * 8, "c41d" * 8],
+        "recipients": list(PSEUDONYMS),
         **fields,
     }
     return {

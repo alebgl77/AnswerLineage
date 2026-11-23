@@ -323,7 +323,7 @@ def _build(name: str, raw: Mapping[str, Any]) -> Scenario:
                 message_ref=_DICE.hex(16, "message", name, given["id"]),
                 recipients=tuple(
                     sorted(
-                        _DICE.hex(32, "recipient", name, alias)
+                        "hmac-sha256:" + _DICE.hex(64, "recipient", name, alias)
                         for alias in _texts(given["recipients"])
                     )
                 ),

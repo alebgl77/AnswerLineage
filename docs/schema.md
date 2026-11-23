@@ -24,7 +24,7 @@ Les onze tables d'`agent` à `delivery_recipient` forment le graphe (`schema.GRA
 | `answer` | run et empreinte | Empreinte de la réponse, jamais son contenu |
 | `delivery` | réponse, canal, référence du message | Diffusion de la réponse |
 | `delivery_recipient` | diffusion et destinataire | Destinataire d'une diffusion |
-| `recipient` | pseudonyme | Destinataire pseudonymisé, sans table de correspondance |
+| `recipient` | pseudonyme | Destinataire pseudonymisé, sans table de correspondance : `hmac-sha256:` suivi de 64 chiffres hexadécimaux, jamais une identité ([pseudonymes](securite/pseudonymes.md)) |
 | `event_raw` | empreinte de l'événement | Événement OpenLineage reçu tel quel, rejouable |
 | `ingest_queue` | événement | File de traitement : événements à projeter dans le graphe, leurs essais en échec |
 | `dead_letter` | événement | File de rebut : événements que la projection n'a pas pu intégrer, leur émetteur et le motif de l'échec |
@@ -43,6 +43,7 @@ Les onze tables d'`agent` à `delivery_recipient` forment le graphe (`schema.GRA
 | `webhook_queue` | identifiant de livraison | File des webhooks : changements d'état des incidents qui attendent d'être annoncés au récepteur, figés à l'heure du changement, leurs envois en échec |
 | `webhook_stats` | une seule ligne | Échéance de la mise en service des webhooks ; messages remis, refusés par le récepteur et abandonnés, depuis la mise en service |
 | `graph_rebuild` | identifiant tiré par la base | Reconstruction du graphe depuis les événements bruts : départ, fin, événements rejoués, période des événements conservés |
+| `recipient_revelation` | identifiant tiré par la base | Journal des révélations de destinataires, en ajout seul : auteur, heure, motif, pseudonyme visé, nombre de candidates, résultat ; jamais l'identité |
 
 ## Deux heures
 
@@ -270,6 +271,35 @@ La migration `0014` crée les deux tables ; sa descente les retire : ce qui atte
 Les décomptes sont positifs (`ck_graph_rebuild_counts`), la fin suit le départ (`ck_graph_rebuild_finished`), les deux réceptions sont données ensemble et dans l'ordre (`ck_graph_rebuild_received`). Une reconstruction inachevée a une ligne sans fin : la suivante la reprend. Tant que la file garde des lignes jusqu'à sa `queue_boundary`, les workers n'analysent aucun incident.
 
 La migration `0012` crée la table ; sa descente la retire, sans toucher au graphe ni à la file.
+
+## Journal des révélations
+
+La [révélation d'un destinataire](securite/pseudonymes.md#la-révélation) laisse une ligne dans `recipient_revelation`, et rien d'autre : ni l'identité révélée, ni les identités candidates. Aucune table ne relie un pseudonyme à une personne.
+
+| Colonne | Contenu |
+| --- | --- |
+| `id` | Numéro de la révélation, tiré par la base |
+| `revealed_at` | Heure de la révélation, posée par la base à l'insertion |
+| `author_issuer`, `author_subject` | L'auteur : l'émetteur OIDC et le sujet (`sub`) de son jeton |
+| `reason` | Motif, d'une liste fermée |
+| `pseudonym` | Pseudonyme visé |
+| `candidates` | Nombre d'identités candidates |
+| `result` | Ce qu'il en est sorti |
+
+| Contrainte | Ce qu'elle tient |
+| --- | --- |
+| `ck_recipient_revelation_reason` | Le motif : `recall`, `data_subject_request`, `legal_obligation`, `incident_investigation` |
+| `ck_recipient_revelation_result` | Le résultat : `matched`, `no_match`, `unknown_recipient` |
+| `ck_recipient_revelation_pseudonym` | La forme d'un pseudonyme, `^hmac-sha256:[0-9a-f]{64}$` |
+| `ck_recipient_revelation_candidates` | De 1 à 100 candidates |
+| `ck_recipient_revelation_author` | L'émetteur de 1 à 1 024 caractères, le sujet de 1 à 255 |
+| `ck_recipient_revelation_append_only` | L'ajout seul : une modification, une suppression ou une troncature est refusée comme une contrainte (`check_violation`), sous ce nom |
+
+L'ajout seul est tenu par la base, pour toute connexion, propriétaire compris : une fonction, `recipient_revelation_append_only()`, et trois déclencheurs. `recipient_revelation_stamped`, avant chaque insertion, pose l'heure de la transaction, quoi que l'insertion porte ; `recipient_revelation_append_only`, avant chaque modification ou suppression, et `recipient_revelation_not_truncated`, avant une troncature, les refusent. Les droits `UPDATE`, `DELETE` et `TRUNCATE` sur la table sont aussi retirés à tous, propriétaire compris. Un index range les révélations d'un auteur par heure : c'est ce que compte la borne de débit.
+
+Le pseudonyme est une valeur, sans clé étrangère vers `recipient` : le journal survit à la reconstruction du graphe, qui vide `recipient`. Il n'est ni partitionné ni purgé.
+
+La migration `0017` crée la table, sa fonction et ses déclencheurs. Elle retire aussi de la base ce qu'un émetteur avait pu envoyer comme destinataire sous une autre forme qu'un pseudonyme, peut-être une identité en clair : des événements bruts (les destinataires de leurs facettes de diffusion, sous `facets` comme sous `outputFacets` ; une liste qui n'en est pas une est vidée), du graphe (le destinataire et ses liens) et des résultats d'analyse des incidents. Les décomptes des analyses passées restent ceux de leur heure. La descente retire le journal, sa fonction et ses déclencheurs ; les destinataires retirés ne reviennent pas.
 
 ## Migrations
 

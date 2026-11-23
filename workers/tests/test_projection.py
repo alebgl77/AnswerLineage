@@ -22,6 +22,9 @@ from answerlineage_api.store.graph import (
 from answerlineage_workers.projection import project
 
 RUN_ID = "0193a9c5-7a10-7c3e-9d5e-2f1b6c8a4e77"
+# Des pseudonymes de destinataires : la seule forme sous laquelle un destinataire entre.
+PSEUDONYM_A = "hmac-sha256:" + "a1" * 32
+PSEUDONYM_B = "hmac-sha256:" + "b2" * 32
 PARENT_ID = "0193a9c5-7a10-7c3e-9d5e-2f1b6c8affff"
 
 
@@ -147,7 +150,7 @@ def test_agent_run_carries_the_answer_and_its_delivery() -> None:
                             fingerprint="hmac:9f2c",
                             channel="slack",
                             messageRef="C042/1730538005.000200",
-                            recipients=["pseudo:b2", "pseudo:a1", "pseudo:a1", 42, ""],
+                            recipients=[PSEUDONYM_B, PSEUDONYM_A, PSEUDONYM_A, 42, ""],
                         )
                     },
                 },
@@ -169,7 +172,7 @@ def test_agent_run_carries_the_answer_and_its_delivery() -> None:
     assert record.answers == (
         Answer(
             "hmac:9f2c",
-            (Delivery("slack", "C042/1730538005.000200", ("pseudo:a1", "pseudo:b2")),),
+            (Delivery("slack", "C042/1730538005.000200", (PSEUDONYM_A, PSEUDONYM_B)),),
         ),
     )
     assert record.writes == (
@@ -308,7 +311,7 @@ def test_every_identifier_enters_the_graph_in_its_nfc_form() -> None:
                             fingerprint=nfd("hmac:é1"),
                             channel=nfd("équipe"),
                             messageRef=nfd("C042/été"),
-                            recipients=[nfd("pseudo:é"), "pseudo:é"],
+                            recipients=[PSEUDONYM_A],
                         )
                     },
                 },
@@ -317,7 +320,7 @@ def test_every_identifier_enters_the_graph_in_its_nfc_form() -> None:
         )
     )
     assert agent.agent == AgentRef("agent://ventes-été", "analyste-société")
-    assert agent.answers == (Answer("hmac:é1", (Delivery("équipe", "C042/été", ("pseudo:é",)),)),)
+    assert agent.answers == (Answer("hmac:é1", (Delivery("équipe", "C042/été", (PSEUDONYM_A,)),)),)
     assert agent.writes == (Write(DatasetRef("memory://société", "notes-été")),)
 
 
@@ -348,7 +351,12 @@ def test_identifiers_of_an_event_stored_before_validation_never_reach_the_graph(
                             fingerprint="hmac:1",
                             channel="slack",
                             messageRef="C042/1",
-                            recipients=["pseudo:a", "<script>"],
+                            recipients=[
+                                PSEUDONYM_A,
+                                "<script>",
+                                "camille.martin@exemple.fr",
+                                "HMAC-SHA256:" + "B2" * 32,
+                            ],
                         )
                     },
                 },
@@ -369,13 +377,14 @@ def test_identifiers_of_an_event_stored_before_validation_never_reach_the_graph(
             ],
         )
     )
-    # Une valeur de facette fautive est ignorée, comme une facette mal formée.
+    # Une valeur de facette fautive est ignorée, comme une facette mal formée ; un
+    # destinataire qui n'a pas la forme d'un pseudonyme n'entre pas au graphe.
     assert record.tool == ToolRef("entrepot", "execute_sql")
     assert record.reads == (
         Read(DatasetRef("bigquery", "t"), precision="columns", columns=("ok",)),
     )
     assert record.answers == (
-        Answer("hmac:1", (Delivery("slack", "C042/1", ("pseudo:a",)),)),
+        Answer("hmac:1", (Delivery("slack", "C042/1", (PSEUDONYM_A,)),)),
         Answer("hmac:2"),
     )
     assert record.writes == (Write(DatasetRef("answer://slack", "r3")),)

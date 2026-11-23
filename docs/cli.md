@@ -80,11 +80,11 @@ Réponses, les plus récentes d'abord (16 sur cette page) :
     outils : execute_sql (entrepot)
     lu : ventes.suivi.commandes (bigquery)
     canaux : email
-    destinataires : 821743431def23772bbc6215495e30c7, a71b66a14ed697845fee1dc093de55a0, d3675030f72fc8499edef4ab380c2c44
+    destinataires : hmac-sha256:821743431def23772bbc6215495e30c713a83d09547d8e16bad01627950ea076, hmac-sha256:a71b66a14ed697845fee1dc093de55a03ba82be3e176ea2b57e58d874685884d, hmac-sha256:d3675030f72fc8499edef4ab380c2c44c57435cd81e28cadda49905bedbb1f1e
   …
 
 Destinataires, pseudonymisés (13 sur cette page) :
-  237937de45af1b1cc4811a3b5a1152bd
+  hmac-sha256:237937de45af1b1cc4811a3b5a1152bdb9e7ac210e929e7084bdabda434a4c0e
   …
 
 Liste complète : aucune réponse touchée ne peut y manquer.
@@ -270,11 +270,11 @@ Couverture du lignage : mesurée, 100 % des appels vus sont dans le graphe, sans
 
 Réponses touchées, les plus récentes d'abord (16 sur cette page) :
   2026-11-12T10:47:56Z  01a1cf5e5bb078b991a908d485d5acfdb4c70313c6faa097
-    destinataires : 821743431def23772bbc6215495e30c7, a71b66a14ed697845fee1dc093de55a0, d3675030f72fc8499edef4ab380c2c44
+    destinataires : hmac-sha256:821743431def23772bbc6215495e30c713a83d09547d8e16bad01627950ea076, hmac-sha256:a71b66a14ed697845fee1dc093de55a03ba82be3e176ea2b57e58d874685884d, hmac-sha256:d3675030f72fc8499edef4ab380c2c44c57435cd81e28cadda49905bedbb1f1e
   …
 
 Destinataires, pseudonymisés (13 sur cette page) :
-  237937de45af1b1cc4811a3b5a1152bd
+  hmac-sha256:237937de45af1b1cc4811a3b5a1152bdb9e7ac210e929e7084bdabda434a4c0e
   …
 
 Liste complète : aucune réponse touchée ne peut y manquer.

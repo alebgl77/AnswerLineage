@@ -65,7 +65,7 @@ export function columnsOf(view: GraphView): Column[] {
       title: "Destinataires",
       nodes: view.recipients.map((recipient) => ({
         id: recipient.id,
-        label: recipient.pseudonym.slice(0, 8),
+        label: shortFingerprint(recipient.pseudonym),
         detail: `Destinataire ${recipient.pseudonym}`,
       })),
     },

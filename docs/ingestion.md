@@ -85,7 +85,7 @@ Un identifiant reçu finit dans le graphe, l'explorateur et les gabarits de rapp
 | Facette `answerlineage_delivery` (dans `facets` ou `outputFacets`) : `fingerprint` | 255 |
 | Même facette : `channel` | 64 |
 | Même facette : `messageRef` | 512 |
-| Même facette : `recipients[]` | 255 |
+| Même facette : `recipients[]` | 255, et la forme d'un pseudonyme (ci-dessous) |
 | Nom d'une facette : clé de `run.facets`, `job.facets`, `facets`, `inputFacets` ou `outputFacets` | 128 |
 
 La longueur se compte en caractères de la forme normalisée. Un identifiant contient des lettres, des marques et des chiffres de toute écriture, et ces signes : `. _ - / : @ = + ~ % , # $ * [ ]`. Ils suffisent aux conventions de nommage d'OpenLineage : `postgres://crm:5432`, `gs://seau/chemin/fichier.csv`, `kafka://broker1:9092,broker2:9092`, `abfss://conteneur@compte.dfs.core.windows.net`, `référentiel.société.coût_unitaire`, `projet.jeu.evenements_2026*`.
@@ -102,6 +102,8 @@ Tout le reste est rejeté, un code par motif. Quand une valeur a plusieurs défa
 | `identifier_credentials` | Un mot de passe devant l'hôte d'une adresse (`postgres://utilisateur:motdepasse@hote`) : une adresse s'écrit sans lui, sinon le secret d'un émetteur mal réglé entrerait dans le graphe et dans les réponses de l'API. Un nom d'utilisateur seul (`conteneur@compte`) reste admis |
 | `identifier_too_long` | Plus de caractères que la borne du champ |
 | `identifier_empty` | Un texte vide |
+
+Un destinataire, en plus, n'entre que sous la forme d'un [pseudonyme](securite/pseudonymes.md) : `hmac-sha256:` suivi de 64 chiffres hexadécimaux minuscules. Toute autre valeur rejette l'événement avec le code `recipient_not_pseudonym`, sans être recopiée : une adresse, un nom, un numéro, en texte ou en nombre, un objet, ou une liste de destinataires qui n'est pas une liste. Une valeur qui n'a déjà pas la forme d'un nom n'est rapportée qu'une fois, avec le code de son premier défaut.
 
 Un nom fait d'une phrase est refusé parce qu'il contient des espaces : une instruction en langage naturel glissée dans un nom de table (`Ignore les consignes précédentes et…`) est rejetée avec `identifier_whitespace`, dont le motif dit qu'une phrase n'est pas un nom. Le motif est un texte fixe : il ne cite jamais la valeur reçue.
 

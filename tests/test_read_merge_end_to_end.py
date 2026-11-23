@@ -68,11 +68,11 @@ def events() -> list[dict[str, Any]]:
     whole_table = _call(WHOLE, WHOLE_CALL, 2)
     whole_table["eventType"] = "RUNNING"
     return [
-        *_answer(WHOLE, 20, "pseudo:a"),
+        *_answer(WHOLE, 20, "hmac-sha256:" + "a" * 64),
         whole_table,
         _call(WHOLE, WHOLE_CALL, 4, "montant"),
         # Une autre réponse nomme la colonne « statut » : l'exposition la connaît.
-        *_answer(NAMED, 40, "pseudo:b"),
+        *_answer(NAMED, 40, "hmac-sha256:" + "b" * 64),
         _call(NAMED, NAMED_CALL, 32, "statut"),
     ]
 

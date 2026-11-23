@@ -70,7 +70,7 @@ def answering(index: int, moment: str) -> dict[str, Any]:
                         fingerprint=f"sha256:{index:064x}",
                         channel="slack",
                         messageRef=f"C07AB/1730538030.{index:06d}",
-                        recipients=["pseudo:a1"],
+                        recipients=["hmac-sha256:" + "a1" * 32],
                     )
                 },
             }

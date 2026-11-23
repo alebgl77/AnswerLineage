@@ -51,6 +51,9 @@ from answerlineage_api.lineage.reading import (
     refuse_timed_out,
 )
 from answerlineage_api.lineage.routes import router as lineage_router
+from answerlineage_api.pseudonyms.models import revelation_request_json_schema
+from answerlineage_api.pseudonyms.routes import router as recipients_router
+from answerlineage_api.pseudonyms.vault import PseudonymVault, vault_from_settings
 from answerlineage_api.responses import reject_invalid_request
 from answerlineage_api.store.engine import create_engine, database_url_from_environment
 
@@ -84,6 +87,7 @@ def create_app(
     read_timeout_ms: int | None = None,
     authentication: Authentication | None = None,
     quarantine_signing: QuarantineSigning | None = None,
+    pseudonym_vault: PseudonymVault | None = None,
 ) -> FastAPI:
     """Construit l'application. Sans moteur fourni, la base vient de l'environnement.
 
@@ -106,6 +110,10 @@ def create_app(
     proxys ; sans elle, ses secrets viennent de ``ANSWERLINEAGE_QUARANTINE_SECRET``
     et ``ANSWERLINEAGE_QUARANTINE_PREVIOUS_SECRET``, et la diffusion n'est pas
     signée quand ils ne sont pas donnés.
+    ``pseudonym_vault`` est le coffre à clés qui calcule les pseudonymes des
+    destinataires, pour les révéler ; sans lui, il vient de l'environnement
+    (``ANSWERLINEAGE_PSEUDONYM_KEYS_FILE`` ou ``ANSWERLINEAGE_PSEUDONYM_KEYS``), et
+    aucune révélation n'est possible quand aucune clé n'est réglée.
     """
     guard = guard_from_settings(allowed_hosts, allowed_origins, os.environ)
     body_limit = max_body_bytes_from_settings(max_body_bytes, os.environ)
@@ -114,6 +122,7 @@ def create_app(
     access = authentication_from_settings(authentication, os.environ)
     access.check_guard(guard)
     signing = signing_from_settings(quarantine_signing, os.environ)
+    vault = pseudonym_vault if pseudonym_vault is not None else vault_from_settings(os.environ)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -145,6 +154,7 @@ def create_app(
     app.state.max_body_bytes = body_limit
     app.state.authentication = access
     app.state.quarantine_signing = signing
+    app.state.pseudonym_vault = vault
     app.include_router(ingestion_router)
     app.include_router(duplicates_router)
     app.include_router(dead_letters_router)
@@ -152,6 +162,7 @@ def create_app(
     app.include_router(coverage_router)
     app.include_router(lineage_router)
     app.include_router(incidents_router)
+    app.include_router(recipients_router)
     app.include_router(health_router)
     app.include_router(authentication_router)
     # Une route que la matrice ne déclare pas ne s'ouvre pas par oubli : l'application
@@ -184,6 +195,9 @@ def create_app(
             schemas.update(confirmation.pop("$defs", {}))
             schemas["ProposalConfirmation"] = confirmation
             schemas["DeadLetterReplay"] = replay_json_schema()
+            revelation = revelation_request_json_schema()
+            schemas.update(revelation.pop("$defs", {}))
+            schemas["RevelationRequest"] = revelation
             matrix.publish(document)
             app.openapi_schema = document
         return app.openapi_schema

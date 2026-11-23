@@ -32,7 +32,7 @@ flowchart LR
 
 **Diffusion.** L'envoi d'une réponse par un canal : `slack`, avec la référence du message, `34f209664c2955dd`. C'est ce que connaît le destinataire d'un message, et ce par quoi il retrouve la réponse ([Remonter](lecture.md#remonter-dune-réponse-à-ses-sources)).
 
-**Destinataire pseudonymisé.** Une personne qui a reçu une réponse, sous un pseudonyme : `4e505884373d04f5b52cbfaa1837d281`. L'émetteur de la diffusion le donne ainsi : AnswerLineage ne reçoit pas d'identité et ne garde aucune table de correspondance.
+**Destinataire pseudonymisé.** Une personne qui a reçu une réponse, sous un pseudonyme : `hmac-sha256:4e505884373d04f5b52cbfaa1837d28134d2933fb75751684ca225a51b76f4d0`. L'émetteur de la diffusion le donne ainsi, calculé par un HMAC sous la clé du locataire : AnswerLineage ne reçoit pas d'identité et ne garde aucune table de correspondance. Un gestionnaire d'incident peut [révéler](securite/pseudonymes.md#la-révélation) un destinataire parmi des identités qu'il apporte, et l'action est journalisée.
 
 ## Qui capte, et ce qu'il a vu
 

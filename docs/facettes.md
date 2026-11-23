@@ -88,6 +88,8 @@ Aucune des deux versions ne dit dans quelle monnaie est `estimatedCost` : c'est 
 
 Diffusion d'une réponse d'agent. La sortie qui la porte est la réponse, décrite par son empreinte (`fingerprint`) ; `channel` et `messageRef` disent où elle est partie, `recipients` à qui, sous des pseudonymes sans table de correspondance. Sans cette facette, une sortie est comptée comme une écriture ordinaire.
 
+Chaque destinataire est un pseudonyme que l'émetteur calcule, là où il connaît l'identité : `hmac-sha256:` suivi de HMAC-SHA-256, sous la clé de pseudonymisation du locataire, de l'étiquette `answerlineage/pseudonym/recipient/v1`, d'un octet nul et de l'identité mise en minuscules puis normalisée en NFC ([le calcul à l'octet près](securite/pseudonymes.md#son-calcul-à-loctet-près), vecteurs dans [`spec/pseudonym/vectors-v1.json`](../spec/pseudonym/vectors-v1.json)). L'API refuse toute autre forme (`recipient_not_pseudonym`) : une identité n'entre jamais, même par erreur.
+
 ### `answerlineage_keys`
 
 Clés lues dans un jeu de données, que le proxy émet pour un outil décrit par une règle de lecture. Jamais en clair : `hmacs` liste des empreintes HMAC calculées avec une clé secrète, `bloomFilter` porte un filtre de Bloom à clé encodé en base64. L'une des deux formes au moins est présente. Les paramètres du filtre ne sont pas encore décrits.
@@ -134,7 +136,7 @@ Une réponse diffusée, sur la sortie du run de l'agent :
       "fingerprint": "sha256:5b1d…",
       "channel": "mail",
       "messageRef": "m-1",
-      "recipients": ["8f3a…"]
+      "recipients": ["hmac-sha256:95ed3414…"]
     }
   }
 }
@@ -163,5 +165,6 @@ Elle peut ajouter des champs facultatifs. Une rupture demande une nouvelle facet
 ## Limites connues
 
 - Le contrôle compare les champs, leur caractère obligatoire et leur type. Il ne compare ni les bornes (`maxLength`, `maxItems`, `minimum`) ni les valeurs admises (`enum`) : les resserrer dans une nouvelle version casserait des émetteurs sans le faire échouer.
+- Le schéma publié de `answerlineage_delivery` (1-0-0) admet pour un destinataire un texte de 1 à 255 caractères : il n'écrit pas la forme du pseudonyme, que l'API exige.
 - De la facette `answerlineage_agent`, seul `framework` est émis, par l'adaptateur du Claude Agent SDK ; de `answerlineage_qos`, le proxy et cet adaptateur émettent ce qu'ils voient, et de `answerlineage_keys`, seul le proxy. Leurs champs sont facultatifs et décrits sobrement ; ils s'étendront.
 - Les schémas sont servis par le fichier brut du dépôt sur la branche principale : une adresse n'existe qu'une fois la version fusionnée.

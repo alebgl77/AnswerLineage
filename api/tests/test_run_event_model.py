@@ -38,6 +38,9 @@ from answerlineage_api.ingest.store import UnstorableEventError, event_identifie
 from api.tests.events import facet, minimal_event, mutated, official_run_event_schema, run_event
 
 OFFICIAL = Draft202012Validator(official_run_event_schema(), format_checker=FormatChecker())
+# Deux pseudonymes de destinataires : la forme HMAC, seule admise.
+PSEUDONYM_A = "hmac-sha256:" + "a1" * 32
+PSEUDONYM_B = "hmac-sha256:" + "b2" * 32
 
 VALID: dict[str, Any] = {
     "appel d'outil complet": run_event(),
@@ -176,7 +179,7 @@ def full_event() -> dict[str, Any]:
             fingerprint="sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
             channel="slack",
             messageRef="C07AB/1730538030.000100",
-            recipients=["pseudo:a1", "pseudo:b2"],
+            recipients=[PSEUDONYM_A, PSEUDONYM_B],
         )
 
     return run_event(
@@ -286,7 +289,6 @@ def test_every_identifier_with_invisible_characters_or_markup_is_rejected(
         (["outputs", 0, "outputFacets", "answerlineage_delivery", "fingerprint"], 255),
         (["outputs", 0, "outputFacets", "answerlineage_delivery", "channel"], 64),
         (["outputs", 0, "outputFacets", "answerlineage_delivery", "messageRef"], 512),
-        (["outputs", 0, "outputFacets", "answerlineage_delivery", "recipients", 0], 255),
     ],
     ids=lambda item: json_pointer(tuple(item)) if isinstance(item, list) else str(item),
 )
@@ -296,6 +298,73 @@ def test_each_identifier_has_its_length_bound(path: list[str | int], limit: int)
     _, errors = validate_event(mutated(path, "é" * (limit + 1), base=full_event()))
     assert [(error.path, error.type) for error in errors] == [
         (json_pointer(tuple(path)), "identifier_too_long")
+    ]
+
+
+@pytest.mark.parametrize("container", ["facets", "outputFacets"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "camille.martin@exemple.fr",
+        "+33612345678",
+        "U07AB12CD",
+        "sha256:" + "a1" * 32,
+        "hmac-sha256:" + "A1" * 32,
+        "hmac-sha256:" + "a1" * 31,
+        "a1" * 32,
+    ],
+    ids=["adresse", "téléphone", "messagerie", "hachage sans clé", "majuscules", "court", "nu"],
+)
+def test_a_recipient_that_is_not_a_pseudonym_is_rejected_without_being_cited(
+    value: str, container: str
+) -> None:
+    """Critère : un destinataire n'entre que sous son pseudonyme HMAC."""
+    path: list[str | int] = ["outputs", 0, container, "answerlineage_delivery", "recipients", 1]
+    raw = mutated(path, value, base=full_event())
+    event, errors = validate_event(raw)
+    assert event is None
+    assert [(error.path, error.type) for error in errors] == [
+        (json_pointer(tuple(path)), "recipient_not_pseudonym")
+    ]
+    assert value not in str([error.model_dump() for error in errors])
+
+
+@pytest.mark.parametrize(
+    ("recipients", "where"),
+    [
+        ([PSEUDONYM_A, 33612345678], "/1"),
+        ([None, PSEUDONYM_A], "/0"),
+        ([PSEUDONYM_A, {"courriel": "c@exemple.fr"}], "/1"),
+        ("camille.martin@exemple.fr", ""),
+        ({"camille": PSEUDONYM_A}, ""),
+    ],
+    ids=["numéro", "nul", "objet", "texte seul", "objet seul"],
+)
+def test_recipients_that_are_not_a_list_of_texts_are_rejected(
+    recipients: object, where: str
+) -> None:
+    path: list[str | int] = ["outputs", 0, "outputFacets", DELIVERY, "recipients"]
+    _, errors = validate_event(mutated(path, recipients, base=full_event()))
+    assert [(error.path, error.type) for error in errors] == [
+        (json_pointer(tuple(path)) + where, "recipient_not_pseudonym")
+    ]
+    assert "33612345678" not in str([error.model_dump() for error in errors])
+    assert "exemple" not in str([error.model_dump() for error in errors])
+
+
+def test_a_delivery_without_recipients_or_with_none_is_accepted() -> None:
+    for recipients in (None, list[str]()):
+        path: list[str | int] = ["outputs", 0, "outputFacets", DELIVERY, "recipients"]
+        event, errors = validate_event(mutated(path, recipients, base=full_event()))
+        assert errors == []
+        assert event is not None
+
+
+def test_a_recipient_without_the_form_of_a_name_is_reported_once() -> None:
+    path: list[str | int] = ["outputs", 0, "outputFacets", DELIVERY, "recipients", 0]
+    _, errors = validate_event(mutated(path, "Camille Martin <c@exemple.fr>", base=full_event()))
+    assert [(error.path, error.type) for error in errors] == [
+        (json_pointer(tuple(path)), "identifier_markup")
     ]
 
 
@@ -314,7 +383,6 @@ def test_facet_values_that_are_not_text_are_left_to_the_projection() -> None:
     raw = full_event()
     raw["inputs"][0]["facets"]["version"]["datasetVersion"] = 7
     raw["inputs"][0]["facets"]["schema"]["fields"] = [{}, 3, {"name": None}]
-    raw["outputs"][0]["outputFacets"]["answerlineage_delivery"]["recipients"] = [42, None]
     raw["outputs"][0]["facets"]["answerlineage_delivery"]["channel"] = ["slack"]
     raw["run"]["facets"]["parent"]["job"] = "pas un objet"
     event, errors = validate_event(raw)
@@ -423,7 +491,7 @@ def test_event_time_is_read_the_same_way_by_ingestion_and_projection(
 
 DATASET = {"namespace": "postgres://crm:5432", "name": "ventes.commandes"}
 COLUMN = {"name": "devise"}
-RECIPIENT = "pseudo:a1"
+RECIPIENT = PSEUDONYM_A
 # Emplacement, élément répété (``None`` : des facettes), borne.
 REPEATED: list[tuple[list[str | int], Any, int]] = [
     (["inputs"], DATASET, INPUTS_MAX),

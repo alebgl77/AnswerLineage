@@ -7,8 +7,19 @@ from typing import Any
 
 import pytest
 
+from answerlineage_api.ingest.models import DELIVERY_FACET
+from answerlineage_conformance.findings import Finding
+from answerlineage_conformance.projection import dropped
 from answerlineage_workers.projection import project
-from conformance.tests.captures import found, judged, moved, mutated, reasons, request
+from conformance.tests.captures import (
+    PSEUDONYMS,
+    found,
+    judged,
+    moved,
+    mutated,
+    reasons,
+    request,
+)
 
 PARENT = "/run/facets/parent"
 DELIVERY = "/outputs/0/outputFacets/answerlineage_delivery"
@@ -34,16 +45,6 @@ DROPPED_DELIVERIES: dict[str, tuple[list[str | int], Any, str]] = {
     "empreinte qui n'est pas un texte": (["fingerprint"], 12, DELIVERY),
     "canal absent : la réponse resterait sans diffusion": (["channel"], ..., DELIVERY),
     "référence du message absente": (["messageRef"], ..., DELIVERY),
-    "destinataire qui n'est pas un texte": (
-        ["recipients"],
-        ["8f3a" * 8, 3],
-        f"{DELIVERY}/recipients",
-    ),
-    "destinataires qui ne sont pas une liste": (
-        ["recipients"],
-        {"a": "8f3a"},
-        f"{DELIVERY}/recipients",
-    ),
 }
 
 
@@ -54,8 +55,24 @@ def test_a_declared_delivery_the_graph_would_ignore_is_reported(case: str) -> No
     assert found(events, "projection") == [("delivery_dropped", 2, pointer)]
 
 
+@pytest.mark.parametrize(
+    "recipients",
+    [[PSEUDONYMS[0], "camille.martin@exemple.fr"], [PSEUDONYMS[0], 3], {"a": PSEUDONYMS[1]}],
+    ids=["en clair", "pas un texte", "pas une liste"],
+)
+def test_recipients_the_graph_would_drop_are_reported_even_past_the_ingestion(
+    recipients: Any,
+) -> None:
+    """L'ingestion les refuse déjà ; si elle venait à les laisser passer, la projection, qui ne
+    garde que des pseudonymes, les perdrait, et le kit le dirait."""
+    event = mutated(request(), 2, [*DELIVERY_PATH, "recipients"], recipients)[2]
+    assert dropped({2: event}, {2: project(event)}) == [
+        Finding("delivery_dropped", 2, ("outputs", 0, "outputFacets", DELIVERY_FACET, "recipients"))
+    ]
+
+
 def test_a_recipient_declared_twice_is_one_recipient() -> None:
-    twice = ["8f3a" * 8, "8f3a" * 8, "équipe", "équipe"]
+    twice = [PSEUDONYMS[0], PSEUDONYMS[0], PSEUDONYMS[1], PSEUDONYMS[1]]
     events = mutated(request(), 2, [*DELIVERY_PATH, "recipients"], twice)
     assert found(events, "projection") == []
 

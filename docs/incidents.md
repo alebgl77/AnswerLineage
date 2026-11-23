@@ -140,9 +140,9 @@ La réponse reprend l'incident et l'état de son analyse ; quand elle est faite,
         "fingerprint": "sha256:56a61da01004ddc4d94d3508b634a4969d96f8919b06504fa3b342f000de6c24",
         "produced_at": "2026-11-12T10:47:56Z",
         "recipients": [
-          "821743431def23772bbc6215495e30c7",
-          "a71b66a14ed697845fee1dc093de55a0",
-          "d3675030f72fc8499edef4ab380c2c44"
+          "hmac-sha256:821743431def23772bbc6215495e30c713a83d09547d8e16bad01627950ea076",
+          "hmac-sha256:a71b66a14ed697845fee1dc093de55a03ba82be3e176ea2b57e58d874685884d",
+          "hmac-sha256:d3675030f72fc8499edef4ab380c2c44c57435cd81e28cadda49905bedbb1f1e"
         ]
       },
       "…"
@@ -191,7 +191,7 @@ Un worker réclame la demande d'analyse, lance la [propagation](lecture.md#propa
 ### Ce que l'analyse trouve
 
 - **Les réponses touchées** sont celles que la propagation renvoie pour l'un des jeux du périmètre : une réponse dont un run de l'arbre a lu le jeu de données pendant la fenêtre ([ce qui compte comme touché](lecture.md#ce-qui-compte-comme-touché)). Une réponse touchée par deux jeux du périmètre n'est comptée qu'une fois.
-- **Les destinataires** sont ceux de chaque réponse touchée, par leur pseudonyme ; `counts.recipients` compte les pseudonymes distincts de tout l'incident.
+- **Les destinataires** sont ceux de chaque réponse touchée, par leur pseudonyme ; `counts.recipients` compte les pseudonymes distincts de tout l'incident. Un gestionnaire d'incident [révèle](securite/pseudonymes.md#la-révélation) celui qu'il doit prévenir, parmi des identités qu'il apporte ; l'action est journalisée.
 - **La couverture du lignage** est celle de la fenêtre de l'incident, tous émetteurs confondus, mesurée à l'heure de l'analyse, avec ses trous connus ([couverture du lignage](lecture.md#couverture-du-lignage)).
 - **Les jeux inconnus** (`unknown_datasets`) sont ceux du périmètre que le graphe ne connaissait pas à l'heure de l'analyse : aucune lecture n'en était connue, ou leur nom est mal écrit. Une analyse qui en compte ne permet pas de conclure qu'aucune réponse n'est touchée.
 

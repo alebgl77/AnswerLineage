@@ -63,7 +63,7 @@ Réponses, les plus récentes d'abord (16 sur cette page) :
     outils : execute_sql (entrepot)
     lu : ventes.suivi.commandes (bigquery)
     canaux : email
-    destinataires : 821743431def23772bbc6215495e30c7, a71b66a14ed697845fee1dc093de55a0, d3675030f72fc8499edef4ab380c2c44
+    destinataires : hmac-sha256:821743431def23772bbc6215495e30c713a83d09547d8e16bad01627950ea076, hmac-sha256:a71b66a14ed697845fee1dc093de55a03ba82be3e176ea2b57e58d874685884d, hmac-sha256:d3675030f72fc8499edef4ab380c2c44c57435cd81e28cadda49905bedbb1f1e
   …
 
 Liste complète : aucune réponse touchée ne peut y manquer.

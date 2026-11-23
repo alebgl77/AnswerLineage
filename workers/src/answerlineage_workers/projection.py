@@ -18,6 +18,8 @@ Chaque identifiant entre dans le graphe sous sa forme normalisée (NFC) : deux
 L'ingestion a refusé tout identifiant mal formé ; un événement enregistré avant
 ce contrôle et rejoué n'en fait pas entrer davantage : une valeur de facette
 fautive est ignorée, un identifiant obligatoire fautif empêche la projection.
+De même, un destinataire n'entre au graphe que sous la forme d'un pseudonyme
+HMAC : toute autre valeur, qu'un événement ancien aurait portée, est ignorée.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from answerlineage_api.ingest.models import (
     TOOL_CALL_FACET,
     parse_event_time,
 )
+from answerlineage_api.pseudonyms.vault import is_pseudonym
 from answerlineage_api.store.graph import (
     AgentRef,
     Answer,
@@ -149,9 +152,9 @@ def _answer(facet: Mapping[str, Any]) -> Answer | None:
     pseudonyms = tuple(
         sorted(
             {
-                pseudonym
+                item
                 for item in (recipients if isinstance(recipients, list) else [])
-                if (pseudonym := _text(item, identifiers.RECIPIENT_MAX)) is not None
+                if is_pseudonym(item)
             }
         )
     )

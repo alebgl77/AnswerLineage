@@ -44,7 +44,7 @@ def request(run_id: UUID, rank: int, *tables: tuple[str, str]) -> list[dict[str,
     """Une demande à un agent : ses appels d'outils, puis sa réponse diffusée."""
     answer = answer_delivered(
         JOB, fingerprint=f"sha256:{rank:064x}", channel="slack", message_ref=f"m-{rank}",
-        recipients=[f"p-{rank}"],
+        recipients=[f"hmac-sha256:{rank:064x}"],
     )  # fmt: skip
     return [
         *(tool_call(run_id, index, table) for index, table in enumerate(tables, start=1)),

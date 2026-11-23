@@ -76,7 +76,7 @@ Quatre groupes de contrôles. Chaque contrôle a un code stable.
 
 | Code | Ce qui le déclenche |
 | --- | --- |
-| `ingestion_rejected` | L'[ingestion](ingestion.md) rejetterait l'événement : schéma, heure, identifiants, bornes de nombre et de profondeur, texte que la base ne peut pas conserver. Le motif est le code qu'elle rendrait (`missing`, `event_time_out_of_range`, `identifier_whitespace`, `too_many_items`, `json_too_deep`, `unstorable_text`…) |
+| `ingestion_rejected` | L'[ingestion](ingestion.md) rejetterait l'événement : schéma, heure, identifiants, bornes de nombre et de profondeur, texte que la base ne peut pas conserver. Le motif est le code qu'elle rendrait (`missing`, `event_time_out_of_range`, `identifier_whitespace`, `recipient_not_pseudonym`, `too_many_items`, `json_too_deep`, `unstorable_text`…) |
 | `facet_schema_violation` | Une facette propre ne respecte pas le schéma que son `_schemaURL` désigne. Le motif est la règle violée, mot-clé de JSON Schema (`required`, `type`, `maxLength`, `pattern`, `enum`…) ; pour un champ obligatoire, le pointeur désigne le champ qui manque |
 | `facet_schema_unknown` | Le `_schemaURL` d'une facette propre n'est l'adresse d'aucune version publiée de son schéma. La facette est alors jugée contre la version la plus récente |
 | `facet_unknown` | Une clé au préfixe `answerlineage`, quelle que soit sa casse, qui n'est pas celle d'une facette publiée : une faute de frappe ferait du run un job ordinaire |

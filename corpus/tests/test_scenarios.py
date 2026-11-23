@@ -499,7 +499,10 @@ def test_scenarios_carry_pseudonyms_and_fingerprints_never_names() -> None:
         for answer in item.answers:
             assert re.fullmatch(r"sha256:[0-9a-f]{64}", answer.fingerprint)
             assert re.fullmatch(r"[0-9a-f]{16}", answer.message_ref)
-            assert all(re.fullmatch(r"[0-9a-f]{32}", pseudonym) for pseudonym in answer.recipients)
+            assert all(
+                re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", pseudonym)
+                for pseudonym in answer.recipients
+            )
 
 
 def test_events_of_a_scenario_tell_its_runs_in_the_order_of_time() -> None:

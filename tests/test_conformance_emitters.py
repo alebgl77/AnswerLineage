@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -23,6 +24,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
+from answerlineage_api.pseudonyms.vault import PseudonymKey, pseudonym_of
 from answerlineage_conformance.judgement import Judgement, judge
 from answerlineage_conformance.runid import derive_run_id
 from answerlineage_corpus.enterprise import FIRST_DAY, generate
@@ -55,6 +57,8 @@ OWN = "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets
 PARENT = "https://openlineage.io/spec/facets/1-2-0/ParentRunFacet.json#/$defs/ParentRunFacet"
 AGENT = {"namespace": "agent://finance", "name": "analyste-change"}
 AGENT_RUN = "0193a9c5-7a10-7c3e-9d5e-2f1b6c8a4e77"
+# Le destinataire de la réponse, pseudonymisé comme l'agent le ferait, sous une clé tirée ici.
+RECIPIENT = pseudonym_of(PseudonymKey(secrets.token_bytes(32)), "destinataire@exemple.fr")
 TABLE = "finance.ref.taux_change"
 CHANNEL, MESSAGE_REF = "slack", "m-2026-11-02-0001"
 # Le contexte de trace de l'appel d'outil, que l'agent ouvre et que le proxy lit.
@@ -181,7 +185,7 @@ def answer_delivered(seconds: int, answer: str) -> dict[str, Any]:
                     fingerprint="sha256:" + hashlib.sha256(answer.encode()).hexdigest(),
                     channel=CHANNEL,
                     messageRef=MESSAGE_REF,
-                    recipients=[hashlib.sha256(b"destinataire").hexdigest()[:32]],
+                    recipients=[RECIPIENT],
                 )
             },
         }

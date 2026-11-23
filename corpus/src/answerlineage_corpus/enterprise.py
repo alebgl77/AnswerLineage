@@ -333,7 +333,8 @@ _WINDOW_ATTEMPTS = 20
 
 
 def _agents(dice: _Dice) -> tuple[Agent, ...]:
-    staff = [dice.hex(32, "recipient", rank) for rank in range(_STAFF)]
+    # Des pseudonymes à la forme d'un HMAC, tirés de la graine : aucune identité derrière.
+    staff = ["hmac-sha256:" + dice.hex(64, "recipient", rank) for rank in range(_STAFF)]
     return tuple(
         Agent(
             namespace=profile.namespace,

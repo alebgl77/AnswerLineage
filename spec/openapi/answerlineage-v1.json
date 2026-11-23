@@ -3116,6 +3116,197 @@
         "title": "RequestRejected",
         "type": "object"
       },
+      "Revelation": {
+        "description": "Ce qu'a donné une révélation, journalisée sous ``revelation``.",
+        "properties": {
+          "candidate": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Rang, à partir de zéro, de la première candidate qui a ce pseudonyme ; nul sans correspondance. L'identité elle-même n'est jamais renvoyée.",
+            "title": "Candidate"
+          },
+          "result": {
+            "description": "« matched » : une candidate a ce pseudonyme ; « no_match » : aucune.",
+            "enum": [
+              "matched",
+              "no_match"
+            ],
+            "title": "Result",
+            "type": "string"
+          },
+          "revelation": {
+            "description": "Numéro de la révélation dans le journal.",
+            "title": "Revelation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revelation",
+          "result",
+          "candidate"
+        ],
+        "title": "Revelation",
+        "type": "object"
+      },
+      "RevelationAuthor": {
+        "description": "L'auteur d'une révélation : son identité OIDC.",
+        "properties": {
+          "issuer": {
+            "description": "Émetteur OIDC qui a signé le jeton de l'auteur.",
+            "title": "Issuer",
+            "type": "string"
+          },
+          "subject": {
+            "description": "Sujet du jeton de l'auteur (« sub »).",
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "issuer",
+          "subject"
+        ],
+        "title": "RevelationAuthor",
+        "type": "object"
+      },
+      "RevelationEntry": {
+        "description": "Une révélation du journal : qui, quand, pourquoi, quel pseudonyme, quel résultat.",
+        "properties": {
+          "author": {
+            "$ref": "#/components/schemas/RevelationAuthor"
+          },
+          "candidates": {
+            "description": "Nombre d'identités candidates, jamais les candidates.",
+            "title": "Candidates",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "pseudonym": {
+            "title": "Pseudonym",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "recall",
+              "data_subject_request",
+              "legal_obligation",
+              "incident_investigation"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "result": {
+            "description": "« matched », « no_match », ou « unknown_recipient » : aucun destinataire connu ne porte ce pseudonyme.",
+            "enum": [
+              "matched",
+              "no_match",
+              "unknown_recipient"
+            ],
+            "title": "Result",
+            "type": "string"
+          },
+          "revealed_at": {
+            "description": "Heure de la révélation, posée par la base.",
+            "format": "date-time",
+            "title": "Revealed At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "revealed_at",
+          "author",
+          "reason",
+          "pseudonym",
+          "candidates",
+          "result"
+        ],
+        "title": "RevelationEntry",
+        "type": "object"
+      },
+      "RevelationJournal": {
+        "description": "Une page du journal des révélations, la plus récente d'abord.",
+        "properties": {
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Curseur de la page suivante ; nul quand il n'y en a plus.",
+            "title": "Next Cursor"
+          },
+          "revelations": {
+            "items": {
+              "$ref": "#/components/schemas/RevelationEntry"
+            },
+            "title": "Revelations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "revelations",
+          "next_cursor"
+        ],
+        "title": "RevelationJournal",
+        "type": "object"
+      },
+      "RevelationRequest": {
+        "additionalProperties": false,
+        "description": "Révéler un destinataire : le pseudonyme visé, le motif, les identités candidates.\n\nAucun texte libre : le motif vient d'une liste fermée, et les candidates ne sont\ngardées nulle part.",
+        "properties": {
+          "candidates": {
+            "description": "Identités candidates, tirées de l'annuaire ou du canal de la diffusion : adresse, identifiant de messagerie, numéro. Ni stockées, ni renvoyées, ni journalisées.",
+            "items": {
+              "maxLength": 320,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Candidates",
+            "type": "array"
+          },
+          "pseudonym": {
+            "description": "Pseudonyme du destinataire, tel que l'API le donne : « hmac-sha256: » suivi de 64 chiffres hexadécimaux minuscules.",
+            "maxLength": 76,
+            "minLength": 76,
+            "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+            "title": "Pseudonym",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Motif, d'une liste fermée : « recall », prévenir le destinataire d'un rappel ; « data_subject_request », répondre à une demande de la personne concernée ; « legal_obligation », répondre à une obligation légale ; « incident_investigation », instruire un incident.",
+            "enum": [
+              "recall",
+              "data_subject_request",
+              "legal_obligation",
+              "incident_investigation"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pseudonym",
+          "reason",
+          "candidates"
+        ],
+        "title": "RevelationRequest",
+        "type": "object"
+      },
       "Run": {
         "properties": {
           "facets": {
@@ -6902,6 +7093,244 @@
         "summary": "Donne les périmètres en quarantaine active, tels que les proxys les reçoivent",
         "tags": [
           "incidents"
+        ]
+      }
+    },
+    "/api/v1/recipients/reveal": {
+      "post": {
+        "description": "Dit laquelle des identités candidates a le pseudonyme visé, en recalculant le HMAC avec\nles clés du coffre, et journalise l'action : auteur, heure, motif, pseudonyme, nombre de\ncandidates, résultat. Aucune identité n'est renvoyée, gardée ni journalisée : la réponse\ndonne le rang de la candidate.",
+        "operationId": "reveal_api_v1_recipients_reveal_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevelationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Revelation"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps n'est pas du JSON en UTF-8 (`invalid_json`), dépasse la profondeur maximale (`json_too_deep`) ou n'est pas un flux gzip complet (`invalid_gzip`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »). Le jeton ne porte pas de sujet admis (« author_unidentified ») : une révélation se journalise sous le nom de son auteur."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Aucun destinataire connu ne porte ce pseudonyme (« unknown_recipient ») ; la tentative est journalisée."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps dépasse la taille maximale, en octets reçus ou déployés (`body_too_large`)."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le corps porte un autre encodage que gzip, ou plusieurs (`unsupported_content_encoding`)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "La demande est invalide."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "L'auteur a fait 20 révélations dans l'heure (« revelation_rate_limited ») ; « Retry-After » dit dans combien de secondes une place se libère. Rien n'est journalisé."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le coffre à clés n'est pas réglé (« pseudonym_keys_unavailable ») : rien n'est calculé ni journalisé. L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
+          }
+        },
+        "security": [
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          }
+        ],
+        "summary": "Révèle un destinataire parmi des identités candidates, et journalise l'action",
+        "tags": [
+          "destinataires"
+        ]
+      }
+    },
+    "/api/v1/recipients/revelations": {
+      "get": {
+        "description": "Chaque révélation : son heure, son auteur, son motif, le pseudonyme visé, le nombre de\ncandidates et le résultat. Jamais une identité : le journal n'en porte aucune.",
+        "operationId": "revelations_api_v1_recipients_revelations_get",
+        "parameters": [
+          {
+            "description": "Nombre maximal de révélations renvoyées.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "description": "Nombre maximal de révélations renvoyées.",
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{1,18}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevelationJournal"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
+          }
+        },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          }
+        ],
+        "summary": "Lit le journal des révélations de destinataires, la plus récente d'abord",
+        "tags": [
+          "destinataires"
         ]
       }
     }

@@ -69,7 +69,7 @@ description = "Une merge request, écrite par un contributeur ou un agent de cod
 [[boundary]]
 id = "donnees-au-repos"
 name = "Données au repos"
-description = "PostgreSQL tient le graphe, les événements bruts, la file, les relevés et les incidents ; le poste ou le serveur du proxy tient la clé des empreintes et les règles de lecture. Qui y accède lit ce qui y est écrit."
+description = "PostgreSQL tient le graphe, les événements bruts, la file, les relevés, les incidents et le journal des révélations ; le poste ou le serveur du proxy tient la clé des empreintes et les règles de lecture ; l'émetteur d'une diffusion et le coffre à clés de l'API tiennent la clé des pseudonymes. Qui y accède lit ce qui y est écrit."
 
 # Actifs
 
@@ -94,6 +94,11 @@ name = "Clé des empreintes"
 description = "La clé HMAC des empreintes du proxy : sans elle, une empreinte ne se retourne pas en valeur."
 
 [[asset]]
+id = "cle-des-pseudonymes"
+name = "Clé des pseudonymes"
+description = "La clé HMAC de pseudonymisation des destinataires, que tiennent les émetteurs et le coffre à clés de l'API, jamais la base : avec elle, un pseudonyme se recalcule à partir d'une identité."
+
+[[asset]]
 id = "lignage"
 name = "Lignage"
 description = "Le graphe, les événements bruts et la file : leur justesse fait celle du rappel. Une lecture manquante écarte à tort une réponse touchée, une lecture inventée en rappelle une saine."
@@ -101,7 +106,7 @@ description = "Le graphe, les événements bruts et la file : leur justesse fait
 [[asset]]
 id = "destinataires"
 name = "Destinataires"
-description = "Les pseudonymes des destinataires des réponses, sans table de correspondance."
+description = "Les pseudonymes des destinataires des réponses, sans table de correspondance, et le journal de leurs révélations : qui relie un pseudonyme à une personne sait qui a reçu quelle réponse."
 
 [[asset]]
 id = "continuite-des-agents"
@@ -1235,6 +1240,121 @@ test = "api/tests/test_quarantine.py::test_an_invalid_secret_stops_the_api_at_st
 description = "Seule la signature part dans la réponse ; les secrets ne s'affichent jamais, pas même dans une représentation."
 code = "api/src/answerlineage_api/incidents/signature.py::QuarantineSigning"
 test = "api/tests/test_quarantine.py::test_the_secrets_of_the_diffusion_come_from_the_environment"
+
+[[threat]]
+id = "api/destinataire-en-clair"
+name = "L'identité d'un destinataire entre dans la base"
+category = "information-disclosure"
+boundary = "emetteur-ingestion"
+assets = ["destinataires"]
+description = "Un émetteur mal réglé, ou hostile, envoie comme destinataire une adresse, un nom ou un numéro au lieu d'un pseudonyme : l'identité entrerait dans l'événement brut, le graphe et les résultats des incidents, et la base deviendrait une table de correspondance."
+abuse_cases = ["identifiants/destinataire-en-clair", "identifiants/champ-destinataire"]
+
+[[threat.mitigation]]
+description = "L'ingestion n'admet un destinataire que sous la forme d'un pseudonyme HMAC ; toute autre valeur rejette l'événement, sans être recopiée."
+code = "api/src/answerlineage_api/ingest/models.py::recipient_errors"
+test = "api/tests/test_run_event_model.py::test_a_recipient_that_is_not_a_pseudonym_is_rejected_without_being_cited"
+
+[[threat.mitigation]]
+description = "La projection ignore un destinataire qui n'a pas cette forme : un événement ancien rejoué n'en fait pas entrer."
+code = "workers/src/answerlineage_workers/projection.py"
+test = "workers/tests/test_projection.py::test_identifiers_of_an_event_stored_before_validation_never_reach_the_graph"
+
+[[threat.mitigation]]
+description = "La montée vers la révision 0017 retire de la base ce qui avait été reçu sous une autre forme : événements bruts, graphe, résultats des incidents."
+code = "api/src/answerlineage_api/migrations/versions/0017_destinataires_pseudonymises.py"
+test = "api/tests/test_migrations.py::test_recipients_that_are_not_pseudonyms_leave_the_base_on_the_way_up"
+
+[[threat.mitigation]]
+description = "Un parcours complet, de l'émetteur à la révélation, laisse dans la base le seul pseudonyme : aucune identité, sous aucune forme, dans aucune table du schéma déclaré."
+code = "api/src/answerlineage_api/store/schema.py"
+test = "tests/test_pseudonymized_recipients.py::test_only_a_pseudonym_enters_the_base_and_nothing_relates_it_to_a_person"
+
+[threat.acceptance]
+reason = "L'API ne voit que la forme : elle ne peut distinguer un HMAC sous la clé du locataire d'un condensé sans clé, ou sous une autre clé, de même forme. Le calcul revient à l'émetteur, et le kit de conformité ne le juge pas."
+consequence = "Un émetteur qui hache les identités sans clé fait entrer des valeurs qu'une énumération de l'annuaire retourne : la base relie alors ses destinataires à des personnes, pour qui a l'annuaire."
+
+[[threat]]
+id = "api/cle-des-pseudonymes-divulguee"
+name = "La clé des pseudonymes sort du coffre"
+category = "information-disclosure"
+boundary = "donnees-au-repos"
+assets = ["cle-des-pseudonymes", "destinataires"]
+description = "Qui tient la clé et la base calcule le pseudonyme de chaque entrée d'un annuaire et retrouve qui a reçu quelle réponse, hors de toute route : sans borne ni journal. La clé fuirait par la base, un journal, un message d'erreur, une représentation du coffre, ou un réglage passé sur la ligne de commande."
+
+[[threat.mitigation]]
+description = "La clé ne vit que dans le coffre, lu d'un fichier ou d'une variable ; la base ne la contient sous aucune forme, ce que vérifie un parcours complet."
+code = "api/src/answerlineage_api/pseudonyms/vault.py::vault_from_settings"
+test = "tests/test_pseudonymized_recipients.py::test_only_a_pseudonym_enters_the_base_and_nothing_relates_it_to_a_person"
+
+[[threat.mitigation]]
+description = "Une clé ne s'affiche ni ne se sérialise ; un réglage refusé nomme le réglage, jamais la clé ni le chemin du fichier."
+code = "api/src/answerlineage_api/pseudonyms/vault.py"
+test = "api/tests/test_pseudonyms.py::test_a_wrong_vault_setting_names_the_setting_never_the_value"
+
+[[threat.mitigation]]
+description = "La clé des pseudonymes n'est pas celle des empreintes du proxy, et le coffre ne rend jamais une clé : un KMS qui calcule sans la livrer peut le remplacer."
+code = "api/src/answerlineage_api/pseudonyms/vault.py::PseudonymVault"
+test = "api/tests/test_pseudonyms.py::test_a_key_never_shows_and_never_serializes"
+
+[threat.acceptance]
+reason = "C'est la limite de toute pseudonymisation par HMAC : qui détient la clé recalcule un pseudonyme. La clé est symétrique, partagée par les émetteurs et l'API ; sa garde, son accès et sa rotation reviennent à l'exploitant, et le coffre d'aujourd'hui la lit en clair d'un fichier ou de l'environnement."
+consequence = "Qui obtient la clé et la base, ou un accès à l'API qui la tient en mémoire, retrouve hors journal les destinataires dont il a l'identité dans un annuaire, jusqu'à la rotation suivante et pour tout ce que la clé a pseudonymisé."
+
+[[threat]]
+id = "api/revelation-abusive"
+name = "Un destinataire est révélé par qui ne le doit pas, ou sans trace"
+category = "elevation-of-privilege"
+boundary = "lecteur-lecture"
+assets = ["destinataires"]
+description = "Un lecteur, un administrateur ou un jeton volé révèle un destinataire ; ou un gestionnaire d'incident révèle sans motif, puis efface la trace de son action."
+abuse_cases = ["jetons/lecteur-revele", "identifiants/identite-candidate"]
+
+[[threat.mitigation]]
+description = "La révélation est réservée au gestionnaire d'incident ; le lecteur, le responsable de données et l'administrateur sont refusés, sans rien journaliser ni calculer."
+code = "api/src/answerlineage_api/auth/matrix.py"
+test = "api/tests/test_revelation.py::test_whoever_is_not_an_incident_manager_is_refused_and_nothing_is_journaled"
+
+[[threat.mitigation]]
+description = "Chaque révélation journalise son auteur (l'émetteur et le sujet de son jeton), l'heure de la base, un motif d'une liste fermée, le pseudonyme et le résultat ; jamais l'identité. Sans sujet admis, rien n'est révélé."
+code = "api/src/answerlineage_api/pseudonyms/store.py::reveal"
+test = "api/tests/test_revelation.py::test_an_incident_manager_reveals_and_the_action_is_journaled"
+
+[[threat.mitigation]]
+description = "Un jeton sans sujet admis, ou l'authentification désactivée, ne révèle rien."
+code = "api/src/answerlineage_api/auth/oidc.py"
+test = "api/tests/test_revelation.py::test_a_token_without_an_admitted_subject_reveals_nothing"
+
+[[threat.mitigation]]
+description = "Le journal est en ajout seul, tenu par la base : l'heure posée à l'insertion, toute modification, suppression ou troncature refusée, les droits retirés au propriétaire de la table."
+code = "api/src/answerlineage_api/store/schema.py::create_revelation_append_only"
+test = "api/tests/test_migrations.py::test_the_revelation_journal_is_appended_to_never_changed"
+
+[threat.acceptance]
+reason = "Le motif vient d'une liste fermée, mais rien ne vérifie qu'il est vrai, ni que le destinataire visé est celui d'un incident : le journal permet de le contrôler après coup. L'ajout seul tient contre l'API et son rôle, pas contre un superutilisateur de la base, qui peut désactiver les déclencheurs."
+consequence = "Un gestionnaire d'incident peut révéler un destinataire hors de tout incident, sous un motif choisi : l'action reste journalisée, à son nom. Qui administre la base peut effacer le journal."
+
+[[threat]]
+id = "api/enumeration-des-destinataires"
+name = "La révélation sert à parcourir un annuaire"
+category = "information-disclosure"
+boundary = "lecteur-lecture"
+assets = ["destinataires"]
+description = "Un gestionnaire d'incident, ou qui a volé son jeton, soumet un annuaire entier comme identités candidates, pseudonyme après pseudonyme, pour retrouver tous les destinataires."
+
+[[threat.mitigation]]
+description = "Une révélation porte au plus 100 candidates de 320 caractères, dans un corps de 256 Kio au plus."
+code = "api/src/answerlineage_api/pseudonyms/models.py::validate_revelation"
+test = "api/tests/test_revelation.py::test_a_wrong_request_is_rejected_without_echo_and_journals_nothing"
+
+[[threat.mitigation]]
+description = "Un auteur fait au plus 20 révélations par heure glissante, comptées dans le journal sous un verrou propre à lui : des révélations simultanées ne passent pas la borne, quel que soit le nombre de réplicas."
+code = "api/src/answerlineage_api/pseudonyms/store.py::reveal"
+test = "api/tests/test_revelation.py::test_simultaneous_revelations_of_one_author_never_pass_the_rate"
+
+[threat.acceptance]
+reason = "La borne laisse prévenir les destinataires d'un incident l'un après l'autre ; elle est par auteur, sans borne globale, et une révélation refusée pour le débit n'est pas journalisée, pour que le journal ne grandisse pas au rythme de qui insiste."
+consequence = "Un gestionnaire d'incident éprouve 2 000 identités par heure, chaque révélation journalisée ; plusieurs comptes multiplient ce débit."
 
 # Workers
 

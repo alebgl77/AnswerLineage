@@ -53,6 +53,12 @@ _OPERATORS = (Role.AUDITOR, Role.ADMINISTRATOR)
 # un rôle le voit attendre, comme les incidents.
 _PROPOSAL_DECIDERS = _STEWARDS
 
+# Révéler un destinataire sort une personne de son pseudonyme : une action tracée, qui
+# revient à qui instruit les incidents et prévient leurs destinataires. Pas à
+# l'administrateur : qui exploite la plateforme, et peut en approcher la base et le coffre
+# à clés, ne révèle pas aussi ; il lit le journal, avec l'auditeur.
+_REVEALERS = (Role.INCIDENT_MANAGER,)
+
 _LINEAGE = "Lire le lignage : toute personne qui a un rôle."
 _INCIDENT_READ = "Lire les incidents et leurs réponses touchées : toute personne qui a un rôle."
 _PROPOSAL_READ = "Lire les incidents proposés : toute personne qui a un rôle."
@@ -112,6 +118,17 @@ ACCESS: Final[Mapping[tuple[str, str], Access]] = {
     ("POST", "/api/v1/incident-proposals/{proposal_id}/dismiss"): _only(
         *_PROPOSAL_DECIDERS,
         why="Écarter un incident proposé : qui répond des données ou des incidents.",
+    ),
+    # Destinataires pseudonymisés.
+    ("POST", "/api/v1/recipients/reveal"): _only(
+        *_REVEALERS,
+        why=(
+            "Révéler un destinataire, action tracée : qui instruit les incidents, pas"
+            " l'administrateur qui exploite la plateforme."
+        ),
+    ),
+    ("GET", "/api/v1/recipients/revelations"): _only(
+        *_OPERATORS, why="Le journal des révélations : l'audit et l'exploitation."
     ),
     ("GET", "/api/v1/quarantine"): _only(
         *_EVERY_PERSON,
@@ -206,7 +223,11 @@ def publish(document: dict[str, Any]) -> None:
                 continue
             responses = operation.setdefault("responses", {})
             responses["401"] = _refusal(_UNAUTHENTICATED)
-            responses["403"] = _refusal(_FORBIDDEN)
+            forbidden = responses.get("403")
+            if forbidden is None:
+                responses["403"] = _refusal(_FORBIDDEN)
+            else:
+                forbidden["description"] = f"{_FORBIDDEN} {forbidden['description']}"
             unavailable = responses.get("503")
             if unavailable is None:
                 responses["503"] = _refusal(_UNAVAILABLE)

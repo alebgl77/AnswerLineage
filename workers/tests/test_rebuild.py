@@ -237,6 +237,10 @@ def call(
     return event
 
 
+# Les destinataires des réponses, sous la seule forme admise : un pseudonyme HMAC.
+PSEUDONYMS = tuple("hmac-sha256:" + letter * 64 for letter in "abc")
+
+
 def answered(kind: str, at: str, *recipients: str, rank: int = 0) -> dict[str, Any]:
     """Un événement du run de l'agent ; terminé, il porte la réponse et sa diffusion."""
     event = _event(
@@ -284,9 +288,12 @@ def history() -> list[list[dict[str, Any]]]:
                 version="v1",
                 kind="RUNNING",
             ),
-            answered("COMPLETE", "09:00:05", "pseudo:a", "pseudo:b"),
+            answered("COMPLETE", "09:00:05", PSEUDONYMS[0], PSEUDONYMS[1]),
         ],
-        [call(2, "09:01:00", "finance.taux"), answered("COMPLETE", "09:00:05", "pseudo:c", rank=1)],
+        [
+            call(2, "09:01:00", "finance.taux"),
+            answered("COMPLETE", "09:00:05", PSEUDONYMS[2], rank=1),
+        ],
     ]
 
 

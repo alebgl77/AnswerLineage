@@ -30,6 +30,13 @@ def test_a_complete_request_is_conformant() -> None:
     assert (judgement.events, judgement.runs) == (3, 2)
 
 
+DELIVERY_RECIPIENTS: list[str | int] = [
+    "outputs",
+    0,
+    "outputFacets",
+    "answerlineage_delivery",
+    "recipients",
+]
 REJECTED: dict[str, tuple[int, list[str | int], Any, str, str]] = {
     "identifiant de run retiré": (1, ["run", "runId"], ..., "/run/runId", "missing"),
     "nom du job retiré": (0, ["job", "name"], ..., "/job/name", "missing"),
@@ -57,6 +64,20 @@ REJECTED: dict[str, tuple[int, list[str | int], Any, str, str]] = {
         ...,
         "/inputs/0/facets/schema/_producer",
         "missing",
+    ),
+    "destinataire en clair": (
+        2,
+        [*DELIVERY_RECIPIENTS, 1],
+        "camille.martin@exemple.fr",
+        "/outputs/0/outputFacets/answerlineage_delivery/recipients/1",
+        "recipient_not_pseudonym",
+    ),
+    "destinataire qui n'est pas un texte": (
+        2,
+        [*DELIVERY_RECIPIENTS, 1],
+        3,
+        "/outputs/0/outputFacets/answerlineage_delivery/recipients/1",
+        "recipient_not_pseudonym",
     ),
 }
 
