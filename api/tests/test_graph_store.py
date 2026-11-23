@@ -359,7 +359,13 @@ async def test_two_reads_of_a_dataset_by_a_run_merge_into_one_edge(engine: Async
     run_id = uuid4()
     await record(
         engine,
-        RunRecord(run_id, "tool", "START", T0 + timedelta(seconds=1), reads=(Read(TAUX),)),
+        RunRecord(
+            run_id,
+            "tool",
+            "START",
+            T0 + timedelta(seconds=1),
+            reads=(Read(TAUX, precision="columns", columns=("taux",)),),
+        ),
         RunRecord(
             run_id,
             "tool",
@@ -380,7 +386,10 @@ async def test_two_reads_of_a_dataset_by_a_run_merge_into_one_edge(engine: Async
     ]
 
 
-async def test_a_coarser_later_read_does_not_degrade_the_edge(engine: AsyncEngine) -> None:
+async def test_a_later_read_of_the_whole_table_widens_the_edge_to_the_whole_table(
+    engine: AsyncEngine,
+) -> None:
+    """Le run a lu toute la table : une colonne qu'il n'a pas nommée peut le toucher."""
     run_id = uuid4()
     await record(
         engine,
@@ -390,7 +399,7 @@ async def test_a_coarser_later_read_does_not_degrade_the_edge(engine: AsyncEngin
         RunRecord(run_id, "tool", "COMPLETE", T0 + timedelta(seconds=1), reads=(Read(TAUX),)),
     )
     assert await rows(engine, "SELECT precision, columns, origin FROM read_edge") == [
-        ("columns", ["taux"], "analysis")
+        ("table", [], "analysis")
     ]
 
 

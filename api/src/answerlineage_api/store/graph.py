@@ -11,6 +11,10 @@ la réception de l'événement qui l'a fait connaître le premier. Une lecture g
 la première et la dernière heure d'événement reçues : un événement antidaté
 élargit son intervalle, il ne la déplace pas.
 
+Deux lectures d'un jeu de données par un même run se fusionnent du côté sûr
+(``merge_reads``) : la lecture fusionnée couvre l'une et l'autre, lignes et
+colonnes, et ne dit donc jamais moins que l'une d'elles.
+
 Plusieurs transactions écrivent le graphe en même temps, une par lot de la file,
 et chacune garde jusqu'à sa validation les lignes qu'elle a créées ou modifiées.
 ``prepare_runs`` pose d'avance, dans un ordre global, celles que les lots se
@@ -37,6 +41,8 @@ RunState = Literal["START", "RUNNING", "COMPLETE", "ABORT", "FAIL", "OTHER"]
 DatasetKind = Literal["table", "document", "api", "memory", "answer"]
 Precision = Literal["table", "columns", "subset", "keys"]
 Origin = Literal["analysis", "reconciliation"]
+# Les précisions qui restreignent les lignes lues, sans que le graphe dise lesquelles.
+_ROW_RESTRICTIONS: tuple[Precision, ...] = ("subset", "keys")
 
 
 @dataclass(frozen=True)
@@ -61,10 +67,59 @@ class DatasetRef:
 
 @dataclass(frozen=True)
 class Read:
+    """Une lecture : ses lignes et ses colonnes, selon sa précision.
+
+    ``table`` : toutes les lignes, toutes les colonnes ; ``columns`` : toutes les
+    lignes des colonnes nommées ; ``subset`` et ``keys`` : un sous-ensemble des
+    lignes, ou les lignes de clés désignées, des colonnes nommées, ou de toutes
+    quand aucune ne l'est.
+    """
+
     dataset: DatasetRef
     precision: Precision = "table"
     columns: tuple[str, ...] = ()
     origin: Origin = "analysis"
+
+
+type ReadShape = tuple[Precision, tuple[str, ...]]
+
+
+def canonical_read(precision: Precision, columns: Iterable[str]) -> ReadShape:
+    """La forme d'une lecture dans le graphe : une seule pour ce qu'elle a lu.
+
+    Une table entière ne nomme aucune colonne ; une lecture de colonnes qui n'en
+    nomme aucune est la table entière ; les colonnes y sont une fois chacune, dans
+    l'ordre de leurs points de code.
+    """
+    named = () if precision == "table" else tuple(sorted(set(columns)))
+    if precision == "columns" and not named:
+        return "table", ()
+    return precision, named
+
+
+def merge_reads(
+    first: tuple[Precision, Iterable[str]], second: tuple[Precision, Iterable[str]]
+) -> ReadShape:
+    """La plus étroite des lectures qui couvrent l'une et l'autre : jamais moins que l'une d'elles.
+
+    Les lignes : une même restriction (``subset`` ou ``keys``) se garde ; toute
+    autre paire couvre toutes les lignes, car le graphe ne dit pas lesquelles une
+    restriction a lues. Les colonnes : toutes dès que l'une des deux les a toutes
+    lues, sinon leur union. La fusion est idempotente, commutative et associative ;
+    ``_UPSERT_READ`` l'applique dans la base.
+    """
+    first_precision, first_columns = canonical_read(*first)
+    second_precision, second_columns = canonical_read(*second)
+    whole_width = (
+        first_precision == "table"
+        or second_precision == "table"
+        or not first_columns
+        or not second_columns
+    )
+    columns = () if whole_width else tuple(sorted({*first_columns, *second_columns}))
+    if first_precision == second_precision and first_precision in _ROW_RESTRICTIONS:
+        return first_precision, columns
+    return ("columns" if columns else "table"), columns
 
 
 @dataclass(frozen=True)
@@ -146,10 +201,18 @@ _UPSERT_RUN = text(
     """  # noqa: S608 — seul un fragment constant est interpolé.
 )
 
-# Une lecture par run, jeu de données et version. Deux événements se fusionnent :
-# la précision la plus fine l'emporte, les colonnes s'additionnent, la
-# réconciliation avec l'entrepôt prime sur l'analyse, et l'intervalle des heures
-# d'événement s'étend de la première à la dernière.
+# L'une des deux lectures a lu toutes les colonnes : une table entière, ou une
+# lecture qui n'en nomme aucune. Une ligne enregistrée avant la forme canonique
+# peut nommer des colonnes d'une table entière.
+_WHOLE_WIDTH = """(read_edge.precision = 'table' OR cardinality(read_edge.columns) = 0
+              OR EXCLUDED.precision = 'table' OR cardinality(EXCLUDED.columns) = 0)"""
+
+# Une lecture par run, jeu de données et version. Deux événements se fusionnent
+# comme le dit ``merge_reads`` : une même restriction des lignes se garde, toute
+# autre paire couvre toutes les lignes ; toutes les colonnes dès qu'une lecture
+# les a toutes lues, sinon leur union, dans l'ordre des points de code comme en
+# Python. La réconciliation avec l'entrepôt prime sur l'analyse, et l'intervalle
+# des heures d'événement s'étend de la première à la dernière.
 _UPSERT_READ = text(
     f"""
     INSERT INTO read_edge (run_id, dataset_id, dataset_version_id, precision, columns, origin,
@@ -158,20 +221,23 @@ _UPSERT_READ = text(
             CAST(:columns AS text[]), :origin, :event_time, :event_time, {_RECORDED})
     ON CONFLICT ON CONSTRAINT {schema.READ_EDGE_KEY} DO UPDATE SET
         precision = CASE
-            WHEN array_position(ARRAY['table', 'columns', 'subset', 'keys'], EXCLUDED.precision)
-               > array_position(ARRAY['table', 'columns', 'subset', 'keys'], read_edge.precision)
-            THEN EXCLUDED.precision ELSE read_edge.precision END,
-        columns = (
-            SELECT COALESCE(array_agg(DISTINCT c ORDER BY c), CAST('{{}}' AS text[]))
-            FROM unnest(read_edge.columns || EXCLUDED.columns) AS c
-        ),
+            WHEN read_edge.precision = EXCLUDED.precision
+             AND read_edge.precision IN ('subset', 'keys') THEN read_edge.precision
+            WHEN {_WHOLE_WIDTH} THEN 'table'
+            ELSE 'columns' END,
+        columns = CASE
+            WHEN {_WHOLE_WIDTH} THEN CAST('{{}}' AS text[])
+            ELSE (
+                SELECT array_agg(DISTINCT c COLLATE "C" ORDER BY c COLLATE "C")
+                FROM unnest(read_edge.columns || EXCLUDED.columns) AS c
+            ) END,
         origin = CASE
             WHEN EXCLUDED.origin = 'reconciliation' THEN EXCLUDED.origin
             ELSE read_edge.origin END,
         event_time = LEAST(read_edge.event_time, EXCLUDED.event_time),
         last_event_time = GREATEST(read_edge.last_event_time, EXCLUDED.last_event_time),
         recorded_at = LEAST(read_edge.recorded_at, EXCLUDED.recorded_at)
-    """  # noqa: S608 — seuls un nom de contrainte et un fragment constants sont interpolés.
+    """  # noqa: S608 — seuls un nom de contrainte et des fragments constants sont interpolés.
 )
 
 _UPSERT_WRITE = text(
@@ -512,14 +578,15 @@ async def record_run(
     # leurs verrous dans le même ordre.
     for read in sorted(record.reads, key=lambda item: _dataset_order(item.dataset)):
         dataset_id, version_id = await _dataset_ids(conn, read.dataset, recorded_at, prepared)
+        precision, columns = canonical_read(read.precision, read.columns)
         await conn.execute(
             _UPSERT_READ,
             {
                 "run_id": record.run_id,
                 "dataset_id": dataset_id,
                 "dataset_version_id": version_id,
-                "precision": read.precision,
-                "columns": sorted(set(read.columns)),
+                "precision": precision,
+                "columns": list(columns),
                 "origin": read.origin,
                 **times,
             },

@@ -255,6 +255,41 @@ async def test_a_table_read_whole_even_once_is_a_source_as_a_whole(
     assert dataset["versions"] == ["2026-11-02", "2026-11-03"]
 
 
+@pytest.mark.parametrize(
+    ("first", "second", "merged"),
+    [
+        # Quelques lignes, mais toutes leurs colonnes : aucune colonne n'est hors de la source.
+        (Read(ORDERS, "subset"), Read(ORDERS, "columns", ("montant",)), ("table", [])),
+        (Read(ORDERS, "keys"), Read(ORDERS, "columns", ("montant",)), ("table", [])),
+        # Deux restrictions des lignes différentes : toutes les lignes, les colonnes réunies.
+        (
+            Read(ORDERS, "subset", ("statut",)),
+            Read(ORDERS, "keys", ("montant",)),
+            ("columns", ["montant", "statut"]),
+        ),
+        (
+            Read(ORDERS, "keys", ("statut",)),
+            Read(ORDERS, "keys", ("montant",)),
+            ("keys", ["montant", "statut"]),
+        ),
+    ],
+)
+async def test_reads_of_a_dataset_by_several_runs_merge_without_saying_less_than_either(
+    client: httpx.AsyncClient,
+    engine: AsyncEngine,
+    first: Read,
+    second: Read,
+    merged: tuple[str, list[str]],
+) -> None:
+    run_id = uuid4()
+    await record(
+        engine, answering(run_id), calling(run_id, SQL, 5, first), calling(run_id, SQL, 9, second)
+    )
+
+    (dataset,) = (await sources(client, run_id))["datasets"]
+    assert (dataset["precision"], dataset["columns"]) == merged
+
+
 async def test_sources_include_what_a_sub_agent_read_and_the_agent_s_own_reads(
     client: httpx.AsyncClient, engine: AsyncEngine
 ) -> None:

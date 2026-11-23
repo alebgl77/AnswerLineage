@@ -84,8 +84,8 @@ Les sources d'une réponse sont les lectures de son run et de tous ses runs enfa
 Un jeu de données lu plusieurs fois n'apparaît qu'une fois :
 
 - `versions` réunit les versions lues, quand l'émetteur les a déclarées ;
-- `precision` garde la lecture la moins précise. Un jeu lu en entier une seule fois est une source en entier : `precision` vaut `table` et `columns` est vide ;
-- `columns` réunit les colonnes lues quand toutes les lectures les donnent ;
+- `precision` et `columns` réunissent ses lectures comme le graphe fusionne deux lectures d'un run ([fusion](schema.md#fusion-de-deux-lectures)) : sans jamais dire moins que l'une d'elles. Un jeu lu en entier une seule fois est une source en entier : `precision` vaut `table` et `columns` est vide ;
+- `columns` réunit les colonnes lues quand toutes les lectures les nomment ;
 - `first_read_at` et `last_read_at` sont la première et la dernière heure d'événement de ces lectures.
 
 ### Ce que la remontée peut manquer
@@ -431,7 +431,7 @@ Une date sans fuseau ou mal formée est refusée en `422` ; une date hors de ces
 
 Ce que la date ne remonte pas :
 
-- **Les fusions.** Une ligne connue à la date porte ce qu'elle porte aujourd'hui : une lecture dont un événement reçu plus tard a élargi l'intervalle, ajouté des colonnes ou affiné la précision, apparaît avec ces valeurs-là. La date dit quelles lignes existaient, pas comment elles étaient remplies.
+- **Les fusions.** Une ligne connue à la date porte ce qu'elle porte aujourd'hui : une lecture dont un événement reçu plus tard a élargi l'intervalle, ajouté des colonnes ou étendu la lecture à toute la table, apparaît avec ces valeurs-là. La date dit quelles lignes existaient, pas comment elles étaient remplies.
 - **La couverture.** Celle d'un résultat d'impact est la couverture d'aujourd'hui : les relevés d'un émetteur se fusionnent au plus grand, et leur état passé n'est pas gardé. `GET /api/v1/coverage` ne prend pas `known_at`.
 
 ## Bornes et délais
@@ -487,7 +487,7 @@ Les réponses vont des plus récentes aux plus anciennes. Plusieurs réponses pe
 - Un appel d'outil n'est rattaché à une réponse que si son événement désigne le run de l'agent comme parent.
 - La propagation s'arrête au niveau table : elle renvoie tout lecteur de la fenêtre, y compris ceux qui n'ont lu que des colonnes, des lignes ou une version saines.
 - Elle ne suit pas encore ce qu'un run touché a écrit : une réponse fondée sur une note ou une table dérivée de la donnée fausse n'est pas renvoyée.
-- Le score d'exposition suit les mêmes dépendances : ni ce qu'un run a écrit, ni ce qu'un appel non capté a lu. Au-delà de 20 000 réponses, les plus anciennes, qui pèsent le moins, n'y comptent pas, et le classement le dit (`truncated`). Une colonne y porte son score et ses réponses, pas ses destinataires. Deux lectures d'un même jeu, dans une même version, par un même run se fusionnent en une, la plus précise ([schéma](schema.md#écrire-dans-le-graphe)) : un run qui a lu la table entière et nommé des colonnes ne compte que pour celles-ci. Le score n'ordonne pas encore les réponses d'un incident à rappeler.
+- Le score d'exposition suit les mêmes dépendances : ni ce qu'un run a écrit, ni ce qu'un appel non capté a lu. Au-delà de 20 000 réponses, les plus anciennes, qui pèsent le moins, n'y comptent pas, et le classement le dit (`truncated`). Une colonne y porte son score et ses réponses, pas ses destinataires. Le score n'ordonne pas encore les réponses d'un incident à rappeler.
 - La couverture du lignage ne voit que ce que voient les émetteurs qui publient des relevés : un appel qui ne passe par aucun d'eux n'est compté nulle part. Elle compte les appels d'outils, pas les runs d'agents.
 - La couverture d'une remontée ne regarde que les émetteurs qui ont vu le run : si un émetteur a perdu le seul événement de ce run qu'il ait porté, rien ne le relie à la réponse, et son trou n'apparaît pas dans sa couverture. La couverture de chaque émetteur sur la période (`GET /api/v1/coverage`) le montre.
 - Un émetteur retiré pour de bon reste connu : rien ne permet encore de le déclarer retiré, et son silence rend partielle la couverture de toute période qui suit son dernier relevé.

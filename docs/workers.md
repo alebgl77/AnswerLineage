@@ -265,7 +265,7 @@ L'horloge de la maintenance est celle du worker, injectée dans les tests : les 
 
 ## Reconstruire le graphe
 
-Le graphe se déduit tout entier des événements bruts. Quand il est corrompu, par un défaut de la projection corrigé depuis ou une écriture malheureuse à la main, on le vide et on rejoue les événements, sans restaurer toute la base :
+Le graphe se déduit tout entier des événements bruts. Quand il est corrompu, par un défaut de la projection corrigé depuis, une règle d'écriture changée depuis (la [fusion de deux lectures](schema.md#fusion-de-deux-lectures), par exemple) ou une écriture malheureuse à la main, on le vide et on rejoue les événements, sans restaurer toute la base :
 
 ```bash
 # L'aperçu : ce que la reconstruction trouverait. Rien ne change.

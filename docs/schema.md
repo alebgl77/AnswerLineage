@@ -74,7 +74,38 @@ Une ligne qu'aucun événement reçu ne rattache garde l'heure qu'elle portait, 
 
 ## Écrire dans le graphe
 
-`answerlineage_api.store.graph.record_run` enregistre un run et ses arêtes dans la transaction en cours, avec la réception de l'événement qui les fait connaître (`RunRecord.recorded_at` ; sans elle, l'heure de la transaction). L'écriture est idempotente et commutative : rejouer un enregistrement, ou recevoir deux événements d'un même run dans le désordre, donne le même graphe, heures comprises. Deux lectures d'un jeu de données par un même run se fusionnent en une arête ; la précision la plus fine l'emporte, les colonnes s'additionnent et l'intervalle des heures s'étend.
+`answerlineage_api.store.graph.record_run` enregistre un run et ses arêtes dans la transaction en cours, avec la réception de l'événement qui les fait connaître (`RunRecord.recorded_at` ; sans elle, l'heure de la transaction). L'écriture est idempotente et commutative : rejouer un enregistrement, ou recevoir deux événements d'un même run dans le désordre, donne le même graphe, heures comprises. Deux lectures d'un jeu de données, dans une même version, par un même run se fusionnent en une arête : elle couvre l'une et l'autre ([plus bas](#fusion-de-deux-lectures)), et l'intervalle des heures s'étend.
+
+### Fusion de deux lectures
+
+Une lecture dit quelles lignes et quelles colonnes d'un jeu de données ont été lues :
+
+| `precision` | Lignes | Colonnes |
+| --- | --- | --- |
+| `table` | Toutes | Toutes ; `columns` est vide |
+| `columns` | Toutes | Celles de `columns`, jamais vide |
+| `subset` | Un sous-ensemble, que le graphe ne décrit pas | Celles de `columns` ; toutes quand elle est vide |
+| `keys` | Les lignes de clés désignées, que le graphe ne décrit pas | Celles de `columns` ; toutes quand elle est vide |
+
+Chaque lecture a une seule forme : une lecture `columns` qui ne nomme aucune colonne est enregistrée comme `table`, une lecture `table` ne garde aucune colonne, et `columns` tient chaque colonne une fois, dans l'ordre de ses points de code.
+
+Deux lectures se fusionnent du côté sûr : la lecture fusionnée est la plus étroite qui couvre l'une et l'autre. Elle ne dit donc jamais moins que l'une d'elles, car une colonne manquante ferait écarter à tort une réponse touchée.
+
+- **Les lignes.** Deux lectures qui ont la même restriction (`subset` et `subset`, `keys` et `keys`) la gardent. Toute autre paire couvre toutes les lignes : le graphe ne garde pas quelles lignes une restriction a lues, et aucune des deux ne décrit leur réunion.
+- **Les colonnes.** Toutes dès que l'une des deux lectures les a toutes lues ; sinon, l'union de leurs listes. On note C₁ ⊔ C₂ ce résultat.
+
+| Fusion | `table` | `columns` C₂ | `subset` C₂ | `keys` C₂ |
+| --- | --- | --- | --- | --- |
+| `table` | `table` | `table` | `table` | `table` |
+| `columns` C₁ | `table` | `columns` C₁ ⊔ C₂ | `columns` C₁ ⊔ C₂ | `columns` C₁ ⊔ C₂ |
+| `subset` C₁ | `table` | `columns` C₁ ⊔ C₂ | `subset` C₁ ⊔ C₂ | `columns` C₁ ⊔ C₂ |
+| `keys` C₁ | `table` | `columns` C₁ ⊔ C₂ | `columns` C₁ ⊔ C₂ | `keys` C₁ ⊔ C₂ |
+
+Une fusion `columns` dont C₁ ⊔ C₂ couvre toutes les colonnes est `table`. Un run qui a lu la table entière, puis nommé une colonne, garde donc la table entière : une autre colonne fausse touche ses réponses.
+
+La fusion est idempotente, commutative et associative : rejouer un événement, recevoir les événements d'un run dans le désordre, ou les fusionner en plusieurs fois, donne la même arête. `api/tests/test_read_merge.py` le vérifie sur toutes les paires de précisions et sur des triplets, et vérifie que la fusion couvre chacune des deux lectures. La [remontée](lecture.md#ce-qui-compte-comme-source) réunit de la même façon les lectures d'un jeu par les runs et les versions de l'arbre d'une réponse.
+
+Auparavant, la précision la plus fine l'emportait : un run qui avait lu la table entière puis nommé des colonnes ne gardait que ces colonnes. Les arêtes déjà enregistrées ainsi le restent. La [reconstruction du graphe](workers.md#reconstruire-le-graphe) (`answerlineage-worker rebuild --yes`) les fusionne de nouveau, selon cette règle, à partir des événements bruts conservés ; celles dont les événements sont purgés ne peuvent pas être reprises ([ce que la reconstruction ne rend pas](workers.md#ce-que-la-reconstruction-ne-rend-pas)).
 
 ## Compteur de doublons
 

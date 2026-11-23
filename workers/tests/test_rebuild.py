@@ -407,6 +407,32 @@ async def test_a_corrupted_graph_is_repaired(engine: AsyncEngine) -> None:
 
 
 @integration
+async def test_a_rebuild_merges_again_the_reads_that_an_older_rule_narrowed(
+    engine: AsyncEngine,
+) -> None:
+    """Une table lue en entier, puis par colonne : l'ancienne fusion n'en gardait que la colonne."""
+    await ingest(
+        engine,
+        [
+            call(0, "09:00:01", "ventes.commandes", kind="RUNNING"),
+            call(0, "09:00:02", "ventes.commandes", columns=("montant",)),
+        ],
+    )
+    await drain(engine)
+    read = "SELECT precision, columns FROM read_edge"
+    assert await rows(engine, read) == [("table", [])]
+    # Le graphe tel que l'ancienne fusion l'a laissé : la précision la plus fine l'emportait.
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE read_edge SET precision = 'columns', columns = '{montant}'")
+        )
+
+    await rebuild_graph(engine)
+
+    assert await rows(engine, read) == [("table", [])]
+
+
+@integration
 async def test_a_rebuild_on_an_empty_base_leaves_an_empty_graph(engine: AsyncEngine) -> None:
     report = await rebuild_graph(engine)
 

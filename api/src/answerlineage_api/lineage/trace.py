@@ -22,20 +22,18 @@ from answerlineage_api.lineage.models import (
     AgentName,
     AnswerSummary,
     DatasetSource,
-    Precision,
     Sources,
     ToolUse,
     Window,
 )
 from answerlineage_api.lineage.paging import ANSWER_DIGEST, digest
 from answerlineage_api.lineage.reading import Reader, known
+from answerlineage_api.store.graph import canonical_read, merge_reads
 
 # Borne de l'arbre des runs parcouru pour une réponse, son propre run compris.
 MAX_RUNS = 10_000
 # Borne des lectures faites par cet arbre.
 MAX_READS = 50_000
-# De la lecture la moins précise à la plus précise.
-_PRECISIONS: tuple[Precision, ...] = ("table", "columns", "subset", "keys")
 
 _ANSWER_COLUMNS = """
     a.run_id, a.fingerprint, a.event_time, g.namespace AS agent_namespace, g.name AS agent_name
@@ -177,18 +175,16 @@ def _datasets(rows: Sequence[Row[Any]]) -> list[DatasetSource]:
             {
                 "kind": row.kind,
                 "versions": set(),
-                "precision": len(_PRECISIONS) - 1,
-                "columns": set(),
+                "read": canonical_read(row.precision, row.columns),
                 "first": row.event_time,
                 "last": row.last_event_time,
             },
         )
         if row.version is not None:
             source["versions"].add(row.version)
-        # La lecture la moins précise l'emporte : un jeu lu en entier une
-        # seule fois est une source en entier.
-        source["precision"] = min(source["precision"], _PRECISIONS.index(row.precision))
-        source["columns"].update(row.columns)
+        # Les lectures de toutes les versions et de tous les runs se fusionnent comme
+        # celles d'un run : un jeu lu en entier une seule fois est une source en entier.
+        source["read"] = merge_reads(source["read"], (row.precision, row.columns))
         source["first"] = min(source["first"], row.event_time)
         source["last"] = max(source["last"], row.last_event_time)
     return [
@@ -197,8 +193,8 @@ def _datasets(rows: Sequence[Row[Any]]) -> list[DatasetSource]:
             name=name,
             kind=source["kind"],
             versions=sorted(source["versions"]),
-            precision=_PRECISIONS[source["precision"]],
-            columns=sorted(source["columns"]) if source["precision"] > 0 else [],
+            precision=source["read"][0],
+            columns=list(source["read"][1]),
             first_read_at=source["first"],
             last_read_at=source["last"],
         )
