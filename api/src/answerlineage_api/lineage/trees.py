@@ -127,6 +127,9 @@ async def descendants(
     rows = sorted(found.rows, key=lambda row: (row.depth, rank[row.root], row.run_id))
     if not found.truncated:
         return Trees([(row.root, row.run_id) for row in rows], truncated=False)
+    if not rows:
+        # Une borne nulle : rien n'est gardé, et la coupe se dit.
+        return Trees([], truncated=True)
 
     cut = rows[-1].depth
     if cut == 0:
@@ -172,6 +175,9 @@ async def ancestors(
     reached = sorted(parent_of, key=lambda run_id: (level[run_id], run_id))
     if not found.truncated:
         return reached, False
+    if not reached:
+        # Une borne nulle : rien n'est gardé, et la coupe se dit.
+        return [], True
 
     cut = level[reached[-1]]
     kept = [run_id for run_id in reached if level[run_id] < cut]

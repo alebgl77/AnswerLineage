@@ -289,3 +289,15 @@ async def test_ancestors_that_name_each_other_as_parent_end(engine: AsyncEngine)
     async with reading(engine) as reader:
         assert await trees.ancestors(reader, [first], limit=2) == ([first, second], False)
         assert await trees.ancestors(reader, [first], limit=1) == ([first], True)
+
+
+async def test_a_bound_of_zero_keeps_no_run_and_says_it_cuts(engine: AsyncEngine) -> None:
+    """Une borne nulle ne garde rien et le dit : une propagation sans run suivi n'est pas vide."""
+    draws = Draws("13")
+    root, _, edges = tree(draws, 2)
+    firsts, _, _, chained = chains(draws, 2)
+    await insert(engine, {**edges, **chained})
+
+    async with reading(engine) as reader:
+        assert await trees.descendants(reader, [root], limit=0) == trees.Trees([], truncated=True)
+        assert await trees.ancestors(reader, firsts, limit=0) == ([], True)
