@@ -44,6 +44,9 @@ Les onze tables d'`agent` à `delivery_recipient` forment le graphe (`schema.GRA
 | `webhook_stats` | une seule ligne | Échéance de la mise en service des webhooks ; messages remis, refusés par le récepteur et abandonnés, depuis la mise en service |
 | `graph_rebuild` | identifiant tiré par la base | Reconstruction du graphe depuis les événements bruts : départ, fin, événements rejoués, période des événements conservés |
 | `recipient_revelation` | identifiant tiré par la base | Journal des révélations de destinataires, en ajout seul : auteur, heure, motif, pseudonyme visé, nombre de candidates, résultat ; jamais l'identité |
+| `recall_list` | incident | Liste de rappel d'un incident, faite de son analyse : heure de référence de l'exposition, décomptes |
+| `recall_entry` | incident et pseudonyme | Un destinataire de la liste, une fois par incident : rang, exposition, réponses touchées comptées |
+| `recall_entry_answer` | incident, pseudonyme, run et empreinte | Une réponse touchée qu'un destinataire de la liste a reçue |
 
 ## Deux heures
 
@@ -300,6 +303,18 @@ L'ajout seul est tenu par la base, pour toute connexion, propriétaire compris :
 Le pseudonyme est une valeur, sans clé étrangère vers `recipient` : le journal survit à la reconstruction du graphe, qui vide `recipient`. Il n'est ni partitionné ni purgé.
 
 La migration `0017` crée la table, sa fonction et ses déclencheurs. Elle retire aussi de la base ce qu'un émetteur avait pu envoyer comme destinataire sous une autre forme qu'un pseudonyme, peut-être une identité en clair : des événements bruts (les destinataires de leurs facettes de diffusion, sous `facets` comme sous `outputFacets` ; une liste qui n'en est pas une est vidée), du graphe (le destinataire et ses liens) et des résultats d'analyse des incidents. Les décomptes des analyses passées restent ceux de leur heure. La descente retire le journal, sa fonction et ses déclencheurs ; les destinataires retirés ne reviennent pas.
+
+## Listes de rappel
+
+La [liste de rappel](rappel.md) d'un incident se range à côté de l'incident, sans clé vers le graphe, comme le résultat de son analyse dont elle est faite. Elle en est un instantané : elle tient ses propres réponses, par leur run et leur empreinte, que rejouer l'analyse refait ou retire. Aucune de ces tables ne porte de texte libre : des pseudonymes, des identifiants, des heures et des nombres.
+
+| Table | Contraintes |
+| --- | --- |
+| `recall_list` | Une liste par incident, clé étrangère vers lui. `built_at`, l'heure de la transaction qui l'a faite, posée par la base ; `reference_at`, l'heure de référence de l'exposition, celle du graphe lu par l'analyse. Des décomptes positifs (`ck_recall_list_counts`) |
+| `recall_entry` | Un pseudonyme une fois par liste (clé primaire), un rang une fois (`uq_recall_entry_incident_id_rank`), clé étrangère vers la liste. Un rang d'au moins 1, une exposition positive en millionièmes, une réponse touchée au moins (`ck_recall_entry_counts`) |
+| `recall_entry_answer` | Une réponse une fois par destinataire, clé étrangère vers son entrée |
+
+La migration `0018` crée ces tables ; sa descente les retire, les incidents et leurs analyses inchangés. Une analyse faite avant elle n'a pas de liste : la rejouer en fait une.
 
 ## Migrations
 

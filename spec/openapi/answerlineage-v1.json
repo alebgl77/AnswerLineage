@@ -2940,6 +2940,183 @@
         "title": "ReasonCount",
         "type": "object"
       },
+      "RecallAnswer": {
+        "description": "Une réponse touchée qu'un destinataire a reçue.",
+        "properties": {
+          "fingerprint": {
+            "description": "Empreinte de la réponse : son contenu n'est pas conservé.",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifiant stable de la réponse.",
+            "title": "Id",
+            "type": "string"
+          },
+          "produced_at": {
+            "format": "date-time",
+            "title": "Produced At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "fingerprint",
+          "produced_at"
+        ],
+        "title": "RecallAnswer",
+        "type": "object"
+      },
+      "RecallCounts": {
+        "description": "Les décomptes de toute la liste.",
+        "properties": {
+          "answers": {
+            "description": "Réponses touchées distinctes qu'ils ont reçues.",
+            "title": "Answers",
+            "type": "integer"
+          },
+          "recipients": {
+            "description": "Destinataires de la liste : une entrée chacun.",
+            "title": "Recipients",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "recipients",
+          "answers"
+        ],
+        "title": "RecallCounts",
+        "type": "object"
+      },
+      "RecallEntry": {
+        "description": "Un destinataire de la liste, une fois par incident, avec ses réponses touchées.",
+        "properties": {
+          "answer_count": {
+            "description": "Réponses touchées qu'il a reçues, toutes comptées.",
+            "title": "Answer Count",
+            "type": "integer"
+          },
+          "answers": {
+            "description": "Ses réponses touchées, les plus récentes d'abord, 100 au plus.",
+            "items": {
+              "$ref": "#/components/schemas/RecallAnswer"
+            },
+            "maxItems": 100,
+            "title": "Answers",
+            "type": "array"
+          },
+          "exposure": {
+            "description": "Exposition du destinataire, au millionième : chaque réponse touchée qu'il a reçue pèse 1, divisé par 2 tous les 30 jours depuis l'heure de la réponse, à l'heure de référence de la liste.",
+            "title": "Exposure",
+            "type": "number"
+          },
+          "latest_answer_at": {
+            "description": "Heure de la plus récente d'entre elles.",
+            "format": "date-time",
+            "title": "Latest Answer At",
+            "type": "string"
+          },
+          "more_answers": {
+            "description": "Vrai quand il en a reçu plus que les 100 rendues.",
+            "title": "More Answers",
+            "type": "boolean"
+          },
+          "rank": {
+            "description": "Rang dans la liste, à partir de 1 : le plus exposé d'abord.",
+            "title": "Rank",
+            "type": "integer"
+          },
+          "recipient": {
+            "description": "Pseudonyme du destinataire, jamais son identité.",
+            "title": "Recipient",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rank",
+          "recipient",
+          "exposure",
+          "answer_count",
+          "latest_answer_at",
+          "answers",
+          "more_answers"
+        ],
+        "title": "RecallEntry",
+        "type": "object"
+      },
+      "RecallList": {
+        "description": "La liste de rappel d'un incident : un message par destinataire, les plus exposés\nd'abord, et une page de ses entrées.",
+        "properties": {
+          "built_at": {
+            "description": "Heure de la transaction qui a fait la liste avec l'analyse.",
+            "format": "date-time",
+            "title": "Built At",
+            "type": "string"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/RecallCounts"
+          },
+          "entries": {
+            "description": "Par rang.",
+            "items": {
+              "$ref": "#/components/schemas/RecallEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "incident_id": {
+            "format": "uuid",
+            "title": "Incident Id",
+            "type": "string"
+          },
+          "more": {
+            "description": "Vrai quand des entrées moins exposées suivent.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Curseur de la page suivante, à rendre tel quel dans le paramètre « cursor ». Nul quand il n'y en a plus.",
+            "title": "Next Cursor"
+          },
+          "reference_at": {
+            "description": "Heure de référence de l'exposition : celle du graphe lu par l'analyse (« known_at »).",
+            "format": "date-time",
+            "title": "Reference At",
+            "type": "string"
+          },
+          "severity": {
+            "description": "Gravité de l'incident.",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "incident_id",
+          "severity",
+          "built_at",
+          "reference_at",
+          "counts",
+          "entries",
+          "more",
+          "next_cursor"
+        ],
+        "title": "RecallList",
+        "type": "object"
+      },
       "RecipientNode": {
         "properties": {
           "id": {
@@ -6243,6 +6420,157 @@
         "summary": "Lève la quarantaine d'un incident : les proxys ne reçoivent plus son périmètre",
         "tags": [
           "incidents"
+        ]
+      }
+    },
+    "/api/v1/incidents/{incident_id}/recall-list": {
+      "get": {
+        "description": "Une entrée par destinataire pseudonymisé, avec ses réponses touchées, rangée par\nexposition ; les décomptes de toute la liste.",
+        "operationId": "recall_list_api_v1_incidents__incident_id__recall_list_get",
+        "parameters": [
+          {
+            "description": "Identifiant de l'incident, tel que l'API le donne.",
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "description": "Identifiant de l'incident, tel que l'API le donne.",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Nombre maximal d'entrées renvoyées.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "description": "Nombre maximal d'entrées renvoyées.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9]{1,9}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor ».",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecallList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton manque (« missing_token »), est invalide (« invalid_token ») ou a expiré (« expired_token »)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Le jeton n'a aucun des rôles qui ouvrent la route (« insufficient_role »)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "Aucun incident ne porte cet identifiant (« unknown_incident »), ou l'incident n'a pas de liste de rappel (« no_recall_list ») : son analyse attend, a échoué, ou est tronquée."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRejected"
+                }
+              }
+            },
+            "description": "Un paramètre est invalide."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRefused"
+                }
+              }
+            },
+            "description": "La lecture a dépassé son délai maximal : PostgreSQL l'a interrompue (« query_timeout »). L'émetteur OIDC ne donne pas la clé qui vérifierait le jeton (« authentication_unavailable »)."
+          }
+        },
+        "security": [
+          {
+            "bearer": [
+              "administrator"
+            ]
+          },
+          {
+            "bearer": [
+              "agent_owner"
+            ]
+          },
+          {
+            "bearer": [
+              "auditor"
+            ]
+          },
+          {
+            "bearer": [
+              "data_steward"
+            ]
+          },
+          {
+            "bearer": [
+              "incident_manager"
+            ]
+          },
+          {
+            "bearer": [
+              "reader"
+            ]
+          }
+        ],
+        "summary": "Donne la liste de rappel d'un incident : un message par destinataire, les plus exposés d'abord",
+        "tags": [
+          "rappel"
         ]
       }
     },

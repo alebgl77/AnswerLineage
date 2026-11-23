@@ -62,6 +62,7 @@ _REVEALERS = (Role.INCIDENT_MANAGER,)
 _LINEAGE = "Lire le lignage : toute personne qui a un rôle."
 _INCIDENT_READ = "Lire les incidents et leurs réponses touchées : toute personne qui a un rôle."
 _PROPOSAL_READ = "Lire les incidents proposés : toute personne qui a un rôle."
+_RECALL_READ = "Lire les listes de rappel : toute personne qui a un rôle."
 
 ACCESS: Final[Mapping[tuple[str, str], Access]] = {
     # Ingestion : les émetteurs seuls écrivent ce que le graphe tiendra.
@@ -119,6 +120,8 @@ ACCESS: Final[Mapping[tuple[str, str], Access]] = {
         *_PROPOSAL_DECIDERS,
         why="Écarter un incident proposé : qui répond des données ou des incidents.",
     ),
+    # Listes de rappel.
+    ("GET", "/api/v1/incidents/{incident_id}/recall-list"): Access(_EVERY_PERSON, _RECALL_READ),
     # Destinataires pseudonymisés.
     ("POST", "/api/v1/recipients/reveal"): _only(
         *_REVEALERS,

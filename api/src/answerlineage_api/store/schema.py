@@ -42,6 +42,10 @@ Chaque révélation d'un destinataire est journalisée (``recipient_revelation``
 ajout seul : son auteur, son heure, son motif d'une liste fermée, le pseudonyme visé
 et le résultat, jamais l'identité. Aucune table ne relie un pseudonyme à une personne.
 
+La liste de rappel d'un incident (``recall_list``) tient une entrée par destinataire
+(``recall_entry``), rangée par exposition, avec ses réponses touchées
+(``recall_entry_answer``) : un instantané de l'analyse, des pseudonymes et des nombres.
+
 Les tables du graphe (``GRAPH``) se déduisent toutes des événements bruts : la
 reconstruction les vide et les rejoue, et garde la trace de chaque
 reconstruction (``graph_rebuild``).
@@ -1279,6 +1283,56 @@ def create_revelation_append_only(target: Table, connection: Connection, **_: ob
 
 
 event.listen(recipient_revelation, "after_create", create_revelation_append_only)
+
+# Liste de rappel d'un incident : un message par destinataire et par incident. Les workers
+# la font de l'analyse d'impact, dans la transaction qui enregistre une analyse faite et non
+# tronquée, et la refont quand l'analyse est rejouée. Elle tient ses propres réponses : un
+# instantané de l'analyse, des pseudonymes, des identifiants et des nombres, sans texte libre.
+# ``reference_at`` est l'heure à laquelle l'exposition des destinataires est calculée :
+# celle du graphe lu par l'analyse.
+recall_list = Table(
+    "recall_list",
+    metadata,
+    Column("incident_id", Uuid, ForeignKey("incident.id"), primary_key=True),
+    Column("built_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("reference_at", DateTime(timezone=True), nullable=False),
+    # Destinataires de la liste, et réponses distinctes qu'ils ont reçues.
+    Column("recipients", BigInteger, nullable=False),
+    Column("answers", BigInteger, nullable=False),
+    CheckConstraint("recipients >= 0 AND answers >= 0", name="counts"),
+)
+
+# Une entrée de la liste : un destinataire, par son pseudonyme, une fois par incident. Son
+# rang suit son exposition (``exposure``, en millionièmes), puis son nombre de réponses
+# touchées, sa réponse la plus récente et son pseudonyme : un ordre total.
+recall_entry = Table(
+    "recall_entry",
+    metadata,
+    Column("incident_id", Uuid, ForeignKey("recall_list.incident_id"), nullable=False),
+    Column("pseudonym", Text, nullable=False),
+    Column("rank", Integer, nullable=False),
+    Column("exposure", BigInteger, nullable=False),
+    Column("answers", Integer, nullable=False),
+    Column("latest_answer_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("incident_id", "pseudonym"),
+    UniqueConstraint("incident_id", "rank"),
+    CheckConstraint("rank >= 1 AND exposure >= 0 AND answers >= 1", name="counts"),
+)
+
+# Les réponses touchées d'un destinataire, désignées comme dans l'analyse : run et empreinte.
+recall_entry_answer = Table(
+    "recall_entry_answer",
+    metadata,
+    Column("incident_id", Uuid, nullable=False),
+    Column("pseudonym", Text, nullable=False),
+    Column("run_id", Uuid, nullable=False),
+    Column("fingerprint", Text, nullable=False),
+    Column("produced_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("incident_id", "pseudonym", "run_id", "fingerprint"),
+    ForeignKeyConstraint(
+        ["incident_id", "pseudonym"], [recall_entry.c.incident_id, recall_entry.c.pseudonym]
+    ),
+)
 
 # Une table partitionnée naît avec la partition du mois courant et des mois à venir.
 for _partitioned in (event_raw, coverage_report, ingest_duplicate):

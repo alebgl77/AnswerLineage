@@ -1,6 +1,6 @@
 # Incidents de données
 
-Un responsable de données constate qu'une donnée est fausse : une table mal chargée, une référence périmée. Il déclare l'incident : quels jeux de données, pendant quelle fenêtre, avec quelle gravité. AnswerLineage enregistre l'incident et lance aussitôt son analyse d'impact : les réponses d'agents qui s'appuient sur ces données pendant la fenêtre, et leurs destinataires.
+Un responsable de données constate qu'une donnée est fausse : une table mal chargée, une référence périmée. Il déclare l'incident : quels jeux de données, pendant quelle fenêtre, avec quelle gravité. AnswerLineage enregistre l'incident et lance aussitôt son analyse d'impact : les réponses d'agents qui s'appuient sur ces données pendant la fenêtre, et leurs destinataires. L'analyse faite, il en dresse la [liste de rappel](rappel.md) : un message par destinataire, les plus exposés d'abord.
 
 Un test de données en échec, émis en OpenLineage par dbt ou un autre outil, [propose un incident](#incidents-proposés-par-un-test-de-qualité) sur la table et la colonne qu'il accuse : la proposition attend un humain, rien n'en part avant qu'il la confirme.
 
@@ -45,7 +45,7 @@ La gravité est l'appréciation du responsable de données. Elle ne change pas l
 | --- | --- |
 | `qualified` | Déclaré : son périmètre, sa fenêtre et sa gravité sont établis, son analyse est demandée |
 
-C'est le seul état aujourd'hui. La liste est fermée, dans l'API comme dans la base (`ck_incident_state`) : les états suivants arriveront avec la liste de rappel, chacun par une révision de la base et du contrat.
+C'est le seul état aujourd'hui. La liste est fermée, dans l'API comme dans la base (`ck_incident_state`) : un état nouveau, la clôture par exemple, viendra par une révision de la base et du contrat. La [liste de rappel](rappel.md) ne change pas l'état de l'incident.
 
 ## Déclarer
 
@@ -161,6 +161,8 @@ Cet exemple est le premier incident de l'[entreprise synthétique](corpus.md), d
 | `cursor` | La page suivante : la valeur de `result.next_cursor`, rendue telle quelle | aucun |
 
 Un identifiant inconnu répond `404` (`unknown_incident`), un identifiant mal formé `422`, sans être recopié.
+
+Une analyse faite et non tronquée fait aussi la liste de rappel de l'incident, qui se lit à `GET /api/v1/incidents/{id}/recall-list` ([liste de rappel](rappel.md)).
 
 ## Lister les incidents
 
@@ -463,7 +465,7 @@ Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses évé
 - **Ce que la quarantaine fait des lectures.** Les proxys connaissent le périmètre, sans encore annoter ni bloquer une lecture. Le périmètre se limite aux jeux de l'incident, sans les vues ni les tables dérivées connues du graphe.
 - **Le journal des quarantaines** : qui a activé ou levé. L'API vérifie l'identité de l'appelant, mais ne la garde pas encore. Les heures, le mode et le périmètre sont déjà gardés.
 - **L'interface.** L'explorateur ne déclare pas encore d'incident ; l'API et la ligne de commande le font.
-- **La suite du cycle de vie.** Un incident reste `qualified` : ni modification, ni clôture, ni liste de rappel pour l'instant. Une déclaration fautive ne se corrige pas, elle se refait. Sa quarantaine se lève à la main.
+- **La suite du cycle de vie.** Un incident reste `qualified` : ni modification, ni clôture pour l'instant. Une déclaration fautive ne se corrige pas, elle se refait. Sa quarantaine se lève à la main.
 - **Les colonnes.** Le périmètre s'arrête aux tables, comme la propagation. Une [proposition](#incidents-proposés-par-un-test-de-qualité) nomme ses colonnes en échec, sans que la propagation s'en serve.
 - **Le motif d'un écartement**, d'une liste fermée, et l'écartement en masse des propositions d'un émetteur : une proposition s'écarte une à une, sans motif.
 - **Ce qu'un run touché a écrit.** Comme la propagation, l'analyse ne suit pas une table ou une note dérivée de la donnée fausse.

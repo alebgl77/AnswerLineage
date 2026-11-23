@@ -26,6 +26,10 @@ seulement, jamais de contenu.
   ``query_timeout`` quand une lecture dépasse le délai de l'analyse,
   ``analysis_error`` pour toute autre erreur, dont seule la classe est
   journalisée.
+- **Sa liste de rappel avec elle.** Une analyse faite et non tronquée fait la liste
+  de rappel de l'incident dans la transaction qui l'enregistre (``recall.py``) : un
+  message par destinataire, les plus exposés d'abord. Une analyse tronquée ne dit
+  pas tous les destinataires : elle n'a pas de liste.
 - **Annoncée dans sa transaction.** Une analyse faite, ou en échec pour de bon,
   met son annonce dans la file des webhooks quand un webhook est en service
   (``answerlineage_api.incidents.webhooks``), dans la transaction qui
@@ -52,7 +56,7 @@ from answerlineage_api.lineage import coverage, impact
 from answerlineage_api.lineage.paging import ANSWER_ORDER
 from answerlineage_api.lineage.reading import Reader, ReadTimedOut, known
 from answerlineage_api.store import schema
-from answerlineage_workers import gate
+from answerlineage_workers import gate, recall
 
 logger = logging.getLogger("answerlineage_workers")
 
@@ -223,6 +227,10 @@ async def analyze_incident(
         ),
         {},
     )
+    if truncated:
+        await recall.forget(reader, incident_id)
+    else:
+        await recall.build(reader, incident_id, known_at)
 
 
 async def _bounded(reader: Reader, statement: Any, params: dict[str, Any], bound: int) -> int:

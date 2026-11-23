@@ -183,14 +183,16 @@ La déclaration d'un [incident](incidents.md) écrit une demande d'analyse dans 
 1. elle lance la [propagation](lecture.md#propager-un-incident) sur chaque jeu de données du périmètre et sur la fenêtre de validité, telle que le graphe était connu à l'heure de l'analyse (`known_at`) ;
 2. elle réunit les runs touchés, et garde les réponses de ces runs, par leur run et leur empreinte, et les pseudonymes de leurs destinataires ;
 3. elle mesure la [couverture du lignage](lecture.md#couverture-du-lignage) sur la fenêtre, et note les jeux du périmètre que le graphe ne connaît pas ;
-4. elle enregistre le résultat et passe l'analyse à l'état `done`.
+4. elle enregistre le résultat et passe l'analyse à l'état `done` ;
+5. quand le résultat n'est pas tronqué, elle en fait la [liste de rappel](rappel.md) : une entrée par destinataire, avec ses réponses touchées, rangée par exposition. Un résultat tronqué n'a pas de liste, et retire celle d'une analyse précédente.
 
 Les garanties sont celles de la file d'ingestion :
 
 - **Sur un graphe entier.** Pendant une [reconstruction du graphe](#reconstruire-le-graphe), et tant que la file n'a pas rendu au graphe ce que la reconstruction y a remis, aucune analyse ne part : la demande attend, puis lit le graphe reconstruit.
 - **Une analyse, un worker.** La demande est réclamée, traitée et close dans une seule transaction ; les workers sautent une demande verrouillée par un autre (`FOR UPDATE SKIP LOCKED`).
 - **Aucune perte.** Un worker arrêté en cours d'analyse n'écrit rien : la demande redevient visible, telle quelle.
-- **Sans doublon.** Le résultat remplace celui d'une analyse précédente du même incident : rejouer une analyse ne duplique ni réponse ni destinataire.
+- **Sans doublon.** Le résultat remplace celui d'une analyse précédente du même incident : rejouer une analyse ne duplique ni réponse ni destinataire. La liste de rappel aussi : la même analyse donne la même liste, rang pour rang.
+- **La liste avec l'analyse.** La liste de rappel s'écrit dans la transaction de l'analyse, sous son délai : une analyse faite a sa liste à la même heure, et une liste qui ne peut pas s'écrire fait échouer l'essai, comme le reste du résultat.
 - **Le même graphe à chaque essai.** `known_at` est l'heure de la base au premier essai, gardée pour les suivants.
 - **Un échec se dit par un code.** Une analyse en échec est remise à plus tard, avec un délai qui double à chaque essai (5 s, 10 s, 20 s…) ; au huitième essai en échec, elle passe à l'état `failed`. La demande garde le nombre d'essais et le code du dernier échec, d'une liste fermée : `query_timeout` quand une lecture dépasse le délai de l'analyse, `analysis_error` pour toute autre erreur. Le journal en donne la classe, jamais le message :
 
@@ -362,9 +364,9 @@ L'ordre n'y fait rien. Les workers avaient projeté les événements dans l'ordr
 
 ### Ce qu'elle ne touche pas
 
-Seules les tables du graphe sont vidées. Les événements bruts, la file, où elle remet les événements, le rebut, la file de réémission, la file des webhooks, le compteur de doublons, les relevés de couverture et les émetteurs connus, les alertes de partition, les incidents et leurs analyses restent tels quels.
+Seules les tables du graphe sont vidées. Les événements bruts, la file, où elle remet les événements, le rebut, la file de réémission, la file des webhooks, le compteur de doublons, les relevés de couverture et les émetteurs connus, les alertes de partition, les incidents, leurs analyses et leurs listes de rappel restent tels quels.
 
-De tout cela, seul le résultat d'une analyse d'incident dérive du graphe : ses réponses touchées, leurs destinataires, ses décomptes et sa couverture, lus tels que le graphe était connu à l'heure de l'analyse (`known_at`). La reconstruction ne les recalcule pas. Elle rend chaque ligne avec son heure d'enregistrement : le graphe tel que connu à `known_at` est celui d'avant la corruption, et une analyse faite avant elle reste juste. Une analyse faite sur le graphe corrompu se rejoue en gardant son `known_at` ([rejouer une analyse](incidents.md#rejouer-une-analyse)) : elle lit alors ce qu'elle aurait dû lire. La couverture du lignage se calcule à la lecture, des événements bruts et de la file : rien n'est à recalculer.
+De tout cela, seul le résultat d'une analyse d'incident dérive du graphe : ses réponses touchées, leurs destinataires, ses décomptes, sa couverture et sa liste de rappel, lus tels que le graphe était connu à l'heure de l'analyse (`known_at`). La reconstruction ne les recalcule pas. Elle rend chaque ligne avec son heure d'enregistrement : le graphe tel que connu à `known_at` est celui d'avant la corruption, et une analyse faite avant elle reste juste. Une analyse faite sur le graphe corrompu se rejoue en gardant son `known_at` ([rejouer une analyse](incidents.md#rejouer-une-analyse)) : elle lit alors ce qu'elle aurait dû lire. La couverture du lignage se calcule à la lecture, des événements bruts et de la file : rien n'est à recalculer.
 
 ### Durée
 

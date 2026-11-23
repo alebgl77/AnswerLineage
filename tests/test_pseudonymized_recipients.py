@@ -47,8 +47,16 @@ RATES = {"namespace": "bigquery", "name": "finance.ref.taux_change"}
 T0 = datetime(2026, 11, 3, 9, 0, tzinfo=UTC)
 
 # Les tables qui tiennent un pseudonyme, et pourquoi : l'événement reçu, le destinataire du
-# graphe, celui d'une réponse touchée, et le journal des révélations. Aucune autre.
-HOLDING_PSEUDONYMS = {"event_raw", "recipient", "incident_recipient", "recipient_revelation"}
+# graphe, celui d'une réponse touchée, les entrées de la liste de rappel et leurs réponses, et
+# le journal des révélations. Aucune autre.
+HOLDING_PSEUDONYMS = {
+    "event_raw",
+    "recipient",
+    "incident_recipient",
+    "recall_entry",
+    "recall_entry_answer",
+    "recipient_revelation",
+}
 
 
 def facet(url: str, **fields: Any) -> dict[str, Any]:
@@ -256,4 +264,10 @@ def test_no_column_of_the_declared_schema_could_hold_a_ciphered_identity() -> No
             if column.name == "pseudonym" or not isinstance(column.type, Text | JSONB):
                 continue
             assert column.name in keys or column.name in checked, (table.name, column.name)
-    assert sorted(with_pseudonyms) == ["incident_recipient", "recipient", "recipient_revelation"]
+    assert sorted(with_pseudonyms) == [
+        "incident_recipient",
+        "recall_entry",
+        "recall_entry_answer",
+        "recipient",
+        "recipient_revelation",
+    ]

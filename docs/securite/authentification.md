@@ -106,6 +106,7 @@ La matrice est déclarée une seule fois, dans le code (`matrix.py`). La dépend
 | `GET /api/v1/incident-proposals/{proposal_id}` | oui | oui | oui | oui | oui | oui |  | Lire les incidents proposés : toute personne qui a un rôle. |
 | `POST /api/v1/incident-proposals/{proposal_id}/confirm` |  | oui |  | oui |  | oui |  | Confirmer un incident proposé : qui répond des données ou des incidents. |
 | `POST /api/v1/incident-proposals/{proposal_id}/dismiss` |  | oui |  | oui |  | oui |  | Écarter un incident proposé : qui répond des données ou des incidents. |
+| `GET /api/v1/incidents/{incident_id}/recall-list` | oui | oui | oui | oui | oui | oui |  | Lire les listes de rappel : toute personne qui a un rôle. |
 | `POST /api/v1/recipients/reveal` |  |  |  | oui |  |  |  | Révéler un destinataire, action tracée : qui instruit les incidents, pas l'administrateur qui exploite la plateforme. |
 | `GET /api/v1/recipients/revelations` |  |  |  |  | oui | oui |  | Le journal des révélations : l'audit et l'exploitation. |
 | `GET /api/v1/quarantine` | oui | oui | oui | oui | oui | oui | oui | Les périmètres en quarantaine : les proxys, et toute personne qui a un rôle. |

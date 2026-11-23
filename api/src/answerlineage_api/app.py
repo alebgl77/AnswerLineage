@@ -54,6 +54,7 @@ from answerlineage_api.lineage.routes import router as lineage_router
 from answerlineage_api.pseudonyms.models import revelation_request_json_schema
 from answerlineage_api.pseudonyms.routes import router as recipients_router
 from answerlineage_api.pseudonyms.vault import PseudonymVault, vault_from_settings
+from answerlineage_api.recall.routes import router as recall_router
 from answerlineage_api.responses import reject_invalid_request
 from answerlineage_api.store.engine import create_engine, database_url_from_environment
 
@@ -162,6 +163,7 @@ def create_app(
     app.include_router(coverage_router)
     app.include_router(lineage_router)
     app.include_router(incidents_router)
+    app.include_router(recall_router)
     app.include_router(recipients_router)
     app.include_router(health_router)
     app.include_router(authentication_router)
