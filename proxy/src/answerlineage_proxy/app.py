@@ -221,6 +221,8 @@ class ProxyStats:
     # pas pu être lues sans ambiguïté et qui pouvaient en cacher un.
     tagged_queries: int = 0
     untagged_queries: int = 0
+    # Transport HTTP : appels coupés à l'arrêt du proxy, au-delà du délai de grâce.
+    cut_at_shutdown: int = 0
 
 
 @dataclass
@@ -698,10 +700,19 @@ class McpProxy(CallCapture[ProxySettings]):
         self._owns_client = client is None
         self._prefix = settings.upstream.raw_path.rstrip(b"/")
         self._guard = settings.guard()
+        # Appels en cours : à l'arrêt, ceux que le serveur HTTP a coupés finissent de se
+        # décrire avant que la boîte d'envoi se vide.
+        self._calls: set[asyncio.Task[Any]] = set()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
-            await self._http(scope, receive, send)
+            call = asyncio.current_task()
+            if call is not None:
+                self._calls.add(call)
+            try:
+                await self._http(scope, receive, send)
+            finally:
+                self._calls.discard(call)
         elif scope["type"] == "lifespan":
             await self._lifespan(receive, send)
         elif scope["type"] == "websocket":
@@ -710,9 +721,14 @@ class McpProxy(CallCapture[ProxySettings]):
             await send({"type": "websocket.close", "code": 1003})
 
     async def aclose(self) -> None:
-        """Termine les analyses en cours, remet la dernière fenêtre de couverture, arrête le
+        """Attend que les appels coupés par l'arrêt du serveur HTTP aient émis leur événement,
+        termine les analyses en cours, remet la dernière fenêtre de couverture, arrête le
         processus d'analyse, vide la destination à remise différée dans son délai, puis ferme
         les connexions vers le serveur MCP."""
+        # Un appel coupé lève l'annulation, puis se décrit en quelques tours de boucle ; un
+        # appel que rien n'a coupé n'est pas attendu.
+        cut = [call for call in self._calls if call.cancelling()]
+        await asyncio.gather(*cut, return_exceptions=True)
         await super().aclose()
         if self._client is not None and self._owns_client:
             await self._client.aclose()
@@ -793,6 +809,10 @@ class McpProxy(CallCapture[ProxySettings]):
                     body, relayed = tagged
         try:
             await self._exchange(scope, relayed, body, stream, upload_done, receive, send, exchange)
+        except asyncio.CancelledError:
+            # Seul l'arrêt du serveur HTTP annule un appel : au-delà du délai de grâce.
+            self.stats.cut_at_shutdown += 1
+            raise
         finally:
             timing.finish()
             if inspection is not None and inspection.is_tool_call:

@@ -478,6 +478,47 @@ test = "proxy/tests/test_quarantine.py::test_a_known_perimeter_changes_nothing_o
 reason = "Le proxy n'authentifie pas encore l'API : il se fie au TLS de l'adresse que règle l'exploitant, et le périmètre n'agit encore sur aucun appel. Avant que le proxy annote ou bloque des lectures, la diffusion devra être authentifiée, par un périmètre signé ou l'identité vérifiée de l'API."
 consequence = "Qui compromet l'API, ou la joint en http sur un réseau qu'il écoute, fait croire aux proxys une quarantaine fausse ou en tait une vraie : aujourd'hui sans effet sur les appels ; le jour où le proxy agira, il annotera ou bloquera à tort, ou laissera passer des lectures en quarantaine."
 
+[[threat]]
+id = "proxy/port-d-administration"
+name = "Le port d'administration fait sortir l'état du proxy ou sert à le gêner"
+category = "information-disclosure"
+boundary = "agent-proxy-mcp"
+assets = ["contenus", "continuite-des-agents"]
+description = "Le port d'administration dit si le proxy est vivant et prêt. Joint d'une autre machine, ou par une page web ouverte sur le poste, par réassociation DNS ou par une balise, il livrerait l'état du proxy, et un contenu s'il en servait ; occupé, il ferait retirer le réplica de la rotation. Un processus du poste, qui peut déjà arrêter le proxy par un signal, n'est pas visé."
+
+[[threat.mitigation]]
+description = "Le port d'administration n'écoute que sur la boucle locale et contrôle Host, Origin et Sec-Fetch-Site comme le port des appels : une page d'un autre site ne le lit pas."
+code = "proxy/src/answerlineage_proxy/lifecycle.py::AdminApp"
+test = "proxy/tests/test_lifecycle.py::test_a_page_of_another_site_cannot_read_the_admin_port"
+
+[[threat.mitigation]]
+description = "Il ne répond qu'une liste fermée de réponses fixes, sans donnée d'appel ni compteur, et ne relaie rien au serveur MCP."
+code = "proxy/src/answerlineage_proxy/lifecycle.py::AdminApp"
+test = "proxy/tests/test_lifecycle.py::test_the_admin_port_answers_a_closed_list_and_nothing_else"
+
+[[threat]]
+id = "proxy/arret-sous-charge"
+name = "L'arrêt ou le redéploiement d'un proxy fait échouer des appels d'agents"
+category = "denial-of-service"
+boundary = "agent-proxy-mcp"
+assets = ["continuite-des-agents"]
+description = "Arrêté sous charge par un orchestrateur qui le redéploie ou réduit ses réplicas, un proxy qui fermerait son écoute avant que le répartiteur l'ait retiré, ou couperait ses appels en cours, ferait échouer des appels d'agents sans que le serveur MCP y soit pour rien."
+
+[[threat.mitigation]]
+description = "Au signal SIGTERM, le proxy se déclare non prêt et sert encore pendant le délai de retrait, puis laisse aux appels en cours le délai de grâce : deux réplicas sous charge derrière un répartiteur, l'un arrêté, aucun appel n'échoue."
+code = "proxy/src/answerlineage_proxy/lifecycle.py::Lifecycle"
+test = "proxy/tests/test_replicas.py::test_two_replicas_under_load_one_stopped_by_sigterm_no_call_fails"
+
+[[threat.mitigation]]
+description = "Un appel en cours quand l'écoute se ferme est rendu pendant le délai de grâce, et la boîte d'envoi ne se vide qu'ensuite."
+code = "proxy/src/answerlineage_proxy/lifecycle.py::Lifecycle"
+test = "proxy/tests/test_lifecycle.py::test_the_outbox_is_flushed_once_the_calls_in_flight_are_answered"
+
+[[threat.mitigation]]
+description = "Un appel plus long que le délai de grâce est coupé : sa réponse reste inachevée, le client sait qu'elle est tronquée, et son événement dit l'échec."
+code = "proxy/src/answerlineage_proxy/app.py::McpProxy"
+test = "proxy/tests/test_lifecycle.py::test_a_call_longer_than_the_grace_delay_is_cut_and_its_event_says_it_failed"
+
 # API
 
 [[threat]]

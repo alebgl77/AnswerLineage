@@ -696,7 +696,9 @@ def test_the_command_line_sends_through_the_outbox_when_an_api_is_set(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     served: dict[str, Any] = {}
-    monkeypatch.setattr("uvicorn.run", lambda app, **options: served.update(app=app))
+    monkeypatch.setattr(
+        "answerlineage_proxy.lifecycle.run", lambda app, settings: served.update(app=app) or 0
+    )
     caplog.set_level(logging.INFO)
     assert cli.main([*UPSTREAM, "--api-url", "http://127.0.0.1:8000"]) == 0
     assert isinstance(served["app"]._sink, Outbox)
@@ -716,7 +718,7 @@ def test_the_command_line_sends_through_the_outbox_when_an_api_is_set(
 def test_an_invalid_outbox_setting_stops_the_proxy(
     argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr("uvicorn.run", lambda app, **options: None)
+    monkeypatch.setattr("answerlineage_proxy.lifecycle.run", lambda app, settings: 0)
     assert cli.main([*UPSTREAM, *argv]) == 2
     assert "Configuration invalide" in capsys.readouterr().err
 

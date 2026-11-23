@@ -446,7 +446,7 @@ def test_an_invalid_window_stops_the_proxy_with_a_configuration_error(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr("uvicorn.run", lambda app, **options: None)
+    monkeypatch.setattr("answerlineage_proxy.lifecycle.run", lambda app, settings: 0)
     argv = ["--upstream", "http://127.0.0.1:9000"]
     if option is not None:
         argv += ["--coverage-window-seconds", option]
@@ -460,6 +460,8 @@ def test_the_proxy_started_from_the_command_line_uses_the_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     served: dict[str, Any] = {}
-    monkeypatch.setattr("uvicorn.run", lambda app, **options: served.update(app=app))
+    monkeypatch.setattr(
+        "answerlineage_proxy.lifecycle.run", lambda app, settings: served.update(app=app) or 0
+    )
     assert cli.main(["--upstream", "http://127.0.0.1:9000", "--coverage-window-seconds", "5"]) == 0
     assert served["app"].coverage.length == timedelta(seconds=5)

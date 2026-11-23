@@ -7,7 +7,7 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrep
 uv run answerlineage-proxy --server-name fichiers --api-url http://127.0.0.1:8000 -- /opt/mcp/serveur-fichiers --racine /srv/partage
 ```
 
-La première ligne écoute devant un serveur HTTP. La seconde lance un serveur local en stdio et se place entre lui et le client : voir [Mode stdio](#mode-stdio). Sauf mention contraire, ce qui suit décrit le mode HTTP ; le mode stdio en reprend l'inspection, l'analyse du SQL, l'étiquetage des requêtes, les règles de lecture, les empreintes, la qualité de service, les relevés de couverture, la boîte d'envoi et la synchronisation des périmètres en quarantaine.
+La première ligne écoute devant un serveur HTTP. La seconde lance un serveur local en stdio et se place entre lui et le client : voir [Mode stdio](#mode-stdio). En HTTP, le proxy peut tourner en plusieurs [réplicas](#plusieurs-réplicas). Sauf mention contraire, ce qui suit décrit le mode HTTP ; le mode stdio en reprend l'inspection, l'analyse du SQL, l'étiquetage des requêtes, les règles de lecture, les empreintes, la qualité de service, les relevés de couverture, la boîte d'envoi et la synchronisation des périmètres en quarantaine.
 
 | Réglage | Option | Variable | Défaut |
 | --- | --- | --- | --- |
@@ -34,6 +34,9 @@ La première ligne écoute devant un serveur HTTP. La seconde lance un serveur l
 | Octets gardés au plus dans la boîte d'envoi | `--outbox-max-bytes` | `ANSWERLINEAGE_PROXY_OUTBOX_MAX_BYTES` | 32 Mio (1 Mio à 1 Gio) |
 | Délai de vidage de la boîte d'envoi à l'arrêt | `--outbox-flush-seconds` | `ANSWERLINEAGE_PROXY_OUTBOX_FLUSH_SECONDS` | 5 s (0 à 300) |
 | Intervalle entre deux interrogations des [périmètres en quarantaine](#périmètres-en-quarantaine) | `--quarantine-interval-seconds` | `ANSWERLINEAGE_PROXY_QUARANTINE_INTERVAL_SECONDS` | 10 s (1 à 30) |
+| Port d'administration, sur la boucle locale : [sondes de santé](#sondes-de-santé) `/livez` et `/readyz` | `--admin-port` | `ANSWERLINEAGE_PROXY_ADMIN_PORT` | aucun : aucune sonde |
+| Délai de retrait : au signal SIGTERM, le proxy, non prêt, sert encore ([Arrêt gracieux](#arrêt-gracieux)) | `--shutdown-delay-seconds` | `ANSWERLINEAGE_PROXY_SHUTDOWN_DELAY_SECONDS` | 5 s (0 à 300) |
+| Délai de grâce : l'écoute fermée, temps laissé aux appels en cours, au-delà coupés | `--shutdown-grace-seconds` | `ANSWERLINEAGE_PROXY_SHUTDOWN_GRACE_SECONDS` | 15 s (0 à 3 600, en secondes entières) |
 
 L'adresse du serveur MCP ne porte ni identifiant ni paramètre : elle peut apparaître dans la configuration. Son hôte peut être une adresse IPv6, entre crochets (`http://[2001:db8::1]:9000`) ; une adresse IPv6 ne faisant pas un nom de serveur, `--server-name` est alors obligatoire. Un réglage invalide arrête le proxy avec le message « Configuration invalide : … » et le code de sortie 2.
 
@@ -72,6 +75,88 @@ uv run answerlineage-proxy --upstream http://mcp.interne:9000 --host 0.0.0.0 --a
 ```
 
 `--allow-host '*'` accepte tout hôte, toute origine et toute requête inter-sites : à réserver à un proxy placé derrière un autre contrôle. Les variables d'environnement prennent une liste séparée par des virgules.
+
+## Plusieurs réplicas
+
+Plusieurs réplicas du proxy, sans état, se placent derrière un répartiteur (un équilibreur de charge, un service Kubernetes) qui n'envoie les appels qu'aux réplicas prêts. Chacun dit sa santé sur un port d'administration, et s'arrête sans faire échouer d'appel.
+
+```bash
+uv run answerlineage-proxy --upstream http://10.0.4.12:9000 --server-name entrepot --host 0.0.0.0 --allow-host mcp.exemple.fr --admin-port 8718 --shutdown-delay-seconds 10
+```
+
+Chaque réplica tient sa boîte d'envoi, sa synchronisation des quarantaines et ses relevés de couverture, sous son propre identifiant d'instance, tiré au démarrage : les réplicas n'ont rien à s'accorder.
+
+### Sondes de santé
+
+Avec `--admin-port`, le proxy sert sa santé sur un second port, qui n'écoute que sur la boucle locale (`127.0.0.1`), jamais sur le port des appels, dont tout chemin appartient au serveur MCP relayé.
+
+| Route | Réponse |
+| --- | --- |
+| `GET /livez` | `200` `{"status":"alive"}` tant que le proxy tourne : la réponse vient de la boucle qui relaie les appels, et dit qu'elle tourne |
+| `GET /readyz` | `200` `{"status":"ready"}` quand le proxy accepte des appels ; sinon `503`, avec `starting` pendant le démarrage, `draining` dès que l'arrêt est demandé, `stopped` à la fin |
+
+`HEAD` y répond de même, sans corps. Les réponses sont fixes, d'une liste fermée : ni donnée d'appel, ni compteur, ni en-tête `Server` ou `Date`. Le port d'administration contrôle `Host`, `Origin` et `Sec-Fetch-Site` comme le port des appels, avec la seule boucle locale pour hôte attendu : une page web ouverte sur le poste ne le lit pas. Tout autre chemin reçoit `404`, toute autre méthode `405`. Il admet 8 connexions à la fois ; au-delà, le serveur HTTP répond `503` sans appeler l'application. Rien ne s'y relaie au serveur MCP, et il ne voit rien du trafic.
+
+Prêt ne dépend ni du serveur MCP ni de l'API d'AnswerLineage : un proxy dont le serveur est injoignable relaie le `502` comme le ferait un client seul, et une API en panne ne retient aucun appel ([Boîte d'envoi](#boîte-denvoi)). Retirer tous les réplicas de la rotation parce que le serveur ou l'API tombe fermerait la capture au lieu de la laisser ouverte.
+
+Une sonde `httpGet` de Kubernetes joint l'adresse du pod, pas sa boucle locale : la sonde s'exécute dans le conteneur, où Python est installé avec le proxy. `urlopen` lève une erreur sur un `503` : la commande échoue, et le réplica n'est pas prêt.
+
+```yaml
+readinessProbe:
+  exec:
+    command: ["python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8718/readyz', timeout=1)"]
+  periodSeconds: 2
+  failureThreshold: 1
+livenessProbe:
+  exec:
+    command: ["python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8718/livez', timeout=1)"]
+  periodSeconds: 10
+```
+
+### Arrêt gracieux
+
+Au signal SIGTERM, celui des orchestrateurs et de `docker stop` :
+
+1. le proxy se déclare non prêt : `/readyz` répond `503` `{"status":"draining"}` ;
+2. il sert encore pendant le **délai de retrait** (`--shutdown-delay-seconds`, 5 s par défaut), le temps que le répartiteur le voie et le retire de sa rotation : un appel qui arrive encore est relayé comme les autres ;
+3. il ferme son écoute et ses connexions inactives ;
+4. il laisse aux appels en cours le **délai de grâce** (`--shutdown-grace-seconds`, 15 s par défaut, en secondes entières) pour se terminer. Au-delà, ils sont coupés : leur réponse reste inachevée, le client sait qu'elle est tronquée, leur événement part en `FAIL`, issue `transport_error`, et ils se comptent dans `ProxyStats.cut_at_shutdown` ;
+5. il émet les événements des derniers appels, termine les analyses du SQL, remet la dernière fenêtre de couverture et vide sa [boîte d'envoi](#à-larrêt) dans sa propre borne (`--outbox-flush-seconds`, 5 s par défaut) ;
+6. il sort avec le code 0.
+
+SIGINT, celui d'un Ctrl-C au terminal, saute le délai de retrait ; un second signal, SIGTERM ou SIGINT, l'écourte. Un proxy qui ne démarre pas, son port déjà pris par exemple, sort avec le code 3. Le journal suit chaque étape, en nombres :
+
+```text
+INFO answerlineage_proxy Prêt : appels sur 0.0.0.0:8717, santé sur 127.0.0.1:8718 (/livez, /readyz).
+INFO answerlineage_proxy Arrêt demandé (SIGTERM) : non prêt ; le proxy sert encore 10 s, le temps d'être retiré de la rotation.
+INFO answerlineage_proxy Écoute fermée : 1 appel(s) en cours, 15 s au plus pour se terminer.
+WARNING answerlineage_proxy Arrêt : 1 appel(s) coupé(s) au-delà du délai de grâce.
+INFO answerlineage_proxy Arrêt terminé en 25.4 s.
+```
+
+Les délais se règlent ensemble :
+
+- **le délai de retrait** couvre le temps que met le répartiteur à retirer le réplica : la période de sa sonde multipliée par le nombre d'échecs qu'il attend, plus le temps de propager sa décision (dans Kubernetes, le retrait du pod des points de terminaison du service, qui suit sa suppression en quelques secondes). Trop court, des appels trouvent porte close ; trop long, l'arrêt dure ;
+- **le délai de grâce** couvre les appels les plus longs que sert le serveur MCP : un outil qui interroge un entrepôt pendant une minute en demande une ;
+- l'orchestrateur attend leur somme, plus le vidage de la boîte, avant de tuer le processus : `terminationGracePeriodSeconds` au moins égal dans Kubernetes, dont les 30 s par défaut tiennent les 25 s des réglages par défaut. `docker stop` n'attend que 10 s : `docker stop --time 30`.
+
+Rien de cela n'est sur le chemin d'un appel : le relais ne lit ni l'état ni les délais, et le port d'administration ne voit pas le trafic.
+
+### La fenêtre mesurée
+
+Un test (`proxy/tests/test_replicas.py`) lance deux réplicas par la ligne de commande, chacun dans son processus, devant le même serveur MCP de test, derrière un répartiteur écrit pour le test qui fait ce que fait un équilibreur : il sonde `/readyz` de chaque réplica toutes les 100 ms, retire de sa rotation celui qui ne se dit pas prêt, répartit les appels entre les autres et ne reprend jamais un appel en échec. Huit clients y font sans relâche des appels de 20 ms, un neuvième des appels de 2 s. SIGTERM arrête un réplica au moment où un appel long vient d'y commencer, avec un délai de retrait de 1 s et un délai de grâce de 5 s. Aucun appel n'échoue.
+
+Mesuré sur cinq passages, depuis l'envoi de SIGTERM, sur un poste de développement :
+
+| Moment | Mesuré | Ce qui le fixe |
+| --- | --- | --- |
+| Le répartiteur retire le réplica | 0,01 à 0,10 s | La période de sa sonde, 0,1 s |
+| Dernier appel envoyé au réplica | 0,01 à 0,10 s ; 2 à 15 appels reçus après SIGTERM, tous servis | Le même retrait |
+| L'écoute se ferme | 1,0 s | Le délai de retrait |
+| L'appel long est rendu | 2,0 s | Sa durée, sous le délai de grâce |
+| Le processus sort | 2,27 à 2,39 s | La fin du dernier appel, puis 0,3 s pour arrêter le serveur HTTP et vider la capture |
+
+Les appels arrivés après SIGTERM l'ont tous été pendant le délai de retrait, et y ont été servis : c'est lui qui évite qu'un appel trouve porte close entre le signal et le retrait.
 
 ## Ce qui est lu
 
@@ -371,7 +456,7 @@ Chaque perte d'un événement est dite au transport, qui la compte dans la [fen�
 
 À l'arrêt du proxy, la boîte se vide pendant 5 s au plus (`--outbox-flush-seconds`). Ce qui n'est pas parti est alors compté perdu, et la dernière part du délai, un cinquième, une seconde au plus, sert à remettre les relevés corrigés qui le disent, chacun une fois. Un lot interrompu à l'arrêt est compté perdu, même si l'API l'avait reçu : le trou est alors surestimé, jamais caché. Avec un délai nul, rien n'est envoyé à l'arrêt.
 
-En HTTP, l'arrêt est celui du serveur HTTP (SIGINT, SIGTERM). En stdio, il suit la fin du serveur MCP : le délai de vidage borne alors le temps que la sortie du proxy, et son code, peuvent suivre celle du serveur.
+En HTTP, la boîte se vide une fois les appels en cours rendus ou coupés, à la fin de l'[arrêt gracieux](#arrêt-gracieux). En stdio, elle se vide après la fin du serveur MCP : le délai de vidage borne alors le temps que la sortie du proxy, et son code, peuvent suivre celle du serveur.
 
 ### Compteurs
 
@@ -434,7 +519,7 @@ INFO answerlineage_proxy Quarantaine synchronisée : 1 périmètre(s) en quarant
 WARNING answerlineage_proxy Quarantaine : synchronisation en échec (HTTP 503) ; le dernier état connu est gardé (1 périmètre(s), synchronisé il y a 12 s), 1 h au plus.
 ```
 
-L'état ne passe pas par les relevés de couverture : ils mesurent ce que le lignage a capté, et leur format est un contrat de l'ingestion. Le proxy n'a pas non plus de route à lui : en HTTP, tout chemin appartient au serveur MCP qu'il relaie, et en stdio il n'écoute pas.
+L'état ne passe pas par les relevés de couverture : ils mesurent ce que le lignage a capté, et leur format est un contrat de l'ingestion. Le proxy n'a pas non plus de route à lui : en HTTP, tout chemin appartient au serveur MCP qu'il relaie, et en stdio il n'écoute pas. Son [port d'administration](#sondes-de-santé) ne dit que s'il est vivant et prêt.
 
 ## Identifiant de run et contexte de trace
 
@@ -768,7 +853,7 @@ Dans la configuration d'un client MCP, la commande devient `answerlineage-proxy`
 - Sa sortie d'erreur est celle du proxy : le proxy ne la lit pas et ne la recopie pas, ce sont les journaux du serveur. Le journal du proxy y passe aussi. Sur sa sortie standard, le proxy n'écrit que ce que l'enfant écrit.
 - Une commande qui ne démarre pas arrête le proxy avec un message fixe, qui ne cite ni la commande ni ses arguments : « Serveur MCP non lancé : commande introuvable. » (code 127) ou « Serveur MCP non lancé : commande non exécutable. » (code 126), comme un shell POSIX.
 - Sans `--server-name` ni `ANSWERLINEAGE_PROXY_SERVER_NAME`, le nom du serveur dans le lignage est celui du programme lancé, sans son chemin (`serveur-fichiers` pour `/opt/mcp/serveur-fichiers`). Un lanceur (`npx`, `uvx`, `docker`, `python`) n'est pas un nom de serveur : il confondrait tous les serveurs qu'il lance, d'où `--server-name`.
-- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-run-comment`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, `--instance-id`, l'adresse de l'API et les bornes de la [boîte d'envoi](#boîte-denvoi), l'intervalle des [périmètres en quarantaine](#périmètres-en-quarantaine), et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin` et `--no-preserve-host` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
+- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-run-comment`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, `--instance-id`, l'adresse de l'API et les bornes de la [boîte d'envoi](#boîte-denvoi), l'intervalle des [périmètres en quarantaine](#périmètres-en-quarantaine), et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin`, `--no-preserve-host`, `--admin-port`, `--shutdown-delay-seconds` et `--shutdown-grace-seconds` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
 
 ### Le relais
 
@@ -816,6 +901,7 @@ Le relais n'attend jamais l'inspection ni l'émission : il remet sa copie et con
 - **Fermetures.** Chaque fermeture passe de l'autre côté, comme si le client et le serveur se parlaient directement : le client ferme son entrée, l'enfant voit la fin de la sienne ; l'enfant ferme sa sortie, le client voit la fin de celle du proxy ; le client cesse de lire, l'enfant le voit à sa prochaine écriture ; l'enfant ferme son entrée, celle du proxy se ferme aussi. L'enfant arrêté, le proxy rend ce qu'il a écrit sans attendre ce qu'un descendant écrirait encore sur la même sortie.
 - **Pas d'orphelin.** Le proxy attend toujours son enfant ; interrompu par une erreur, il le tue avant de s'arrêter. L'enfant reste dans le groupe de processus du proxy : un client qui arrête ce groupe les arrête ensemble.
 - **Arrêt.** L'enfant arrêté, le proxy attend les analyses du SQL en cours, remet la dernière fenêtre de couverture, vide sa boîte d'envoi dans son délai (`--outbox-flush-seconds`, 5 s par défaut), puis s'arrête : ce délai borne le temps que sa sortie suit celle de l'enfant.
+- **Arrêt gracieux.** Il tient à l'enfant : SIGTERM lui est transmis, et c'est lui qui termine, ou non, les appels qu'il sert ; le proxy l'attend, rend leurs réponses, émet leurs événements, puis vide sa boîte d'envoi. Le reste de l'[arrêt gracieux](#arrêt-gracieux) du mode HTTP n'a pas d'objet : le proxy n'écoute pas, son seul client est celui qui l'a lancé, et aucun répartiteur ne le met en rotation. Il n'a donc ni sonde de santé, ni délai de retrait, ni délai de grâce, et un serveur qui ignore le signal garde le proxy en vie.
 
 ### Différences avec le mode HTTP
 
@@ -829,6 +915,8 @@ Le relais n'attend jamais l'inspection ni l'émission : il remet sa copie et con
 | Statut HTTP | `httpStatus`, issue `http_error` | Aucun |
 | Portée d'une reprise | Session MCP, puis trace, puis le proxy | Trace, puis le proxy, qui ne sert qu'un client |
 | Requête étiquetée, sur option | Le corps lu en entier, sa longueur mise à jour | La ligne rassemblée avant d'être écrite |
+| Sondes de santé | Port d'administration, sur option | Aucune |
+| Arrêt | Retrait, grâce, puis vidage de la boîte | Celui du serveur, puis vidage de la boîte |
 
 ## Ce qui n'est jamais conservé
 
@@ -863,6 +951,10 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - Le proxy ne pose lui-même aucun délai de lecture : seul le délai de connexion au serveur MCP (10 s) fait une issue `timeout`, sauf avec un client HTTP qui en a un autre.
 - Sans session MCP ni contexte de trace transmis par le client, la portée d'une reprise est le proxy entier : deux clients qui font le même appel, aux mêmes arguments, dans la minute qui suit un échec, sont comptés comme une reprise.
 - Le mode stdio est réservé aux systèmes POSIX (Linux, macOS).
+- Le port d'administration n'écoute que sur la boucle locale : une sonde `httpGet` de Kubernetes, qui joint l'adresse du pod, ne l'atteint pas, et la sonde s'exécute dans le conteneur. Un processus du même poste peut en occuper les 8 connexions : le réplica paraît alors non prêt.
+- La santé ne dit pas si le serveur MCP ou l'API d'AnswerLineage répondent : un réplica reste prêt quand ils tombent, pour que la capture reste ouverte.
+- Un appel plus long que le délai de grâce est coupé à l'arrêt. Son événement dit `transport_error` : la facette de qualité de service n'a pas d'issue propre à l'arrêt du proxy.
+- Le délai de retrait se règle à la main, d'après le répartiteur : le proxy ne sait pas quand celui-ci l'a retiré.
 - Tué par SIGKILL, le proxy ne peut rien transmettre à son enfant : celui-ci voit la fin de son entrée, sur laquelle un serveur MCP s'arrête, mais un serveur qui l'ignore lui survit. Arrêter le groupe de processus les arrête ensemble.
 - Un Ctrl-C au terminal atteint tout le groupe de processus : en stdio, l'enfant reçoit alors SIGINT deux fois, du terminal et du proxy.
 - En stdio, une réponse plus grande que la taille lue, dont l'identifiant suit le résultat au-delà des 16 premiers Ko, ne se rattache pas à son appel : l'appel n'a pas d'événement et compte comme perdu. De même, un appel d'outil plus grand que la taille lue dont l'identifiant suit les arguments n'est pas décrit. Relever `--max-inspected-bytes` en réduit le nombre.

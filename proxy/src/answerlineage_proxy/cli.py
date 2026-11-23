@@ -9,18 +9,20 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import timedelta
-from typing import Any, Final
 
-import uvicorn
-
+from answerlineage_proxy import lifecycle
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import (
+    ADMIN_HOST,
     DEFAULT_HOST,
     DEFAULT_MAX_INSPECTED_BYTES,
     DEFAULT_PORT,
+    DEFAULT_SHUTDOWN_DELAY,
+    DEFAULT_SHUTDOWN_GRACE,
     DEFAULT_SQL_BUDGET_MS,
     DEFAULT_SQL_CACHE_SIZE,
     DEFAULT_SQL_QUEUE_SIZE,
+    ENV_ADMIN_PORT,
     ENV_ALLOWED_HOSTS,
     ENV_ALLOWED_ORIGINS,
     ENV_FINGERPRINT_KEY,
@@ -30,6 +32,8 @@ from answerlineage_proxy.config import (
     ENV_PORT,
     ENV_READ_RULES_FILE,
     ENV_SERVER_NAME,
+    ENV_SHUTDOWN_DELAY,
+    ENV_SHUTDOWN_GRACE,
     ENV_SQL_BUDGET_MS,
     ENV_SQL_CACHE_SIZE,
     ENV_SQL_QUEUE_SIZE,
@@ -40,10 +44,13 @@ from answerlineage_proxy.config import (
     fingerprint_key,
     integer,
     listed,
+    optional_port,
     read_rules,
+    seconds,
 )
 from answerlineage_proxy.coverage import DEFAULT_WINDOW, MAX_WINDOW, MIN_WINDOW
 from answerlineage_proxy.guard import LOOPBACK_HOSTS
+from answerlineage_proxy.lifecycle import SERVER_OPTIONS as SERVER_OPTIONS
 from answerlineage_proxy.outbox import (
     DEFAULT_FLUSH_SECONDS,
     DEFAULT_MAX_BYTES,
@@ -69,16 +76,6 @@ ENV_OUTBOX_MAX_BYTES = "ANSWERLINEAGE_PROXY_OUTBOX_MAX_BYTES"
 ENV_OUTBOX_FLUSH_SECONDS = "ANSWERLINEAGE_PROXY_OUTBOX_FLUSH_SECONDS"
 # Synchronisation des périmètres en quarantaine, depuis la même API.
 ENV_QUARANTINE_INTERVAL = "ANSWERLINEAGE_PROXY_QUARANTINE_INTERVAL_SECONDS"
-
-# Réglages du serveur HTTP qui sert le proxy. Le journal d'accès contiendrait
-# chemins et paramètres de requête ; les en-têtes Server et Date du serveur MCP
-# sont relayés tels quels, le serveur HTTP n'en ajoute pas.
-SERVER_OPTIONS: Final[Mapping[str, Any]] = {
-    "access_log": False,
-    "server_header": False,
-    "date_header": False,
-    "log_level": "warning",
-}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -242,6 +239,33 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--admin-port",
+        type=int,
+        metavar="PORT",
+        help=(
+            f"port d'administration, sur {ADMIN_HOST} seulement, où se lisent la vie et la "
+            f"disponibilité du proxy (/livez, /readyz) ; aucun par défaut (ou {ENV_ADMIN_PORT})"
+        ),
+    )
+    parser.add_argument(
+        "--shutdown-delay-seconds",
+        type=float,
+        help=(
+            "délai de retrait : au signal SIGTERM, le proxy se déclare non prêt et sert encore "
+            "ce temps, pour qu'un répartiteur le retire de sa rotation, "
+            f"{DEFAULT_SHUTDOWN_DELAY:g} s par défaut (ou {ENV_SHUTDOWN_DELAY})"
+        ),
+    )
+    parser.add_argument(
+        "--shutdown-grace-seconds",
+        type=int,
+        help=(
+            "délai de grâce : une fois l'écoute fermée, temps laissé aux appels en cours pour "
+            f"se terminer, au-delà ils sont coupés, {DEFAULT_SHUTDOWN_GRACE} s par défaut "
+            f"(ou {ENV_SHUTDOWN_GRACE})"
+        ),
+    )
+    parser.add_argument(
         "--quarantine-interval-seconds",
         type=int,
         help=(
@@ -269,13 +293,6 @@ def coverage_window_from_args(
     return window
 
 
-def _seconds(environment: Mapping[str, str], name: str, default: float) -> float:
-    try:
-        return float(environment.get(name, default))
-    except ValueError as error:
-        raise ProxyConfigurationError(f"{name} doit être un nombre de secondes.") from error
-
-
 def outbox_settings_from_args(
     argv: Sequence[str] | None, environment: Mapping[str, str]
 ) -> OutboxSettings | None:
@@ -300,7 +317,7 @@ def outbox_settings_from_args(
         flush_seconds=(
             args.outbox_flush_seconds
             if args.outbox_flush_seconds is not None
-            else _seconds(environment, ENV_OUTBOX_FLUSH_SECONDS, DEFAULT_FLUSH_SECONDS)
+            else seconds(environment, ENV_OUTBOX_FLUSH_SECONDS, DEFAULT_FLUSH_SECONDS)
         ),
     )
 
@@ -386,6 +403,21 @@ def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str
         fingerprint_key=fingerprint_key(environment, args.fingerprint_key_file),
         read_rules=read_rules(environment, args.read_rules_file),
         instance_id=args.instance_id or environment.get(ENV_INSTANCE_ID) or None,
+        admin_port=(
+            args.admin_port
+            if args.admin_port is not None
+            else optional_port(environment, ENV_ADMIN_PORT)
+        ),
+        shutdown_delay=(
+            args.shutdown_delay_seconds
+            if args.shutdown_delay_seconds is not None
+            else seconds(environment, ENV_SHUTDOWN_DELAY, DEFAULT_SHUTDOWN_DELAY)
+        ),
+        shutdown_grace=(
+            args.shutdown_grace_seconds
+            if args.shutdown_grace_seconds is not None
+            else integer(environment, ENV_SHUTDOWN_GRACE, DEFAULT_SHUTDOWN_GRACE)
+        ),
     )
 
 
@@ -475,13 +507,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         quarantine=quarantine_sync(quarantine),
     )
     log_instance(proxy.instance)
-    uvicorn.run(
-        proxy,
-        host=settings.host,
-        port=settings.port,
-        **SERVER_OPTIONS,
-    )
-    return 0
+    return lifecycle.run(proxy, settings)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -32,6 +33,10 @@ ENV_FINGERPRINT_KEY_FILE = "ANSWERLINEAGE_PROXY_FINGERPRINT_KEY_FILE"
 ENV_READ_RULES_FILE = "ANSWERLINEAGE_PROXY_READ_RULES_FILE"
 # Identifiant d'instance des relevés de couverture.
 ENV_INSTANCE_ID = "ANSWERLINEAGE_PROXY_INSTANCE_ID"
+# Port d'administration (santé) et délais de l'arrêt gracieux.
+ENV_ADMIN_PORT = "ANSWERLINEAGE_PROXY_ADMIN_PORT"
+ENV_SHUTDOWN_DELAY = "ANSWERLINEAGE_PROXY_SHUTDOWN_DELAY_SECONDS"
+ENV_SHUTDOWN_GRACE = "ANSWERLINEAGE_PROXY_SHUTDOWN_GRACE_SECONDS"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8717
@@ -41,6 +46,18 @@ DEFAULT_MAX_INSPECTED_BYTES = 1024 * 1024
 DEFAULT_SQL_BUDGET_MS = 50
 DEFAULT_SQL_QUEUE_SIZE = 32
 DEFAULT_SQL_CACHE_SIZE = 1024
+# Le port d'administration n'écoute que sur la boucle locale.
+ADMIN_HOST = "127.0.0.1"
+# Arrêt gracieux, en secondes : le proxy, non prêt, sert encore pendant le délai de
+# retrait, puis laisse aux appels en cours le délai de grâce. Avec le vidage de la boîte
+# d'envoi (5 s par défaut), l'arrêt tient en 25 s, sous les 30 s qu'un orchestrateur
+# accorde d'ordinaire avant de tuer le processus.
+DEFAULT_SHUTDOWN_DELAY = 5.0
+DEFAULT_SHUTDOWN_GRACE = 15
+_SHUTDOWN_LIMITS = {
+    "shutdown_delay": (0, 300),
+    "shutdown_grace": (0, 3600),
+}
 # Bornes des réglages d'analyse : (minimum, maximum).
 _SQL_LIMITS = {
     "sql_budget_ms": (1, 60_000),
@@ -126,6 +143,25 @@ def _check_capture(settings: CaptureSettings) -> None:
             )
 
 
+def _check_lifecycle(settings: ProxySettings) -> None:
+    """Le port d'administration et les délais de l'arrêt gracieux."""
+    if settings.admin_port is not None:
+        if not 0 <= settings.admin_port <= 65535:
+            raise ProxyConfigurationError(
+                "Le port d'administration doit être compris entre 0 et 65535."
+            )
+        if settings.admin_port != 0 and settings.admin_port == settings.port:
+            raise ProxyConfigurationError(
+                "Le port d'administration doit différer du port des appels."
+            )
+    for name, (minimum, maximum) in _SHUTDOWN_LIMITS.items():
+        value = getattr(settings, name)
+        if not (math.isfinite(value) and minimum <= value <= maximum):
+            raise ProxyConfigurationError(
+                f"{name} doit être compris entre {minimum} et {maximum} secondes."
+            )
+
+
 def instance(value: str | None) -> str | None:
     """L'identifiant d'instance sous sa forme normalisée NFC ; ``None`` sans réglage."""
     return None if value is None else normalize_name(value)
@@ -196,6 +232,20 @@ def integer(environment: Mapping[str, str], name: str, default: int) -> int:
         return int(environment.get(name, default))
     except ValueError as error:
         raise ProxyConfigurationError(f"{name} doit être un entier.") from error
+
+
+def seconds(environment: Mapping[str, str], name: str, default: float) -> float:
+    """Lit une durée en secondes dans une variable d'environnement, ``default`` sans elle."""
+    try:
+        return float(environment.get(name, default))
+    except ValueError as error:
+        raise ProxyConfigurationError(f"{name} doit être un nombre de secondes.") from error
+
+
+def optional_port(environment: Mapping[str, str], name: str) -> int | None:
+    """Lit un port dans une variable d'environnement ; ``None`` sans elle."""
+    value = environment.get(name)
+    return None if not value else integer(environment, name, 0)
 
 
 @dataclass(frozen=True)
@@ -272,6 +322,13 @@ class ProxySettings:
     # Identifiant d'instance des relevés de couverture, sous sa forme NFC. Sans lui, le
     # proxy en tire un au démarrage.
     instance_id: str | None = None
+    # Port d'administration, sur la boucle locale : la santé du proxy (vivant, prêt). Sans
+    # lui, aucune sonde n'est servie ; 0 en tire un.
+    admin_port: int | None = None
+    # Arrêt gracieux, en secondes : délai de retrait, pendant lequel le proxy, non prêt,
+    # sert encore ; délai de grâce, laissé aux appels en cours une fois l'écoute fermée.
+    shutdown_delay: float = DEFAULT_SHUTDOWN_DELAY
+    shutdown_grace: int = DEFAULT_SHUTDOWN_GRACE
 
     def __post_init__(self) -> None:
         if self.upstream.scheme not in ("http", "https") or not self.upstream.host:
@@ -292,6 +349,7 @@ class ProxySettings:
         )
         if not 0 <= self.port <= 65535:
             raise ProxyConfigurationError("Le port doit être compris entre 0 et 65535.")
+        _check_lifecycle(self)
         _check_capture(self)
         try:
             RequestGuard.create([self.upstream_host])
@@ -339,6 +397,9 @@ class ProxySettings:
         fingerprint_key: FingerprintKey | None = None,
         read_rules: Sequence[ReadRule] = (),
         instance_id: str | None = None,
+        admin_port: int | None = None,
+        shutdown_delay: float = DEFAULT_SHUTDOWN_DELAY,
+        shutdown_grace: int = DEFAULT_SHUTDOWN_GRACE,
     ) -> ProxySettings:
         try:
             url = httpx.URL(upstream)
@@ -361,6 +422,9 @@ class ProxySettings:
             fingerprint_key=fingerprint_key,
             read_rules=rules_for(tuple(read_rules), name),
             instance_id=instance(instance_id),
+            admin_port=admin_port,
+            shutdown_delay=shutdown_delay,
+            shutdown_grace=shutdown_grace,
         )
 
     @classmethod
@@ -387,6 +451,9 @@ class ProxySettings:
             fingerprint_key=fingerprint_key(environment),
             read_rules=read_rules(environment),
             instance_id=environment.get(ENV_INSTANCE_ID) or None,
+            admin_port=optional_port(environment, ENV_ADMIN_PORT),
+            shutdown_delay=seconds(environment, ENV_SHUTDOWN_DELAY, DEFAULT_SHUTDOWN_DELAY),
+            shutdown_grace=integer(environment, ENV_SHUTDOWN_GRACE, DEFAULT_SHUTDOWN_GRACE),
         )
 
 

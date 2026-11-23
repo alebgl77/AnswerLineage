@@ -15,6 +15,7 @@ from answerlineage_proxy.app import McpProxy, end_to_end_headers, quiet_transpor
 from answerlineage_proxy.config import DEFAULT_PORT, ProxyConfigurationError, ProxySettings
 from answerlineage_proxy.events import RUN_EVENT_SCHEMA, UNRESOLVED_TOOL, build_tool_call_event
 from answerlineage_proxy.inspection import Inspection
+from answerlineage_proxy.lifecycle import Lifecycle
 from answerlineage_proxy.sink import MemorySink
 from answerlineage_proxy.tracecontext import CallTrace, TraceContext, TraceOrigin
 
@@ -236,23 +237,100 @@ def test_command_line_overrides_the_environment() -> None:
         cli.settings_from_args(["--upstream", "http://h"], {"ANSWERLINEAGE_PROXY_PORT": "x"})
 
 
+def test_lifecycle_settings_come_from_the_command_line_then_the_environment() -> None:
+    defaults = cli.settings_from_args(["--upstream", "http://h"], {})
+    assert (defaults.admin_port, defaults.shutdown_delay, defaults.shutdown_grace) == (
+        None,
+        5.0,
+        15.0,
+    )
+    environment = {
+        "ANSWERLINEAGE_PROXY_UPSTREAM": "http://h",
+        "ANSWERLINEAGE_PROXY_ADMIN_PORT": "8718",
+        "ANSWERLINEAGE_PROXY_SHUTDOWN_DELAY_SECONDS": "2.5",
+        "ANSWERLINEAGE_PROXY_SHUTDOWN_GRACE_SECONDS": "30",
+    }
+    from_options = cli.settings_from_args([], environment)
+    for settings in (from_options, ProxySettings.from_environment(environment)):
+        assert (settings.admin_port, settings.shutdown_delay, settings.shutdown_grace) == (
+            8718,
+            2.5,
+            30.0,
+        )
+    options = [
+        "--admin-port",
+        "0",
+        "--shutdown-delay-seconds",
+        "0",
+        "--shutdown-grace-seconds",
+        "1",
+    ]
+    overridden = cli.settings_from_args(options, environment)
+    assert (overridden.admin_port, overridden.shutdown_delay, overridden.shutdown_grace) == (
+        0,
+        0.0,
+        1,
+    )
+
+
+@pytest.mark.parametrize(
+    ("options", "environment", "message"),
+    [
+        (["--admin-port", "70000"], {}, "Le port d'administration doit être compris"),
+        (["--admin-port", "-1"], {}, "Le port d'administration doit être compris"),
+        (["--admin-port", str(DEFAULT_PORT)], {}, "doit différer du port des appels"),
+        (["--port", "9000", "--admin-port", "9000"], {}, "doit différer du port des appels"),
+        (["--shutdown-delay-seconds", "-1"], {}, "shutdown_delay doit être compris entre 0 et 300"),
+        (["--shutdown-delay-seconds", "301"], {}, "shutdown_delay"),
+        (["--shutdown-grace-seconds", "3601"], {}, "shutdown_grace"),
+        (["--shutdown-delay-seconds", "nan"], {}, "shutdown_delay"),
+        (["--shutdown-delay-seconds", "inf"], {}, "shutdown_delay"),
+        ([], {"ANSWERLINEAGE_PROXY_ADMIN_PORT": "x"}, "ANSWERLINEAGE_PROXY_ADMIN_PORT doit être"),
+        (
+            [],
+            {"ANSWERLINEAGE_PROXY_SHUTDOWN_DELAY_SECONDS": "bientôt"},
+            "ANSWERLINEAGE_PROXY_SHUTDOWN_DELAY_SECONDS doit être un nombre de secondes",
+        ),
+    ],
+)
+def test_an_invalid_lifecycle_setting_is_refused(
+    options: list[str], environment: dict[str, str], message: str
+) -> None:
+    with pytest.raises(ProxyConfigurationError, match=message):
+        cli.settings_from_args(["--upstream", "http://h", *options], environment)
+
+
+def test_both_ports_may_be_drawn_at_random() -> None:
+    settings = ProxySettings.create("http://h", port=0, admin_port=0)
+    assert (settings.port, settings.admin_port) == (0, 0)
+
+
+def served_by_main(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Ce que la ligne de commande remet au cycle de vie, sans rien servir."""
+    served: dict[str, Any] = {}
+
+    def fake_run(app: McpProxy, settings: ProxySettings) -> int:
+        served.update(app=app, settings=settings)
+        return 0
+
+    monkeypatch.setattr("answerlineage_proxy.lifecycle.run", fake_run)
+    return served
+
+
 def test_main_serves_without_access_log_and_without_added_headers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    served: dict[str, Any] = {}
-
-    def fake_run(app: object, **options: object) -> None:
-        served["app"] = app
-        served.update(options)
-
-    monkeypatch.setattr("uvicorn.run", fake_run)
+    served = served_by_main(monkeypatch)
     monkeypatch.delenv("ANSWERLINEAGE_PROXY_UPSTREAM", raising=False)
     assert cli.main(["--upstream", "http://127.0.0.1:9000", "--port", "9003"]) == 0
     assert isinstance(served["app"], McpProxy)
-    assert (served["host"], served["port"]) == ("127.0.0.1", 9003)
-    assert served["access_log"] is False
-    assert served["server_header"] is False
-    assert served["date_header"] is False
+    config = Lifecycle(served["app"], served["settings"]).config()
+    assert (config.host, config.port) == ("127.0.0.1", 9003)
+    assert config.access_log is False
+    assert config.server_header is False
+    assert config.date_header is False
+    # À l'arrêt, les appels en cours ont le délai de grâce pour se terminer.
+    assert config.timeout_graceful_shutdown == 15
 
 
 def test_main_reports_an_invalid_configuration(
@@ -267,7 +345,7 @@ def test_main_reports_an_invalid_configuration(
 def test_main_reports_an_mcp_server_that_host_cannot_name(
     upstream: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr("uvicorn.run", lambda app, **options: None)
+    served_by_main(monkeypatch)
     assert cli.main(["--upstream", upstream, "--server-name", "meteo"]) == 2
     error = capsys.readouterr().err
     assert error.startswith("Configuration invalide : L'hôte du serveur MCP")
@@ -277,8 +355,7 @@ def test_main_reports_an_mcp_server_that_host_cannot_name(
 def test_main_serves_an_ipv6_mcp_server(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    served: dict[str, Any] = {}
-    monkeypatch.setattr("uvicorn.run", lambda app, **options: served.update(app=app))
+    served = served_by_main(monkeypatch)
     assert cli.main(["--upstream", "http://[::1]:9000", "--server-name", "meteo"]) == 0
     assert isinstance(served["app"], McpProxy)
     # Une adresse IPv6 ne fait pas un nom de serveur : le message dit comment en donner un.

@@ -16,9 +16,8 @@ from typing import Any
 
 import httpx
 import pytest
-import uvicorn
 
-from answerlineage_proxy import cli
+from answerlineage_proxy import cli, lifecycle
 from answerlineage_proxy.config import ProxyConfigurationError, ProxySettings
 from answerlineage_proxy.fingerprint import (
     ARGUMENTS_LABEL,
@@ -274,7 +273,7 @@ def test_an_invalid_key_stops_the_proxy_without_being_quoted(
         arguments += ["--fingerprint-key-file", str(key_file)]
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr(uvicorn, "run", _never_started)
+    monkeypatch.setattr(lifecycle, "run", _never_started)
 
     assert cli.main(arguments) == 2
     printed = capsys.readouterr()
@@ -299,7 +298,7 @@ def test_the_proxy_says_once_at_startup_that_it_has_no_key(
 ) -> None:
     monkeypatch.delenv("ANSWERLINEAGE_PROXY_FINGERPRINT_KEY", raising=False)
     monkeypatch.delenv("ANSWERLINEAGE_PROXY_FINGERPRINT_KEY_FILE", raising=False)
-    monkeypatch.setattr(uvicorn, "run", lambda *args, **options: None)
+    monkeypatch.setattr(lifecycle, "run", lambda app, settings: 0)
     with caplog.at_level(logging.INFO):
         assert cli.main(["--upstream", UPSTREAM]) == 0
     assert caplog.text.count("Aucune clé d'empreinte") == 1
@@ -319,8 +318,13 @@ async def test_the_key_appears_nowhere(
 ) -> None:
     """Ni journal, ni événement, ni représentation des réglages, ni compteurs."""
     started: list[Any] = []
+
+    def run(app: Any, settings: Any) -> int:
+        started.append(app)
+        return 0
+
     monkeypatch.setenv("ANSWERLINEAGE_PROXY_FINGERPRINT_KEY", CANARY_KEY)
-    monkeypatch.setattr(uvicorn, "run", lambda app, **options: started.append(app))
+    monkeypatch.setattr(lifecycle, "run", run)
     with caplog.at_level(logging.DEBUG):
         assert cli.main(["--upstream", UPSTREAM]) == 0
         (proxy,) = started

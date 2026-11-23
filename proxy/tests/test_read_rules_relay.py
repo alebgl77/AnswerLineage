@@ -208,7 +208,9 @@ def test_an_invalid_rule_stops_the_proxy_without_echoing_the_file(
         f"version: 1\nrules:\n  - tool: t\n    datasets: [{{namespace: a, name: '{CANARY} x'}}]\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr("uvicorn.run", lambda app, **options: pytest.fail("démarré"))
+    monkeypatch.setattr(
+        "answerlineage_proxy.lifecycle.run", lambda app, settings: pytest.fail("démarré")
+    )
     with pytest.raises(ProxyConfigurationError, match="Règles de lecture invalides : règle 1"):
         cli.settings_from_args(["--upstream", "http://h", "--read-rules-file", str(path)], {})
     assert cli.main(["--upstream", "http://h", "--read-rules-file", str(path)]) == 2
@@ -223,7 +225,9 @@ def test_the_proxy_says_at_start_which_rules_it_ignores_for_a_sql_tool(
     rules_file: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     served: dict[str, Any] = {}
-    monkeypatch.setattr("uvicorn.run", lambda app, **options: served.update(app=app))
+    monkeypatch.setattr(
+        "answerlineage_proxy.lifecycle.run", lambda app, settings: served.update(app=app) or 0
+    )
     arguments = [
         "--upstream",
         "http://127.0.0.1:9000",

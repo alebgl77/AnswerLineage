@@ -500,7 +500,9 @@ def test_the_command_line_gives_the_proxy_its_sync_or_refuses_a_wrong_interval(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     served: dict[str, Any] = {}
-    monkeypatch.setattr("uvicorn.run", lambda app, **options: served.update(app=app))
+    monkeypatch.setattr(
+        "answerlineage_proxy.lifecycle.run", lambda app, settings: served.update(app=app) or 0
+    )
     assert cli.main([*UPSTREAM, "--api-url", API]) == 0
     synchronized: McpProxy = served.pop("app")
     assert isinstance(synchronized.quarantine, QuarantineSync)
