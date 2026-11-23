@@ -449,6 +449,26 @@ def test_a_published_file_of_the_webhook_format_never_changes(
     assert f"spec/webhooks/v1/{name} : publié et retiré" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("name", ["vectors.json", "README.md"])
+def test_a_published_file_of_the_quarantine_signature_never_changes(
+    tmp_path: Path, published: dict[str, str], capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    """Un proxy écrit contre une version de la signature des périmètres la garde."""
+    path = tmp_path / "spec" / "quarantine" / "v1" / name
+    path.parent.mkdir(parents=True)
+    path.write_text('{"tolerance_seconds": 300}\n', "utf-8")
+    base = commit(tmp_path, "quarantaine")
+    assert main({"BASE_SHA": base}) == 0
+
+    path.write_text('{"tolerance_seconds": 600}\n', "utf-8")
+    assert main({"BASE_SHA": base}) == 1
+    assert f"spec/quarantine/v1/{name} : publié et modifié" in capsys.readouterr().out
+
+    path.unlink()
+    assert main({"BASE_SHA": base}) == 1
+    assert f"spec/quarantine/v1/{name} : publié et retiré" in capsys.readouterr().out
+
+
 def test_the_repository_facets_respect_the_layout_and_chain_without_a_break() -> None:
     root = Path(__file__).resolve().parents[1] / "spec" / "facets"
     assert any(root.glob("*/*.json"))

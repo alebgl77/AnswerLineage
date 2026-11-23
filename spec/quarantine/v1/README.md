@@ -9,3 +9,5 @@ L'API signe et date chaque réponse de `GET /api/v1/quarantine`, `200` comme `30
 Le message signé commence par l'étiquette `answerlineage/quarantine/v1` et un octet nul : une signature d'un autre domaine, celle d'un webhook par exemple, ne vaut jamais pour une diffusion. La charge d'un `200` est son corps, octet pour octet ; celle d'un `304`, qui n'a pas de corps, est la version que le proxy tient : un `304` ne vaut que pour cette version et que pendant la tolérance.
 
 La signature est écrite deux fois, sans que l'un dépende de l'autre : par l'API, qui signe ([`signature.py`](../../../api/src/answerlineage_api/incidents/signature.py)), et par le proxy, qui vérifie ([`quarantine_signature.py`](../../../proxy/src/answerlineage_proxy/quarantine_signature.py)). Les vecteurs ont été calculés sans l'une ni l'autre, en bibliothèque standard ; un test les recalcule de même, et juge les deux écritures dessus.
+
+Une fois publiés sur la branche principale, ces fichiers ne changent plus : `make contract` refuse qu'ils changent ou disparaissent. Une évolution du format sera une nouvelle version, dans un autre dossier, avec sa propre étiquette.

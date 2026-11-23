@@ -17,11 +17,13 @@ continuer de fonctionner : ce contrôle échoue dès que
 Ajouter un champ facultatif est compatible. Le contrôle compare les champs, leur
 caractère obligatoire et leur type, pas les bornes ni les valeurs admises.
 
-Les fichiers de l'extension A2A (``spec/a2a/<version>/``) et ceux du format des
+Les fichiers de l'extension A2A (``spec/a2a/<version>/``), ceux du format des
 webhooks (``spec/webhooks/<version>/`` : schéma du message et vecteurs de la
-signature) sont figés de même, tous, schémas et texte : un fichier publié ne
-change ni ne disparaît. Ils n'ont pas d'autre règle : leur version est dans
-leur dossier, et une évolution est une nouvelle version, dans un nouveau dossier.
+signature) et les vecteurs de la signature des périmètres en quarantaine
+(``spec/quarantine/<version>/``) sont figés de même, tous, schémas et texte :
+un fichier publié ne change ni ne disparaît. Ils n'ont pas d'autre règle : leur
+version est dans leur dossier, et une évolution est une nouvelle version, dans
+un nouveau dossier.
 
 Usage : ``python -m scripts.check_facets_compat`` (``BASE_SHA`` désigne la
 branche cible ; à défaut, ``origin/main``).
@@ -41,7 +43,7 @@ from typing import Any
 
 FACETS = Path("spec/facets")
 # Dossiers figés : chaque fichier publié y est immuable, sans autre règle de rangement.
-FROZEN = (Path("spec/a2a"), Path("spec/webhooks"))
+FROZEN = (Path("spec/a2a"), Path("spec/quarantine"), Path("spec/webhooks"))
 BASE_URL = "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/"
 JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 OPENLINEAGE_DEFINITIONS = "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/"
