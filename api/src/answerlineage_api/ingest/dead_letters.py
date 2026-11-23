@@ -21,8 +21,8 @@ Deux routes :
   ne change pas le graphe d'un événement déjà intégré : la projection est
   idempotente.
 
-Ces routes n'authentifient pas encore leurs appelants : comme le reste de
-l'API, elles sont faites pour la boucle locale ou un accès déjà contrôlé.
+Comme toute route de l'API, chacune exige un jeton OIDC et un rôle que la
+matrice des droits lui accorde (``auth/matrix.py``).
 """
 
 from __future__ import annotations

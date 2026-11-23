@@ -17,8 +17,8 @@ active par ``GET /api/v1/quarantine``, sous un ETag qui leur évite de
 retélécharger une liste qui n'a pas changé ; avec un secret partagé avec eux,
 chaque réponse, ``200`` comme ``304``, est signée et datée (``signature.py``).
 
-Ces routes n'authentifient pas encore leurs appelants : comme le reste de
-l'API, elles sont faites pour la boucle locale ou un accès déjà contrôlé.
+Comme toute route de l'API, chacune exige un jeton OIDC et un rôle que la
+matrice des droits lui accorde (``auth/matrix.py``).
 """
 
 from __future__ import annotations
