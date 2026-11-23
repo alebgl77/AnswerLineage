@@ -14,7 +14,8 @@ un ``DELETE`` : la quarantaine levée reste, pour l'histoire de l'incident, et
 une levée pourra porter un corps (son motif, d'une liste fermée), ce que
 ``DELETE`` ne promet pas. Les proxys lisent les périmètres en quarantaine
 active par ``GET /api/v1/quarantine``, sous un ETag qui leur évite de
-retélécharger une liste qui n'a pas changé.
+retélécharger une liste qui n'a pas changé ; avec un secret partagé avec eux,
+chaque réponse, ``200`` comme ``304``, est signée et datée (``signature.py``).
 
 Ces routes n'authentifient pas encore leurs appelants : comme le reste de
 l'API, elles sont faites pour la boucle locale ou un accès déjà contrôlé.
@@ -29,7 +30,7 @@ from fastapi import APIRouter, Header, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from answerlineage_api.incidents import proposals, quarantine, store
+from answerlineage_api.incidents import proposals, quarantine, signature, store
 from answerlineage_api.incidents.models import (
     MAX_CONFIRMATION_BYTES,
     MAX_DECLARATION_BYTES,
@@ -442,15 +443,32 @@ IfNoneMatch = Annotated[
 ]
 
 
+def _signed(charge: str) -> dict[str, dict[str, Any]]:
+    """L'en-tête de signature d'une réponse de la diffusion, documenté avec sa charge."""
+    return {
+        signature.HEADER: {
+            "description": (
+                "Avec un secret partagé avec les proxys : t=<heure de signature>,v1=<signature>,"
+                " une signature v1 par secret pendant une rotation. HMAC-SHA-256, en hexadécimal,"
+                " de « answerlineage/quarantine/v1 », d'un octet nul, de t, d'un point, puis de"
+                f" {charge} (spec/quarantine/v1). Absent sans secret."
+            ),
+            "schema": {"type": "string"},
+        }
+    }
+
+
 @router.get(
     "/quarantine",
     response_model=ActiveQuarantines,
     summary="Donne les périmètres en quarantaine active, tels que les proxys les reçoivent",
     responses={
+        200: {"headers": _signed("son corps, tel qu'il part")},
         304: {
             "description": (
                 "La version donnée dans If-None-Match est la version courante : rien n'a changé."
-            )
+            ),
+            "headers": _signed("la version courante, celle donnée dans If-None-Match"),
         },
         **TIMED_OUT,
     },
@@ -458,12 +476,21 @@ IfNoneMatch = Annotated[
 async def active_quarantines(request: Request, if_none_match: IfNoneMatch = None) -> Response:
     """Chaque quarantaine active, avec son mode et le périmètre de son incident, et la version
     de la liste, qui est aussi l'ETag de la réponse. Une lecture bornée : l'activation tient
-    les quarantaines actives sous leur borne."""
+    les quarantaines actives sous leur borne. Avec un secret, chaque réponse est signée et
+    datée : un proxy qui le connaît n'adopte qu'une diffusion de l'API, et récente."""
+    signing: signature.QuarantineSigning | None = request.app.state.quarantine_signing
     async with reading(request) as reader:
         diffusion = await quarantine.active_quarantines(reader)
     headers = {"etag": diffusion.etag, "cache-control": "no-cache"}
     if diffusion.matches(if_none_match):
+        if signing is not None:
+            # Un 304 n'a pas de corps : la charge est la version, que le proxy tient déjà.
+            headers[signature.HEADER] = signing.header(diffusion.quarantines.version.encode())
         return Response(status_code=304, headers=headers)
-    return JSONResponse(
+    response = JSONResponse(
         status_code=200, content=diffusion.quarantines.model_dump(mode="json"), headers=headers
     )
+    if signing is not None:
+        # La charge est le corps tel qu'il part, octet pour octet.
+        response.headers[signature.HEADER] = signing.header(bytes(response.body))
+    return response

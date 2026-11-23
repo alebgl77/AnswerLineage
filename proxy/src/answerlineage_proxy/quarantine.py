@@ -6,6 +6,14 @@ connaît déjà pour sa boîte d'envoi (``GET /api/v1/quarantine``), à interval
 réglable : 10 s par défaut, 30 s au plus. Il ne fait encore rien des lectures
 de ce périmètre : il le connaît, et le dit.
 
+Avec le secret qu'il partage avec l'API, le proxy n'accorde foi qu'à une
+diffusion signée et datée par elle (``quarantine_signature.py``) : chaque
+réponse, ``200`` comme ``304``, est vérifiée avant que son contenu soit lu, et
+une réponse non signée, mal signée, trop ancienne ou venue du futur est écartée
+comme une réponse hostile. Seul un proxy qui vérifie la diffusion pourra agir
+sur les lectures du périmètre (``annotating``) ; sans secret, il l'apprend sans
+la vérifier, et ne sera jamais autorisé à annoter.
+
 Les invariants de la capture tiennent :
 
 - **rien n'attend la synchronisation.** Elle tourne dans une tâche de fond,
@@ -36,9 +44,9 @@ livre les périmètres qu'à un appelant authentifié. Sans jeton disponible,
 l'interrogation échoue comme une API en panne, et le dernier état connu est
 gardé ; un refus ``401`` fait oublier le jeton.
 
-Le proxy n'authentifie pas encore l'API : il ne fait encore rien des lectures
-du périmètre, et un faux périmètre est sans effet ; le modèle de menaces dit ce
-qu'il faudra le jour où le proxy agira.
+Le modèle de menaces (``proxy/perimetre-usurpe``) dit ce que la signature ne
+couvre pas : le secret est symétrique, une API compromise signe ce qu'elle
+pousse, et qui bloque le chemin fait garder le dernier état valide une heure.
 """
 
 from __future__ import annotations
@@ -49,7 +57,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from random import Random
 from typing import Any, Final, Literal
@@ -63,6 +71,14 @@ from answerlineage_proxy.names import (
     NAMESPACE_MAX,
     name_fault,
     normalize_name,
+)
+from answerlineage_proxy.quarantine_signature import (
+    ENV_SECRET,
+    HEADER,
+    MALFORMED,
+    SignatureRefusedError,
+    checked_secret,
+    verify,
 )
 
 logger = logging.getLogger("answerlineage_proxy")
@@ -112,14 +128,19 @@ class ResponseRefusedError(Exception):
 
 @dataclass(frozen=True)
 class QuarantineSettings:
-    """L'adresse des périmètres en quarantaine et l'intervalle de leur interrogation."""
+    """L'adresse des périmètres en quarantaine, l'intervalle de leur interrogation, et le secret
+    qui vérifie leur diffusion."""
 
     url: httpx.URL
     # Secondes entre deux interrogations.
     interval: float = DEFAULT_INTERVAL
+    # Le secret partagé avec l'API ; sans lui, la diffusion n'est pas vérifiée. Jamais affiché.
+    secret: str | None = field(default=None, repr=False)
 
     @classmethod
-    def create(cls, api_url: httpx.URL, interval: int = DEFAULT_INTERVAL) -> QuarantineSettings:
+    def create(
+        cls, api_url: httpx.URL, interval: int = DEFAULT_INTERVAL, *, secret: str | None = None
+    ) -> QuarantineSettings:
         """L'adresse vient de celle de l'API, déjà contrôlée pour la boîte d'envoi."""
         minimum, maximum = INTERVAL_LIMITS
         if not minimum <= interval <= maximum:
@@ -127,7 +148,8 @@ class QuarantineSettings:
                 f"L'intervalle de synchronisation des quarantaines va de {minimum} à {maximum}"
                 " secondes."
             )
-        return cls(api_url.copy_with(raw_path=api_url.raw_path.rstrip(b"/") + _PATH), interval)
+        url = api_url.copy_with(raw_path=api_url.raw_path.rstrip(b"/") + _PATH)
+        return cls(url, interval, None if secret is None else checked_secret(secret))
 
 
 @dataclass(frozen=True)
@@ -167,6 +189,9 @@ class QuarantineStatus:
     last_sync_age: float | None
     # Vrai tant que les interrogations échouent, depuis la dernière réussie.
     failing: bool
+    # Vrai quand le périmètre connu vient d'une diffusion vérifiée par sa signature : seul
+    # un tel périmètre pourra agir sur les lectures. Jamais vrai sans secret.
+    annotating: bool = False
 
 
 def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -276,6 +301,8 @@ class _Reply:
     encoded: bool
     # Le corps lu, ou ``None`` au-delà de la taille lue.
     body: bytes | None
+    # Chaque valeur reçue de l'en-tête de signature : une au plus est admise.
+    signatures: tuple[str, ...] = ()
 
 
 class QuarantineSync:
@@ -289,12 +316,15 @@ class QuarantineSync:
         request_timeout: float = REQUEST_TIMEOUT,
         stale_after: timedelta = STALE_AFTER,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
         random: Random | None = None,
         tokens: Tokens | None = None,
     ) -> None:
         _quiet_client_logs()
         self.settings = settings
         self._tokens = tokens
+        # L'heure du proxy, en secondes depuis 1970 : celle qui juge l'heure d'une signature.
+        self._wall_clock = wall_clock
         self._client = client
         self._owns_client = client is None
         self._request_timeout = request_timeout
@@ -308,6 +338,12 @@ class QuarantineSync:
         self._task: asyncio.Task[None] | None = None
         self.polls = 0
 
+    @property
+    def annotating(self) -> bool:
+        """Vrai quand le périmètre connu vient d'une diffusion vérifiée : avec un secret, le
+        proxy n'en adopte pas d'autre ; sans secret, jamais."""
+        return self.known is not None and self.settings.secret is not None
+
     def status(self) -> QuarantineStatus:
         known = self.known
         return QuarantineStatus(
@@ -316,6 +352,7 @@ class QuarantineSync:
             datasets=0 if known is None else known.datasets,
             last_sync_age=None if self._synced_at is None else self._clock() - self._synced_at,
             failing=self._failing,
+            annotating=self.annotating,
         )
 
     async def start(self) -> None:
@@ -338,6 +375,18 @@ class QuarantineSync:
             " interrogée toutes les %g s.",
             self.settings.interval,
         )
+        if self.settings.secret is None:
+            logger.warning(
+                "Quarantaine : aucun secret de diffusion (%s ou --quarantine-secret-file) ; les"
+                " périmètres sont appris sans être vérifiés, et ce proxy ne sera jamais autorisé"
+                " à annoter un résultat.",
+                ENV_SECRET,
+            )
+        else:
+            logger.info(
+                "Quarantaine : seule une diffusion signée par l'API, et datée de moins de 5 min,"
+                " est adoptée."
+            )
         self._task = asyncio.ensure_future(self._loop())
 
     async def aclose(self) -> None:
@@ -377,9 +426,16 @@ class QuarantineSync:
         except (httpx.HTTPError, TimeoutError) as error:
             self._failed(type(error).__name__)
             return False
+        now = self._wall_clock()
         if reply.status == 401 and self._tokens is not None:
             self._tokens.invalidate()
         if reply.status == 304 and self.known is not None:
+            # Un 304 n'a pas de corps : sa signature porte sur la version tenue.
+            try:
+                self._verify(reply.signatures, self.known.version.encode("ascii"), now)
+            except ResponseRefusedError as refusal:
+                self._failed(f"réponse écartée, {refusal.code}")
+                return False
             self._succeeded(self.known)
             return True
         if reply.status != 200:
@@ -392,12 +448,31 @@ class QuarantineSync:
                 raise ResponseRefusedError("not_json")
             if reply.body is None:
                 raise ResponseRefusedError("too_large")
-            known = await asyncio.to_thread(parse, reply.body)
+            known = await asyncio.to_thread(self._read, reply.body, reply.signatures, now)
         except ResponseRefusedError as refusal:
             self._failed(f"réponse écartée, {refusal.code}")
             return False
         self._succeeded(known)
         return True
+
+    def _verify(self, signatures: tuple[str, ...], payload: bytes, now: float) -> None:
+        """Avec un secret, la diffusion doit être signée par l'API, et récente ; sans secret,
+        rien n'est vérifié."""
+        secret = self.settings.secret
+        if secret is None:
+            return
+        if len(signatures) > 1:
+            raise ResponseRefusedError(MALFORMED)
+        try:
+            verify(signatures[0] if signatures else None, payload, secret, now=now)
+        except SignatureRefusedError as refusal:
+            raise ResponseRefusedError(refusal.code) from None
+
+    def _read(self, body: bytes, signatures: tuple[str, ...], now: float) -> KnownQuarantines:
+        """Le corps d'un 200, authentifié avant d'être lu : l'analyseur JSON ne lit jamais ce
+        qu'un tiers a écrit."""
+        self._verify(signatures, body, now)
+        return parse(body)
 
     async def _get(self, headers: dict[str, str]) -> _Reply:
         if self._client is None:  # pragma: no cover — démarrée avant toute interrogation.
@@ -407,14 +482,15 @@ class QuarantineSync:
                 reply.headers.get("content-encoding", "identity").strip().lower() != "identity"
             )
             content_type = reply.headers.get("content-type", "").split(";")[0].strip().lower()
+            signatures = tuple(reply.headers.get_list(HEADER))
             body = bytearray()
             # Un corps compressé n'est pas lu : une bombe n'est jamais déployée.
             if reply.status_code == 200 and not encoded:
                 async for chunk in reply.aiter_bytes():
                     body += chunk
                     if len(body) > MAX_RESPONSE_BYTES:
-                        return _Reply(reply.status_code, content_type, encoded, None)
-            return _Reply(reply.status_code, content_type, encoded, bytes(body))
+                        return _Reply(reply.status_code, content_type, encoded, None, signatures)
+            return _Reply(reply.status_code, content_type, encoded, bytes(body), signatures)
 
     def _succeeded(self, known: KnownQuarantines) -> None:
         changed = self.known is None or known.version != self.known.version

@@ -54,7 +54,7 @@ description = "Les workers annoncent les changements d'état des incidents, par 
 [[boundary]]
 id = "api-proxy"
 name = "API et proxys"
-description = "Chaque proxy interroge l'API d'AnswerLineage, à l'adresse que règle l'exploitant, pour apprendre les périmètres en quarantaine, avec son jeton d'émetteur. Le proxy n'authentifie pas encore l'API : le réseau qui y mène et ce qu'elle répond sont hostiles."
+description = "Chaque proxy interroge l'API d'AnswerLineage, à l'adresse que règle l'exploitant, pour apprendre les périmètres en quarantaine, avec son jeton d'émetteur. Il vérifie la diffusion par un secret partagé avec l'API, qui la signe et la date ; le réseau qui y mène et ce qu'elle répond restent hostiles."
 
 [[boundary]]
 id = "api-emetteur-oidc"
@@ -137,6 +137,11 @@ description = "Le secret HMAC que les workers et le récepteur de webhooks parta
 id = "annonces-d-incident"
 name = "Annonces d'incident"
 description = "Les messages qui disent au récepteur de webhooks qu'un incident est déclaré, analysé ou en échec, avec ses décomptes : une alerte ou un rappel peut en partir."
+
+[[asset]]
+id = "secret-de-la-diffusion"
+name = "Secret de la diffusion des quarantaines"
+description = "Le secret HMAC que l'API et les proxys partagent : qui le détient signe une diffusion des périmètres en quarantaine que les proxys acceptent."
 
 [[asset]]
 id = "perimetres-en-quarantaine"
@@ -477,7 +482,7 @@ name = "Une API compromise ou usurpée pousse aux proxys un faux périmètre en 
 category = "spoofing"
 boundary = "api-proxy"
 assets = ["perimetres-en-quarantaine", "continuite-des-agents"]
-description = "Qui compromet l'API, ou se place sur le chemin qui y mène, répond aux proxys qui l'interrogent : il fait croire à une quarantaine qui n'existe pas, en tait une active, ou sert une réponse faite pour épuiser le proxy. Aujourd'hui le proxy ne fait rien des lectures du périmètre ; demain, il les annotera, puis pourra les bloquer."
+description = "Qui compromet l'API, ou se place sur le chemin qui y mène, répond aux proxys qui l'interrogent : il fait croire à une quarantaine qui n'existe pas, en tait une active, en prolonge une levée en rejouant une réponse ancienne, ou sert une réponse faite pour épuiser le proxy. Aujourd'hui le proxy ne fait rien des lectures du périmètre ; demain, il les annotera, puis pourra les bloquer."
 
 [[threat.mitigation]]
 description = "Seule l'adresse que règle l'exploitant est jointe : TLS vérifié, aucune redirection suivie, aucun mandataire lu de l'environnement."
@@ -499,9 +504,57 @@ description = "Le proxy connaît le périmètre sans s'en servir : un faux péri
 code = "proxy/src/answerlineage_proxy/app.py"
 test = "proxy/tests/test_quarantine.py::test_a_known_perimeter_changes_nothing_of_the_call_nor_of_its_event"
 
+[[threat.mitigation]]
+description = "Avec le secret partagé, le proxy n'adopte qu'une diffusion signée par l'API et datée de moins de cinq minutes, 200 comme 304 : une réponse non signée, mal signée, trop ancienne ou venue du futur est écartée avec un code, avant que son contenu soit lu, et le dernier état valide est gardé."
+code = "proxy/src/answerlineage_proxy/quarantine.py::QuarantineSync"
+test = "proxy/tests/test_quarantine_signature.py::test_an_unsigned_badly_signed_stale_or_future_diffusion_is_set_aside_with_a_code"
+
+[[threat.mitigation]]
+description = "Un 304 est signé sur la version que le proxy tient : rejoué au-delà de la tolérance, ou présenté pour une autre version, il est écarté et ne prolonge pas un état levé."
+code = "proxy/src/answerlineage_proxy/quarantine_signature.py::verify"
+test = "proxy/tests/test_quarantine_signature.py::test_a_304_holds_only_signed_for_the_version_held_and_recently"
+
+[[threat.mitigation]]
+description = "La signature de l'API et la vérification du proxy, écrites chacune de leur côté, se jugent sur des vecteurs publiés, recalculés sans l'une ni l'autre ; l'étiquette du domaine écarte une signature de webhook."
+code = "api/src/answerlineage_api/incidents/signature.py::signature_header"
+test = "tests/test_contract_quarantine.py::test_the_api_signs_as_the_vectors_say_and_the_proxy_verifies_it"
+
+[[threat.mitigation]]
+description = "De bout en bout, les proxys qui partagent le secret de l'API vérifient sa diffusion ; un proxy réglé sur un autre secret n'en croit rien et reste en mode observer."
+code = "api/src/answerlineage_api/incidents/routes.py::active_quarantines"
+test = "tests/test_quarantine_end_to_end.py::test_a_quarantine_is_known_by_each_proxy_within_thirty_seconds_then_lifted"
+
+[[threat.mitigation]]
+description = "Sans secret, le proxy apprend le périmètre sans le vérifier et ne sera jamais autorisé à annoter ; il le dit une fois au journal."
+code = "proxy/src/answerlineage_proxy/quarantine.py::QuarantineSync"
+test = "proxy/tests/test_quarantine_signature.py::test_without_a_secret_the_proxy_learns_the_perimeters_but_never_annotates"
+
 [threat.acceptance]
-reason = "Le proxy n'authentifie pas encore l'API : il se fie au TLS de l'adresse que règle l'exploitant, et le périmètre n'agit encore sur aucun appel. Avant que le proxy annote ou bloque des lectures, la diffusion devra être authentifiée, par un périmètre signé ou l'identité vérifiée de l'API."
-consequence = "Qui compromet l'API, ou la joint en http sur un réseau qu'il écoute, fait croire aux proxys une quarantaine fausse ou en tait une vraie : aujourd'hui sans effet sur les appels ; le jour où le proxy agira, il annotera ou bloquera à tort, ou laissera passer des lectures en quarantaine."
+reason = "La diffusion est signée sous un secret symétrique : l'API et chaque proxy le gardent en clair, et qui le lit chez l'un d'eux signe comme l'API ; une API compromise signe le faux périmètre qu'elle pousse. La signature date la réponse sans la lier à la requête : une diffusion captée se rejoue pendant la tolérance de cinq minutes, et qui coupe le chemin fait garder au proxy son dernier état valide, une heure au plus, comme une panne. Un proxy réglé sans secret apprend le périmètre sans le vérifier, et n'est jamais autorisé à annoter."
+consequence = "Qui compromet l'API, ou lit le secret sur son hôte ou celui d'un proxy, fait croire aux proxys une quarantaine fausse ou en tait une vraie, jusqu'à la rotation du secret ; qui écoute le réseau sans le secret ne peut que rejouer une diffusion de moins de cinq minutes, ou faire garder une heure une quarantaine levée. Aujourd'hui sans effet sur les appels ; quand le proxy annotera en mode avertir, des avertissements à tort ou manquants : jamais un appel bloqué, ni un contenu divulgué."
+
+[[threat]]
+id = "proxy/secret-de-diffusion-divulgue"
+name = "Le secret de la diffusion des quarantaines sort du proxy par la ligne de commande, le journal, ses réglages ou le serveur MCP"
+category = "information-disclosure"
+boundary = "agent-proxy-mcp"
+assets = ["secret-de-la-diffusion", "perimetres-en-quarantaine"]
+description = "Le proxy vérifie la diffusion des périmètres avec un secret qu'il partage avec l'API : lu dans la liste des processus, écrit au journal, affiché avec les réglages ou transmis au serveur MCP lancé en stdio, il donnerait à un tiers de quoi signer une diffusion que les proxys acceptent."
+
+[[threat.mitigation]]
+description = "Le secret vient d'un fichier ou d'une variable, jamais d'une option ; un secret refusé n'est pas cité, ni le chemin de son fichier."
+code = "proxy/src/answerlineage_proxy/quarantine_signature.py::read_secret"
+test = "proxy/tests/test_quarantine_signature.py::test_an_unusable_secret_is_refused_without_being_cited"
+
+[[threat.mitigation]]
+description = "Ni le journal, ni les réglages affichés, ni l'état de la synchronisation ne le citent."
+code = "proxy/src/answerlineage_proxy/quarantine.py::QuarantineSettings"
+test = "proxy/tests/test_quarantine_signature.py::test_the_secret_is_neither_in_the_journal_nor_in_the_displayed_settings"
+
+[[threat.mitigation]]
+description = "Le serveur MCP lancé en stdio ne reçoit ni le secret ni la variable qui nomme son fichier."
+code = "proxy/src/answerlineage_proxy/stdio.py"
+test = "proxy/tests/test_quarantine_signature.py::test_the_stdio_server_does_not_get_the_secret_of_the_diffusion"
 
 [[threat]]
 id = "proxy/jeton-hors-audience"
@@ -1164,6 +1217,24 @@ test = "tests/test_conformance_no_content.py::test_three_canaries_cross_the_whol
 [threat.acceptance]
 reason = "AnswerLineage ne chiffre pas la base : son accès, le chiffrement du disque et des sauvegardes reviennent à l'exploitant. Le mot de passe de la démonstration est écrit dans compose.yaml, pour une base que la démonstration ne publie pas."
 consequence = "Qui obtient un accès à la base lit les noms des jeux de données, des agents et des outils, les empreintes et les pseudonymes, sans aucun contenu ; avec la clé des empreintes en plus, il peut éprouver des valeurs candidates."
+
+[[threat]]
+id = "api/secret-de-diffusion-divulgue"
+name = "Le secret de la diffusion des quarantaines sort de l'API par un réglage refusé, une représentation ou une réponse"
+category = "information-disclosure"
+boundary = "api-proxy"
+assets = ["secret-de-la-diffusion", "perimetres-en-quarantaine"]
+description = "L'API signe la diffusion avec un secret qu'elle partage avec les proxys : un message de démarrage, une représentation ou une réponse qui le citeraient donneraient à qui lit le terminal, les journaux ou le réseau de quoi signer une diffusion que les proxys acceptent."
+
+[[threat.mitigation]]
+description = "Les secrets ne se règlent que par des variables d'environnement ; un secret refusé arrête l'API au démarrage, avec un message qui nomme la variable, jamais sa valeur."
+code = "api/src/answerlineage_api/incidents/signature.py::signing_from_settings"
+test = "api/tests/test_quarantine.py::test_an_invalid_secret_stops_the_api_at_startup_without_being_cited"
+
+[[threat.mitigation]]
+description = "Seule la signature part dans la réponse ; les secrets ne s'affichent jamais, pas même dans une représentation."
+code = "api/src/answerlineage_api/incidents/signature.py::QuarantineSigning"
+test = "api/tests/test_quarantine.py::test_the_secrets_of_the_diffusion_come_from_the_environment"
 
 # Workers
 

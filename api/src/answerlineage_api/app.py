@@ -36,6 +36,7 @@ from answerlineage_api.incidents.models import (
     quarantine_request_json_schema,
 )
 from answerlineage_api.incidents.routes import router as incidents_router
+from answerlineage_api.incidents.signature import QuarantineSigning, signing_from_settings
 from answerlineage_api.ingest.body import max_body_bytes_from_settings
 from answerlineage_api.ingest.coverage import router as coverage_router
 from answerlineage_api.ingest.dead_letters import replay_json_schema
@@ -82,6 +83,7 @@ def create_app(
     ui_directory: str | os.PathLike[str] | None = None,
     read_timeout_ms: int | None = None,
     authentication: Authentication | None = None,
+    quarantine_signing: QuarantineSigning | None = None,
 ) -> FastAPI:
     """Construit l'application. Sans moteur fourni, la base vient de l'environnement.
 
@@ -100,6 +102,10 @@ def create_app(
     elle vient de l'environnement (``ANSWERLINEAGE_OIDC_*``), et l'API ne démarre
     pas sans émetteur, à moins d'être désactivée pour la démonstration
     (``ANSWERLINEAGE_AUTH=disabled``), sur la boucle locale seule.
+    ``quarantine_signing`` signe la diffusion des périmètres en quarantaine aux
+    proxys ; sans elle, ses secrets viennent de ``ANSWERLINEAGE_QUARANTINE_SECRET``
+    et ``ANSWERLINEAGE_QUARANTINE_PREVIOUS_SECRET``, et la diffusion n'est pas
+    signée quand ils ne sont pas donnés.
     """
     guard = guard_from_settings(allowed_hosts, allowed_origins, os.environ)
     body_limit = max_body_bytes_from_settings(max_body_bytes, os.environ)
@@ -107,6 +113,7 @@ def create_app(
     read_timeout = read_timeout_from_settings(read_timeout_ms, os.environ)
     access = authentication_from_settings(authentication, os.environ)
     access.check_guard(guard)
+    signing = signing_from_settings(quarantine_signing, os.environ)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -137,6 +144,7 @@ def create_app(
     app.state.read_timeout_ms = read_timeout
     app.state.max_body_bytes = body_limit
     app.state.authentication = access
+    app.state.quarantine_signing = signing
     app.include_router(ingestion_router)
     app.include_router(duplicates_router)
     app.include_router(dead_letters_router)

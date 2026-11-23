@@ -326,6 +326,26 @@ Rien n'est enregistré ni annoncé pour une demande refusée. Une activation pre
 
 Plusieurs proxys l'interrogent chacun de leur côté, sans s'accorder : la route est faite pour cela.
 
+#### Signée et datée
+
+Avec un secret partagé avec les proxys, l'API signe et date chaque réponse de la route, `200` comme `304`, pour qu'un tiers ne puisse ni faire croire à une quarantaine, ni en prolonger une levée. Un proxy qui connaît le secret n'adopte qu'une diffusion signée, et récente ([proxy](proxy.md#une-diffusion-signée-et-datée)).
+
+| Variable | Rôle | Défaut |
+| --- | --- | --- |
+| `ANSWERLINEAGE_QUARANTINE_SECRET` | Le secret partagé avec les proxys : de l'ASCII imprimable sans espace, de 32 à 512 caractères | aucun : la diffusion n'est pas signée |
+| `ANSWERLINEAGE_QUARANTINE_PREVIOUS_SECRET` | Le secret précédent, pendant une rotation : chaque réponse est signée sous les deux | aucun |
+
+```text
+AnswerLineage-Signature: t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369
+```
+
+- **`t`** est l'heure de la signature, en secondes depuis 1970 ; **`v1`**, HMAC-SHA-256 en hexadécimal, sous le secret, de l'étiquette `answerlineage/quarantine/v1`, d'un octet nul, de `t`, d'un point, puis de la charge. L'étiquette sépare ce domaine de celui des [webhooks](webhooks.md) : une signature de l'un ne vaut jamais pour l'autre.
+- **La charge** d'un `200` est son corps, octet pour octet ; celle d'un `304`, qui n'a pas de corps, est la version courante, celle que le proxy a donnée dans `If-None-Match`. Un `304` ne vaut ainsi que pour cette version.
+- **Pendant une rotation**, l'en-tête porte une signature `v1` par secret, le secret puis le précédent : un proxy qui connaît l'un ou l'autre accepte. Régler le nouveau secret à l'API avec l'ancien comme précédent, puis le nouveau chez chaque proxy, puis retirer le précédent de l'API.
+- **Un secret refusé** (trop court, trop long, hors de l'ASCII imprimable, un précédent sans secret) arrête l'API au démarrage, avec un message qui nomme la variable, jamais sa valeur. Seule la signature part dans la réponse.
+
+Le format, sa vérification et des vecteurs (réponses valides, rotation, signatures fausses, réponses rejouées hors de la tolérance ou venues du futur) sont publiés dans [`spec/quarantine/v1`](../spec/quarantine/v1/README.md). L'en-tête est décrit dans la spécification OpenAPI.
+
 ## Incidents proposés par un test de qualité
 
 Une donnée fausse se voit souvent d'abord dans les tests de données : un `not_null` qui échoue sur la colonne `email` des clients, un `unique` sur un identifiant. Quand l'outil de tests émet ses résultats en OpenLineage, dbt par exemple (dbt-ol), AnswerLineage en fait une **proposition d'incident** : un incident signalé, sur la table et la colonne en échec, qu'un humain examine. Rien ne part d'une proposition : ni analyse, ni annonce, ni quarantaine. L'humain la [confirme](#confirmer-ou-écarter), et l'incident est déclaré comme à la main, ou l'écarte.
@@ -439,7 +459,7 @@ Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses évé
 
 ## Ce qui n'existe pas encore
 
-- **L'authentification de l'API par les proxys.** Chaque route exige un jeton et un rôle ([Authentification et rôles](securite/authentification.md)) : déclarer, mettre en quarantaine et lever reviennent au responsable de données, au gestionnaire d'incident et à l'administrateur ; les proxys lisent les périmètres avec le jeton d'un émetteur. Mais les proxys n'authentifient pas encore l'API qui leur donne le périmètre ([modèle de menaces](securite/modele-de-menaces.md#acceptations)).
+- **Une signature asymétrique de la diffusion.** Chaque route exige un jeton et un rôle ([Authentification et rôles](securite/authentification.md)) : déclarer, mettre en quarantaine et lever reviennent au responsable de données, au gestionnaire d'incident et à l'administrateur ; les proxys lisent les périmètres avec le jeton d'un émetteur, et vérifient la [signature](#signée-et-datée) de la diffusion. Mais elle est faite sous un secret partagé : qui le lit sur l'hôte de l'API ou d'un proxy signe comme l'API ([modèle de menaces](securite/modele-de-menaces.md#acceptations)).
 - **Ce que la quarantaine fait des lectures.** Les proxys connaissent le périmètre, sans encore annoter ni bloquer une lecture. Le périmètre se limite aux jeux de l'incident, sans les vues ni les tables dérivées connues du graphe.
 - **Le journal des quarantaines** : qui a activé ou levé. L'API vérifie l'identité de l'appelant, mais ne la garde pas encore. Les heures, le mode et le périmètre sont déjà gardés.
 - **L'interface.** L'explorateur ne déclare pas encore d'incident ; l'API et la ligne de commande le font.

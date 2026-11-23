@@ -6769,7 +6769,7 @@
     },
     "/api/v1/quarantine": {
       "get": {
-        "description": "Chaque quarantaine active, avec son mode et le périmètre de son incident, et la version\nde la liste, qui est aussi l'ETag de la réponse. Une lecture bornée : l'activation tient\nles quarantaines actives sous leur borne.",
+        "description": "Chaque quarantaine active, avec son mode et le périmètre de son incident, et la version\nde la liste, qui est aussi l'ETag de la réponse. Une lecture bornée : l'activation tient\nles quarantaines actives sous leur borne. Avec un secret, chaque réponse est signée et\ndatée : un proxy qui le connaît n'adopte qu'une diffusion de l'API, et récente.",
         "operationId": "active_quarantines_api_v1_quarantine_get",
         "parameters": [
           {
@@ -6800,10 +6800,26 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Successful Response",
+            "headers": {
+              "AnswerLineage-Signature": {
+                "description": "Avec un secret partagé avec les proxys : t=<heure de signature>,v1=<signature>, une signature v1 par secret pendant une rotation. HMAC-SHA-256, en hexadécimal, de « answerlineage/quarantine/v1 », d'un octet nul, de t, d'un point, puis de son corps, tel qu'il part (spec/quarantine/v1). Absent sans secret.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "304": {
-            "description": "La version donnée dans If-None-Match est la version courante : rien n'a changé."
+            "description": "La version donnée dans If-None-Match est la version courante : rien n'a changé.",
+            "headers": {
+              "AnswerLineage-Signature": {
+                "description": "Avec un secret partagé avec les proxys : t=<heure de signature>,v1=<signature>, une signature v1 par secret pendant une rotation. HMAC-SHA-256, en hexadécimal, de « answerlineage/quarantine/v1 », d'un octet nul, de t, d'un point, puis de la version courante, celle donnée dans If-None-Match (spec/quarantine/v1). Absent sans secret.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "content": {

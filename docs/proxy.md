@@ -35,6 +35,8 @@ La première ligne écoute devant un serveur HTTP. La seconde lance un serveur l
 | Octets gardés au plus dans la boîte d'envoi | `--outbox-max-bytes` | `ANSWERLINEAGE_PROXY_OUTBOX_MAX_BYTES` | 32 Mio (1 Mio à 1 Gio) |
 | Délai de vidage de la boîte d'envoi à l'arrêt | `--outbox-flush-seconds` | `ANSWERLINEAGE_PROXY_OUTBOX_FLUSH_SECONDS` | 5 s (0 à 300) |
 | Intervalle entre deux interrogations des [périmètres en quarantaine](#périmètres-en-quarantaine) | `--quarantine-interval-seconds` | `ANSWERLINEAGE_PROXY_QUARANTINE_INTERVAL_SECONDS` | 10 s (1 à 30) |
+| Fichier du secret partagé avec l'API, qui vérifie la [diffusion des périmètres](#une-diffusion-signée-et-datée) | `--quarantine-secret-file` | `ANSWERLINEAGE_PROXY_QUARANTINE_SECRET_FILE` | aucun |
+| Secret de la diffusion lui-même | | `ANSWERLINEAGE_PROXY_QUARANTINE_SECRET` | aucun : les périmètres sont appris sans être vérifiés |
 | Port d'administration, sur la boucle locale : [sondes de santé](#sondes-de-santé) `/livez` et `/readyz` | `--admin-port` | `ANSWERLINEAGE_PROXY_ADMIN_PORT` | aucun : aucune sonde |
 | Délai de retrait : au signal SIGTERM, le proxy, non prêt, sert encore ([Arrêt gracieux](#arrêt-gracieux)) | `--shutdown-delay-seconds` | `ANSWERLINEAGE_PROXY_SHUTDOWN_DELAY_SECONDS` | 5 s (0 à 300) |
 | Délai de grâce : l'écoute fermée, temps laissé aux appels en cours, au-delà coupés | `--shutdown-grace-seconds` | `ANSWERLINEAGE_PROXY_SHUTDOWN_GRACE_SECONDS` | 15 s (0 à 3 600, en secondes entières) |
@@ -585,7 +587,7 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --api-url https://an
 
 **En moins de 30 secondes.** Chaque attente entre deux interrogations est tirée entre 80 % et 100 % de l'intervalle, jamais au-delà, pour que des proxys démarrés ensemble ne reviennent pas ensemble ; une interrogation est coupée à 10 s. Au réglage par défaut, une quarantaine activée juste après une interrogation est connue 20 s plus tard au pire, et une levée de même ; un test le vérifie, et le test de bout en bout mesure le délai réel. Au réglage maximal, l'attente seule atteint 30 s. Chaque proxy interroge de son côté : plusieurs proxys, en HTTP comme en stdio, n'ont rien à s'accorder.
 
-**Rien ne retarde un appel.** La synchronisation tourne dans une tâche de fond, démarrée sans attendre la première réponse : le proxy démarre et relaie aussitôt, l'API joignable ou non. Elle n'envoie que `Accept`, le [jeton du proxy](#le-jeton-du-proxy-envers-lapi) quand il est réglé et, quand le proxy tient déjà une version, `If-None-Match` : une liste qui n'a pas changé ne se retélécharge pas (`304`). Sans jeton disponible, l'interrogation échoue comme une API en panne ; un refus `401` fait oublier le jeton. Son client suit les règles de celui de la boîte d'envoi : certificat vérifié, aucune redirection suivie, rien de l'environnement ; 5 s pour la connexion et chaque lecture.
+**Rien ne retarde un appel.** La synchronisation tourne dans une tâche de fond, démarrée sans attendre la première réponse : le proxy démarre et relaie aussitôt, l'API joignable ou non. La vérification de la [signature](#une-diffusion-signée-et-datée) se fait avec la lecture de la réponse, dans un fil à part. Elle n'envoie que `Accept`, le [jeton du proxy](#le-jeton-du-proxy-envers-lapi) quand il est réglé et, quand le proxy tient déjà une version, `If-None-Match` : une liste qui n'a pas changé ne se retélécharge pas (`304`). Sans jeton disponible, l'interrogation échoue comme une API en panne ; un refus `401` fait oublier le jeton. Son client suit les règles de celui de la boîte d'envoi : certificat vérifié, aucune redirection suivie, rien de l'environnement ; 5 s pour la connexion et chaque lecture.
 
 ### Une réponse hostile est écartée
 
@@ -599,6 +601,25 @@ Une réponse de l'API est une entrée comme une autre. Elle est écartée en ent
 
 Le journal dit le motif par un code (`réponse écartée, invalid_identifier`), jamais la réponse ni un nom. Les champs que le proxy ne lit pas sont ignorés. Une quarantaine d'un mode que le proxy ne connaît pas, après une mise à jour de l'API, est comptée et laissée de côté, avec un avertissement : mettre le proxy à jour.
 
+### Une diffusion signée et datée
+
+Le proxy n'accorde foi qu'à une diffusion que l'API a signée et datée, quand il partage un secret avec elle : un tiers qui se place sur le chemin, ou se fait passer pour l'API, ne peut ni lui faire croire à une quarantaine, ni en prolonger une levée. Le secret se règle des deux côtés, celui de l'API par `ANSWERLINEAGE_QUARANTINE_SECRET` ([incidents](incidents.md#signée-et-datée)), celui du proxy par un fichier ou une variable, jamais sur la ligne de commande, que la liste des processus montre :
+
+```bash
+export ANSWERLINEAGE_PROXY_QUARANTINE_SECRET_FILE=/etc/answerlineage/secret-diffusion
+uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --api-url https://answerlineage.interne
+```
+
+Chaque réponse porte l'en-tête `AnswerLineage-Signature: t=<heure>,v1=<signature>` ; la signature est un HMAC-SHA-256 de l'étiquette `answerlineage/quarantine/v1`, de l'heure et de la charge : le corps d'un `200`, ou, pour un `304`, qui n'a pas de corps, la version que le proxy tient. Le format et ses vecteurs sont publiés dans [`spec/quarantine/v1`](../spec/quarantine/v1/README.md).
+
+- **Avant d'être lue.** La signature est vérifiée avant que le JSON de la réponse soit lu : ce qu'un tiers a écrit n'atteint pas l'analyseur.
+- **`200` comme `304`.** Un `304` n'est bon que signé sur la version que le proxy tient, et récent : des `304` rejoués à l'infini ne prolongent pas un état levé.
+- **Datée.** L'heure de la signature doit être à 5 minutes au plus de l'horloge du proxy, avant comme après : une réponse captée ne se rejoue pas au-delà. Les horloges de l'API et des proxys doivent donc être synchronisées (NTP).
+- **Écartée comme une réponse hostile.** Une réponse non signée, mal signée, trop ancienne ou venue du futur est écartée en entier ; le journal dit son code, jamais son contenu : `unsigned`, `malformed_signature` (en-tête illisible ou répété), `signature_mismatch` (charge altérée, autre secret, autre version), `signature_expired`, `signature_from_future`. Le proxy garde son dernier état valide, puis revient en mode observer au bout d'une heure sans diffusion valide, comme pour une [panne](#une-panne-garde-le-dernier-état-connu-une-heure).
+- **La rotation.** L'API signe sous son secret et sous le précédent pendant une rotation : un proxy qui connaît l'un ou l'autre accepte. On règle le nouveau secret à l'API avec l'ancien comme précédent, puis chez chaque proxy, puis on retire l'ancien de l'API.
+- **Sans secret**, le proxy apprend les périmètres sans les vérifier, comme avant : il ne sera jamais autorisé à agir sur une lecture (`annotating` reste faux), et le dit une fois au journal, au démarrage. Avec un secret, il n'adopte aucune réponse que l'API n'a pas signée : une API réglée sans secret le laisse en mode observer.
+- **Le secret ne sort pas.** Ni le journal, ni la représentation des réglages, ni l'état de la synchronisation ne le citent ; un réglage refusé ne cite ni le secret ni le chemin de son fichier ; le serveur MCP lancé en [stdio](#le-lancement) ne le reçoit pas. C'est de l'ASCII imprimable sans espace, de 32 à 512 caractères, le même qu'à l'API ; régler un secret sans `--api-url` est refusé.
+
 ### Une panne garde le dernier état connu, une heure
 
 API injoignable, lente (coupée à 10 s), en erreur ou hostile : le proxy garde le dernier périmètre connu, une heure au plus après la dernière synchronisation réussie. Une heure couvre un redémarrage, une mise à jour ou une bascule de l'API sans perdre une quarantaine en cours ; au-delà, le proxy ne peut plus savoir si elle tient encore. Il oublie alors ce périmètre et revient en mode observer : une quarantaine levée pendant une longue panne ne survit pas indéfiniment chez lui, et la capture reste ouverte en cas de panne, comme le reste du proxy. Aucune panne ne l'arrête.
@@ -608,14 +629,15 @@ API injoignable, lente (coupée à 10 s), en erreur ou hostile : le proxy garde 
 Tant qu'aucune synchronisation n'a réussi (API injoignable au démarrage, sans `--api-url`, ou périmètre oublié après une heure de panne), le proxy est en mode observer : il relaie et décrit les appels comme toujours. Il le dit :
 
 - **au journal**, en nombres, à chaque changement : le démarrage en mode observer, chaque synchronisation qui change le périmètre, le premier échec d'un épisode avec l'âge de la dernière synchronisation, le retour de l'API, l'oubli du périmètre ;
-- **dans son état**, `McpProxy.quarantine_status()` (et `StdioProxy`), à côté de `ProxyStats` : `mode` (`observe` ou `synced`), le nombre de périmètres et de jeux connus, l'âge de la dernière synchronisation réussie (`last_sync_age`, nul sans aucune), et `failing` tant que les interrogations échouent.
+- **dans son état**, `McpProxy.quarantine_status()` (et `StdioProxy`), à côté de `ProxyStats` : `mode` (`observe` ou `synced`), le nombre de périmètres et de jeux connus, l'âge de la dernière synchronisation réussie (`last_sync_age`, nul sans aucune), `failing` tant que les interrogations échouent, et `annotating`, vrai quand le périmètre connu vient d'une [diffusion vérifiée](#une-diffusion-signée-et-datée), jamais sans secret.
 
 ```text
 INFO answerlineage_proxy Quarantaine : mode observer jusqu'à la première synchronisation avec l'API, interrogée toutes les 10 s.
+INFO answerlineage_proxy Quarantaine : seule une diffusion signée par l'API, et datée de moins de 5 min, est adoptée.
 WARNING answerlineage_proxy Quarantaine : synchronisation en échec (ConnectError) ; mode observer, aucun périmètre connu.
 INFO answerlineage_proxy Quarantaine : API de nouveau joignable.
 INFO answerlineage_proxy Quarantaine synchronisée : 1 périmètre(s) en quarantaine, 2 jeu(x) de données.
-WARNING answerlineage_proxy Quarantaine : synchronisation en échec (HTTP 503) ; le dernier état connu est gardé (1 périmètre(s), synchronisé il y a 12 s), 1 h au plus.
+WARNING answerlineage_proxy Quarantaine : synchronisation en échec (réponse écartée, signature_expired) ; le dernier état connu est gardé (1 périmètre(s), synchronisé il y a 12 s), 1 h au plus.
 ```
 
 L'état ne passe pas par les relevés de couverture : ils mesurent ce que le lignage a capté, et leur format est un contrat de l'ingestion. Le proxy n'a pas non plus de route à lui : en HTTP, tout chemin appartient au serveur MCP qu'il relaie, et en stdio il n'écoute pas. Son [port d'administration](#sondes-de-santé) ne dit que s'il est vivant et prêt.
@@ -950,11 +972,11 @@ Dans la configuration d'un client MCP, la commande devient `answerlineage-proxy`
 ### Le lancement
 
 - La commande est lancée directement, comme liste d'arguments, jamais par un shell : `$HOME`, `*` ou `|` y sont des caractères comme les autres.
-- L'enfant reçoit l'environnement du proxy tel quel, à une exception près : `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY`, la clé d'empreinte du locataire, ne lui est pas transmise. Un serveur MCP n'a pas à la connaître, et l'environnement d'un processus se lit plus facilement que sa mémoire.
+- L'enfant reçoit l'environnement du proxy tel quel, sauf les secrets du proxy : `ANSWERLINEAGE_PROXY_FINGERPRINT_KEY`, la clé d'empreinte du locataire, le secret du client OIDC du proxy (`ANSWERLINEAGE_PROXY_OIDC_CLIENT_SECRET` et `…_FILE`) et celui de la diffusion des quarantaines (`ANSWERLINEAGE_PROXY_QUARANTINE_SECRET` et `…_FILE`) ne lui sont pas transmis. Un serveur MCP n'a pas à les connaître, et l'environnement d'un processus se lit plus facilement que sa mémoire.
 - Sa sortie d'erreur est celle du proxy : le proxy ne la lit pas et ne la recopie pas, ce sont les journaux du serveur. Le journal du proxy y passe aussi. Sur sa sortie standard, le proxy n'écrit que ce que l'enfant écrit.
 - Une commande qui ne démarre pas arrête le proxy avec un message fixe, qui ne cite ni la commande ni ses arguments : « Serveur MCP non lancé : commande introuvable. » (code 127) ou « Serveur MCP non lancé : commande non exécutable. » (code 126), comme un shell POSIX.
 - Sans `--server-name` ni `ANSWERLINEAGE_PROXY_SERVER_NAME`, le nom du serveur dans le lignage est celui du programme lancé, sans son chemin (`serveur-fichiers` pour `/opt/mcp/serveur-fichiers`). Un lanceur (`npx`, `uvx`, `docker`, `python`) n'est pas un nom de serveur : il confondrait tous les serveurs qu'il lance, d'où `--server-name`.
-- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-run-comment`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, `--instance-id`, l'adresse de l'API et les bornes de la [boîte d'envoi](#boîte-denvoi), l'intervalle des [périmètres en quarantaine](#périmètres-en-quarantaine), et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin`, `--no-preserve-host`, `--audience-bound-tokens`, `--admin-port`, `--shutdown-delay-seconds` et `--shutdown-grace-seconds` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
+- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-run-comment`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, `--instance-id`, l'adresse de l'API et les bornes de la [boîte d'envoi](#boîte-denvoi), l'intervalle des [périmètres en quarantaine](#périmètres-en-quarantaine) et le secret de leur diffusion, et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin`, `--no-preserve-host`, `--audience-bound-tokens`, `--admin-port`, `--shutdown-delay-seconds` et `--shutdown-grace-seconds` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
 
 ### Le relais
 
@@ -1042,7 +1064,9 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - Un lot interrompu à l'arrêt est compté perdu même si l'API l'a reçu : le trou est surestimé.
 - La boîte d'envoi et le client du jeton ne lisent ni mandataire ni autorité de certification de l'environnement : une API ou un émetteur OIDC derrière une autorité de certification privée ne sont pas encore joignables.
 - Le proxy ne s'authentifie auprès de l'émetteur que par un secret partagé (`client_secret_basic`) : ni certificat client, ni assertion signée.
-- Le proxy n'authentifie pas l'API qui lui donne les périmètres en quarantaine : il se fie au TLS de l'adresse réglée. C'est sans effet tant qu'il ne fait rien des lectures ; c'est une acceptation à signer du [modèle de menaces](securite/modele-de-menaces.md#acceptations) (`proxy/perimetre-usurpe`).
+- La diffusion est signée sous un secret symétrique : qui le lit sur l'hôte de l'API ou d'un proxy signe comme l'API, et une API compromise signe ce qu'elle pousse. La signature date la réponse sans la lier à la requête : une diffusion captée se rejoue pendant les 5 minutes de la tolérance, et qui coupe le chemin fait garder le dernier état valide une heure. C'est une acceptation à signer du [modèle de menaces](securite/modele-de-menaces.md#acceptations) (`proxy/perimetre-usurpe`).
+- Sans secret, le proxy se fie au TLS de l'adresse réglée et apprend le périmètre sans le vérifier : c'est sans effet tant qu'il ne fait rien des lectures, et il ne sera jamais autorisé à le faire ainsi.
+- Une horloge décalée de plus de 5 minutes, sur l'API ou sur un proxy, fait écarter chaque diffusion : le proxy revient en mode observer au bout d'une heure, et le journal dit `signature_expired` ou `signature_from_future`.
 - Une liste de périmètres de plus de 2 Mio est écartée : cent quarantaines de vingt jeux aux noms de plusieurs centaines de caractères. Le proxy garde alors son dernier état, puis revient en mode observer au bout d'une heure, et le journal dit `too_large`.
 - L'état de la synchronisation ne se lit qu'au journal et dans le processus (`quarantine_status()`) : ni relevé, ni route.
 - Le seuil de 5 ms au p99 ne se vérifie qu'au banc de chaque nuit ; l'intégration continue, sur une machine partagée, n'en garde qu'un seuil tolérant.

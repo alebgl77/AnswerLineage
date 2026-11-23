@@ -78,6 +78,11 @@ from answerlineage_proxy.quarantine import (
     QuarantineSettings,
     QuarantineSync,
 )
+from answerlineage_proxy.quarantine_signature import ENV_SECRET as ENV_QUARANTINE_SECRET
+from answerlineage_proxy.quarantine_signature import (
+    ENV_SECRET_FILE as ENV_QUARANTINE_SECRET_FILE,
+)
+from answerlineage_proxy.quarantine_signature import read_secret
 from answerlineage_proxy.resource import check_gateway
 from answerlineage_proxy.sink import EventSink, NullSink
 
@@ -304,6 +309,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--quarantine-secret-file",
+        metavar="FICHIER",
+        help=(
+            "fichier qui contient le secret partagé avec l'API, qui vérifie la signature de la "
+            f"diffusion des quarantaines (ou {ENV_QUARANTINE_SECRET_FILE}, ou le secret lui-même "
+            f"dans {ENV_QUARANTINE_SECRET}) ; jamais sur la ligne de commande. Sans lui, les "
+            "périmètres sont appris sans être vérifiés"
+        ),
+    )
+    parser.add_argument(
         "--oidc-issuer",
         metavar="URL",
         help=(
@@ -386,14 +401,21 @@ def quarantine_settings_from_args(
     argv: Sequence[str] | None, environment: Mapping[str, str], outbox: OutboxSettings | None
 ) -> QuarantineSettings | None:
     """Réglages de la synchronisation des quarantaines : l'API de la boîte d'envoi, et
-    l'intervalle de l'option, sinon de l'environnement. Aucune sans adresse d'API."""
-    if outbox is None:
-        return None
+    l'intervalle de l'option, sinon de l'environnement ; le secret de la diffusion, d'un
+    fichier ou d'une variable. Aucune sans adresse d'API, et un secret sans elle est refusé."""
     args = build_parser().parse_args(argv)
+    secret = read_secret(environment, args.quarantine_secret_file)
+    if outbox is None:
+        if secret is not None:
+            raise ProxyConfigurationError(
+                "Un secret de diffusion des quarantaines est réglé sans adresse d'API (--api-url) :"
+                " il ne servirait à rien."
+            )
+        return None
     interval = args.quarantine_interval_seconds
     if interval is None:
         interval = integer(environment, ENV_QUARANTINE_INTERVAL, DEFAULT_INTERVAL)
-    return QuarantineSettings.create(outbox.api_url, interval)
+    return QuarantineSettings.create(outbox.api_url, interval, secret=secret)
 
 
 def credentials_from_args(

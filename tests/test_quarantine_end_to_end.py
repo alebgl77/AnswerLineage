@@ -9,7 +9,9 @@ de la réponse de l'API à l'activation jusqu'à ce que chaque proxy connaisse l
 périmètre.
 
 - Une quarantaine activée est connue de chaque proxy en moins de 30 s ; levée, elle
-  ne l'est plus.
+  ne l'est plus. L'API signe la diffusion, et les deux proxys, qui partagent son
+  secret, la vérifient : ils pourront annoter. Un troisième, réglé sur un autre
+  secret, écarte chaque réponse et reste en mode observer.
 - L'API injoignable au démarrage, chaque proxy démarre, relaie, et est en mode
   observer ; l'API revenue, il se synchronise.
 """
@@ -19,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
 import sys
 import time
 from collections.abc import AsyncIterator, Callable
@@ -31,11 +34,13 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
+from answerlineage_api.incidents.signature import QuarantineSigning
 from answerlineage_proxy import cli
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import ProxySettings
 from answerlineage_proxy.credentials import ENV_CLIENT_SECRET
 from answerlineage_proxy.quarantine import QuarantineScope
+from answerlineage_proxy.quarantine_signature import ENV_SECRET as ENV_QUARANTINE_SECRET
 from api.tests.issuer import EMITTER_CLIENT, EMITTER_SECRET, LocalIssuer, serving_issuer
 from proxy.tests.conftest import FakeMcpServer, exchange, running, stdio_server, tool_call
 from proxy.tests.stdio_server import RESULT_TEXT
@@ -55,6 +60,8 @@ DECLARATION = {
     "window": {"from": "2026-11-11T06:00:00Z", "to": "2026-11-12T12:00:00Z"},
     "severity": "high",
 }
+# Le secret que l'API et les proxys partagent, tiré pour la session.
+SHARED = "partage-" + secrets.token_urlsafe(32)
 CALL = json.dumps(
     {
         "jsonrpc": "2.0",
@@ -71,7 +78,9 @@ def identity(issuer: LocalIssuer) -> list[str]:
 
 
 @asynccontextmanager
-async def http_proxy(api_url: str, issuer: LocalIssuer) -> AsyncIterator[tuple[McpProxy, str]]:
+async def http_proxy(
+    api_url: str, issuer: LocalIssuer, shared: str = SHARED
+) -> AsyncIterator[tuple[McpProxy, str]]:
     """Un proxy HTTP réglé comme la ligne de commande le règle, servi devant un faux serveur."""
     async with running(FakeMcpServer()) as upstream_url:
         options = ["--upstream", upstream_url, "--api-url", api_url, *INTERVAL]
@@ -79,7 +88,9 @@ async def http_proxy(api_url: str, issuer: LocalIssuer) -> AsyncIterator[tuple[M
         outbox = cli.outbox_settings_from_args(options, {})
         secret = {ENV_CLIENT_SECRET: EMITTER_SECRET}
         tokens = cli.token_source(cli.credentials_from_args(options, secret, outbox))
-        sync = cli.quarantine_sync(cli.quarantine_settings_from_args(options, {}, outbox), tokens)
+        diffusion = {ENV_QUARANTINE_SECRET: shared}
+        settings = cli.quarantine_settings_from_args(options, diffusion, outbox)
+        sync = cli.quarantine_sync(settings, tokens)
         assert sync is not None
         proxy = McpProxy(
             ProxySettings.create(upstream_url, "entrepot"),
@@ -127,7 +138,7 @@ async def stdio_proxy(api_url: str, record: Path, issuer: LocalIssuer) -> AsyncI
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, ENV_CLIENT_SECRET: EMITTER_SECRET},
+        env={**os.environ, ENV_CLIENT_SECRET: EMITTER_SECRET, ENV_QUARANTINE_SECRET: SHARED},
     )
     proxy = StdioProxy(process)
 
@@ -163,16 +174,23 @@ def perimeter(proxy: McpProxy) -> tuple[QuarantineScope, ...] | None:
 async def test_a_quarantine_is_known_by_each_proxy_within_thirty_seconds_then_lifted(
     engine: AsyncEngine, tmp_path: Path
 ) -> None:
+    signing = QuarantineSigning.create(SHARED)
+    stranger = "autre-" + secrets.token_urlsafe(32)
     async with (
         serving_issuer() as (issuer, _),
-        running(create_app(engine, authentication=issuer.authentication())) as api_url,
+        running(
+            create_app(engine, authentication=issuer.authentication(), quarantine_signing=signing)
+        ) as api_url,
         http_proxy(api_url, issuer) as (proxy, _),
+        http_proxy(api_url, issuer, stranger) as (misled, _),
         stdio_proxy(api_url, tmp_path / "stdio", issuer) as stdio,
         httpx.AsyncClient(base_url=api_url, trust_env=False, headers=issuer.headers()) as client,
     ):
         # Les deux proxys se sont synchronisés une première fois : aucune quarantaine.
         await waited(lambda: perimeter(proxy) == (), time.monotonic())
         await waited(lambda: stdio.said("synchronisée : 0 périmètre(s)") == 1, time.monotonic())
+        assert proxy.quarantine_status().annotating
+        assert stdio.said("seule une diffusion signée par l'API") == 1
 
         declared = await client.post("/api/v1/incidents", json=DECLARATION)
         incident_id = declared.json()["id"]
@@ -202,6 +220,14 @@ async def test_a_quarantine_is_known_by_each_proxy_within_thirty_seconds_then_li
             2,
             False,
         )
+        assert status.annotating
+        # Le proxy réglé sur un autre secret n'a rien cru de l'API.
+        misled_status = misled.quarantine_status()
+        assert (misled_status.mode, misled_status.failing, misled_status.annotating) == (
+            "observe",
+            True,
+            False,
+        )
 
         lifted = await client.post(f"/api/v1/incidents/{incident_id}/quarantine/lift")
         assert lifted.status_code == 200
@@ -211,10 +237,11 @@ async def test_a_quarantine_is_known_by_each_proxy_within_thirty_seconds_then_li
             await waited(lambda: stdio.said("synchronisée : 0 périmètre(s)") == 2, since)
             < CRITERION_S
         )
-    # Le journal ne dit que des nombres : ni l'adresse de l'API, ni un nom de jeu.
+    # Le journal ne dit que des nombres : ni l'adresse de l'API, ni un nom de jeu, ni le secret.
     journal = "".join(stdio.journal)
     assert api_url not in journal
     assert all(item["name"] not in journal for item in DATASETS)
+    assert SHARED not in journal
 
 
 async def test_an_api_down_at_startup_leaves_each_proxy_relaying_in_observe_mode_until_it_is_back(
@@ -239,7 +266,12 @@ async def test_an_api_down_at_startup_leaves_each_proxy_relaying_in_observe_mode
             await waited(lambda: stdio.said("mode observer, aucun périmètre connu") == 1, started)
 
             # L'API revient, avec une quarantaine active : chaque proxy se synchronise.
-            async with served(create_app(engine, authentication=issuer.authentication()), sock):
+            api = create_app(
+                engine,
+                authentication=issuer.authentication(),
+                quarantine_signing=QuarantineSigning.create(SHARED),
+            )
+            async with served(api, sock):
                 async with httpx.AsyncClient(
                     base_url=api_url, trust_env=False, headers=issuer.headers()
                 ) as client:

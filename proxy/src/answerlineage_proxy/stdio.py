@@ -81,6 +81,10 @@ from answerlineage_proxy.inspection import (
 )
 from answerlineage_proxy.prefix import PREFIX_BYTES, read_message_prefix, read_reply_prefix
 from answerlineage_proxy.quarantine import QuarantineSync
+from answerlineage_proxy.quarantine_signature import ENV_SECRET as ENV_QUARANTINE_SECRET
+from answerlineage_proxy.quarantine_signature import (
+    ENV_SECRET_FILE as ENV_QUARANTINE_SECRET_FILE,
+)
 from answerlineage_proxy.signals import (
     CallOutcome,
     CallTiming,
@@ -101,10 +105,16 @@ FORWARDED_SIGNALS: Final = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 # Codes de sortie d'une commande qui ne démarre pas, comme ceux d'un shell POSIX.
 EXIT_NOT_FOUND: Final = 127
 EXIT_NOT_EXECUTABLE: Final = 126
-# Variables que l'enfant ne reçoit pas : la clé d'empreinte du locataire et le secret
-# du client OIDC du proxy, ou le fichier qui le tient, n'ont pas à sortir du proxy. Le
-# reste de l'environnement passe tel quel.
-WITHHELD_VARIABLES: Final = (ENV_FINGERPRINT_KEY, ENV_CLIENT_SECRET, ENV_CLIENT_SECRET_FILE)
+# Variables que l'enfant ne reçoit pas : la clé d'empreinte du locataire, le secret du
+# client OIDC du proxy et celui de la diffusion des quarantaines, ou les fichiers qui les
+# tiennent, n'ont pas à sortir du proxy. Le reste de l'environnement passe tel quel.
+WITHHELD_VARIABLES: Final = (
+    ENV_FINGERPRINT_KEY,
+    ENV_CLIENT_SECRET,
+    ENV_CLIENT_SECRET_FILE,
+    ENV_QUARANTINE_SECRET,
+    ENV_QUARANTINE_SECRET_FILE,
+)
 
 # Morceau lu d'un flux, au plus.
 _CHUNK_BYTES: Final = 64 * 1024

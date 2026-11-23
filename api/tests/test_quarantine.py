@@ -6,12 +6,21 @@ ses transitions tenus par la base. Chaque activation et chaque levée s'annonce
 par webhook, dans sa transaction. Les proxys lisent les périmètres en
 quarantaine active sous une version qui leur évite de retélécharger ce qui n'a
 pas changé. Une demande fautive est refusée sans rien enregistrer ni recopier.
+
+Avec un secret, l'API signe et date chaque diffusion, ``200`` comme ``304`` ; sous
+deux pendant une rotation ; sans secret, elle ne signe rien. Un secret invalide
+l'arrête au démarrage, sans être cité.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
-from collections.abc import AsyncIterator
+import re
+import secrets
+import time
+from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -27,6 +36,14 @@ from answerlineage_api.app import create_app
 from answerlineage_api.incidents import quarantine
 from answerlineage_api.incidents.models import ActiveQuarantines, validate_quarantine
 from answerlineage_api.incidents.quarantine import Diffusion, version_of
+from answerlineage_api.incidents.signature import (
+    ENV_PREVIOUS_SECRET,
+    ENV_SECRET,
+    MAX_SECRET_LENGTH,
+    MIN_SECRET_LENGTH,
+    QuarantineSigning,
+    signing_from_settings,
+)
 from answerlineage_api.store import schema
 from api.tests.issuer import authentication, signed_in
 from api.tests.test_incidents import DECLARATION, declaration, first_dataset
@@ -43,6 +60,41 @@ async def client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
         transport=transport, base_url="http://localhost", headers=signed_in()
     ) as client:
         yield client
+
+
+def a_secret() -> str:
+    return "partage-" + secrets.token_urlsafe(32)
+
+
+# Le secret de la diffusion et son ancien, pendant une rotation, tirés pour la session.
+SIGNING_SECRETS = (a_secret(), a_secret())
+
+
+@pytest.fixture
+async def signing_client(engine: AsyncEngine) -> AsyncIterator[httpx.AsyncClient]:
+    signing = QuarantineSigning.create(*SIGNING_SECRETS)
+    app = create_app(engine, authentication=authentication(), quarantine_signing=signing)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://localhost", headers=signed_in()
+    ) as client:
+        yield client
+
+
+def expected_signature(secret: str, timestamp: int, payload: bytes) -> str:
+    """La signature que le format publié décrit, calculée ici sans la fonction de l'API."""
+    message = b"answerlineage/quarantine/v1\x00" + str(timestamp).encode() + b"." + payload
+    return hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+
+
+def signed_under(header: str, keys: Sequence[str], payload: bytes, since: float) -> bool:
+    """Vrai quand l'en-tête porte une heure récente, puis une signature par secret, dans
+    l'ordre des secrets."""
+    found = re.fullmatch(r"t=([1-9][0-9]*)((?:,v1=[0-9a-f]{64})+)", header)
+    assert found is not None, "en-tête illisible"
+    timestamp = int(found.group(1))
+    assert int(since) <= timestamp <= time.time()
+    signatures = found.group(2).split(",v1=")[1:]
+    return signatures == [expected_signature(key, timestamp, payload) for key in keys]
 
 
 async def rows(engine: AsyncEngine, sql: str, **params: Any) -> list[tuple[Any, ...]]:
@@ -107,6 +159,44 @@ def test_a_faulty_request_is_refused_with_its_reason_and_without_its_value(
     assert asked is None
     assert (path, code) in {(error.path, error.type) for error in errors}
     assert CANARY not in json.dumps([error.model_dump() for error in errors])
+
+
+def test_the_secrets_of_the_diffusion_come_from_the_environment() -> None:
+    current, previous = a_secret(), a_secret()
+    assert signing_from_settings(None, {}) is None
+    alone = signing_from_settings(None, {ENV_SECRET: current})
+    assert alone is not None and alone.secrets == (current,)
+    rotating = signing_from_settings(None, {ENV_SECRET: current, ENV_PREVIOUS_SECRET: previous})
+    assert rotating is not None and rotating.secrets == (current, previous)
+    given = QuarantineSigning.create(current)
+    assert signing_from_settings(given, {ENV_SECRET: previous}) is given
+    # Un secret ne s'affiche jamais, pas même dans une représentation.
+    for shown in (repr(rotating), str(rotating)):
+        assert current not in shown and previous not in shown
+
+
+# Des réglages refusés, faits autour d'un canari qu'aucun message ne doit citer.
+INVALID: dict[str, Callable[[str], dict[str, str]]] = {
+    "court": lambda canary: {ENV_SECRET: canary},
+    "un-de-moins": lambda canary: {ENV_SECRET: (canary * 2)[: MIN_SECRET_LENGTH - 1]},
+    "trop-long": lambda canary: {ENV_SECRET: canary * (MAX_SECRET_LENGTH // len(canary) + 1)},
+    "espaces": lambda canary: {ENV_SECRET: f"{canary} {canary} {canary}"},
+    "hors-ascii": lambda canary: {ENV_SECRET: f"{canary}é{canary}{canary}"},
+    "precedent-seul": lambda canary: {ENV_PREVIOUS_SECRET: canary * 2},
+    "precedent-invalide": lambda canary: {ENV_SECRET: canary * 2, ENV_PREVIOUS_SECRET: canary},
+}
+
+
+@pytest.mark.parametrize("case", sorted(INVALID))
+def test_an_invalid_secret_stops_the_api_at_startup_without_being_cited(
+    case: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    canary = "canari" + secrets.token_hex(8)
+    for variable, value in INVALID[case](canary).items():
+        monkeypatch.setenv(variable, value)
+    with pytest.raises(ValueError, match="ANSWERLINEAGE_QUARANTINE_") as refused:
+        create_app(authentication=authentication())
+    assert canary not in str(refused.value)
 
 
 def test_the_only_mode_today_is_warn() -> None:
@@ -503,6 +593,58 @@ async def test_the_proxies_read_the_active_perimeters_under_a_version_that_spare
     )
     assert changed.status_code == 200
     assert changed.json() == {"version": version_of([]), "quarantines": []}
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_the_diffusion_is_signed_and_dated_200_and_304_alike_under_each_secret(
+    signing_client: httpx.AsyncClient,
+) -> None:
+    incident_id = await declared(signing_client)
+    await quarantined(signing_client, incident_id)
+
+    since = time.time()
+    found = await signing_client.get("/api/v1/quarantine")
+    assert found.status_code == 200
+    # La charge d'un 200 est son corps, tel qu'il part ; sous le secret, puis l'ancien.
+    assert signed_under(
+        found.headers["answerlineage-signature"], SIGNING_SECRETS, found.content, since
+    )
+
+    since = time.time()
+    unchanged = await signing_client.get(
+        "/api/v1/quarantine", headers={"if-none-match": found.headers["etag"]}
+    )
+    assert (unchanged.status_code, unchanged.content) == (304, b"")
+    # Celle d'un 304, qui n'a pas de corps, est la version que le proxy tient.
+    version = found.json()["version"].encode("ascii")
+    assert signed_under(
+        unchanged.headers["answerlineage-signature"], SIGNING_SECRETS, version, since
+    )
+
+    await lifted(signing_client, incident_id)
+    changed = await signing_client.get(
+        "/api/v1/quarantine", headers={"if-none-match": found.headers["etag"]}
+    )
+    assert changed.status_code == 200
+    assert signed_under(
+        changed.headers["answerlineage-signature"], SIGNING_SECRETS, changed.content, since
+    )
+    assert changed.json()["quarantines"] == []
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_without_a_secret_the_diffusion_carries_no_signature(
+    client: httpx.AsyncClient,
+) -> None:
+    found = await client.get("/api/v1/quarantine")
+    unchanged = await client.get(
+        "/api/v1/quarantine", headers={"if-none-match": found.headers["etag"]}
+    )
+    assert (found.status_code, unchanged.status_code) == (200, 304)
+    assert "answerlineage-signature" not in found.headers
+    assert "answerlineage-signature" not in unchanged.headers
 
 
 @pytest.mark.integration
