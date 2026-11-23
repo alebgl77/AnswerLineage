@@ -32,6 +32,8 @@ Les tests d'intégration démarrent PostgreSQL avec Testcontainers : Docker doit
 ANSWERLINEAGE_TEST_POSTGRES_IMAGE=public.ecr.aws/docker/library/postgres:17.11@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f UV_PYTHON=3.14 UV_PROJECT_ENVIRONMENT=.venv-314 uv run --all-packages --locked pytest
 ```
 
+Le registre public d'AWS limite les tirages anonymes, et les runners hébergés partagent leurs adresses : quand il refuse pour excès de débit, l'image épinglée est tirée, à la même empreinte donc aux mêmes octets, de Docker Hub, qui copie les mêmes images officielles ; si les deux refusent, l'essai reprend après 30 puis 60 secondes (`conftest.py`). Une image donnée par une étiquette seule n'a pas de repli.
+
 Un serveur PostgreSQL déjà disponible s'utilise à la place avec `ANSWERLINEAGE_TEST_DATABASE_URL`. Sans Docker ni serveur, les tests d'intégration sont sautés sur le poste ; en CI, ils échouent.
 
 ## Corpus d'abus

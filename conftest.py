@@ -8,6 +8,7 @@ test reçoit sa propre base, clonée d'un modèle déjà migré.
 from __future__ import annotations
 
 import os
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -31,6 +32,12 @@ _TEMPLATE = "answerlineage_template"
 # serveur est retenté après ces pauses, en secondes, avant d'être tenu pour un échec.
 REGISTRY_RETRY_DELAYS = (30.0, 60.0)
 _RATE_LIMITED = ("toomanyrequests", "429 too many requests")
+# Les images officielles de Docker sont copiées telles quelles sur le registre public
+# d'AWS : une même empreinte y désigne les mêmes octets. Quand l'un refuse pour excès de
+# débit, l'autre sert l'image épinglée ; une étiquette seule n'a pas de repli, car elle
+# peut désigner d'autres octets d'un registre à l'autre.
+_MIRRORS = (("public.ecr.aws/docker/library/", "docker.io/library/"),)
+_PINNED = re.compile(r"@sha256:[0-9a-f]{64}$")
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -56,21 +63,55 @@ def _admin_execute(server: URL, statement: str) -> None:
         engine.dispose()
 
 
-def start_despite_rate_limits(
-    start: Callable[[], object], sleep: Callable[[float], None] = time.sleep
-) -> None:
+def _rate_limited(error: Exception) -> bool:
+    return any(mark in str(error).lower() for mark in _RATE_LIMITED)
+
+
+def start_despite_rate_limits[T](
+    start: Callable[[], T], sleep: Callable[[float], None] = time.sleep
+) -> T:
     """Lance ``start`` ; un refus du registre pour excès de débit est retenté après une pause.
 
     Toute autre erreur, et le dernier refus, remontent tels quels.
     """
     for delay in (*REGISTRY_RETRY_DELAYS, None):
         try:
-            start()
-            return
+            return start()
         except Exception as error:
-            if delay is None or not any(mark in str(error).lower() for mark in _RATE_LIMITED):
+            if delay is None or not _rate_limited(error):
                 raise
             sleep(delay)
+    raise AssertionError("inatteignable")  # pragma: no cover
+
+
+def registry_mirrors(image: str) -> list[str]:
+    """L'image, puis la même empreinte sur un autre registre public qui la copie."""
+    if not _PINNED.search(image):
+        return [image]
+    return [image] + [
+        mirror + image[len(origin) :] for origin, mirror in _MIRRORS if image.startswith(origin)
+    ]
+
+
+def start_from_mirrors[T](
+    images: list[str], start: Callable[[str], T], sleep: Callable[[float], None] = time.sleep
+) -> T:
+    """Lance ``start`` sur la première image qu'un registre accepte de servir.
+
+    Un refus pour excès de débit passe aussitôt à l'image suivante ; tous refusés, l'essai
+    reprend après une pause. Toute autre erreur remonte telle quelle.
+    """
+
+    def attempt() -> T:
+        for image in images[:-1]:
+            try:
+                return start(image)
+            except Exception as error:
+                if not _rate_limited(error):
+                    raise
+        return start(images[-1])
+
+    return start_despite_rate_limits(attempt, sleep)
 
 
 @pytest.fixture(scope="session")
@@ -91,8 +132,12 @@ def postgres_server(postgres_image: str) -> Iterator[URL]:
     try:
         from testcontainers.community.postgres import PostgresContainer
 
-        container = PostgresContainer(image, driver="psycopg")
-        start_despite_rate_limits(container.start)
+        def started(reference: str) -> PostgresContainer:
+            container = PostgresContainer(reference, driver="psycopg")
+            container.start()
+            return container
+
+        container = start_from_mirrors(registry_mirrors(image), started)
     except Exception as error:
         # En CI, un test d'intégration sauté serait un faux vert.
         if os.environ.get("CI"):
