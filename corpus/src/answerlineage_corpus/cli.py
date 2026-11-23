@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -24,7 +25,15 @@ from answerlineage_corpus.enterprise import (
     generate,
 )
 from answerlineage_corpus.events import render
-from answerlineage_corpus.loader import DEFAULT_BATCH_SIZE, LoadError, send, send_reports
+from answerlineage_corpus.loader import (
+    DEFAULT_BATCH_SIZE,
+    ENV_TOKEN,
+    ENV_TOKEN_FILE,
+    LoadError,
+    send,
+    send_reports,
+    token_from_environment,
+)
 from answerlineage_corpus.scenarios import CORPUS_VERSION, check_corpus, load_corpus
 from answerlineage_corpus.truth import truth
 
@@ -46,7 +55,13 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("events", parents=[size], help="écrit les événements OpenLineage (JSON)")
     commands.add_parser("truth", parents=[size], help="écrit la vérité des incidents (JSON)")
     load = commands.add_parser(
-        "load", parents=[size], help="envoie les événements et les relevés de couverture à une API"
+        "load",
+        parents=[size],
+        help="envoie les événements et les relevés de couverture à une API",
+        epilog=(
+            f"Le jeton porteur d'un émetteur se lit de {ENV_TOKEN} ou du fichier que nomme "
+            f"{ENV_TOKEN_FILE} ; la démonstration n'en demande pas."
+        ),
     )
     load.add_argument(
         "--url", required=True, help="adresse de l'API, par exemple http://127.0.0.1:8000"
@@ -130,8 +145,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.write("\n")
         return 0
     try:
-        result = send(render(enterprise), args.url, batch_size=args.batch_size)
-        reports = send_reports(coverage_reports(enterprise), args.url)
+        token = token_from_environment(os.environ)
+        result = send(render(enterprise), args.url, batch_size=args.batch_size, token=token)
+        reports = send_reports(coverage_reports(enterprise), args.url, token=token)
     except LoadError as error:
         print(f"Envoi interrompu : {error}", file=sys.stderr)
         return 1

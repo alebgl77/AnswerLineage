@@ -15,6 +15,13 @@ est hostile tant qu'il n'est pas validé :
 httpx journalise l'adresse complète de chaque requête, paramètres compris :
 le niveau de ses journaux est relevé, pour qu'aucun nom de jeu de données ni
 aucune fenêtre d'incident n'atteigne un journal.
+
+L'API demande un jeton porteur OIDC. La commande le lit d'une variable
+d'environnement (``ANSWERLINEAGE_TOKEN``) ou d'un fichier
+(``ANSWERLINEAGE_TOKEN_FILE``, ``--token-file``), jamais de la ligne de
+commande, que la liste des processus montre. Elle ne l'envoie qu'en https, ou
+en http vers la boucle locale, et ne le cite jamais. Un refus de l'API pour le
+jeton se dit par un message écrit d'avance (``NotAuthorizedError``).
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final
 from urllib.parse import urlsplit
 
@@ -33,20 +41,43 @@ import httpx
 from answerlineage_cli import __version__
 
 ENV_URL: Final = "ANSWERLINEAGE_API_URL"
+ENV_TOKEN: Final = "ANSWERLINEAGE_TOKEN"  # noqa: S105
+ENV_TOKEN_FILE: Final = "ANSWERLINEAGE_TOKEN_FILE"  # noqa: S105
 DEFAULT_URL: Final = "http://127.0.0.1:8000"
 DEFAULT_TIMEOUT: Final = 30.0
 MAX_TIMEOUT: Final = 600
 MAX_URL_LENGTH: Final = 2048
 # Un refus de l'API tient en quelques dizaines d'octets.
 MAX_REFUSAL_BYTES: Final = 64 * 1024
+# Un jeton porteur, au plus : celui que l'API admet.
+MAX_TOKEN_LENGTH: Final = 16 * 1024
 
 _HOST = re.compile(r"\[[0-9a-f:.]{2,45}\]|[a-z0-9_-][a-z0-9._-]{0,252}")
 _PATH = re.compile(r"(/[A-Za-z0-9._~!$&'()*+,;=:@%-]*)*")
+# Un jeton porteur (RFC 6750, 2.1) : token68.
+_TOKEN = re.compile(r"[A-Za-z0-9\-._~+/]+=*")
 _TRANSPORT_LOGGERS: Final = ("httpx", "httpcore")
+# Les refus de l'API pour le jeton : statut et code.
+AUTHORIZATION_REFUSALS: Final = {
+    "missing_token": 401,
+    "invalid_token": 401,
+    "expired_token": 401,
+    "insufficient_role": 403,
+    "authentication_unavailable": 503,
+}
 
 
 class UsageError(Exception):
     """Un réglage de la commande est inutilisable. Le message est un texte fixe."""
+
+
+class NotAuthorizedError(Exception):
+    """L'API refuse la requête pour son jeton : ``code`` est l'un de
+    ``AUTHORIZATION_REFUSALS``, jamais un texte reçu."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 class UnreachableError(Exception):
@@ -138,6 +169,48 @@ def is_loopback(base: str) -> bool:
     return host in ("127.0.0.1", "localhost", "::1") or host.startswith("127.")
 
 
+def configured_token(token_file: str | None, environment: Mapping[str, str]) -> str | None:
+    """Le jeton : d'un fichier (``--token-file``, sinon ``ANSWERLINEAGE_TOKEN_FILE``) ou de
+    ``ANSWERLINEAGE_TOKEN`` ; ``None`` sans jeton. Aucun message ne cite le jeton ni le
+    chemin du fichier."""
+    path = token_file or environment.get(ENV_TOKEN_FILE) or None
+    text = environment.get(ENV_TOKEN) or None
+    if path is not None and text is not None:
+        raise UsageError(
+            f"Le jeton vient d'un fichier ({ENV_TOKEN_FILE} ou --token-file) ou de {ENV_TOKEN}, "
+            "pas des deux."
+        )
+    if path is not None:
+        try:
+            with Path(path).open("rb") as source:
+                content = source.read(MAX_TOKEN_LENGTH + 2)
+        except OSError:
+            raise UsageError("Le fichier du jeton est illisible.") from None
+        text = content.decode("ascii", errors="replace").strip()
+    if text is None:
+        return None
+    if len(text) > MAX_TOKEN_LENGTH or not _TOKEN.fullmatch(text):
+        raise UsageError(
+            "Le jeton est illisible : un jeton porteur, sans préfixe « Bearer », "
+            f"de {MAX_TOKEN_LENGTH} caractères au plus."
+        )
+    return text
+
+
+def _authorization_refusal(status: int, content_type: str, body: bytes) -> str | None:
+    """Le code d'un refus de l'API pour le jeton, s'il en est un."""
+    if status not in AUTHORIZATION_REFUSALS.values() or content_type != "application/json":
+        return None
+    try:
+        document = json.loads(body)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    code = document.get("error") if isinstance(document, dict) else None
+    if isinstance(code, str) and AUTHORIZATION_REFUSALS.get(code) == status:
+        return code
+    return None
+
+
 class Api:
     """Les requêtes de la commande vers une API AnswerLineage."""
 
@@ -147,18 +220,29 @@ class Api:
         *,
         timeout: float = DEFAULT_TIMEOUT,
         transport: httpx.BaseTransport | None = None,
+        token: str | None = None,
     ) -> None:
+        if token is not None and not (base.startswith("https://") or is_loopback(base)):
+            raise UsageError(
+                "Le jeton ne part qu'en https, ou en http vers la boucle locale : "
+                "donner l'adresse https de l'API."
+            )
         self.base = base
+        # Vrai quand chaque requête porte un jeton.
+        self.authenticated = token is not None
         self._timeout = timeout
+        headers = {
+            "accept-encoding": "identity",
+            "user-agent": f"answerlineage-cli/{__version__}",
+        }
+        if token is not None:
+            headers["authorization"] = f"Bearer {token}"
         self._client = httpx.Client(
             timeout=httpx.Timeout(timeout),
             follow_redirects=False,
             trust_env=False,
             transport=transport,
-            headers={
-                "accept-encoding": "identity",
-                "user-agent": f"answerlineage-cli/{__version__}",
-            },
+            headers=headers,
         )
         quiet_transport_logs()
 
@@ -217,8 +301,11 @@ class Api:
                         raise InvalidResponseError(_too_large(max_bytes))
                     if time.monotonic() > deadline:
                         raise UnreachableError
-                media = response.headers.get("content-type", "").partition(";")[0]
-                return Received(response.status_code, media.strip().lower(), bytes(body))
+                media = response.headers.get("content-type", "").partition(";")[0].strip().lower()
+                refusal = _authorization_refusal(response.status_code, media, bytes(body))
+                if refusal is not None:
+                    raise NotAuthorizedError(refusal)
+                return Received(response.status_code, media, bytes(body))
         except httpx.ProtocolError:
             raise InvalidResponseError("elle n'est pas du HTTP valide") from None
         except (httpx.TransportError, httpx.InvalidURL):

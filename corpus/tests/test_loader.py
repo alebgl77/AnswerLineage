@@ -6,17 +6,21 @@ import json
 import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
 
 from answerlineage_corpus.loader import (
+    ENV_TOKEN,
+    ENV_TOKEN_FILE,
     LoadError,
     LoadResult,
     ReportResult,
     batch_url,
     send,
     send_reports,
+    token_from_environment,
 )
 
 
@@ -31,7 +35,12 @@ class FakeApi(BaseHTTPRequestHandler):
         length = int(self.headers["content-length"])
         events = json.loads(self.rfile.read(length))
         type(self).batches.append(
-            {"path": self.path, "type": self.headers["content-type"], "events": events}
+            {
+                "path": self.path,
+                "type": self.headers["content-type"],
+                "authorization": self.headers.get("authorization"),
+                "events": events,
+            }
         )
         report = {"accepted": len(events), "duplicates": 1, "rejected": []}
         payload = self.body if self.body is not None else json.dumps(report).encode()
@@ -156,3 +165,55 @@ def test_reports_need_an_http_address() -> None:
 )
 def test_batch_address_is_built_from_the_api_address(base: str, expected: str) -> None:
     assert batch_url(base) == expected
+
+
+# Le jeton porteur d'un émetteur, quand l'API en demande un.
+
+TOKEN = "canari.jeton-corpus_4b1e"  # noqa: S105 — canari de test, pas un secret.
+
+
+def test_the_token_goes_with_every_batch_and_report(api: str) -> None:
+    send(events(3), api, batch_size=2, token=TOKEN)
+    FakeApi.status, FakeApi.body = 201, b"{}"
+    send_reports([{"rank": 0}], api, token=TOKEN)
+    assert [batch["authorization"] for batch in FakeApi.batches] == [f"Bearer {TOKEN}"] * 3
+
+
+def test_without_token_no_authorization_is_sent(api: str) -> None:
+    send(events(1), api)
+    assert FakeApi.batches[0]["authorization"] is None
+
+
+@pytest.mark.parametrize("address", ["http://lignage.exemple.fr", "http://10.0.0.5:8000"])
+def test_the_token_never_leaves_in_http_beyond_the_loopback(address: str) -> None:
+    for sending in (
+        lambda: send(events(1), address, token=TOKEN),
+        lambda: send_reports([{"rank": 0}], address, token=TOKEN),
+    ):
+        with pytest.raises(LoadError, match="https") as refused:
+            sending()
+        assert TOKEN not in str(refused.value)
+
+
+def test_the_token_comes_from_a_variable_or_a_file(tmp_path: Path) -> None:
+    held = tmp_path / "jeton"
+    held.write_text(TOKEN + "\n", encoding="ascii")
+    assert token_from_environment({}) is None
+    assert token_from_environment({ENV_TOKEN: TOKEN}) == TOKEN
+    assert token_from_environment({ENV_TOKEN_FILE: str(held)}) == TOKEN
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {ENV_TOKEN: TOKEN, ENV_TOKEN_FILE: "/dev/null"},
+        {ENV_TOKEN: f"Bearer {TOKEN}"},
+        {ENV_TOKEN_FILE: "/chemin/canari-absent"},
+    ],
+    ids=["les deux", "préfixe", "fichier absent"],
+)
+def test_an_unusable_token_is_refused_without_being_cited(environment: dict[str, str]) -> None:
+    with pytest.raises(LoadError) as refused:
+        token_from_environment(environment)
+    assert TOKEN not in str(refused.value)
+    assert "canari-absent" not in str(refused.value)

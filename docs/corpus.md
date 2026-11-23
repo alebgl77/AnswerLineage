@@ -16,6 +16,8 @@ uv run answerlineage-corpus load --url http://127.0.0.1:8000
 
 Les options `--seed`, `--requests`, `--days` et `--incidents` choisissent la graine et la taille. Par défaut : graine 1, 240 demandes sur 10 jours ouvrés, 6 incidents.
 
+Devant une API qui demande un jeton porteur, `load` envoie celui de `ANSWERLINEAGE_TOKEN`, ou du fichier que nomme `ANSWERLINEAGE_TOKEN_FILE` : le jeton d'un émetteur, jamais sur la ligne de commande, et seulement en `https` ou vers la boucle locale. La [démonstration](demonstration.md) n'en demande pas.
+
 ## Ce que contient l'entreprise
 
 | | |

@@ -31,6 +31,11 @@ Les invariants de la capture tiennent :
 - **le journal ne dit que des nombres**, des statuts et des codes : ni
   l'adresse de l'API, ni la réponse, ni un nom de jeu de données.
 
+Avec un jeton (``credentials.py``), chaque interrogation le porte : l'API ne
+livre les périmètres qu'à un appelant authentifié. Sans jeton disponible,
+l'interrogation échoue comme une API en panne, et le dernier état connu est
+gardé ; un refus ``401`` fait oublier le jeton.
+
 Le proxy n'authentifie pas encore l'API : il ne fait encore rien des lectures
 du périmètre, et un faux périmètre est sans effet ; le modèle de menaces dit ce
 qu'il faudra le jour où le proxy agira.
@@ -52,6 +57,7 @@ from typing import Any, Final, Literal
 import httpx
 
 from answerlineage_proxy.config import ProxyConfigurationError
+from answerlineage_proxy.credentials import Tokens, TokenUnavailableError
 from answerlineage_proxy.names import (
     DATASET_NAME_MAX,
     NAMESPACE_MAX,
@@ -284,9 +290,11 @@ class QuarantineSync:
         stale_after: timedelta = STALE_AFTER,
         clock: Callable[[], float] = time.monotonic,
         random: Random | None = None,
+        tokens: Tokens | None = None,
     ) -> None:
         _quiet_client_logs()
         self.settings = settings
+        self._tokens = tokens
         self._client = client
         self._owns_client = client is None
         self._request_timeout = request_timeout
@@ -358,11 +366,19 @@ class QuarantineSync:
         if self.known is not None:
             headers["if-none-match"] = f'"{self.known.version}"'
         try:
+            if self._tokens is not None:
+                headers["authorization"] = f"Bearer {await self._tokens.token()}"
+        except TokenUnavailableError:
+            self._failed("jeton indisponible")
+            return False
+        try:
             async with asyncio.timeout(self._request_timeout):
                 reply = await self._get(headers)
         except (httpx.HTTPError, TimeoutError) as error:
             self._failed(type(error).__name__)
             return False
+        if reply.status == 401 and self._tokens is not None:
+            self._tokens.invalidate()
         if reply.status == 304 and self.known is not None:
             self._succeeded(self.known)
             return True

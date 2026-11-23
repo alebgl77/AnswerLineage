@@ -50,6 +50,19 @@ from answerlineage_proxy.config import (
     seconds,
 )
 from answerlineage_proxy.coverage import DEFAULT_WINDOW, MAX_WINDOW, MIN_WINDOW
+from answerlineage_proxy.credentials import (
+    ENV_AUDIENCE,
+    ENV_CLIENT_ID,
+    ENV_CLIENT_SECRET,
+    ENV_CLIENT_SECRET_FILE,
+    ENV_ISSUER,
+    ENV_SCOPE,
+    ClientCredentials,
+    ClientCredentialsTokens,
+    Tokens,
+    client_secret,
+    secure_url,
+)
 from answerlineage_proxy.guard import LOOPBACK_HOSTS
 from answerlineage_proxy.lifecycle import SERVER_OPTIONS as SERVER_OPTIONS
 from answerlineage_proxy.outbox import (
@@ -290,6 +303,37 @@ def build_parser() -> argparse.ArgumentParser:
             f"défaut (ou {ENV_QUARANTINE_INTERVAL})"
         ),
     )
+    parser.add_argument(
+        "--oidc-issuer",
+        metavar="URL",
+        help=(
+            "émetteur OIDC auprès duquel le proxy obtient son jeton envers l'API, par l'octroi "
+            f"client_credentials (ou {ENV_ISSUER}) ; sans lui, l'API est appelée sans jeton"
+        ),
+    )
+    parser.add_argument(
+        "--oidc-client-id",
+        metavar="CLIENT",
+        help=f"identifiant du client OIDC du proxy (ou {ENV_CLIENT_ID})",
+    )
+    parser.add_argument(
+        "--oidc-client-secret-file",
+        metavar="FICHIER",
+        help=(
+            f"fichier qui contient le secret du client OIDC (ou {ENV_CLIENT_SECRET_FILE}, ou le "
+            f"secret lui-même dans {ENV_CLIENT_SECRET}) ; jamais sur la ligne de commande"
+        ),
+    )
+    parser.add_argument(
+        "--oidc-scope",
+        metavar="PORTÉE",
+        help=f"portée demandée avec le jeton, si l'émetteur en exige une (ou {ENV_SCOPE})",
+    )
+    parser.add_argument(
+        "--oidc-audience",
+        metavar="AUDIENCE",
+        help=f"audience demandée avec le jeton, si l'émetteur en exige une (ou {ENV_AUDIENCE})",
+    )
     return parser
 
 
@@ -350,6 +394,48 @@ def quarantine_settings_from_args(
     if interval is None:
         interval = integer(environment, ENV_QUARANTINE_INTERVAL, DEFAULT_INTERVAL)
     return QuarantineSettings.create(outbox.api_url, interval)
+
+
+def credentials_from_args(
+    argv: Sequence[str] | None, environment: Mapping[str, str], outbox: OutboxSettings | None
+) -> ClientCredentials | None:
+    """L'identité du proxy envers l'API : l'émetteur, le client et son secret, des options,
+    sinon de l'environnement. Aucune sans émetteur ; un réglage partiel est refusé."""
+    args = build_parser().parse_args(argv)
+    issuer = args.oidc_issuer or environment.get(ENV_ISSUER) or None
+    client_id = args.oidc_client_id or environment.get(ENV_CLIENT_ID) or None
+    secret = client_secret(environment, args.oidc_client_secret_file)
+    if issuer is None and client_id is None and secret is None:
+        return None
+    if issuer is None or client_id is None or secret is None:
+        raise ProxyConfigurationError(
+            f"Le jeton du proxy demande l'émetteur ({ENV_ISSUER}), l'identifiant du client "
+            f"({ENV_CLIENT_ID}) et son secret ({ENV_CLIENT_SECRET_FILE} ou {ENV_CLIENT_SECRET})."
+        )
+    if outbox is None:
+        raise ProxyConfigurationError(
+            "Un jeton OIDC est réglé sans adresse d'API (--api-url) : il ne servirait à rien."
+        )
+    if not secure_url(outbox.api_url):
+        raise ProxyConfigurationError(
+            "Le jeton du proxy ne part qu'en https, ou en http vers la boucle locale : "
+            "l'adresse de l'API doit être en https."
+        )
+    return ClientCredentials.create(
+        issuer,
+        client_id,
+        secret,
+        scope=args.oidc_scope or environment.get(ENV_SCOPE) or None,
+        audience=args.oidc_audience or environment.get(ENV_AUDIENCE) or None,
+    )
+
+
+def token_source(credentials: ClientCredentials | None) -> Tokens | None:
+    """Le jeton du proxy, partagé par la boîte d'envoi et la synchronisation des quarantaines."""
+    if credentials is None:
+        return None
+    logger.info("Envois à l'API authentifiés par un jeton OIDC du proxy (client_credentials).")
+    return ClientCredentialsTokens(credentials)
 
 
 def sql_tools_from_args(args: argparse.Namespace) -> dict[str, SqlTool]:
@@ -438,7 +524,7 @@ def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str
     )
 
 
-def event_sink(outbox: OutboxSettings | None) -> EventSink:
+def event_sink(outbox: OutboxSettings | None, tokens: Tokens | None = None) -> EventSink:
     """La destination des événements, la même pour les deux transports : la boîte d'envoi
     vers l'API quand son adresse est réglée, sinon une destination qui compte sans envoyer."""
     if outbox is None:
@@ -456,13 +542,15 @@ def event_sink(outbox: OutboxSettings | None) -> EventSink:
         outbox.max_bytes,
         outbox.flush_seconds,
     )
-    return Outbox(outbox)
+    return Outbox(outbox, tokens=tokens)
 
 
-def quarantine_sync(settings: QuarantineSettings | None) -> QuarantineSync | None:
+def quarantine_sync(
+    settings: QuarantineSettings | None, tokens: Tokens | None = None
+) -> QuarantineSync | None:
     """La synchronisation des quarantaines, la même pour les deux transports : aucune sans
     adresse d'API, le proxy reste alors en mode observer."""
-    return None if settings is None else QuarantineSync(settings)
+    return None if settings is None else QuarantineSync(settings, tokens=tokens)
 
 
 def log_instance(instance: str) -> None:
@@ -485,6 +573,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         coverage_window = coverage_window_from_args(argv, os.environ)
         outbox = outbox_settings_from_args(argv, os.environ)
         quarantine = quarantine_settings_from_args(argv, os.environ, outbox)
+        credentials = credentials_from_args(argv, os.environ, outbox)
         if settings.mode == "gateway":
             # Les métadonnées OAuth du serveur disent si ses jetons sont liés à son URL :
             # elles se lisent avant de servir, jamais sur le chemin d'un appel.
@@ -522,11 +611,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if settings.read_rules:
         logger.info("Règles de lecture : %d outils décrits.", len(settings.read_rules))
     log_run_comments(settings.sql_tools)
+    tokens = token_source(credentials)
     proxy = McpProxy(
         settings,
-        event_sink(outbox),
+        event_sink(outbox, tokens),
         coverage_window=coverage_window,
-        quarantine=quarantine_sync(quarantine),
+        quarantine=quarantine_sync(quarantine, tokens),
     )
     log_instance(proxy.instance)
     return lifecycle.run(proxy, settings)

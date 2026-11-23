@@ -70,6 +70,7 @@ from answerlineage_proxy.config import (
     read_rules,
 )
 from answerlineage_proxy.coverage import DEFAULT_WINDOW
+from answerlineage_proxy.credentials import ENV_CLIENT_SECRET, ENV_CLIENT_SECRET_FILE
 from answerlineage_proxy.events import Outcome
 from answerlineage_proxy.fingerprint import RESULT_LABEL, Digest
 from answerlineage_proxy.inspection import (
@@ -100,9 +101,10 @@ FORWARDED_SIGNALS: Final = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 # Codes de sortie d'une commande qui ne démarre pas, comme ceux d'un shell POSIX.
 EXIT_NOT_FOUND: Final = 127
 EXIT_NOT_EXECUTABLE: Final = 126
-# Variable que l'enfant ne reçoit pas : la clé d'empreinte du locataire n'a pas à
-# sortir du proxy. Le reste de l'environnement passe tel quel.
-WITHHELD_VARIABLES: Final = (ENV_FINGERPRINT_KEY,)
+# Variables que l'enfant ne reçoit pas : la clé d'empreinte du locataire et le secret
+# du client OIDC du proxy, ou le fichier qui le tient, n'ont pas à sortir du proxy. Le
+# reste de l'environnement passe tel quel.
+WITHHELD_VARIABLES: Final = (ENV_FINGERPRINT_KEY, ENV_CLIENT_SECRET, ENV_CLIENT_SECRET_FILE)
 
 # Morceau lu d'un flux, au plus.
 _CHUNK_BYTES: Final = 64 * 1024
@@ -1131,12 +1133,14 @@ def main(arguments: Sequence[str], environment: Mapping[str, str]) -> int:
     que la sortie du proxy peut suivre celle du serveur.
     """
     from answerlineage_proxy.cli import (
+        credentials_from_args,
         event_sink,
         log_instance,
         log_run_comments,
         outbox_settings_from_args,
         quarantine_settings_from_args,
         quarantine_sync,
+        token_source,
     )
 
     try:
@@ -1144,6 +1148,7 @@ def main(arguments: Sequence[str], environment: Mapping[str, str]) -> int:
         options = _split(arguments)[0]
         outbox = outbox_settings_from_args(options, environment)
         quarantine = quarantine_settings_from_args(options, environment, outbox)
+        credentials = credentials_from_args(options, environment, outbox)
     except ProxyConfigurationError as error:
         print(f"Configuration invalide : {error}", file=sys.stderr)
         return 2
@@ -1162,11 +1167,12 @@ def main(arguments: Sequence[str], environment: Mapping[str, str]) -> int:
             tool,
         )
     log_run_comments(settings.sql_tools)
+    tokens = token_source(credentials)
     proxy = StdioProxy(
         settings,
-        event_sink(outbox),
+        event_sink(outbox, tokens),
         coverage_window=coverage_window,
-        quarantine=quarantine_sync(quarantine),
+        quarantine=quarantine_sync(quarantine, tokens),
     )
     log_instance(proxy.instance)
     return asyncio.run(proxy.run())

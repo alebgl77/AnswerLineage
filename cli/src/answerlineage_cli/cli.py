@@ -31,7 +31,7 @@ import sys
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TextIO
+from typing import Final, TextIO
 
 import httpx
 
@@ -39,13 +39,17 @@ from answerlineage_cli import dead_letters, demo, doctor, exposure, impact, inci
 from answerlineage_cli.client import (
     DEFAULT_TIMEOUT,
     DEFAULT_URL,
+    ENV_TOKEN,
+    ENV_TOKEN_FILE,
     ENV_URL,
     MAX_TIMEOUT,
     Api,
     InvalidResponseError,
+    NotAuthorizedError,
     UnreachableError,
     UsageError,
     configured_base,
+    configured_token,
     is_loopback,
 )
 from answerlineage_cli.exits import Exit
@@ -194,6 +198,14 @@ def _dataset_part(value: str) -> str:
 
 def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--url", help=f"adresse de l'API (ou {ENV_URL}), {DEFAULT_URL} par défaut")
+    parser.add_argument(
+        "--token-file",
+        metavar="FICHIER",
+        help=(
+            f"fichier qui contient le jeton porteur OIDC de l'appelant (ou {ENV_TOKEN_FILE}, ou "
+            f"le jeton lui-même dans {ENV_TOKEN}) ; jamais le jeton sur la ligne de commande"
+        ),
+    )
     parser.add_argument(
         "--timeout",
         type=_bounded(1, MAX_TIMEOUT, "de secondes"),
@@ -830,6 +842,27 @@ def _demo(api: Api, args: argparse.Namespace) -> Exit:
     return Exit.OK
 
 
+# Les refus de l'API pour le jeton, écrits d'avance : aucun ne cite le jeton.
+NOT_AUTHORIZED: Final = {
+    "missing_token": (
+        f"L'API demande un jeton : le donner par {ENV_TOKEN} ou par un fichier "
+        f"({ENV_TOKEN_FILE} ou --token-file)."
+    ),
+    "invalid_token": (
+        "L'API refuse le jeton : il est mal formé, ou n'a pas été émis pour elle par son "
+        "émetteur OIDC. En obtenir un nouveau."
+    ),
+    "expired_token": "Le jeton a expiré : en obtenir un nouveau.",
+    "insufficient_role": (
+        "Le jeton n'a pas le rôle que demande cette commande : la matrice des droits est dans "
+        "docs/securite/authentification.md."
+    ),
+    "authentication_unavailable": (
+        "L'API ne peut pas vérifier le jeton : son émetteur OIDC ne répond pas. Réessayer dans "
+        "un instant."
+    ),
+}
+
 _COMMANDS = {
     "impact": _impact,
     "exposure": _exposure,
@@ -851,10 +884,12 @@ def main(argv: Sequence[str] | None = None, *, transport: httpx.BaseTransport | 
         return Exit.OK if exit_.code in (0, None) else Exit.USAGE
     try:
         base = configured_base(args.url, os.environ)
+        token = configured_token(args.token_file, os.environ)
+        api = Api(base, timeout=float(args.timeout), transport=transport, token=token)
     except UsageError as error:
         err(f"Usage fautif : {error}")
         return Exit.USAGE
-    with Api(base, timeout=float(args.timeout), transport=transport) as api:
+    with api:
         try:
             return int(_COMMANDS[args.command](api, args))
         except UnreachableError:
@@ -866,6 +901,9 @@ def main(argv: Sequence[str] | None = None, *, transport: httpx.BaseTransport | 
         except InvalidResponseError as invalid:
             where = f" en {invalid.where}" if invalid.where else ""
             err(f"Réponse de l'API invalide{where} : {invalid.reason}. Rien n'est affiché.")
+            return Exit.API_ERROR
+        except NotAuthorizedError as refused:
+            err(NOT_AUTHORIZED[refused.code])
             return Exit.API_ERROR
 
 

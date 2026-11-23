@@ -27,6 +27,7 @@ import pytest
 from answerlineage_proxy import stdio
 from answerlineage_proxy.config import ENV_FINGERPRINT_KEY, ProxyConfigurationError, SqlTool
 from answerlineage_proxy.config import StdioSettings as Settings
+from answerlineage_proxy.credentials import ENV_CLIENT_SECRET, ENV_CLIENT_SECRET_FILE
 from answerlineage_proxy.fingerprint import RESULT_LABEL, arguments_fingerprint
 from answerlineage_proxy.prefix import PREFIX_BYTES
 from answerlineage_proxy.sink import MemorySink
@@ -759,15 +760,39 @@ async def test_marked_arguments_and_results_never_leave_the_proxy(
     assert len(session.events) == 2
 
 
-async def test_the_server_gets_the_environment_except_the_fingerprint_key(tmp_path: Path) -> None:
-    environment = {**os.environ, ENV_FINGERPRINT_KEY: "ab" * 32, "ANSWERLINEAGE_ESSAI": "1"}
-    names = [ENV_FINGERPRINT_KEY, "ANSWERLINEAGE_ESSAI"]
+async def present_in_the_server(tmp_path: Path, variables: Mapping[str, str]) -> dict[str, bool]:
+    """Les variables données au proxy, et pour chacune si le serveur MCP la reçoit."""
+    environment = {**os.environ, **variables}
     async with stdio_session(tmp_path, environment=environment) as session:
-        await session.send(stdio_call(1, "environment", {"names": names}))
+        await session.send(stdio_call(1, "environment", {"names": list(variables)}))
         (reply,) = await session.replies(1)
         assert await session.close() == 0
-    present = json.loads(reply)["result"]["structuredContent"]
+    present: dict[str, bool] = json.loads(reply)["result"]["structuredContent"]
+    return present
+
+
+async def test_the_server_gets_the_environment_except_the_fingerprint_key(tmp_path: Path) -> None:
+    present = await present_in_the_server(
+        tmp_path, {ENV_FINGERPRINT_KEY: "ab" * 32, "ANSWERLINEAGE_ESSAI": "1"}
+    )
     assert present == {ENV_FINGERPRINT_KEY: False, "ANSWERLINEAGE_ESSAI": True}
+
+
+async def test_the_server_does_not_get_the_client_secret_of_the_proxy(tmp_path: Path) -> None:
+    """Le secret du client OIDC du proxy, ni le fichier qui le tient, ne sortent du proxy."""
+    present = await present_in_the_server(
+        tmp_path,
+        {
+            ENV_CLIENT_SECRET: "canari-secret-client",
+            ENV_CLIENT_SECRET_FILE: str(tmp_path / "secret"),
+            "ANSWERLINEAGE_ESSAI": "1",
+        },
+    )
+    assert present == {
+        ENV_CLIENT_SECRET: False,
+        ENV_CLIENT_SECRET_FILE: False,
+        "ANSWERLINEAGE_ESSAI": True,
+    }
 
 
 # Les réglages.

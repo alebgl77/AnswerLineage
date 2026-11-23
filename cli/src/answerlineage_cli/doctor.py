@@ -1,7 +1,8 @@
 """``answerlineage doctor`` : vérifie chaque composant d'une installation.
 
 Les vérifications, dans l'ordre : l'API répond et sa version ; elle accepte
-l'adresse utilisée (en-têtes Host et Origin) ; elle lit sa base ; le schéma
+l'adresse utilisée (en-têtes Host et Origin) ; elle accepte le jeton, et son
+rôle ouvre la route de santé ; elle lit sa base ; le schéma
 est à jour ; la file d'ingestion avance ; aucun événement n'attend au rebut ;
 aucun émetteur n'est muet ; aucune partition mensuelle ne manque ; la
 réémission vers un consommateur OpenLineage externe n'est pas en retard ; les
@@ -25,7 +26,15 @@ from dataclasses import asdict, dataclass
 from typing import Any, Final, Literal
 
 from answerlineage_cli import shape
-from answerlineage_cli.client import Api, InvalidResponseError, Received, UnreachableError
+from answerlineage_cli.client import (
+    ENV_TOKEN,
+    ENV_TOKEN_FILE,
+    Api,
+    InvalidResponseError,
+    NotAuthorizedError,
+    Received,
+    UnreachableError,
+)
 
 HEALTH: Final = "/api/v1/health"
 MAX_HEALTH_BYTES: Final = 64 * 1024
@@ -45,6 +54,7 @@ MIGRATION_STATES: Final = ("current", "behind", "unknown_revision", "not_migrate
 CHECKS: Final = (
     "api",
     "address",
+    "access",
     "database",
     "migrations",
     "queue",
@@ -60,6 +70,7 @@ CHECKS: Final = (
 _LABELS: Final = {
     "api": "API",
     "address": "Adresse",
+    "access": "Accès",
     "database": "Base",
     "migrations": "Migrations",
     "queue": "File",
@@ -126,6 +137,28 @@ ANOMALIES: Final[Mapping[str, Anomaly]] = {
         "L'API refuse les requêtes faites à cette adresse.",
         "Vérifier ANSWERLINEAGE_ALLOWED_HOSTS et ANSWERLINEAGE_ALLOWED_ORIGINS dans "
         "l'environnement de l'API.",
+    ),
+    "token_missing": Anomaly(
+        "access",
+        "L'API demande un jeton porteur OIDC, et la commande n'en a pas.",
+        f"Donner un jeton par {ENV_TOKEN}, ou par un fichier ({ENV_TOKEN_FILE} ou --token-file).",
+    ),
+    "token_refused": Anomaly(
+        "access",
+        "L'API refuse le jeton : il est mal formé, expiré, ou n'a pas été émis pour elle.",
+        "Obtenir un nouveau jeton de l'émetteur OIDC de l'API, pour son audience.",
+    ),
+    "role_insufficient": Anomaly(
+        "access",
+        "Le jeton n'a pas le rôle qu'ouvre la route de santé : administrateur ou auditeur.",
+        "Demander l'un de ces rôles à l'administrateur de l'émetteur OIDC "
+        "(docs/securite/authentification.md).",
+    ),
+    "authentication_unavailable": Anomaly(
+        "access",
+        "L'API ne peut pas vérifier le jeton : son émetteur OIDC ne lui répond pas.",
+        "Vérifier que l'émetteur OIDC tourne et que l'API le joint "
+        "(ANSWERLINEAGE_OIDC_ISSUER dans l'environnement de l'API).",
     ),
     "database_unavailable": Anomaly(
         "database",
@@ -431,6 +464,12 @@ def diagnose(
     except InvalidResponseError:
         report.add(_anomaly("api_invalid_response"))
         return report.finish("la réponse de l'API n'est pas lisible.")
+    except NotAuthorizedError as refused:
+        report.add(_ok("api", "L'API répond."))
+        report.add(_ok("address", "L'API accepte cette adresse (en-têtes Host et Origin)."))
+        report.add(_anomaly(_ACCESS_REFUSALS[refused.code]))
+        _explorer(api, report)
+        return report.finish("l'API ne livre pas son état sans un jeton qu'elle accepte.")
 
     refusal = _refusal_code(received) if received.status != 200 else None
     if received.status == 403 and refusal in (
@@ -446,6 +485,7 @@ def diagnose(
     if received.status == 503 and refusal == "query_timeout":
         report.add(_ok("api", "L'API répond."))
         report.add(_ok("address", "L'API accepte cette adresse (en-têtes Host et Origin)."))
+        report.add(_access(api))
         report.add(_anomaly("database_unavailable"))
         _explorer(api, report)
         return report.finish("l'API ne lit pas sa base.")
@@ -462,9 +502,31 @@ def diagnose(
 
     report.add(_ok("api", f"L'API répond : API {health.version}."))
     report.add(_ok("address", "L'API accepte cette adresse (en-têtes Host et Origin)."))
+    report.add(_access(api))
     _installation(health, report, queue_max_age, reemission_max_age, webhook_max_age)
     _explorer(api, report)
     return report.finish(_unchecked_reason(health))
+
+
+# Un refus de l'API pour le jeton, et l'anomalie qui le dit.
+_ACCESS_REFUSALS: Final = {
+    "missing_token": "token_missing",
+    "invalid_token": "token_refused",
+    "expired_token": "token_refused",
+    "insufficient_role": "role_insufficient",
+    "authentication_unavailable": "authentication_unavailable",
+}
+
+
+def _access(api: Api) -> Check:
+    """L'API a livré son état : avec le jeton de la commande, ou sans en demander."""
+    if api.authenticated:
+        return _ok("access", "L'API accepte le jeton, et son rôle ouvre la route de santé.")
+    return _ok(
+        "access",
+        "L'API répond sans jeton : son authentification est désactivée, comme dans la "
+        "démonstration.",
+    )
 
 
 def _unchecked_reason(health: _Health) -> str:

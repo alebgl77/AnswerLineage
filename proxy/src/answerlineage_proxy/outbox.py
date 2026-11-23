@@ -25,6 +25,12 @@ est reprise avec une attente exponentielle, plafonnée et tirée au hasard, qui
 respecte ``Retry-After`` dans une borne. À l'arrêt, la boîte se vide dans un
 délai borné ; le reste est perdu, et le dernier relevé le dit si le temps le permet.
 
+Avec un jeton (``credentials.py``), chaque envoi le porte. Il est demandé dans
+la tâche d'envoi, jamais sur le chemin d'un appel : un émetteur OIDC en panne
+se lit comme une API en panne, et les événements attendent dans la boîte. Un
+refus ``401`` de l'API fait oublier le jeton, et l'envoi est repris avec un
+nouveau.
+
 Rien du contenu des événements, de l'adresse de l'API ni de ses réponses n'est
 journalisé : un échec se dit par sa classe ou son statut.
 """
@@ -48,6 +54,7 @@ from typing import Any, Final, Literal
 import httpx
 
 from answerlineage_proxy.config import ProxyConfigurationError
+from answerlineage_proxy.credentials import Tokens, TokenUnavailableError
 from answerlineage_proxy.sink import Settled, receipt
 
 logger = logging.getLogger("answerlineage_proxy")
@@ -285,10 +292,12 @@ class Outbox:
         max_reports: int = MAX_REPORTS,
         random: Random | None = None,
         clock: Callable[[], float] = time.monotonic,
+        tokens: Tokens | None = None,
     ) -> None:
         _quiet_client_logs()
         self.settings = settings
         self.stats = OutboxStats()
+        self._tokens = tokens
         self._client = client
         self._owns_client = client is None
         self._request_timeout = request_timeout
@@ -481,11 +490,19 @@ class Outbox:
     async def _post(
         self, url: httpx.URL, content: bytes, headers: Mapping[str, str]
     ) -> tuple[int, httpx.Headers, bytes | None]:
-        """Un envoi, borné en durée ; la réponse lue au plus jusqu'à sa borne, ``None`` au-delà."""
+        """Un envoi, borné en durée ; la réponse lue au plus jusqu'à sa borne, ``None`` au-delà.
+
+        Avec un jeton, l'envoi le porte ; ``TokenUnavailableError`` quand l'émetteur n'en
+        donne pas. Un refus ``401`` le fait oublier : l'envoi repris en demandera un autre.
+        """
         if self._client is None:  # pragma: no cover — démarrée avant tout envoi.
             raise RuntimeError("boîte d'envoi non démarrée")
+        if self._tokens is not None:
+            headers = {**headers, "authorization": f"Bearer {await self._tokens.token()}"}
         async with asyncio.timeout(self._request_timeout):
             async with self._client.stream("POST", url, content=content, headers=headers) as reply:
+                if reply.status_code == 401 and self._tokens is not None:
+                    self._tokens.invalidate()
                 body = bytearray()
                 async for chunk in reply.aiter_bytes():
                     body += chunk
@@ -505,10 +522,10 @@ class Outbox:
             status, headers, _ = await self._post(
                 self.settings.coverage_url, content, {"content-type": "application/json"}
             )
-        except (httpx.HTTPError, TimeoutError) as error:
+        except (httpx.HTTPError, TimeoutError, TokenUnavailableError) as error:
             self._report_in_flight = None
             self._requeue_report(key, report)
-            self._failed(None, type(error).__name__)
+            self._failed(None, _failure(error))
             return
         self._report_in_flight = None
         if 200 <= status < 300:
@@ -553,10 +570,10 @@ class Outbox:
                 content,
                 {"content-type": "application/json", "content-encoding": "gzip"},
             )
-        except (httpx.HTTPError, TimeoutError) as error:
+        except (httpx.HTTPError, TimeoutError, TokenUnavailableError) as error:
             self._sending = []
             self._requeue(batch)
-            self._failed(None, type(error).__name__)
+            self._failed(None, _failure(error))
             return
         # Interrompu à l'arrêt, le lot reste en cours d'envoi : l'arrêt le compte perdu.
         self._sending = []
@@ -686,7 +703,7 @@ class Outbox:
                     status, _, _ = await self._post(
                         self.settings.coverage_url, content, {"content-type": "application/json"}
                     )
-            except (httpx.HTTPError, TimeoutError, TypeError, ValueError):
+            except (httpx.HTTPError, TimeoutError, TokenUnavailableError, TypeError, ValueError):
                 self._reports[key] = report
                 self._reports.move_to_end(key, last=False)
                 break
@@ -697,6 +714,13 @@ class Outbox:
         self.stats.reports_dropped += len(self._reports)
         self._reports.clear()
         self._finished = True
+
+
+def _failure(error: Exception) -> str:
+    """Le motif d'un envoi en échec : un texte fixe ou la classe de l'erreur, jamais son texte."""
+    if isinstance(error, TokenUnavailableError):
+        return "jeton indisponible"
+    return type(error).__name__
 
 
 def _report_key(report: Mapping[str, Any]) -> tuple[str, ...]:

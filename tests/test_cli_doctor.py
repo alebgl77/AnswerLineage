@@ -101,6 +101,7 @@ async def test_a_sound_installation_has_no_anomaly(
     assert {check["check"]: check["status"] for check in report["checks"]} == {
         "api": "ok",
         "address": "ok",
+        "access": "ok",
         "database": "ok",
         "migrations": "ok",
         "queue": "ok",

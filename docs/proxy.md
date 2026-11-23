@@ -490,7 +490,34 @@ L'adresse est réglée par l'exploitant au démarrage ; elle n'est jamais tirée
 
 L'API n'accepte dans l'en-tête `Host` que les hôtes qu'elle attend ([réglages](ingestion.md#hôtes-et-origines-attendus)) : l'hôte de l'adresse réglée doit en être, sinon elle répond `403`, que la boîte prend pour une indisponibilité et reprend sans fin.
 
-Le client de la boîte vérifie le certificat TLS, ne suit aucune redirection et ne lit rien de l'environnement (ni mandataire, ni fichier d'identifiants) : seule l'adresse réglée est jointe. Il borne la connexion à 5 s, chaque lecture et écriture à 10 s, et chaque envoi à 30 s en tout, pour qu'une réponse servie goutte à goutte ne le retienne pas. Il n'envoie aucun en-tête au-delà du type et de l'encodage du corps. La réponse de l'API est lue au plus sur 1 Mio, et n'est jamais journalisée.
+Le client de la boîte vérifie le certificat TLS, ne suit aucune redirection et ne lit rien de l'environnement (ni mandataire, ni fichier d'identifiants) : seule l'adresse réglée est jointe. Il borne la connexion à 5 s, chaque lecture et écriture à 10 s, et chaque envoi à 30 s en tout, pour qu'une réponse servie goutte à goutte ne le retienne pas. Il n'envoie aucun en-tête au-delà du type et de l'encodage du corps, et du [jeton du proxy](#le-jeton-du-proxy-envers-lapi) quand il est réglé. La réponse de l'API est lue au plus sur 1 Mio, et n'est jamais journalisée.
+
+### Le jeton du proxy envers l'API
+
+L'API peut demander un jeton porteur OIDC sur chacune de ses routes. Le proxy obtient le sien auprès de l'émetteur OIDC de l'entreprise, par l'octroi `client_credentials`, sous l'identité d'un client qui lui est propre ; l'API lui donne le rôle d'émetteur. Le même jeton sert à la boîte d'envoi et à la [synchronisation des quarantaines](#périmètres-en-quarantaine).
+
+```bash
+export ANSWERLINEAGE_PROXY_OIDC_CLIENT_SECRET_FILE=/run/secrets/proxy-entrepot
+uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --api-url https://answerlineage.interne \
+  --oidc-issuer https://idp.interne/realms/lignage --oidc-client-id proxy-entrepot
+```
+
+| Réglage | Rôle |
+| --- | --- |
+| `--oidc-issuer`, `ANSWERLINEAGE_PROXY_OIDC_ISSUER` | L'émetteur OIDC, en `https` (en `http` sur la boucle locale seulement). Sans lui, la boîte appelle l'API sans jeton |
+| `--oidc-client-id`, `ANSWERLINEAGE_PROXY_OIDC_CLIENT_ID` | L'identifiant du client du proxy chez l'émetteur |
+| `--oidc-client-secret-file`, `ANSWERLINEAGE_PROXY_OIDC_CLIENT_SECRET_FILE` | Le fichier qui contient son secret |
+| `ANSWERLINEAGE_PROXY_OIDC_CLIENT_SECRET` | Le secret lui-même, à la place du fichier ; aucune option ne le prend |
+| `--oidc-scope`, `ANSWERLINEAGE_PROXY_OIDC_SCOPE` | Une portée à demander, pour un émetteur qui en exige une (Entra ID : `api://…/.default`) |
+| `--oidc-audience`, `ANSWERLINEAGE_PROXY_OIDC_AUDIENCE` | Une audience à demander, pour un émetteur qui l'exige (Auth0) |
+
+- **Le point de jeton est découvert** (`/.well-known/openid-configuration`) : le document doit nommer l'émetteur réglé, et le point de jeton est en `https` (en `http` sur la boucle locale seulement), sans identifiant. Le proxy s'y présente par `client_secret_basic`. La réponse est lue au plus sur 64 Kio ; un jeton qui n'est pas porteur, illisible ou de plus de 16 Kio est refusé.
+- **En mémoire seulement.** Le jeton n'est écrit nulle part, ni journalisé, ni dans les compteurs. Il se renouvelle avant d'expirer : une minute avant, ou au cinquième de sa vie quand elle est courte ; sans durée annoncée, il vit cinq minutes. Un refus `401` de l'API le fait oublier, et l'envoi repris en demande un autre.
+- **Le secret ne sort pas.** Il vient d'un fichier ou d'une variable d'environnement, jamais de la ligne de commande, que la liste des processus montre ; aucun message ne le cite, ni le chemin de son fichier. En [stdio](#mode-stdio), le serveur MCP lancé ne reçoit ni le secret ni la variable qui nomme son fichier. Le jeton ne part qu'en `https`, ou en `http` vers la boucle locale : un réglage qui l'enverrait en clair arrête le proxy.
+- **Rien n'attend le jeton.** Il n'est demandé que par les tâches de fond, jamais sur le chemin d'un appel. Un émetteur en panne, lent (coupé à 10 s) ou qui refuse le client se lit comme une API en panne : les événements attendent dans la boîte, dans ses bornes, et la synchronisation des quarantaines garde son dernier état. Après un échec, l'émetteur n'est pas redemandé avant 5 s. Le journal dit l'épisode une fois, par sa classe ou son statut, jamais l'émetteur, le client ni le jeton.
+- **Un réglage partiel est refusé** : l'émetteur, le client et le secret vont ensemble, et demandent une adresse d'API.
+
+Ce jeton n'a rien à voir avec ceux des agents. L'[invariant 4](architecture.md#où-chaque-invariant-est-tenu), « le proxy ne termine pas OAuth et ne conserve aucun jeton », vise le trafic MCP : les jetons qu'un agent présente au serveur MCP traversent le proxy sans être lus ni gardés ([Autorisation](#autorisation)). Le jeton propre du proxy est l'identité du proxy lui-même auprès de l'API d'AnswerLineage : il ne sert à aucun appel relayé, et aucun jeton d'agent n'y entre.
 
 ### Réponses de l'API
 
@@ -499,7 +526,8 @@ Le client de la boîte vérifie le certificat TLS, ne suit aucune redirection et
 | `2xx` | Le lot est remis. Les événements que le bilan désigne par leur rang (`rejected[].index`) sont rejetés ; un bilan illisible ou trop long ne désigne rien |
 | `422` | Aucun événement du lot n'est valide : tous sont rejetés |
 | `400`, `413` | Le corps entier est refusé : le lot est coupé en deux, jusqu'à isoler l'événement fautif, qui est rejeté seul ; la taille trouvée sert aux lots suivants |
-| `429`, `5xx`, tout autre statut, une redirection, une erreur réseau, un délai dépassé | Le lot est remis en tête de file et repris plus tard |
+| `401` | Le jeton du proxy est refusé : il est oublié, et le lot repris plus tard avec un nouveau |
+| `429`, `5xx`, tout autre statut (dont `403`, un rôle qui n'ouvre pas la route), une redirection, une erreur réseau, un délai dépassé, un jeton que l'émetteur ne donne pas | Le lot est remis en tête de file et repris plus tard |
 
 Un événement rejeté est abandonné et compté, jamais retenté. Un événement que la boîte ne sait pas sérialiser en JSON strict (un nombre non fini, par exemple) l'est aussi, sans être envoyé.
 
@@ -555,7 +583,7 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --api-url https://an
 
 **En moins de 30 secondes.** Chaque attente entre deux interrogations est tirée entre 80 % et 100 % de l'intervalle, jamais au-delà, pour que des proxys démarrés ensemble ne reviennent pas ensemble ; une interrogation est coupée à 10 s. Au réglage par défaut, une quarantaine activée juste après une interrogation est connue 20 s plus tard au pire, et une levée de même ; un test le vérifie, et le test de bout en bout mesure le délai réel. Au réglage maximal, l'attente seule atteint 30 s. Chaque proxy interroge de son côté : plusieurs proxys, en HTTP comme en stdio, n'ont rien à s'accorder.
 
-**Rien ne retarde un appel.** La synchronisation tourne dans une tâche de fond, démarrée sans attendre la première réponse : le proxy démarre et relaie aussitôt, l'API joignable ou non. Elle n'envoie que `Accept` et, quand le proxy tient déjà une version, `If-None-Match` : une liste qui n'a pas changé ne se retélécharge pas (`304`). Son client suit les règles de celui de la boîte d'envoi : certificat vérifié, aucune redirection suivie, rien de l'environnement ; 5 s pour la connexion et chaque lecture.
+**Rien ne retarde un appel.** La synchronisation tourne dans une tâche de fond, démarrée sans attendre la première réponse : le proxy démarre et relaie aussitôt, l'API joignable ou non. Elle n'envoie que `Accept`, le [jeton du proxy](#le-jeton-du-proxy-envers-lapi) quand il est réglé et, quand le proxy tient déjà une version, `If-None-Match` : une liste qui n'a pas changé ne se retélécharge pas (`304`). Sans jeton disponible, l'interrogation échoue comme une API en panne ; un refus `401` fait oublier le jeton. Son client suit les règles de celui de la boîte d'envoi : certificat vérifié, aucune redirection suivie, rien de l'environnement ; 5 s pour la connexion et chaque lecture.
 
 ### Une réponse hostile est écartée
 
@@ -994,7 +1022,7 @@ Aucun argument, résultat, en-tête ni jeton n'est stocké ou journalisé : des 
 
 ## Autorisation
 
-Le proxy ne prend aucune part à l'autorisation. Le défi `401` d'un serveur MCP protégé, ses métadonnées OAuth (`/.well-known/…`) et les échanges d'un client avec le serveur d'autorisation passent tels quels : le proxy n'y répond jamais lui-même, ne s'authentifie pas à la place du client et ne garde aucun jeton d'un appel au suivant.
+Le proxy ne prend aucune part à l'autorisation du trafic MCP. Le défi `401` d'un serveur MCP protégé, ses métadonnées OAuth (`/.well-known/…`) et les échanges d'un client avec le serveur d'autorisation passent tels quels : le proxy n'y répond jamais lui-même, ne s'authentifie pas à la place du client et ne garde aucun jeton d'un appel au suivant. Son propre jeton, envers l'API d'AnswerLineage ([ci-dessus](#le-jeton-du-proxy-envers-lapi)), est une autre chose : il ne touche à aucun appel relayé.
 
 Un test fait traverser un jeton, un cookie, un paramètre recopié en en-tête et un argument d'outil sur tout le parcours, du proxy au graphe, puis les cherche dans les événements, la base entière, les réponses de l'API, les compteurs et tous les journaux : il n'en reste rien. Le proxy y est placé en mode transparent devant un serveur MCP protégé par OAuth, qui contrôle la signature et l'audience du jeton : le jeton lui arrive octet pour octet, et il l'accepte.
 
@@ -1008,7 +1036,8 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 
 - La boîte d'envoi est en mémoire : un arrêt brutal ou un redémarrage perd ce qui n'était pas parti. La perte se voit (silence, événements manquants au graphe), sans être comptée parmi les perdus.
 - Un lot interrompu à l'arrêt est compté perdu même si l'API l'a reçu : le trou est surestimé.
-- La boîte ne s'authentifie pas auprès de l'API, comme tout émetteur aujourd'hui, et ne lit ni mandataire ni autorité de certification de l'environnement : une API derrière une autorité de certification privée n'est pas encore joignable.
+- La boîte d'envoi et le client du jeton ne lisent ni mandataire ni autorité de certification de l'environnement : une API ou un émetteur OIDC derrière une autorité de certification privée ne sont pas encore joignables.
+- Le proxy ne s'authentifie auprès de l'émetteur que par un secret partagé (`client_secret_basic`) : ni certificat client, ni assertion signée.
 - Le proxy n'authentifie pas l'API qui lui donne les périmètres en quarantaine : il se fie au TLS de l'adresse réglée. C'est sans effet tant qu'il ne fait rien des lectures ; c'est une acceptation à signer du [modèle de menaces](securite/modele-de-menaces.md#acceptations) (`proxy/perimetre-usurpe`).
 - Une liste de périmètres de plus de 2 Mio est écartée : cent quarantaines de vingt jeux aux noms de plusieurs centaines de caractères. Le proxy garde alors son dernier état, puis revient en mode observer au bout d'une heure, et le journal dit `too_large`.
 - L'état de la synchronisation ne se lit qu'au journal et dans le processus (`quarantine_status()`) : ni relevé, ni route.

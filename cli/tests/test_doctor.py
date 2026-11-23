@@ -41,6 +41,7 @@ def test_a_sound_installation_has_no_anomaly(monkeypatch: pytest.MonkeyPatch) ->
     assert statuses(result.out) == {
         "api": ("ok", None),
         "address": ("ok", None),
+        "access": ("ok", None),
         "database": ("ok", None),
         "migrations": ("ok", None),
         "queue": ("ok", None),

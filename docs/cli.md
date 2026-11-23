@@ -42,6 +42,23 @@ Une adresse s'écrit `http://hôte[:port][/chemin]` ou `https://…`, sans ident
 
 La commande joint l'adresse donnée, directement : elle ne suit aucune redirection, et ignore les variables de mandataire (`HTTPS_PROXY`…) et `.netrc`, pour qu'aucun identifiant ne s'y ajoute à son insu. L'API refuse un nom d'hôte qu'elle n'attend pas ([Hôtes et origines attendus](ingestion.md#hôtes-et-origines-attendus)) : `answerlineage doctor` le dit, avec le réglage à changer.
 
+## Le jeton
+
+L'API peut demander sur chaque route un jeton porteur OIDC, et un rôle qui ouvre la route. La commande l'envoie sur chaque requête, dans l'en-tête `Authorization`. Elle ne l'obtient pas elle-même : il vient de l'émetteur OIDC de l'entreprise, par l'outil qu'elle donne pour cela.
+
+| Réglage | Rôle |
+| --- | --- |
+| `ANSWERLINEAGE_TOKEN` | Le jeton lui-même, sans préfixe `Bearer` |
+| `ANSWERLINEAGE_TOKEN_FILE` | Le fichier qui le contient ; les blancs qui l'entourent sont ignorés |
+| `--token-file` | Le même fichier, sous-commande par sous-commande ; passe avant `ANSWERLINEAGE_TOKEN_FILE` |
+
+- **Jamais sur la ligne de commande** : aucune option ne prend le jeton lui-même, que la liste des processus montrerait. Le fichier et la variable ne se donnent pas ensemble.
+- **Jamais en clair sur le réseau** : avec un jeton, l'adresse de l'API est en `https`, ou en `http` vers la boucle locale ; sinon la commande refuse, sans rien envoyer.
+- **Jamais cité** : ni dans un message, ni dans la sortie, ni dans un journal. Un jeton illisible ou trop long (16 Kio au plus) est une erreur d'usage, dont le message ne le recopie pas.
+- Sans jeton, la commande n'envoie pas d'en-tête `Authorization` : c'est le cas de la [démonstration](demonstration.md), dont l'authentification est désactivée.
+
+Un refus de l'API pour le jeton se dit par un message écrit d'avance, avec le code de sortie `5` : jeton manquant (`401 missing_token`), refusé (`401 invalid_token`) ou expiré (`401 expired_token`), rôle qui n'ouvre pas la route (`403 insufficient_role`), émetteur OIDC que l'API ne joint pas (`503 authentication_unavailable`).
+
 ## `answerlineage impact`
 
 Le premier incident de la démonstration : la table des commandes, fausse du chargement de nuit du 11 novembre jusqu'à sa correction le lendemain midi.
@@ -473,6 +490,7 @@ Vérification de l'installation : http://127.0.0.1:8000
 
   bon          API          L'API répond : API 1.0.0.
   bon          Adresse      L'API accepte cette adresse (en-têtes Host et Origin).
+  bon          Accès        L'API accepte le jeton, et son rôle ouvre la route de santé.
   bon          Base         L'API lit sa base PostgreSQL.
   bon          Migrations   Le schéma de la base est à jour.
   anomalie     File         queue_stalled : La file d'ingestion n'avance pas : 12 événements en attente, le plus ancien depuis 1 h 02 min (seuil : 5 min).
@@ -495,6 +513,7 @@ Chaque vérification rend `bon`, `anomalie` ou `non vérifié`. Une vérificatio
 | --- | --- | --- |
 | `api` | L'API répond à sa route de santé, dans une version majeure que la commande sait lire | `api_unreachable`, `api_invalid_response`, `api_version_unsupported` |
 | `address` | L'API accepte l'adresse utilisée : son nom d'hôte (`Host`) et son origine (`Origin`), celle d'une page qui serait servie à cette adresse | `host_not_allowed`, `origin_not_allowed`, `address_refused` |
+| `access` | L'API accepte le [jeton](#le-jeton) de la commande, et son rôle (administrateur ou auditeur) ouvre la route de santé ; sans jeton, l'API répond quand son authentification est désactivée, comme dans la démonstration, et le message le dit. Un refus laisse la suite non vérifiée, sauf l'explorateur, qui se sert sans jeton | `token_missing`, `token_refused`, `role_insufficient`, `authentication_unavailable` |
 | `database` | L'API lit sa base dans son délai | `database_unavailable` |
 | `migrations` | Le schéma de la base est à la dernière révision des migrations | `schema_not_migrated`, `schema_behind`, `schema_unknown_revision` |
 | `queue` | La file d'ingestion avance : le plus ancien événement en attente n'attend pas depuis plus que `--queue-max-age` | `queue_stalled` |
@@ -528,6 +547,10 @@ Chaque anomalie a un code stable, un message et un remède écrits d'avance. Auc
 | `host_not_allowed` | L'API refuse le nom d'hôte de l'adresse | L'ajouter à `ANSWERLINEAGE_ALLOWED_HOSTS` sur l'API, ou passer par la boucle locale |
 | `origin_not_allowed` | L'API refuse l'origine de l'adresse : une page servie là ne pourrait pas l'appeler | L'ajouter à `ANSWERLINEAGE_ALLOWED_ORIGINS`, ou son hôte à `ANSWERLINEAGE_ALLOWED_HOSTS` |
 | `address_refused` | L'API refuse les requêtes faites à cette adresse | Vérifier les hôtes et les origines attendus de l'API |
+| `token_missing` | L'API demande un jeton, et la commande n'en a pas | Le donner par `ANSWERLINEAGE_TOKEN`, ou par un fichier (`ANSWERLINEAGE_TOKEN_FILE`, `--token-file`) |
+| `token_refused` | L'API refuse le jeton : mal formé, expiré, ou émis pour une autre audience | En obtenir un nouveau de l'émetteur OIDC de l'API |
+| `role_insufficient` | Le jeton n'a pas un rôle qui ouvre la route de santé : administrateur ou auditeur | Demander l'un de ces rôles à l'administrateur de l'émetteur |
+| `authentication_unavailable` | L'API ne joint pas son émetteur OIDC et ne peut pas vérifier le jeton | Vérifier l'émetteur, et `ANSWERLINEAGE_OIDC_ISSUER` côté API |
 | `database_unavailable` | L'API ne lit pas sa base, ou pas dans son délai | Vérifier PostgreSQL et `ANSWERLINEAGE_DATABASE_URL` côté API |
 | `schema_not_migrated` | Aucune migration n'est appliquée | `python -m answerlineage_api.store.migrate upgrade` ; dans la démonstration, `docker compose run --rm migrate` |
 | `schema_behind` | Des migrations restent à appliquer | Le même |
@@ -686,7 +709,7 @@ La commande n'écrit dans aucun journal. Le client HTTP qu'elle emploie, httpx, 
 
 ## Limites connues
 
-- L'API n'authentifie pas ses appelants : la commande non plus. Elle est faite pour une API sur la boucle locale ou derrière un contrôle d'accès.
+- La commande n'obtient ni ne renouvelle son jeton : elle envoie celui qu'on lui donne, et dit quand il a expiré.
 - `impact` lit une page de réponses à la fois, 200 au plus ; les décomptes sont ceux de tout l'incident, et `--cursor` donne la suite. `incident show` de même.
 - `exposure` lit une page de jeux de données à la fois, 200 au plus, et 100 colonnes par jeu ; au-delà, la sortie le dit, sans moyen de lire les suivantes.
 - `incident declare` n'attend pas l'analyse : `incident show` la lit quand un worker l'a faite.
