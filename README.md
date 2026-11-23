@@ -51,7 +51,7 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Tables et colonnes lues, déduites des requêtes SQL (BigQuery, Snowflake, PostgreSQL), analysées dans un processus à part sous un budget | Disponible |
 | Règles de lecture déclaratives en YAML pour les outils non SQL : jeux de données, colonnes, clés lues sous forme d'empreinte | Disponible |
 | Envoi des événements et des relevés du proxy vers l'API, par une boîte d'envoi en mémoire qui ne retarde jamais un appel | Disponible |
-| Adaptateur Claude Agent SDK : les appels d'outils captés par les crochets de l'agent, sans toucher à sa logique ni le retarder | Disponible |
+| Adaptateur Claude Agent SDK : les appels d'outils captés par les crochets de l'agent, sans toucher à sa logique ni le retarder ; la réponse publiée (Slack ou autre canal) et ses destinataires pseudonymisés rattachés au run | Disponible |
 | API d'ingestion OpenLineage, par événement ou par lot | Disponible |
 | Schéma du graphe de lignage dans PostgreSQL, avec ses migrations | Disponible |
 | Alimentation du graphe à partir des événements reçus, par des workers concurrents | Disponible |
