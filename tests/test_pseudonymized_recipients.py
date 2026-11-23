@@ -266,6 +266,7 @@ def test_no_column_of_the_declared_schema_could_hold_a_ciphered_identity() -> No
             assert column.name in keys or column.name in checked, (table.name, column.name)
     assert sorted(with_pseudonyms) == [
         "incident_recipient",
+        "recall_dispatch",
         "recall_entry",
         "recall_entry_answer",
         "recipient",

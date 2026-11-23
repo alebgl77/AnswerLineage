@@ -47,6 +47,8 @@ Les onze tables d'`agent` à `delivery_recipient` forment le graphe (`schema.GRA
 | `recall_list` | incident | Liste de rappel d'un incident, faite de son analyse : heure de référence de l'exposition, décomptes |
 | `recall_entry` | incident et pseudonyme | Un destinataire de la liste, une fois par incident : rang, exposition, réponses touchées comptées |
 | `recall_entry_answer` | incident, pseudonyme, run et empreinte | Une réponse touchée qu'un destinataire de la liste a reçue |
+| `recall_decision` | identifiant tiré par la base | Journal des décisions sur les listes de rappel, en ajout seul : décision, auteur, heure, gabarit ou motif ; et leurs remontées, sans auteur |
+| `recall_dispatch` | identifiant tiré par la base | Message de rappel mis à l'envoi, un par destinataire et par incident : refusé par la base sans liste validée |
 
 ## Deux heures
 
@@ -315,6 +317,39 @@ La [liste de rappel](rappel.md) d'un incident se range à côté de l'incident, 
 | `recall_entry_answer` | Une réponse une fois par destinataire, clé étrangère vers son entrée |
 
 La migration `0018` crée ces tables ; sa descente les retire, les incidents et leurs analyses inchangés. Une analyse faite avant elle n'a pas de liste : la rejouer en fait une.
+
+### Décisions et envois
+
+La [décision](rappel.md#décider-du-rappel) d'un responsable d'agent sur une liste, et sa [remontée](rappel.md#la-remontée) faute de décision, laissent une ligne dans `recall_decision`. Le journal désigne l'incident, sans clé vers la liste : il survit à une liste qu'une analyse rejouée retire.
+
+| Colonne | Contenu |
+| --- | --- |
+| `id` | Numéro de la ligne, tiré par la base |
+| `incident_id` | L'incident dont la liste est décidée ou remonte, clé étrangère vers lui |
+| `decided_at` | L'heure, posée par la base à l'insertion, quoi que l'insertion porte |
+| `decision` | `validated`, `modified`, `refused`, ou `escalated` pour une remontée |
+| `author_issuer`, `author_subject` | L'auteur : l'émetteur OIDC et le sujet (`sub`) de son jeton ; nuls pour une remontée |
+| `template` | Le gabarit de ce qui partira : `standard`, `information`, `decision_review` ; pour une liste validée ou modifiée seulement |
+| `reason` | Le motif d'un refus : `not_affected`, `already_informed`, `no_impact`, `duplicate_incident` |
+
+| Contrainte | Ce qu'elle tient |
+| --- | --- |
+| `ck_recall_decision_decision`, `ck_recall_decision_template`, `ck_recall_decision_reason` | La décision, le gabarit et le motif, de leurs listes fermées |
+| `ck_recall_decision_author` | Une décision a son auteur, émetteur et sujet ensemble, de 1 à 1 024 et de 1 à 255 caractères ; une remontée n'en a pas |
+| `ck_recall_decision_given` | Un gabarit pour une liste validée ou modifiée, et pour elle seule ; un motif pour un refus, et pour lui seul |
+| `uq_recall_decision_decided`, `uq_recall_decision_escalated` | Une décision au plus par liste, une remontée au plus : deux index uniques partiels |
+| `ck_recall_decision_append_only` | L'ajout seul : une modification, une suppression ou une troncature est refusée comme une contrainte (`check_violation`), sous ce nom |
+
+L'ajout seul est tenu par la base, comme celui du [journal des révélations](#journal-des-révélations) : une fonction, `recall_decision_append_only()`, et trois déclencheurs, qui posent l'heure à l'insertion et refusent le reste ; les droits `UPDATE`, `DELETE` et `TRUNCATE` sont retirés à tous, propriétaire compris.
+
+`recall_dispatch` tient les messages de rappel mis à l'envoi : un par destinataire et par incident (`uq_recall_dispatch_incident_id_pseudonym`), chacun une entrée de la liste (clé étrangère vers `recall_entry`), et l'heure de sa mise à l'envoi. Rien ne l'écrit encore. Deux règles sont tenues par la base, pour toute connexion, propriétaire compris :
+
+| Contrainte | Ce qu'elle tient |
+| --- | --- |
+| `ck_recall_dispatch_validated` | Aucun message sans une liste validée ou modifiée : une contrainte de déclencheur (`CREATE CONSTRAINT TRIGGER`) et sa fonction `recall_dispatch_validated()` refusent toute autre écriture, comme une contrainte de vérification (`check_violation`), sous ce nom |
+| `ck_recall_list_frozen` | Une liste décidée ne change plus : la fonction `recall_list_frozen()` et un déclencheur sur `recall_list`, `recall_entry` et `recall_entry_answer` refusent toute écriture dans une liste qui porte une décision ; une remontée ne la fige pas |
+
+La migration `0019` crée les deux tables, leurs fonctions et leurs déclencheurs ; sa descente les retire : les décisions journalisées sont perdues, les listes inchangées.
 
 ## Migrations
 

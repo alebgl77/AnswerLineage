@@ -59,6 +59,12 @@ _PROPOSAL_DECIDERS = _STEWARDS
 # à clés, ne révèle pas aussi ; il lit le journal, avec l'auditeur.
 _REVEALERS = (Role.INCIDENT_MANAGER,)
 
+# Décider d'un rappel, c'est garder la main sur ce qui est dit aux utilisateurs des agents :
+# une action journalisée, qui revient à qui répond des agents, et à l'administrateur, qui a
+# ce qu'ont les rôles des personnes. Les rôles ne portent pas de périmètre par agent : tout
+# responsable d'agent décide de toute liste.
+_RECALL_DECIDERS = (Role.AGENT_OWNER, Role.ADMINISTRATOR)
+
 _LINEAGE = "Lire le lignage : toute personne qui a un rôle."
 _INCIDENT_READ = "Lire les incidents et leurs réponses touchées : toute personne qui a un rôle."
 _PROPOSAL_READ = "Lire les incidents proposés : toute personne qui a un rôle."
@@ -122,6 +128,11 @@ ACCESS: Final[Mapping[tuple[str, str], Access]] = {
     ),
     # Listes de rappel.
     ("GET", "/api/v1/incidents/{incident_id}/recall-list"): Access(_EVERY_PERSON, _RECALL_READ),
+    ("GET", "/api/v1/recall-lists"): Access(_EVERY_PERSON, _RECALL_READ),
+    ("POST", "/api/v1/incidents/{incident_id}/recall-list/decision"): _only(
+        *_RECALL_DECIDERS,
+        why="Valider, modifier ou refuser un rappel, action journalisée : qui répond des agents.",
+    ),
     # Destinataires pseudonymisés.
     ("POST", "/api/v1/recipients/reveal"): _only(
         *_REVEALERS,

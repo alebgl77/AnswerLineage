@@ -6,7 +6,7 @@ Un worker lit la file de traitement et projette chaque événement reçu dans le
 ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run answerlineage-worker
 ```
 
-Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Un événement qu'il ne parvient pas à projeter va à la [file de rebut](#file-de-rebut), où il se consulte et se rejoue. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés, des [propositions d'incident](#propositions-dincident) des tests de qualité en échec, contrôle les [émetteurs muets](#émetteurs-muets), entretient les [partitions mensuelles](#partitions-mensuelles) et, quand une destination est réglée, [réémet les événements](#réémission) vers un catalogue OpenLineage ; quand un webhook est réglé, il [annonce les changements d'état des incidents](#webhooks) à son récepteur. La même commande [reconstruit le graphe](#reconstruire-le-graphe) depuis les événements bruts, quand il est corrompu.
+Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Un événement qu'il ne parvient pas à projeter va à la [file de rebut](#file-de-rebut), où il se consulte et se rejoue. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés et leur liste de rappel, des [propositions d'incident](#propositions-dincident) des tests de qualité en échec, fait [remonter les listes de rappel](#remontée-des-listes-de-rappel) restées sans décision, contrôle les [émetteurs muets](#émetteurs-muets), entretient les [partitions mensuelles](#partitions-mensuelles) et, quand une destination est réglée, [réémet les événements](#réémission) vers un catalogue OpenLineage ; quand un webhook est réglé, il [annonce les changements d'état des incidents](#webhooks) à son récepteur. La même commande [reconstruit le graphe](#reconstruire-le-graphe) depuis les événements bruts, quand il est corrompu.
 
 ## Garanties
 
@@ -184,7 +184,7 @@ La déclaration d'un [incident](incidents.md) écrit une demande d'analyse dans 
 2. elle réunit les runs touchés, et garde les réponses de ces runs, par leur run et leur empreinte, et les pseudonymes de leurs destinataires ;
 3. elle mesure la [couverture du lignage](lecture.md#couverture-du-lignage) sur la fenêtre, et note les jeux du périmètre que le graphe ne connaît pas ;
 4. elle enregistre le résultat et passe l'analyse à l'état `done` ;
-5. quand le résultat n'est pas tronqué, elle en fait la [liste de rappel](rappel.md) : une entrée par destinataire, avec ses réponses touchées, rangée par exposition. Un résultat tronqué n'a pas de liste, et retire celle d'une analyse précédente.
+5. quand le résultat n'est pas tronqué, elle en fait la [liste de rappel](rappel.md) : une entrée par destinataire, avec ses réponses touchées, rangée par exposition. Un résultat tronqué n'a pas de liste, et retire celle d'une analyse précédente. Une liste déjà décidée est gardée telle quelle : la liste est verrouillée, puis la décision relue, avant d'être refaite.
 
 Les garanties sont celles de la file d'ingestion :
 
@@ -219,6 +219,25 @@ INFO answerlineage_workers Incident proposé par un test de qualité en échec :
 Chaque minute, la boucle en fait aussi l'entretien : une proposition sans nouvel échec rattaché depuis 7 jours expire, sans rien annoncer ([expiration](incidents.md#expiration)) ; les signaux reçus il y a plus de 62 jours sont purgés, 10 000 au plus par passage, dans une transaction à part qui ne prend pas le verrou des propositions. Un entretien en échec est dit au journal par sa classe et repris au passage suivant.
 
 Les signaux, les colonnes suivies et les propositions sont hors du graphe : une reconstruction ne les vide pas, et rejoue les événements sans rien proposer deux fois.
+
+## Remontée des listes de rappel
+
+Aucun rappel ne part sans qu'un responsable d'agent [décide de sa liste](rappel.md#décider-du-rappel). Pour qu'une liste ne s'oublie pas, la boucle du worker, au démarrage puis chaque minute, fait remonter au responsable de données celles qui ont des destinataires et restent sans décision au-delà du délai, depuis qu'elles ont été faites :
+
+1. elle réclame au plus 1 000 listes en retard, à l'heure de la base, les plus anciennes d'abord, verrouillées (`FOR UPDATE SKIP LOCKED`) : une liste qu'une décision tient est sautée ;
+2. elle relit, sous ce verrou, qu'aucune décision ni remontée n'existe, puis écrit une remontée au journal des décisions, sans auteur, à l'heure de la base.
+
+Plusieurs workers font remonter une liste une seule fois, et une décision prise pendant ce temps l'emporte. Une remontée ne décide rien : la liste reste en attente, et se lit remontée par l'API ([la remontée](rappel.md#la-remontée)). Le journal ne nomme l'incident que par son identifiant, tiré par l'API :
+
+```text
+WARNING answerlineage_workers Liste de rappel de l'incident 974e7c80-6643-4065-a541-e4c029abbdab sans décision depuis plus de 48 h : remontée au responsable de données.
+```
+
+| Réglage | Option | Défaut |
+| --- | --- | --- |
+| Heures sans décision au-delà desquelles une liste remonte | `--recall-decision-hours` | 48 (1 à 720) |
+
+Le délai est celui du worker qui fait le passage : des workers réglés différemment font remonter une liste au plus court de leurs délais. Un passage en échec, base injoignable par exemple, est dit au journal par la classe de l'erreur et repris au passage suivant.
 
 ## Émetteurs muets
 
@@ -364,7 +383,7 @@ L'ordre n'y fait rien. Les workers avaient projeté les événements dans l'ordr
 
 ### Ce qu'elle ne touche pas
 
-Seules les tables du graphe sont vidées. Les événements bruts, la file, où elle remet les événements, le rebut, la file de réémission, la file des webhooks, le compteur de doublons, les relevés de couverture et les émetteurs connus, les alertes de partition, les incidents, leurs analyses et leurs listes de rappel restent tels quels.
+Seules les tables du graphe sont vidées. Les événements bruts, la file, où elle remet les événements, le rebut, la file de réémission, la file des webhooks, le compteur de doublons, les relevés de couverture et les émetteurs connus, les alertes de partition, les incidents, leurs analyses, leurs listes de rappel et le journal de leurs décisions restent tels quels.
 
 De tout cela, seul le résultat d'une analyse d'incident dérive du graphe : ses réponses touchées, leurs destinataires, ses décomptes, sa couverture et sa liste de rappel, lus tels que le graphe était connu à l'heure de l'analyse (`known_at`). La reconstruction ne les recalcule pas. Elle rend chaque ligne avec son heure d'enregistrement : le graphe tel que connu à `known_at` est celui d'avant la corruption, et une analyse faite avant elle reste juste. Une analyse faite sur le graphe corrompu se rejoue en gardant son `known_at` ([rejouer une analyse](incidents.md#rejouer-une-analyse)) : elle lit alors ce qu'elle aurait dû lire. La couverture du lignage se calcule à la lecture, des événements bruts et de la file : rien n'est à recalculer.
 

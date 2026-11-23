@@ -203,8 +203,8 @@ uv run pytest "tests/test_abuse_corpus.py::test_every_case_of_the_abuse_corpus_i
 | `emetteur` | Un autre hôte, une autre page, un faux proxy, les en-têtes d'identité, l'événement ou le relevé d'un autre émetteur, un relevé de couverture aux compteurs incohérents |
 | `entetes` | Un en-tête MCP contredit par le corps : le corps décide, l'écart est signalé |
 | `capture` | Une requête que le proxy ne peut pas lire sans ambiguïté : elle passe, sans événement, et se compte |
-| `champs` | Un champ que le contrat ne prévoit pas : du texte libre dans un incident, qui n'en porte aucun ; des colonnes dans son périmètre ; un filtre de rejeu mal orthographié, qui ne doit pas rejouer tout le rebut ; un champ au nom piégé, que le refus ne nomme pas ; un paramètre inconnu d'une lecture, ignoré |
-| `jetons` | L'[authentification](securite/authentification.md) de l'API : aucun jeton ; un jeton sans signature, signé en HMAC avec la clé publique, d'un autre émetteur ou d'une autre audience, expiré, pas encore valide, d'une clé que l'émetteur ne publie pas, à la signature altérée, démesuré ; le rôle de lecteur sur une route qu'il n'ouvre pas |
+| `champs` | Un champ que le contrat ne prévoit pas : du texte libre dans un incident, qui n'en porte aucun ; des colonnes dans son périmètre ; un filtre de rejeu mal orthographié, qui ne doit pas rejouer tout le rebut ; un champ au nom piégé, que le refus ne nomme pas ; un paramètre inconnu d'une lecture, ignoré ; un message, un auteur, un motif ou un gabarit écrits dans la décision sur une liste de rappel, et une décision qui demande l'envoi lui-même |
+| `jetons` | L'[authentification](securite/authentification.md) de l'API : aucun jeton ; un jeton sans signature, signé en HMAC avec la clé publique, d'un autre émetteur ou d'une autre audience, expiré, pas encore valide, d'une clé que l'émetteur ne publie pas, à la signature altérée, démesuré ; le rôle de lecteur sur une route qu'il n'ouvre pas, dont la validation d'un rappel |
 
 ### Lire un cas
 
@@ -261,7 +261,7 @@ Les recettes forment une liste fermée :
 
 ### Ajouter un cas
 
-1. Choisir sa famille et sa base ; une nouvelle base se déclare dans `abuse_bases.json`, avec son issue saine. Une lecture part d'une base remplie par le chemin réel : ses événements (`seed`), passés par un worker, ses relevés de couverture (`reports`) puis ses incidents (`incidents`), déclarés par l'API. L'API tire l'identifiant d'un incident à sa déclaration : `{incident}`, dans le chemin, est remplacé par celui du premier.
+1. Choisir sa famille et sa base ; une nouvelle base se déclare dans `abuse_bases.json`, avec son issue saine. Une lecture part d'une base remplie par le chemin réel : ses événements (`seed`), passés par un worker, ses relevés de couverture (`reports`) puis ses incidents (`incidents`), déclarés par l'API, et, quand la base le demande (`analysed`), analysés par un worker, qui en fait la liste de rappel. L'API tire l'identifiant d'un incident à sa déclaration : `{incident}`, dans le chemin, est remplacé par celui du premier.
 2. Écrire le cas : une seule altération, dont la valeur porte le canari, et l'attente lue dans la documentation du produit, pas dans son code. Un caractère invisible ne s'écrit jamais tel quel : toujours en échappement JSON, pour que la revue voie ce qui s'exécute.
 3. Rejouer : `make abuse`. Le contrôle refuse un cas sans attente, hors des listes fermées (surface, verdict, base, recette), une famille exigée à moins de trois cas bloqués et un caractère invisible écrit tel quel.
 4. Changer la version : l'empreinte du corpus est liée à son numéro de version (`ABUSE_VERSION` dans `abuse.py`). Le contrôle donne la nouvelle empreinte ; affaiblir un cas sans changer de version échoue.
@@ -274,6 +274,7 @@ Les recettes forment une liste fermée :
 | 4 | Les assertions de qualité : texte libre, colonne piégée, rafale |
 | 5 | La confirmation d'un incident proposé, et les tests en échec qui le font naître |
 | 6 | La famille `jetons` et la recette `forger-jeton` ; chaque requête porte désormais le jeton d'un appelant qui a tous les rôles, y compris celui d'émetteur, et les cas ouverts des émetteurs se jouent ainsi |
+| 8 | La décision sur une liste de rappel : refusée au lecteur, sans texte libre, sans auteur dans le corps, sans valeur hors de ses listes ; une décision qui demande l'envoi lui-même. Une base peut faire analyser ses incidents (`analysed`) |
 
 Un cas qui révèle une attaque que le produit laisse passer ne se retire pas et ne se corrige pas en passant : il devient un cas ouvert.
 
@@ -297,7 +298,8 @@ Un cas que le produit ne bloque pas encore reste au corpus, déclaré avec son m
 - Dans l'explorateur, le navigateur consigne lui-même comme une erreur le refus `404` ou `422` de l'API : ce refus, qui amène le message fixe, n'est pas compté parmi les erreurs de la page.
 - Une valeur hostile qui est un nombre, comme un compteur incohérent, ne porte pas de canari : rien n'est cherché après coup pour ces cas.
 - Le rebut est vide quand ses routes sont rejouées : aucune requête du corpus ne fait refuser un événement par la projection. Les cas éprouvent la validation, les bornes, le délai et le contrôle des hôtes et des origines de la liste et du rejeu, pas un rejeu qui remet des événements en file ; les tests de l'API et des workers le couvrent.
-- L'analyse d'un incident déclaré ne tourne pas : la lecture d'un incident le rend en attente d'analyse, sans réponse touchée.
+- L'analyse d'un incident déclaré ne tourne pas, sauf pour une base qui le demande (`analysed`) : la lecture d'un incident le rend en attente d'analyse, sans réponse touchée ; la décision sur une liste de rappel porte sur la liste que l'analyse a faite.
+- L'envoi d'un rappel forcé sans validation ne s'éprouve ici que par l'API, qui n'envoie rien : la base qui refuse une écriture directe est éprouvée par `api/tests/test_recall_decisions.py`.
 
 ## Limites connues
 

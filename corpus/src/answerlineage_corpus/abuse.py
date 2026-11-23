@@ -56,7 +56,7 @@ from answerlineage_corpus.scenarios import CorpusError
 
 # Change dès qu'un cas, une base ou une exception change : affaiblir le corpus
 # sans le dire échoue au contrôle.
-ABUSE_VERSION = "7"
+ABUSE_VERSION = "8"
 _DIGESTS = {
     "1": "a6e3bdbb6724874d86cde209f8549640b68bce9d76e097da185ea54284a05619",
     # La lecture antidatée est bloquée : son exception est retirée.
@@ -73,6 +73,9 @@ _DIGESTS = {
     # Les destinataires ne sont admis que sous un pseudonyme HMAC ; la révélation d'un
     # destinataire, refusée au lecteur, ne garde aucune identité candidate.
     "7": "f74d1534722cad951761bd0cf7853fb3541ff4a4d88fdfef776aaff9d3ed61fb",
+    # La décision sur une liste de rappel : refusée au lecteur, sans texte libre ni valeur
+    # hors de ses listes, sans auteur dans le corps ; aucune décision ne demande l'envoi.
+    "8": "7f5b31b6fd338d1c5cc1f61cb03fb28bca4ae709df7561c696fcd47a067abb25",
 }
 
 # Marque que porte toute valeur hostile, cherchée ensuite partout : réponses,
@@ -140,6 +143,9 @@ class Base:
     # Tests de qualité en échec, envoyés après les incidents : la première proposition
     # d'incident qu'ils font naître donne son identifiant au chemin (``PROPOSAL``).
     proposals: tuple[Mapping[str, Any], ...] = field(default=(), hash=False)
+    # Vrai : un worker analyse les incidents déclarés avant la requête ; leur liste de rappel
+    # est alors faite.
+    analysed: bool = False
     settings: Mapping[str, Any] = field(default_factory=dict, hash=False)
 
 
@@ -192,6 +198,7 @@ def _play(base: Base, alter: Mapping[str, Any] | None) -> Play:
         reports=base.reports,
         incidents=base.incidents,
         proposals=base.proposals,
+        analysed=base.analysed,
         fragment=base.surface == "explorateur",
     )
 
@@ -413,6 +420,11 @@ def _base(name: str, raw: Any, seeds: Mapping[str, Any]) -> Base:
         raise ValueError("le chemin désigne une proposition que la base ne fait pas naître")
     if not isinstance(settings, dict):
         raise TypeError("les réglages sont un objet JSON")
+    analysed = raw.get("analysed", False)
+    if not isinstance(analysed, bool):
+        raise TypeError("« analysed » est un booléen")
+    if analysed and not incidents:
+        raise ValueError("une base analyse les incidents qu'elle déclare")
     unknown = set(raw) - {
         "title",
         "surface",
@@ -422,6 +434,7 @@ def _base(name: str, raw: Any, seeds: Mapping[str, Any]) -> Base:
         "reports",
         "incidents",
         "proposals",
+        "analysed",
         "settings",
     }
     if unknown:
@@ -436,6 +449,7 @@ def _base(name: str, raw: Any, seeds: Mapping[str, Any]) -> Base:
         reports=tuple(reports),
         incidents=tuple(incidents),
         proposals=tuple(proposals),
+        analysed=analysed,
         settings=settings,
     )
 

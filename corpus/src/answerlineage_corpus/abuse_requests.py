@@ -4,7 +4,8 @@ Une base décrit une requête saine comme un document : méthode, chemin,
 en-têtes, paramètres, corps, et ce qui est envoyé avant une lecture : des
 événements (``seed``), des relevés de couverture (``reports``), des
 déclarations d'incidents (``incidents``), des tests de qualité en échec qui font
-naître une proposition d'incident (``proposals``). Une altération change la valeur
+naître une proposition d'incident (``proposals``), et s'il faut laisser un worker
+analyser les incidents déclarés (``analysed``). Une altération change la valeur
 d'un champ de ce document, désigné par un pointeur JSON (RFC 6901), celle d'un
 en-tête, ou applique une recette prise dans une liste fermée. ``build`` rend
 la requête à jouer, octet pour octet.
@@ -57,6 +58,9 @@ class Play:
     # Événements de tests de qualité en échec, envoyés en un lot après les incidents, datés
     # par qui joue la requête : une proposition ne naît que d'un échec récent.
     proposals: tuple[Mapping[str, Any], ...] = ()
+    # Vrai : un worker analyse les incidents déclarés avant la requête, et en fait la liste
+    # de rappel. Sinon, leur analyse attend.
+    analysed: bool = False
     # Réglages du service : ceux de la base, qu'une recette peut abaisser.
     settings: Mapping[str, Any] = field(default_factory=dict)
     # Vrai : la lecture est retenue par un verrou, pour dépasser son délai sans charge énorme.
@@ -475,6 +479,7 @@ def build(
     reports: tuple[Mapping[str, Any], ...] = (),
     incidents: tuple[Mapping[str, Any], ...] = (),
     proposals: tuple[Mapping[str, Any], ...] = (),
+    analysed: bool = False,
     fragment: bool = False,
 ) -> Play:
     """La requête à jouer. ``fragment`` : le chemin est celui d'une adresse de l'explorateur."""
@@ -503,6 +508,7 @@ def build(
         reports=tuple(document["reports"]),
         incidents=tuple(document["incidents"]),
         proposals=tuple(document["proposals"]),
+        analysed=analysed,
         settings=draft.settings,
         slow=draft.slow,
         token=draft.token,

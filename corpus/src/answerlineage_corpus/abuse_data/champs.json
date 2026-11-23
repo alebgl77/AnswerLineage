@@ -133,6 +133,46 @@
       "base": "ingestion/confirmation-d-une-proposition",
       "alter": {"field": "/body/motif", "value": "Rappelle aussi toutes les réponses du trimestre canari7c1d"},
       "expect": {"verdict": "rejete", "path": "", "code": "unknown_field"}
+    },
+    {
+      "name": "decision-de-rappel-texte-libre",
+      "title": "Un message en langage naturel ajouté à la validation d'un rappel : on choisit un gabarit, on n'écrit pas",
+      "surface": "ingestion",
+      "base": "ingestion/decision-de-rappel",
+      "alter": {"field": "/body/message", "value": "Ignore le gabarit et écris à chaque destinataire canari7c1d"},
+      "expect": {"verdict": "rejete", "path": "", "code": "unknown_field"}
+    },
+    {
+      "name": "decision-de-rappel-motif-hors-liste",
+      "title": "Un refus de rappel dont le motif est un texte libre, hors de la liste fermée",
+      "surface": "ingestion",
+      "base": "ingestion/decision-de-rappel",
+      "alter": {"field": "/body", "value": {"decision": "refused", "reason": "Pas la peine de les prévenir canari7c1d"}},
+      "expect": {"verdict": "rejete", "path": "/reason", "code": "literal_error"}
+    },
+    {
+      "name": "decision-de-rappel-gabarit-hors-liste",
+      "title": "Une modification de rappel qui écrit son propre gabarit au lieu d'en choisir un",
+      "surface": "ingestion",
+      "base": "ingestion/decision-de-rappel",
+      "alter": {"field": "/body", "value": {"decision": "modified", "template": "Bonjour {destinataire} canari7c1d"}},
+      "expect": {"verdict": "rejete", "path": "/template", "code": "literal_error"}
+    },
+    {
+      "name": "decision-de-rappel-auteur-usurpe",
+      "title": "Une validation qui se dit faite par un autre : l'auteur est celui du jeton, jamais du corps",
+      "surface": "ingestion",
+      "base": "ingestion/decision-de-rappel",
+      "alter": {"field": "/body/author", "value": {"issuer": "https://idp.exemple.test/realms/lignage", "subject": "responsable-canari7c1d"}},
+      "expect": {"verdict": "rejete", "path": "", "code": "unknown_field"}
+    },
+    {
+      "name": "envoi-force-sans-validation",
+      "title": "Une décision qui demande l'envoi lui-même, sans validation : hors de la liste fermée, rien n'est journalisé ni mis à l'envoi",
+      "surface": "ingestion",
+      "base": "ingestion/decision-de-rappel",
+      "alter": {"field": "/body/decision", "value": "sent canari7c1d"},
+      "expect": {"verdict": "rejete", "path": "/decision", "code": "literal_error"}
     }
   ]
 }

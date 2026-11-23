@@ -35,6 +35,8 @@ celle du worker, sans la retarder.
 Entre deux lots, la boucle du worker analyse aussi un incident déclaré, quand
 une demande attend (``incidents.py``), puis fait des propositions d'incident des
 signaux de qualité que la projection a relevés (``quality.py``, ``proposals.py``).
+Chaque minute, elle fait remonter au responsable de données les listes de rappel
+restées sans décision au-delà de leur délai (``recall.py``).
 Quand le worker a un webhook, une autre boucle annonce les changements d'état
 des incidents au récepteur (``webhooks.py``), sans retarder la projection.
 
@@ -74,6 +76,12 @@ from answerlineage_workers.proposals import (
     DEFAULT_PROPOSALS_EVERY,
     maintain_proposals,
     process_signals,
+)
+from answerlineage_workers.recall import (
+    DEFAULT_DECISION_DELAY,
+    DEFAULT_ESCALATION_EVERY,
+    checked_delay,
+    escalate,
 )
 from answerlineage_workers.reemission import Reemission, run_reemission
 from answerlineage_workers.silence import DEFAULT_SILENCE, check_silent_emitters
@@ -486,6 +494,8 @@ async def run_worker(
     clock: Callable[[], datetime] = _now,
     reemission: Reemission | None = None,
     webhook: Webhook | None = None,
+    recall_delay: timedelta = DEFAULT_DECISION_DELAY,
+    escalation_every: timedelta = DEFAULT_ESCALATION_EVERY,
 ) -> None:
     """Traite la file jusqu'à ce que ``stop`` soit levé.
 
@@ -501,7 +511,10 @@ async def run_worker(
     partitions mensuelles selon ``retention`` : création à l'avance, purge,
     contrôle. Au démarrage, puis toutes les ``proposals_every``, il expire les
     propositions d'incident sans nouvel échec et purge les vieux signaux de
-    qualité (``maintain_proposals``).
+    qualité (``maintain_proposals``). Au démarrage, puis toutes les
+    ``escalation_every``, il fait remonter au responsable de données les listes de
+    rappel restées sans décision plus de ``recall_delay`` (``escalate``) ; un délai
+    hors de ses bornes lève ``ValueError`` avant tout lot.
 
     Avec ``reemission``, les événements projetés entrent dans la file de
     réémission, et une seconde boucle, à côté, les envoie à la destination
@@ -510,6 +523,7 @@ async def run_worker(
     incidents au récepteur (``run_webhooks``), sans la retarder non plus.
     """
     checked_batch_size(batch_size)
+    checked_delay(recall_delay)
     beside: list[asyncio.Task[None]] = []
     if reemission is not None:
         beside.append(asyncio.create_task(run_reemission(engine, stop, reemission)))
@@ -532,6 +546,8 @@ async def run_worker(
             analysis_timeout=analysis_timeout,
             clock=clock,
             reemit=reemission is not None,
+            recall_delay=recall_delay,
+            escalation_every=escalation_every,
         )
     finally:
         if not stop.is_set():
@@ -557,10 +573,13 @@ async def _project_loop(
     analysis_timeout: timedelta,
     clock: Callable[[], datetime],
     reemit: bool,
+    recall_delay: timedelta,
+    escalation_every: timedelta,
 ) -> None:
     next_check: datetime | None = None
     next_maintenance: datetime | None = None
     next_proposals: datetime | None = None
+    next_escalation: datetime | None = None
     while not stop.is_set():
         now = clock()
         if next_check is None or now >= next_check:
@@ -586,6 +605,13 @@ async def _project_loop(
                 logger.error(
                     "Entretien des propositions d'incident en échec (%s).", type(error).__name__
                 )
+        if next_escalation is None or now >= next_escalation:
+            next_escalation = now + escalation_every
+            try:
+                await escalate(engine, delay=recall_delay)
+            except Exception as error:
+                # Reprise au prochain passage : la liste attend, sa remontée viendra.
+                logger.error("Remontée des listes de rappel en échec (%s).", type(error).__name__)
         delay = 0.0
         try:
             result = await process_batch(

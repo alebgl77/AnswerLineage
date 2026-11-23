@@ -30,7 +30,7 @@ Le périmètre ne descend pas encore aux colonnes : la [propagation](lecture.md#
 
 ### Gravité
 
-La gravité est l'appréciation du responsable de données. Elle ne change pas l'analyse : elle ordonnera les rappels.
+La gravité est l'appréciation du responsable de données. Elle ne change pas l'analyse : elle ordonne les [listes de rappel](rappel.md#la-remontée), de l'incident le plus grave au moins grave.
 
 | `severity` | Quand l'employer |
 | --- | --- |

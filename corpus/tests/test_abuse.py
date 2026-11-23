@@ -597,6 +597,17 @@ def confirm_a_proposal_the_base_does_not_make(content: Any) -> None:
     del content["bases"][CONFIRMATION]["proposals"]
 
 
+DECISION = "ingestion/decision-de-rappel"
+
+
+def describe_the_analysis_as_text(content: Any) -> None:
+    content["bases"][DECISION]["analysed"] = "oui"
+
+
+def analyse_incidents_the_base_does_not_declare(content: Any) -> None:
+    content["bases"]["lecture/graphe"]["analysed"] = True
+
+
 @pytest.mark.parametrize(
     ("mutate", "problem"),
     [
@@ -620,6 +631,12 @@ def confirm_a_proposal_the_base_does_not_make(content: Any) -> None:
             confirm_a_proposal_the_base_does_not_make,
             f"base « {CONFIRMATION} » invalide (ValueError : le chemin désigne une proposition"
             " que la base ne fait pas naître)",
+        ),
+        (describe_the_analysis_as_text, f"base « {DECISION} » invalide (TypeError"),
+        (
+            analyse_incidents_the_base_does_not_declare,
+            "base « lecture/graphe » invalide (ValueError : une base analyse les incidents"
+            " qu'elle déclare)",
         ),
         (lambda content: [], f"{BASES_FILE} : un objet JSON qui porte « bases » est attendu"),
     ],
@@ -683,6 +700,9 @@ def test_a_read_follows_the_incidents_its_base_declares() -> None:
     )
     assert severe.incidents[0]["severity"] == "critical"
     assert DECLARATION["severity"] == "low"
+    # Un worker analyse les incidents déclarés quand la base le demande, et seulement alors.
+    assert build(read, incidents=(DECLARATION,), analysed=True).analysed
+    assert not play.analysed
 
 
 def test_a_request_follows_the_proposal_its_failing_tests_make() -> None:

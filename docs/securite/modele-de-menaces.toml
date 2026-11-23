@@ -69,7 +69,7 @@ description = "Une merge request, écrite par un contributeur ou un agent de cod
 [[boundary]]
 id = "donnees-au-repos"
 name = "Données au repos"
-description = "PostgreSQL tient le graphe, les événements bruts, la file, les relevés, les incidents et le journal des révélations ; le poste ou le serveur du proxy tient la clé des empreintes et les règles de lecture ; l'émetteur d'une diffusion et le coffre à clés de l'API tiennent la clé des pseudonymes. Qui y accède lit ce qui y est écrit."
+description = "PostgreSQL tient le graphe, les événements bruts, la file, les relevés, les incidents, leurs listes de rappel, le journal de leurs décisions et le journal des révélations ; le poste ou le serveur du proxy tient la clé des empreintes et les règles de lecture ; l'émetteur d'une diffusion et le coffre à clés de l'API tiennent la clé des pseudonymes. Qui y accède lit ce qui y est écrit."
 
 # Actifs
 
@@ -152,6 +152,11 @@ description = "Le secret HMAC que l'API et les proxys partagent : qui le détien
 id = "perimetres-en-quarantaine"
 name = "Périmètres en quarantaine"
 description = "Les jeux de données qu'un incident met en quarantaine, que chaque proxy apprend de l'API : demain, l'annotation ou le blocage des lectures de ces jeux en dépendra."
+
+[[asset]]
+id = "rappels"
+name = "Rappels"
+description = "Les listes de rappel, les décisions prises sur elles et les messages mis à l'envoi : ce qui sera dit aux destinataires, à qui, et qui l'a décidé."
 
 # Composants du dépôt : les membres de l'espace de travail uv, les paquets npm, le pipeline.
 
@@ -1394,6 +1399,77 @@ test = "api/tests/test_revelation.py::test_simultaneous_revelations_of_one_autho
 reason = "La borne laisse prévenir les destinataires d'un incident l'un après l'autre ; elle est par auteur, sans borne globale, et une révélation refusée pour le débit n'est pas journalisée, pour que le journal ne grandisse pas au rythme de qui insiste."
 consequence = "Un gestionnaire d'incident éprouve 2 000 identités par heure, chaque révélation journalisée ; plusieurs comptes multiplient ce débit."
 
+[[threat]]
+id = "api/decision-de-rappel-usurpee"
+name = "Une décision de rappel est prise par qui ne le doit pas, au nom d'un autre, ou sans trace"
+category = "spoofing"
+boundary = "lecteur-lecture"
+assets = ["rappels", "destinataires"]
+description = "Un lecteur, un jeton volé ou un appelant sans identité valide, modifie ou refuse le rappel d'un incident ; une décision se dit prise par un autre, ou glisse un texte libre dans ce qui sera dit aux destinataires ; son auteur efface ensuite sa trace."
+abuse_cases = ["jetons/lecteur-valide-un-rappel", "champs/decision-de-rappel-auteur-usurpe", "champs/decision-de-rappel-texte-libre", "champs/decision-de-rappel-motif-hors-liste", "champs/decision-de-rappel-gabarit-hors-liste"]
+
+[[threat.mitigation]]
+description = "Décider revient au responsable d'agent et à l'administrateur ; le lecteur, le responsable de données, le gestionnaire d'incident, l'auditeur et l'émetteur sont refusés, sans rien journaliser."
+code = "api/src/answerlineage_api/auth/matrix.py"
+test = "api/tests/test_recall_decisions.py::test_whoever_is_not_an_agent_owner_or_administrator_is_refused_and_nothing_is_journaled"
+
+[[threat.mitigation]]
+description = "L'auteur est l'émetteur et le sujet du jeton, jamais un champ du corps ; la décision se journalise avec lui, à l'heure de la base. Sans sujet admis, ou sans authentification, rien n'est décidé."
+code = "api/src/answerlineage_api/recall/routes.py::decide"
+test = "api/tests/test_recall_decisions.py::test_a_token_without_an_admitted_subject_decides_nothing"
+
+[[threat.mitigation]]
+description = "Une décision n'est faite que de codes de listes fermées : la décision, le gabarit d'une liste modifiée, le motif d'un refus. Un texte libre, un auteur ou une valeur hors de sa liste sont refusés sans être recopiés."
+code = "api/src/answerlineage_api/recall/models.py::validate_decision"
+test = "api/tests/test_recall_decisions.py::test_free_text_or_a_value_out_of_its_list_is_refused_without_being_copied"
+
+[[threat.mitigation]]
+description = "Une décision est définitive : la même se redemande sans rien changer, une autre est refusée."
+code = "api/src/answerlineage_api/recall/store.py::decide"
+test = "api/tests/test_recall_decisions.py::test_a_decision_is_final_and_asking_it_again_changes_nothing"
+
+[[threat.mitigation]]
+description = "Le journal des décisions est en ajout seul, tenu par la base : l'heure posée à l'insertion, toute modification, suppression ou troncature refusée, les droits retirés au propriétaire de la table ; une décision a son auteur."
+code = "api/src/answerlineage_api/store/schema.py::create_recall_decision_append_only"
+test = "api/tests/test_recall_decisions.py::test_the_decision_journal_is_appended_to_never_changed"
+
+[threat.acceptance]
+reason = "Les rôles ne portent pas de périmètre par agent : tout responsable d'agent, et l'administrateur, décide de la liste de tout incident, quel que soit l'agent qui a répondu à ses destinataires. L'ajout seul tient contre l'API et son rôle, pas contre un superutilisateur de la base, qui peut désactiver les déclencheurs."
+consequence = "Un responsable d'agent peut valider ou refuser le rappel des utilisateurs d'un agent qui n'est pas le sien : la décision reste journalisée, à son nom. Qui administre la base peut écrire une décision au nom d'un autre, ou effacer le journal."
+
+[[threat]]
+id = "api/rappel-sans-validation"
+name = "Un rappel part sans validation humaine, ou autre que celui validé"
+category = "elevation-of-privilege"
+boundary = "donnees-au-repos"
+assets = ["rappels", "destinataires"]
+description = "Un code qui contourne l'API écrit un envoi directement dans la base ; une décision demande l'envoi elle-même ; ou la liste change après sa validation, et ce qui partirait n'est plus ce qu'un humain a validé."
+abuse_cases = ["champs/envoi-force-sans-validation"]
+
+[[threat.mitigation]]
+description = "La base refuse tout envoi sans une liste validée ou modifiée, par une contrainte de déclencheur que toute connexion subit, propriétaire compris : une écriture directe est refusée, et ni une remontée ni un refus n'ouvrent l'envoi."
+code = "api/src/answerlineage_api/store/schema.py::create_recall_dispatch_validated"
+test = "api/tests/test_recall_decisions.py::test_a_list_without_validation_has_sent_nothing_and_the_base_refuses_any_dispatch"
+
+[[threat.mitigation]]
+description = "Une liste décidée ne change plus : la base refuse toute écriture dans la liste, ses entrées et leurs réponses dès qu'une décision existe."
+code = "api/src/answerlineage_api/store/schema.py::create_recall_list_frozen"
+test = "api/tests/test_recall_decisions.py::test_a_decided_list_no_longer_changes_and_an_escalated_one_still_does"
+
+[[threat.mitigation]]
+description = "Une analyse rejouée après la décision, même tronquée, ne refait ni ne retire la liste décidée."
+code = "workers/src/answerlineage_workers/recall.py::build"
+test = "workers/tests/test_recall_decisions.py::test_a_replayed_analysis_keeps_a_decided_list_as_it_was_decided"
+
+[[threat.mitigation]]
+description = "Aucune route n'envoie : décider ne fait que journaliser, et une décision qui demanderait l'envoi est hors de sa liste fermée."
+code = "api/src/answerlineage_api/recall/routes.py::decide"
+test = "tests/test_recall_validation_end_to_end.py::test_a_list_left_without_decision_reaches_the_data_steward_then_is_validated"
+
+[threat.acceptance]
+reason = "La base tient la règle contre toute connexion qui n'est pas superutilisateur : un superutilisateur peut désactiver les déclencheurs, ou écrire une décision au nom d'un autre. L'envoi lui-même n'existe pas encore : la base garantit seulement qu'un message mis à l'envoi vise une entrée d'une liste validée ou modifiée."
+consequence = "Qui administre la base en superutilisateur peut mettre à l'envoi un rappel que personne n'a validé. Le code qui enverra devra prendre le gabarit de la décision : la base ne vérifie pas ce qu'il dira."
+
 # Workers
 
 [[threat]]
@@ -1860,6 +1936,33 @@ test = "workers/tests/test_proposals.py::test_a_proposal_without_a_new_failure_f
 [threat.acceptance]
 reason = "Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements, et les workers ne savent pas quel client a envoyé un échec : une borne par émetteur se contournerait en changeant d'espace de noms ; seule la borne globale des propositions ouvertes tient la table et la liste."
 consequence = "Un client émetteur hostile, ou qui en a volé le secret, peut remplir les 100 propositions ouvertes et faire refuser les signaux des vrais tests en échec, jusqu'à ce que des propositions soient décidées ou expirent ; le refus se compte, se dit au journal, et doctor signale les propositions qui attendent."
+
+[[threat]]
+id = "workers/remontee-manquee"
+name = "Une liste de rappel reste sans décision, et personne ne le sait"
+category = "repudiation"
+boundary = "lecteur-lecture"
+assets = ["rappels", "destinataires"]
+description = "Personne ne valide ni ne refuse la liste de rappel d'un incident, et rien ne le dit au responsable de données : les destinataires d'une donnée fausse ne sont jamais prévenus, sans que l'oubli laisse de trace."
+
+[[threat.mitigation]]
+description = "Chaque minute, les workers font remonter au responsable de données une liste qui a des destinataires et reste sans décision au-delà du délai, 48 heures par défaut, d'une heure à 720 : une ligne au journal des décisions, sans auteur, à l'heure de la base, une fois par liste."
+code = "workers/src/answerlineage_workers/recall.py::escalate"
+test = "workers/tests/test_recall_decisions.py::test_a_list_without_decision_past_the_delay_escalates_once_to_the_data_steward"
+
+[[threat.mitigation]]
+description = "La remontée se lit par l'API : les listes en attente remontées, de l'incident le plus grave au moins grave, et l'heure de la remontée sur chaque liste."
+code = "api/src/answerlineage_api/recall/store.py::recall_lists"
+test = "tests/test_recall_validation_end_to_end.py::test_a_list_left_without_decision_reaches_the_data_steward_then_is_validated"
+
+[[threat.mitigation]]
+description = "Plusieurs workers font remonter une liste une seule fois ; un passage en échec est dit au journal par sa classe et repris au suivant."
+code = "workers/src/answerlineage_workers/queue.py"
+test = "workers/tests/test_recall_decisions.py::test_the_worker_loop_escalates_overdue_lists_and_survives_a_failed_pass"
+
+[threat.acceptance]
+reason = "La remontée s'écrit au journal et se lit par l'API ; elle n'est pas poussée : aucun webhook ne l'annonce, la version 1 du format ne connaissant que les états d'un incident, et doctor ne la signale pas. Une liste vide ne remonte pas, et une analyse tronquée n'a pas de liste."
+consequence = "Un responsable de données qui ne consulte pas les listes remontées ne voit pas qu'un rappel attend. Un incident dont l'analyse est tronquée reste sans liste, donc sans remontée, tant qu'il n'est pas déclaré de nouveau sur une fenêtre plus courte."
 
 # Ligne de commande
 

@@ -528,6 +528,31 @@
         "graph": {"recipient_revelation": 1}
       }
     },
+    "ingestion/decision-de-rappel": {
+      "title": "Un responsable d'agent valide la liste de rappel d'un incident analysé : les deux destinataires de la réponse touchée",
+      "surface": "ingestion",
+      "seed": "une-reponse",
+      "incidents": [
+        {
+          "scope": {"datasets": [{"namespace": "bigquery", "name": "finance.ref.taux_change"}]},
+          "window": {"from": "2026-11-03T06:00:00Z", "to": "2026-11-03T16:00:00Z"},
+          "severity": "high"
+        }
+      ],
+      "analysed": true,
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/incidents/{incident}/recall-list/decision",
+        "headers": {"content-type": "application/json"},
+        "body": {"decision": "validated"}
+      },
+      "healthy": {
+        "status": 200,
+        "body": {"changed": true, "state": "validated", "escalated_at": null, "dispatched": 0},
+        "events": 0,
+        "graph": {"recall_decision": 1}
+      }
+    },
     "ingestion/rejeu-du-rebut": {
       "title": "Le rejeu de la file de rebut, filtré par émetteur, par motif et par événement",
       "surface": "ingestion",

@@ -54,6 +54,7 @@ from answerlineage_api.lineage.routes import router as lineage_router
 from answerlineage_api.pseudonyms.models import revelation_request_json_schema
 from answerlineage_api.pseudonyms.routes import router as recipients_router
 from answerlineage_api.pseudonyms.vault import PseudonymVault, vault_from_settings
+from answerlineage_api.recall.models import decision_request_json_schema
 from answerlineage_api.recall.routes import router as recall_router
 from answerlineage_api.responses import reject_invalid_request
 from answerlineage_api.store.engine import create_engine, database_url_from_environment
@@ -200,6 +201,7 @@ def create_app(
             revelation = revelation_request_json_schema()
             schemas.update(revelation.pop("$defs", {}))
             schemas["RevelationRequest"] = revelation
+            schemas["RecallDecisionRequest"] = decision_request_json_schema()
             matrix.publish(document)
             app.openapi_schema = document
         return app.openapi_schema

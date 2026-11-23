@@ -43,7 +43,7 @@ Avant toute route, et avant la validation de ses paramètres ou la lecture de so
 - **sa signature**, puis ses revendications : `iss` est l'émetteur réglé, `aud` nomme l'audience, `exp` est présent et à venir, `nbf` et `iat`, s'ils sont présents, ne sont pas à venir. Une tolérance d'horloge de 60 secondes s'applique aux trois heures : assez pour l'écart de deux horloges synchronisées par NTP, trop peu pour prolonger un jeton volé ;
 - **le rôle** : l'un des rôles du jeton ouvre la route ([matrice](#la-matrice-des-droits)).
 
-Le sujet du jeton (`sub`) est l'identité de la personne. L'API ne le garde que pour une action tracée, la [révélation d'un destinataire](pseudonymes.md#révéler), qui le journalise comme auteur avec l'émetteur ; il n'est lu que s'il a la forme qu'OpenID Connect lui donne, 255 caractères ASCII imprimables au plus, sans blanc ni rien qui forme une balise. Sans sujet admis, la révélation répond `403 author_unidentified`.
+Le sujet du jeton (`sub`) est l'identité de la personne. L'API ne le garde que pour une action tracée, la [révélation d'un destinataire](pseudonymes.md#révéler) ou la [décision sur une liste de rappel](../rappel.md#décider-du-rappel), qui le journalise comme auteur avec l'émetteur ; il n'est lu que s'il a la forme qu'OpenID Connect lui donne, 255 caractères ASCII imprimables au plus, sans blanc ni rien qui forme une balise. Sans sujet admis, l'une et l'autre répondent `403 author_unidentified`.
 
 | Refus | Statut | Défi `WWW-Authenticate` |
 | --- | --- | --- |
@@ -67,13 +67,13 @@ Les clés se gardent en mémoire. Un jeton au `kid` inconnu relit la découverte
 | --- | --- | --- |
 | Lecteur | `reader` | Lire le lignage, la couverture, les incidents, les incidents proposés et les périmètres en quarantaine |
 | Responsable de données | `data_steward` | Le lecteur, et déclarer un incident, mettre un incident en quarantaine et la lever, confirmer ou écarter un incident proposé |
-| Responsable d'agent | `agent_owner` | Ce que lit le lecteur, et les doublons par émetteur et les outils sans règle de lecture |
+| Responsable d'agent | `agent_owner` | Ce que lit le lecteur, les doublons par émetteur et les outils sans règle de lecture, et valider, modifier ou refuser une liste de rappel, action journalisée ([liste de rappel](../rappel.md#décider-du-rappel)) |
 | Gestionnaire d'incident | `incident_manager` | Comme le responsable de données, et révéler un destinataire parmi des identités candidates, action journalisée ([pseudonymes](pseudonymes.md)) |
 | Auditeur | `auditor` | Tout lire, l'exploitation comprise (état détaillé, rebut, doublons) et le journal des révélations, sans rien écrire |
 | Administrateur | `administrator` | Tout ce qu'ouvrent les rôles de personnes, sauf révéler un destinataire, et rejouer le rebut |
 | Émetteur | `emitter` | Rôle technique : envoyer des événements et des relevés de couverture, lire les périmètres en quarantaine |
 
-Les six premiers sont ceux des personnes : ils se lisent dans la revendication réglée, à travers la table de correspondance. L'administrateur ne révèle pas de destinataire : il exploite la plateforme, et peut en approcher la base et le coffre à clés ; un seul compte, ou un seul jeton volé, réunirait sinon les pseudonymes, la clé et le droit de révéler. Il lit le journal des révélations, avec l'auditeur. Le rôle d'émetteur ne se lit que de l'identifiant du client (`azp`, à défaut `client_id`) : une revendication de rôles ne le donne jamais, et une personne qui se connecte à l'explorateur ne l'a pas. L'administrateur n'émet pas d'événements : tout événement vient d'un client identifié comme émetteur.
+Les six premiers sont ceux des personnes : ils se lisent dans la revendication réglée, à travers la table de correspondance. Aucun ne porte de périmètre : un responsable d'agent l'est de tous les agents, et décide de toute liste de rappel ([qui décide](../rappel.md#qui-décide)). L'administrateur ne révèle pas de destinataire : il exploite la plateforme, et peut en approcher la base et le coffre à clés ; un seul compte, ou un seul jeton volé, réunirait sinon les pseudonymes, la clé et le droit de révéler. Il lit le journal des révélations, avec l'auditeur. Le rôle d'émetteur ne se lit que de l'identifiant du client (`azp`, à défaut `client_id`) : une revendication de rôles ne le donne jamais, et une personne qui se connecte à l'explorateur ne l'a pas. L'administrateur n'émet pas d'événements : tout événement vient d'un client identifié comme émetteur.
 
 Le lien entre un émetteur et l'espace de noms de ses événements n'est pas encore fait : un émetteur authentifié peut envoyer un événement au nom d'un autre ([limites](#limites-connues)).
 
@@ -107,6 +107,8 @@ La matrice est déclarée une seule fois, dans le code (`matrix.py`). La dépend
 | `POST /api/v1/incident-proposals/{proposal_id}/confirm` |  | oui |  | oui |  | oui |  | Confirmer un incident proposé : qui répond des données ou des incidents. |
 | `POST /api/v1/incident-proposals/{proposal_id}/dismiss` |  | oui |  | oui |  | oui |  | Écarter un incident proposé : qui répond des données ou des incidents. |
 | `GET /api/v1/incidents/{incident_id}/recall-list` | oui | oui | oui | oui | oui | oui |  | Lire les listes de rappel : toute personne qui a un rôle. |
+| `GET /api/v1/recall-lists` | oui | oui | oui | oui | oui | oui |  | Lire les listes de rappel : toute personne qui a un rôle. |
+| `POST /api/v1/incidents/{incident_id}/recall-list/decision` |  |  | oui |  |  | oui |  | Valider, modifier ou refuser un rappel, action journalisée : qui répond des agents. |
 | `POST /api/v1/recipients/reveal` |  |  |  | oui |  |  |  | Révéler un destinataire, action tracée : qui instruit les incidents, pas l'administrateur qui exploite la plateforme. |
 | `GET /api/v1/recipients/revelations` |  |  |  |  | oui | oui |  | Le journal des révélations : l'audit et l'exploitation. |
 | `GET /api/v1/quarantine` | oui | oui | oui | oui | oui | oui | oui | Les périmètres en quarantaine : les proxys, et toute personne qui a un rôle. |
@@ -168,6 +170,7 @@ L'API ne voit pas l'adresse sur laquelle le serveur HTTP écoute : le serveur ou
 - Le `kid` est exigé ; un émetteur qui n'en met pas n'est pas pris en charge.
 - Un jeton reste valable jusqu'à son expiration : l'API ne consulte ni l'introspection ni la révocation de l'émetteur. Des jetons courts, de quelques minutes, bornent ce qu'un jeton volé permet.
 - Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements : il peut envoyer un événement, un rejeu ou un relevé au nom d'un autre émetteur.
-- L'API ne garde pas encore qui a fait quoi, hors de la révélation d'un destinataire : la déclaration d'un incident ou sa mise en quarantaine ne retient pas encore son auteur.
+- L'API ne garde pas encore qui a fait quoi, hors de la révélation d'un destinataire et de la décision sur une liste de rappel : la déclaration d'un incident ou sa mise en quarantaine ne retient pas encore son auteur.
+- Les rôles ne portent pas de périmètre par agent : un responsable d'agent décide de la liste de rappel de tout incident, pas seulement des utilisateurs de son agent.
 - Le point de jeton de l'émetteur doit être sur son origine, pour que la politique de sécurité du contenu de l'explorateur le laisse joindre.
 - L'API et le proxy ne lisent ni mandataire ni autorité de certification de l'environnement : un émetteur derrière une autorité privée n'est pas encore joignable.

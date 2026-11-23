@@ -43,6 +43,7 @@ from answerlineage_proxy import app as proxy_app
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import ProxySettings, SqlTool
 from answerlineage_proxy.sink import MemorySink
+from answerlineage_workers.incidents import process_analysis
 from answerlineage_workers.proposals import process_signals
 from answerlineage_workers.queue import process_batch
 from api.tests.issuer import authentication, forged, signed_in
@@ -306,6 +307,10 @@ async def observe_api(
                 (await client.post("/api/v1/incidents", json=incident)).json().get("id")
                 for incident in play.incidents
             ]
+            if play.analysed:
+                # Un worker analyse les incidents déclarés, et en fait la liste de rappel.
+                while await process_analysis(engine) is not None:
+                    pass
             path = play.path.replace(INCIDENT, str(declared[0])) if declared else play.path
             if play.proposals:
                 path = path.replace(PROPOSAL, await proposed(client, engine, play.proposals))

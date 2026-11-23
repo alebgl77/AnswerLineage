@@ -122,6 +122,14 @@
       "expect": {"verdict": "refuse", "status": 403, "code": "insufficient_role"}
     },
     {
+      "name": "lecteur-valide-un-rappel",
+      "title": "Une personne qui n'a que le rôle de lecteur valide la liste de rappel d'un incident",
+      "surface": "ingestion",
+      "base": "ingestion/decision-de-rappel",
+      "alter": {"recipe": "forger-jeton", "forge": "lecteur-seul", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "insufficient_role"}
+    },
+    {
       "name": "lecteur-lit-les-doublons",
       "title": "Une personne qui n'a que le rôle de lecteur lit les doublons par émetteur",
       "surface": "lecture",

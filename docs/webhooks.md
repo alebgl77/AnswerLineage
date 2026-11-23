@@ -258,6 +258,6 @@ WARNING answerlineage_workers Webhook : 3 message(s) abandonné(s), les plus anc
 - Rien n'est rattrapé : un changement d'état survenu hors service, avant le premier passage d'un worker à webhook ou après l'échéance, n'est jamais mis en file ; un message perdu par les bornes ou un refus n'est pas remis en file.
 - Un webhook retiré des workers reste en service jusqu'à son échéance, une semaine par défaut, sauf à le retirer dans la base ([en service](#en-service)).
 - Le secret est partagé et symétrique, sa rotation manuelle ; écarter un rejeu dans la fenêtre de tolérance revient au récepteur, par l'identifiant de livraison. Ce sont deux risques acceptés du modèle de menaces, à signer.
-- La version 1 du format ne connaît que les états d'aujourd'hui. Les états que la liste de rappel ajoutera, et les écarts, feront une nouvelle version : un récepteur qui ne lit que la version 1 ne les recevra pas sans changement.
+- La version 1 du format ne connaît que les états d'un incident. La [liste de rappel](rappel.md), sa décision et sa remontée au responsable de données ne sont pas annoncées, ni les écarts : les annoncer fera une nouvelle version, qu'un récepteur qui ne lit que la version 1 ne recevra pas sans changement.
 - Un envoi par message, une connexion par worker : le débit est celui du récepteur. Les incidents sont rares, la borne de la file est faite pour une panne, pas pour un flux.
 - La transaction d'un lot reste ouverte pendant son envoi, 30 s au plus, plus le délai d'un envoi : elle ne tient que des lignes de la file des webhooks.

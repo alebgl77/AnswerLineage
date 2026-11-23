@@ -45,6 +45,9 @@ et le résultat, jamais l'identité. Aucune table ne relie un pseudonyme à une 
 La liste de rappel d'un incident (``recall_list``) tient une entrée par destinataire
 (``recall_entry``), rangée par exposition, avec ses réponses touchées
 (``recall_entry_answer``) : un instantané de l'analyse, des pseudonymes et des nombres.
+Chaque décision sur une liste, et sa remontée faute de décision, est journalisée
+(``recall_decision``), en ajout seul. Une liste décidée ne change plus, et aucun message
+ne se met à l'envoi (``recall_dispatch``) sans une liste validée : la base le tient.
 
 Les tables du graphe (``GRAPH``) se déduisent toutes des événements bruts : la
 reconstruction les vide et les rejoue, et garde la trace de chaque
@@ -240,6 +243,23 @@ PSEUDONYM_FORM: Final = "^hmac-sha256:[0-9a-f]{64}$"
 # sujet de son jeton, qu'OpenID Connect borne à 255 caractères.
 AUTHOR_ISSUER_MAX: Final = 1024
 AUTHOR_SUBJECT_MAX: Final = 255
+
+# Décision sur une liste de rappel, d'une liste fermée : validée telle quelle ; modifiée, par
+# le choix d'un autre gabarit ; refusée, avec un motif. « escalated » est la remontée d'une
+# liste restée sans décision, que posent les workers. Une liste a au plus une décision et
+# une remontée.
+RecallDecision = Literal["validated", "modified", "refused", "escalated"]
+RECALL_DECISIONS: Final[tuple[str, ...]] = get_args(RecallDecision)
+# Les décisions qui permettent l'envoi : la base refuse tout envoi sans l'une d'elles.
+RECALL_APPROVALS: Final = ("validated", "modified")
+# Gabarit du message de rappel, d'une liste fermée : on le choisit, on ne l'écrit pas.
+# « standard » est celui d'une liste validée telle quelle.
+RecallTemplate = Literal["standard", "information", "decision_review"]
+RECALL_TEMPLATES: Final[tuple[str, ...]] = get_args(RecallTemplate)
+DEFAULT_RECALL_TEMPLATE: Final = "standard"
+# Motif du refus d'une liste, d'une liste fermée.
+RecallRefusal = Literal["not_affected", "already_informed", "no_impact", "duplicate_incident"]
+RECALL_REFUSALS: Final[tuple[str, ...]] = get_args(RecallRefusal)
 
 READ_EDGE_KEY = "uq_read_edge_run_id_dataset_id_dataset_version_id"
 WRITE_EDGE_KEY = "uq_write_edge_run_id_dataset_id_dataset_version_id"
@@ -1333,6 +1353,202 @@ recall_entry_answer = Table(
         ["incident_id", "pseudonym"], [recall_entry.c.incident_id, recall_entry.c.pseudonym]
     ),
 )
+
+# Journal des décisions sur les listes de rappel, en ajout seul : qui a décidé (l'émetteur
+# OIDC et le sujet de son jeton), quand (l'heure de la base), quoi (validée, modifiée,
+# refusée), avec quel gabarit ou pour quel motif, de listes fermées ; et la remontée d'une
+# liste restée sans décision, posée par les workers, sans auteur. Jamais de texte libre.
+# Une liste a au plus une décision (``uq_recall_decision_decided``), définitive, et au plus
+# une remontée (``uq_recall_decision_escalated``). Le journal survit à la liste qu'une
+# analyse rejouée retire : il désigne l'incident.
+recall_decision = Table(
+    "recall_decision",
+    metadata,
+    Column("id", BigInteger, Identity(always=True), primary_key=True),
+    Column("incident_id", Uuid, ForeignKey("incident.id"), nullable=False),
+    Column("decided_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("decision", Text, nullable=False),
+    Column("author_issuer", Text),
+    Column("author_subject", Text),
+    Column("template", Text),
+    Column("reason", Text),
+    CheckConstraint(_in("decision", RECALL_DECISIONS), name="decision"),
+    CheckConstraint(f"template IS NULL OR {_in('template', RECALL_TEMPLATES)}", name="template"),
+    CheckConstraint(f"reason IS NULL OR {_in('reason', RECALL_REFUSALS)}", name="reason"),
+    # Une décision a son auteur, une remontée n'en a pas.
+    CheckConstraint(
+        "(decision = 'escalated') = (author_issuer IS NULL)"
+        " AND (author_issuer IS NULL) = (author_subject IS NULL)"
+        " AND (author_issuer IS NULL"
+        f" OR char_length(author_issuer) BETWEEN 1 AND {AUTHOR_ISSUER_MAX})"
+        " AND (author_subject IS NULL"
+        f" OR char_length(author_subject) BETWEEN 1 AND {AUTHOR_SUBJECT_MAX})",
+        name="author",
+    ),
+    # Un gabarit pour ce qui part, un motif pour un refus, rien d'autre.
+    CheckConstraint(
+        f"(template IS NOT NULL) = ({_in('decision', RECALL_APPROVALS)})"
+        " AND (reason IS NOT NULL) = (decision = 'refused')",
+        name="given",
+    ),
+)
+Index(
+    "uq_recall_decision_decided",
+    recall_decision.c.incident_id,
+    unique=True,
+    postgresql_where=recall_decision.c.decision != "escalated",
+)
+Index(
+    "uq_recall_decision_escalated",
+    recall_decision.c.incident_id,
+    unique=True,
+    postgresql_where=recall_decision.c.decision == "escalated",
+)
+
+RECALL_DECISION_APPEND_ONLY_FUNCTION: Final = """
+CREATE FUNCTION recall_decision_append_only() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        NEW.decided_at := now();
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'le journal des décisions de rappel ne se modifie pas'
+        USING ERRCODE = 'check_violation',
+              CONSTRAINT = 'ck_recall_decision_append_only',
+              TABLE = 'recall_decision';
+END
+$$
+"""
+RECALL_DECISION_APPEND_ONLY_TRIGGERS: Final = (
+    """
+CREATE TRIGGER recall_decision_stamped
+BEFORE INSERT ON recall_decision
+FOR EACH ROW EXECUTE FUNCTION recall_decision_append_only()
+""",
+    """
+CREATE TRIGGER recall_decision_append_only
+BEFORE UPDATE OR DELETE ON recall_decision
+FOR EACH ROW EXECUTE FUNCTION recall_decision_append_only()
+""",
+    """
+CREATE TRIGGER recall_decision_not_truncated
+BEFORE TRUNCATE ON recall_decision
+FOR EACH STATEMENT EXECUTE FUNCTION recall_decision_append_only()
+""",
+    "REVOKE UPDATE, DELETE, TRUNCATE ON TABLE recall_decision FROM PUBLIC, CURRENT_USER",
+)
+
+
+def create_recall_decision_append_only(target: Table, connection: Connection, **_: object) -> None:
+    """Crée, avec la table, ce qui la tient en ajout seul : la fonction, ses déclencheurs, et
+    le retrait des droits de modifier."""
+    connection.exec_driver_sql(RECALL_DECISION_APPEND_ONLY_FUNCTION)
+    for statement in RECALL_DECISION_APPEND_ONLY_TRIGGERS:
+        connection.exec_driver_sql(statement)
+
+
+event.listen(recall_decision, "after_create", create_recall_decision_append_only)
+
+# Les messages de rappel mis à l'envoi : un par destinataire et par incident, chacun un
+# destinataire de la liste. Aucun ne s'y écrit sans une liste validée ou modifiée : la base
+# le refuse, quelle que soit la connexion qui l'écrit (``ck_recall_dispatch_validated``).
+# Rien ne l'écrit encore : l'envoi n'existe pas.
+recall_dispatch = Table(
+    "recall_dispatch",
+    metadata,
+    Column("id", BigInteger, Identity(always=True), primary_key=True),
+    Column("incident_id", Uuid, nullable=False),
+    Column("pseudonym", Text, nullable=False),
+    Column("enqueued_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    UniqueConstraint("incident_id", "pseudonym"),
+    ForeignKeyConstraint(
+        ["incident_id", "pseudonym"], [recall_entry.c.incident_id, recall_entry.c.pseudonym]
+    ),
+)
+
+RECALL_DISPATCH_VALIDATED_FUNCTION: Final = f"""
+CREATE FUNCTION recall_dispatch_validated() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM recall_decision
+        WHERE incident_id = NEW.incident_id AND {_in("decision", RECALL_APPROVALS)}
+    ) THEN
+        RETURN NULL;
+    END IF;
+    RAISE EXCEPTION 'aucun rappel ne part sans validation humaine'
+        USING ERRCODE = 'check_violation',
+              CONSTRAINT = 'ck_recall_dispatch_validated',
+              TABLE = 'recall_dispatch';
+END
+$$
+"""  # noqa: S608 — seule une liste fermée est interpolée.
+RECALL_DISPATCH_VALIDATED_CONSTRAINT: Final = """
+CREATE CONSTRAINT TRIGGER ck_recall_dispatch_validated
+AFTER INSERT OR UPDATE ON recall_dispatch
+FOR EACH ROW EXECUTE FUNCTION recall_dispatch_validated()
+"""
+
+
+def create_recall_dispatch_validated(target: Table, connection: Connection, **_: object) -> None:
+    """Crée, avec la table, la fonction et la contrainte qui refusent un envoi sans validation."""
+    connection.exec_driver_sql(RECALL_DISPATCH_VALIDATED_FUNCTION)
+    connection.exec_driver_sql(RECALL_DISPATCH_VALIDATED_CONSTRAINT)
+
+
+event.listen(recall_dispatch, "after_create", create_recall_dispatch_validated)
+
+# Une liste décidée ne change plus : ce qui a été validé est ce qui partira. La base refuse
+# toute écriture dans la liste, ses entrées et leurs réponses dès qu'une décision existe
+# (``ck_recall_list_frozen``) ; une remontée ne la fige pas.
+RECALL_LIST_FROZEN_FUNCTION: Final = """
+CREATE FUNCTION recall_list_frozen() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    touched uuid[];
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        touched := ARRAY[NEW.incident_id];
+    ELSIF TG_OP = 'DELETE' THEN
+        touched := ARRAY[OLD.incident_id];
+    ELSE
+        touched := ARRAY[OLD.incident_id, NEW.incident_id];
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM recall_decision
+        WHERE incident_id = ANY(touched) AND decision <> 'escalated'
+    ) THEN
+        RAISE EXCEPTION 'une liste de rappel décidée ne change plus'
+            USING ERRCODE = 'check_violation',
+                  CONSTRAINT = 'ck_recall_list_frozen',
+                  TABLE = TG_TABLE_NAME;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END
+$$
+"""
+RECALL_LIST_FROZEN_TRIGGERS: Final = tuple(
+    f"""
+CREATE TRIGGER {table}_frozen
+BEFORE INSERT OR UPDATE OR DELETE ON {table}
+FOR EACH ROW EXECUTE FUNCTION recall_list_frozen()
+"""
+    for table in ("recall_list", "recall_entry", "recall_entry_answer")
+)
+
+
+def create_recall_list_frozen(target: MetaData, connection: Connection, **_: object) -> None:
+    """Crée, les tables de la liste et du journal créées, ce qui fige une liste décidée."""
+    connection.exec_driver_sql(RECALL_LIST_FROZEN_FUNCTION)
+    for statement in RECALL_LIST_FROZEN_TRIGGERS:
+        connection.exec_driver_sql(statement)
+
+
+event.listen(metadata, "after_create", create_recall_list_frozen)
 
 # Une table partitionnée naît avec la partition du mois courant et des mois à venir.
 for _partitioned in (event_raw, coverage_report, ingest_duplicate):

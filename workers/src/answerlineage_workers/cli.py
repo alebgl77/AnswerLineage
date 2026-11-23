@@ -7,9 +7,11 @@ en ``--max-attempts`` essais va au rebut, ou au premier échec quand l'erreur ne
 se corrigera pas en réessayant. Il contrôle aussi, chaque minute, les émetteurs
 muets depuis plus de ``--silence-minutes``, et entretient chaque heure les
 partitions mensuelles : ``--partitions-ahead`` mois créés à l'avance,
-``--retention-months`` mois conservés. Une conservation absurde
-(nulle, négative, plus courte que l'avance), un lot ou un nombre d'essais hors
-de leurs bornes empêchent le worker de démarrer.
+``--retention-months`` mois conservés. Chaque minute, il fait remonter au
+responsable de données les listes de rappel restées sans décision plus de
+``--recall-decision-hours`` heures. Une conservation absurde (nulle, négative,
+plus courte que l'avance), un lot, un nombre d'essais ou un délai hors de leurs
+bornes empêchent le worker de démarrer.
 
 Avec une destination de réémission (``--reemit-url`` ou
 ``ANSWERLINEAGE_REEMIT_URL``, et ``ANSWERLINEAGE_REEMIT_AUTHORIZATION`` pour son
@@ -84,6 +86,11 @@ from answerlineage_workers.rebuild import (
     RebuildRefusedError,
     assess,
     rebuild_graph,
+)
+from answerlineage_workers.recall import (
+    DEFAULT_DECISION_DELAY,
+    MAX_DECISION_DELAY,
+    MIN_DECISION_DELAY,
 )
 from answerlineage_workers.reemission import (
     DEFAULT_MAX_AGE,
@@ -208,6 +215,7 @@ async def serve(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     reemission: Reemission | None = None,
     webhook: Webhook | None = None,
+    recall_delay: timedelta = DEFAULT_DECISION_DELAY,
 ) -> None:
     engine = create_engine(database_url_from_environment())
     stop = stop or asyncio.Event()
@@ -223,6 +231,7 @@ async def serve(
                 max_attempts=max_attempts,
                 reemission=reemission,
                 webhook=webhook,
+                recall_delay=recall_delay,
             )
     finally:
         await engine.dispose()
@@ -281,6 +290,13 @@ def _minutes(value: str) -> timedelta:
     if not value.isdigit() or not 1 <= int(value) <= 10_080:
         raise argparse.ArgumentTypeError("un nombre entier de minutes, de 1 à 10080 (une semaine)")
     return timedelta(minutes=int(value))
+
+
+def _decision_hours(value: str) -> timedelta:
+    low, high = MIN_DECISION_DELAY // timedelta(hours=1), MAX_DECISION_DELAY // timedelta(hours=1)
+    if not value.isdigit() or not low <= int(value) <= high:
+        raise argparse.ArgumentTypeError(f"un nombre entier d'heures, de {low} à {high}")
+    return timedelta(hours=int(value))
 
 
 def _months(low: int, high: int) -> Callable[[str], int]:
@@ -351,6 +367,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=_minutes,
         default=DEFAULT_SILENCE,
         help="minutes sans relevé au-delà desquelles un émetteur est signalé muet (10 par défaut)",
+    )
+    parser.add_argument(
+        "--recall-decision-hours",
+        type=_decision_hours,
+        default=DEFAULT_DECISION_DELAY,
+        help=(
+            "heures sans décision au-delà desquelles une liste de rappel remonte au responsable"
+            " de données, de 1 à 720 (48 par défaut)"
+        ),
     )
     parser.add_argument(
         "--retention-months",
@@ -503,6 +528,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_attempts=args.max_attempts,
                 reemission=reemission,
                 webhook=webhook,
+                recall_delay=args.recall_decision_hours,
             )
         )
     except DatabaseConfigurationError as error:
