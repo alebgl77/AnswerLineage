@@ -12,7 +12,10 @@ from uuid import UUID
 
 from answerlineage_emitter import __version__
 from answerlineage_emitter.events import (
+    AGENT_FACET,
+    AGENT_FACET_SCHEMA,
     KEYS_FACET_SCHEMA,
+    PARENT_FACET_SCHEMA,
     QOS_FACET_SCHEMA,
     RUN_EVENT_SCHEMA,
     SCHEMA_FACET_SCHEMA,
@@ -22,6 +25,7 @@ from answerlineage_emitter.events import (
     TOOL_CALL_FACET_SCHEMA_RUN_ID_TAG,
     facet,
     format_event_time,
+    parent_facet,
     producer,
     run_event,
     schema_facet,
@@ -97,7 +101,19 @@ def test_the_own_facet_schemas_are_published_files_of_the_repository() -> None:
         TOOL_CALL_FACET_SCHEMA_RUN_ID_TAG,
         KEYS_FACET_SCHEMA,
         QOS_FACET_SCHEMA,
+        AGENT_FACET_SCHEMA,
     ):
         path, _, pointer = address.removeprefix(prefix).partition("#")
         assert (ROOT / path).is_file(), address
         assert pointer == "/$defs/" + Path(path).stem
+    assert AGENT_FACET == "answerlineage_agent"
+
+
+def test_the_parent_facet_names_the_run_and_the_job_of_the_parent() -> None:
+    job = {"namespace": "agent://finance", "name": "analyste-change"}
+    assert parent_facet(PRODUCER, RUN, job) == {
+        "_producer": PRODUCER,
+        "_schemaURL": PARENT_FACET_SCHEMA,
+        "run": {"runId": str(RUN)},
+        "job": job,
+    }

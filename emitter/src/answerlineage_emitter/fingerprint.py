@@ -15,7 +15,9 @@ Le calcul, à l'octet près, pour qu'un autre émetteur l'établisse à l'identi
   hexadécimal minuscule ;
 - arguments : la forme canonique JSON (RFC 8785) de ``params.arguments``, en
   UTF-8 ; un appel sans arguments est empreint comme ``{}`` ;
-- résultat : les octets du corps de la réponse tels que le proxy les relaie.
+- résultat : les octets du corps de la réponse tels que le proxy les relaie ;
+  pour un adaptateur, qui ne voit que le résultat décodé, sa forme canonique
+  JSON.
 
 La clé se lit d'un fichier ou d'une variable d'environnement que chaque
 émetteur nomme (``read_key``) : jamais de sa ligne de commande.

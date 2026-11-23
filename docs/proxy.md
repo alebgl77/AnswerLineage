@@ -624,6 +624,8 @@ L'état ne passe pas par les relevés de couverture : ils mesurent ce que le lig
 
 L'identifiant de run d'un appel d'outil vient de son contexte de trace W3C ([Trace Context](https://www.w3.org/TR/trace-context/), en-tête `traceparent`). Lignage et traces se corrèlent sans nouvel en-tête, et tout émetteur qui voit le même contexte (deux proxys en série, un proxy et un adaptateur d'agent) émet pour le même run : les écritures du graphe, idempotentes, fusionnent leurs événements.
 
+L'[adaptateur du Claude Agent SDK](adaptateurs.md) ne voit pas ce contexte : les crochets du SDK ne le portent pas. Un appel vu par lui et par un proxy fait donc deux runs ([ses limites](adaptateurs.md#limites-connues)).
+
 ### D'où vient le contexte
 
 Dans cet ordre, pour une requête `tools/call` :

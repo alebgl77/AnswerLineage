@@ -26,6 +26,7 @@ ENV UV_PYTHON_DOWNLOADS=never \
 
 WORKDIR /src
 COPY pyproject.toml uv.lock ./
+COPY adapters/ adapters/
 COPY api/ api/
 COPY cli/ cli/
 COPY conformance/ conformance/

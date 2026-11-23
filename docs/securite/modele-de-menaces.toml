@@ -27,6 +27,11 @@ name = "Agent, proxy et serveur MCP"
 description = "Le client MCP d'un agent appelle des outils à travers le proxy, en HTTP ou en stdio, et le proxy relaie au serveur MCP. Le corps, les en-têtes et la réponse viennent de part et d'autre ; une page web ouverte sur le poste peut aussi viser un proxy qui écoute sur la boucle locale."
 
 [[boundary]]
+id = "agent-adaptateur"
+name = "Agent et adaptateur"
+description = "L'adaptateur tourne dans le processus de l'agent : les crochets du kit de l'agent lui passent le prompt, les arguments et le résultat de chaque outil, le message d'une erreur, la réponse, et des identifiants de session, d'outil et de sous-agent. Tout cela vient de l'agent, de ses outils et de l'utilisateur : c'est hostile, et aucun contenu ne doit en sortir."
+
+[[boundary]]
 id = "emetteur-ingestion"
 name = "Émetteur et ingestion"
 description = "Le proxy, l'entreprise synthétique ou tout émetteur OpenLineage envoie événements et relevés de couverture à l'API d'ingestion, avec le jeton OIDC d'un client qui a le rôle d'émetteur. Ce qu'un émetteur déclare reste une entrée hostile, et un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements."
@@ -174,6 +179,11 @@ name = "Kit de conformité"
 id = "emitter"
 path = "emitter"
 name = "Émetteur commun"
+
+[[component]]
+id = "adapters"
+path = "adapters"
+name = "Adaptateurs d'agents"
 
 [[component]]
 id = "ui"
@@ -685,6 +695,84 @@ test = "emitter/tests/test_settings.py::test_the_secret_comes_from_the_variables
 description = "Le secret et le jeton ne s'affichent jamais, pas même dans une représentation ; le journal ne dit qu'une classe ou un statut."
 code = "emitter/src/answerlineage_emitter/credentials.py::ClientCredentialsTokens"
 test = "proxy/tests/test_credentials.py::test_the_secret_is_never_shown"
+
+# Adaptateurs d'agents
+
+[[threat]]
+id = "adapters/contenu-dans-l-evenement"
+name = "Un contenu de l'agent sort de l'adaptateur dans un événement, un journal ou un compteur"
+category = "information-disclosure"
+boundary = "agent-adaptateur"
+assets = ["contenus"]
+description = "Les crochets donnent à l'adaptateur le prompt, les arguments et le résultat des outils, le message d'une erreur et la réponse de l'agent : les recopier dans un événement, les journaliser sur une erreur ou les compter sous leur nom les ferait sortir."
+
+[[threat.mitigation]]
+description = "Les arguments et le résultat ne partent qu'en empreintes à clé ; le prompt, le message d'erreur et la réponse ne sont pas lus. Trois canaris placés dans tous ces contenus ne ressortent ni des événements reçus par l'API, ni du journal au niveau le plus bavard, ni des sorties, ni des compteurs, et le kit de conformité le confirme."
+code = "adapters/src/answerlineage_adapters/claude_agent_sdk.py::ClaudeAgentLineage"
+test = "tests/test_conformance_adapter.py::test_three_canaries_cross_the_adapter_and_come_out_nowhere"
+
+[[threat.mitigation]]
+description = "Un échec se dit par l'étape fautive et un compte d'erreurs, jamais par son message ; une erreur de l'adaptateur se journalise par sa classe."
+code = "adapters/src/answerlineage_adapters/claude_agent_sdk.py::_tool_event"
+test = "adapters/tests/test_claude_agent_sdk.py::test_a_failed_tool_is_recorded_with_the_failing_step"
+
+[[threat]]
+id = "adapters/agent-retarde"
+name = "Le lignage retarde ou interrompt l'agent qui porte l'adaptateur"
+category = "denial-of-service"
+boundary = "agent-adaptateur"
+assets = ["continuite-des-agents"]
+description = "Les crochets tournent sur le chemin de l'agent : un envoi attendu, une empreinte calculée sur un gros résultat, une API en panne ou une erreur de l'adaptateur retarderaient chaque appel d'outil, ou l'interrompraient."
+
+[[threat.mitigation]]
+description = "Chaque crochet ne fait que des opérations en mémoire et rend aussitôt une sortie asynchrone : la CLI poursuit sans l'attendre ; l'événement se construit dans une tâche de fond, ses empreintes dans un fil, et part par la boîte d'envoi."
+code = "adapters/src/answerlineage_adapters/claude_agent_sdk.py::ClaudeAgentLineage"
+test = "adapters/tests/test_claude_agent_sdk.py::test_the_hook_returns_without_waiting_for_the_send"
+
+[[threat.mitigation]]
+description = "Une erreur de l'adaptateur ou de la destination est comptée, jamais propagée à l'agent."
+code = "adapters/src/answerlineage_adapters/claude_agent_sdk.py::ClaudeAgentLineage"
+test = "adapters/tests/test_claude_agent_sdk.py::test_a_failing_destination_never_reaches_the_agent"
+
+[[threat.mitigation]]
+description = "La file des événements à construire et les runs suivis sont bornés ; au-delà, le plus ancien est abandonné et compté."
+code = "adapters/src/answerlineage_adapters/claude_agent_sdk.py::ClaudeAgentLineage"
+test = "adapters/tests/test_claude_agent_sdk.py::test_the_events_waiting_to_be_built_are_bounded"
+
+[[threat]]
+id = "adapters/nom-piege"
+name = "Un nom ou un identifiant piégé venu du SDK entre dans l'événement"
+category = "tampering"
+boundary = "agent-adaptateur"
+assets = ["lignage", "disponibilite"]
+description = "Le nom d'un outil ou le type d'un sous-agent peuvent venir d'un serveur MCP ou d'une configuration hostile ; des identifiants de session démesurés useraient la mémoire de l'adaptateur."
+
+[[threat.mitigation]]
+description = "Un nom d'outil ou de sous-agent n'est recopié que s'il a la forme recommandée par MCP ; sinon l'événement le dit, sans le citer."
+code = "adapters/src/answerlineage_adapters/claude_agent_sdk.py::_tool_name"
+test = "adapters/tests/test_claude_agent_sdk.py::test_a_hostile_tool_name_is_not_copied"
+
+[[threat.mitigation]]
+description = "Les identifiants de session, de demande et de sous-agent ne servent que de clés en mémoire, bornées en longueur."
+code = "adapters/src/answerlineage_adapters/claude_agent_sdk.py::_key"
+test = "adapters/tests/test_claude_agent_sdk.py::test_hostile_identifiers_from_the_sdk_are_bounded"
+
+[[threat]]
+id = "adapters/lecture-non-decrite"
+name = "Un appel d'outil vu par l'adaptateur ne dit pas ce qu'il a lu"
+category = "repudiation"
+boundary = "agent-adaptateur"
+assets = ["lignage"]
+description = "L'adaptateur voit chaque appel d'outil mais ne décrit pas ses lectures, et les crochets du SDK ne lui donnent pas le contexte de trace qu'un proxy placé devant le même serveur MCP lirait : l'appel vu par l'un et l'autre fait deux runs, et les lectures du proxy ne se rattachent pas à l'agent."
+
+[[threat.mitigation]]
+description = "L'appel se déclare sans lecture résolue (undescribed_tool) : la lacune se voit dans l'API, au lieu de passer pour un appel qui ne lit rien."
+code = "adapters/src/answerlineage_adapters/claude_agent_sdk.py::_tool_event"
+test = "adapters/tests/test_claude_agent_sdk.py::test_a_tool_call_is_emitted_from_post_tool_use_in_async_mode"
+
+[threat.acceptance]
+reason = "Les crochets du Claude Agent SDK ne portent ni contexte de trace ni description des lectures : l'adaptateur rattache l'appel à l'agent, il ne sait pas ce que l'outil a lu."
+consequence = "Une réponse fondée sur une lecture faite par un outil de l'agent n'est pas rappelée d'après cette lecture, tant qu'aucune règle ni aucun contexte partagé avec le proxy ne la relie au run de l'agent."
 
 # API
 

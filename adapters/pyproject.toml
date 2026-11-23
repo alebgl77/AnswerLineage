@@ -1,0 +1,42 @@
+[project]
+name = "answerlineage-adapters"
+version = "0.0.0"
+description = "Adaptateurs d'AnswerLineage : captent les appels d'outils d'un agent par les crochets de son kit de développement."
+requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Natural Language :: French",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "answerlineage-emitter==0.0.0",
+]
+
+[project.optional-dependencies]
+claude-agent-sdk = [
+    "claude-agent-sdk>=0.2.182",
+]
+
+[project.urls]
+Source = "https://github.com/alebgl77/AnswerLineage"
+Documentation = "https://github.com/alebgl77/AnswerLineage/tree/main/docs"
+Issues = "https://github.com/alebgl77/AnswerLineage/issues"
+
+[tool.uv.sources]
+answerlineage-emitter = { workspace = true }
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/answerlineage_adapters"]

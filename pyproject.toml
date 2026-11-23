@@ -14,6 +14,8 @@ Source = "https://github.com/alebgl77/AnswerLineage"
 
 [dependency-groups]
 dev = [
+    # Les adaptateurs s'éprouvent avec les vrais types du SDK, installé en extra.
+    "answerlineage-adapters[claude-agent-sdk]",
     "anyio>=4.9",
     "httpx>=0.28",
     "jsonschema[format-nongpl]>=4.25",
@@ -36,8 +38,12 @@ package = false
 # Délai de carence : une version publiée depuis moins de 7 jours n'est pas adoptée.
 exclude-newer = "7 days"
 
+[tool.uv.sources]
+answerlineage-adapters = { workspace = true }
+
 [tool.uv.workspace]
 members = [
+    "adapters",
     "api",
     "cli",
     "conformance",
@@ -51,6 +57,7 @@ members = [
 line-length = 100
 target-version = "py313"
 src = [
+    "adapters/src",
     "api/src",
     "cli/src",
     "conformance/src",
@@ -77,6 +84,7 @@ warn_unreachable = true
 namespace_packages = true
 explicit_package_bases = true
 mypy_path = [
+    "adapters/src",
     "api/src",
     "cli/src",
     "conformance/src",
@@ -87,6 +95,7 @@ mypy_path = [
     ".",
 ]
 files = [
+    "adapters",
     "api",
     "cli",
     "conformance",
@@ -108,6 +117,7 @@ addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config", "-r
 pythonpath = ["."]
 testpaths = [
     "tests",
+    "adapters",
     "api",
     "cli",
     "conformance",
@@ -130,6 +140,7 @@ branch = true
 concurrency = ["greenlet", "thread"]
 source = [
     "scripts",
+    "adapters/src",
     "api/src",
     "cli/src",
     "conformance/src",
@@ -149,6 +160,7 @@ skip_empty = true
 minimum = 85
 paths = [
     "scripts",
+    "adapters/src",
     "api/src",
     "cli/src",
     "conformance/src",

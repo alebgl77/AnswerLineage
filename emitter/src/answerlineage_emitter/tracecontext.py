@@ -90,5 +90,19 @@ def new_trace_context(token: Callable[[int], str] = secrets.token_hex) -> TraceC
             return TraceContext(trace_id, parent_id)
 
 
+def new_span(
+    context: TraceContext, token: Callable[[int], str] = secrets.token_hex
+) -> TraceContext:
+    """Un span de plus dans la trace de ``context`` : même ``trace-id``, ``parent-id`` tiré.
+
+    Le span d'un appel fait sous un run, l'appel d'outil d'un agent sous la trace
+    de l'agent par exemple : son identifiant de run en dérive, distinct de celui du run.
+    """
+    while True:
+        parent_id = token(8)
+        if _nonzero(parent_id):
+            return TraceContext(context.trace_id, parent_id, context.version, context.flags)
+
+
 def _nonzero(identifier: str) -> bool:
     return identifier.strip("0") != ""

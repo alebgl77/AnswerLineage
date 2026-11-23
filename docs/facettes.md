@@ -64,6 +64,8 @@ Les empreintes à clé de l'appel et la taille de son résultat (voir [le proxy]
 
 Sans clé, les deux empreintes sont absentes : un émetteur n'écrit jamais un hachage sans clé, qu'une énumération inverserait, et le schéma refuse toute autre forme que `hmac-sha256:`. Quand le corps de la réponse n'a pas été relayé en entier, ni `resultFingerprint` ni `resultSize` ne sont émis. Les vecteurs de test sont dans [`spec/fingerprint/vectors-v1.json`](../spec/fingerprint/vectors-v1.json).
 
+L'[adaptateur du Claude Agent SDK](adaptateurs.md#ce-qui-sort) émet aussi cette facette, sur le run de chaque appel d'outil que lui disent les crochets de l'agent : `server`, `tool`, `invalidToolName`, `readResolution` (`unresolved`, motif `undescribed_tool` : il ne décrit pas les lectures), `traceId` et `spanId`, les empreintes et la taille. Il n'émet ni `transport`, ni `headerMismatch`, ni `traceOrigin`, qui disent ce que voit le proxy. Son `argumentsFingerprint` est celui du proxy, sur la forme canonique des arguments ; son `resultFingerprint` et son `resultSize` portent sur la forme canonique JSON du résultat que l'agent reçoit, décodé, et non sur des octets relayés.
+
 Facultatifs prévus, pas encore émis : `readOnly`, `definitionFingerprint` (l'empreinte de la définition de l'outil).
 
 Pour un outil SQL déclaré, la requête n'est pas dans cette facette : sa forme sans littéraux va dans la facette de job standard d'OpenLineage `sql` ([`SQLJobFacet` 1-1-0](../spec/openlineage/facets/1-1-0/SQLJobFacet.json)), sous `job.facets`, avec `query` (la forme, chaque constante remplacée par `?`) et `dialect`. Elle est absente quand l'analyse n'a pas établi de forme sûre (voir [le proxy](proxy.md#le-sql-conservé-sans-ses-littéraux)).
@@ -161,5 +163,5 @@ Elle peut ajouter des champs facultatifs. Une rupture demande une nouvelle facet
 ## Limites connues
 
 - Le contrôle compare les champs, leur caractère obligatoire et leur type. Il ne compare ni les bornes (`maxLength`, `maxItems`, `minimum`) ni les valeurs admises (`enum`) : les resserrer dans une nouvelle version casserait des émetteurs sans le faire échouer.
-- La facette `answerlineage_agent` n'émet encore aucun champ propre ; de `answerlineage_qos` et `answerlineage_keys`, seul le proxy émet, et seulement ce qu'il voit. Leurs champs sont facultatifs et décrits sobrement ; ils s'étendront.
+- De la facette `answerlineage_agent`, seul `framework` est émis, par l'adaptateur du Claude Agent SDK ; de `answerlineage_qos`, le proxy et cet adaptateur émettent ce qu'ils voient, et de `answerlineage_keys`, seul le proxy. Leurs champs sont facultatifs et décrits sobrement ; ils s'étendront.
 - Les schémas sont servis par le fichier brut du dépôt sur la branche principale : une adresse n'existe qu'une fois la version fusionnée.

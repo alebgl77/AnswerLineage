@@ -43,6 +43,7 @@ Les menaces sont classées selon STRIDE :
 | Frontière | Ce qui la traverse |
 | --- | --- |
 | Agent, proxy et serveur MCP | Le client MCP d'un agent appelle des outils à travers le proxy, en HTTP ou en stdio, et le proxy relaie au serveur MCP. Le corps, les en-têtes et la réponse viennent de part et d'autre ; une page web ouverte sur le poste peut aussi viser un proxy qui écoute sur la boucle locale. |
+| Agent et adaptateur | L'adaptateur tourne dans le processus de l'agent : les crochets du kit de l'agent lui passent le prompt, les arguments et le résultat de chaque outil, le message d'une erreur, la réponse, et des identifiants de session, d'outil et de sous-agent. Tout cela vient de l'agent, de ses outils et de l'utilisateur : c'est hostile, et aucun contenu ne doit en sortir. |
 | Émetteur et ingestion | Le proxy, l'entreprise synthétique ou tout émetteur OpenLineage envoie événements et relevés de couverture à l'API d'ingestion, avec le jeton OIDC d'un client qui a le rôle d'émetteur. Ce qu'un émetteur déclare reste une entrée hostile, et un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements. |
 | Lecteur, API de lecture et explorateur | Un navigateur, la ligne de commande ou un script lit le lignage, déclare un incident ou ouvre une adresse partagée de l'explorateur, avec le jeton OIDC d'une personne et ses rôles. Un appelant sans jeton n'atteint aucune route ; l'adresse, les paramètres et les corps restent hostiles, et les noms affichés viennent des émetteurs. |
 | Workers et catalogue externe | Les workers réémettent les événements projetés vers un consommateur OpenLineage externe (Marquez, DataHub, OpenMetadata, Dataplex), à l'adresse que règle l'exploitant. Le catalogue, le réseau qui y mène et ses réponses sont hors du contrôle d'AnswerLineage. |
@@ -181,6 +182,15 @@ Le détail de chaque menace, son scénario, ses parades avec leur code et leur t
 | `emitter/boite-d-envoi-bloquante` | La boîte d'envoi de l'émetteur commun fait attendre son émetteur, ou grossit sans fin | Déni de service | 2 parades |
 | `emitter/secret-du-client-cite` | Le secret du client ou le jeton d'accès sort de l'émetteur commun par un message ou un journal | Divulgation | 2 parades |
 
+### Adaptateurs d'agents
+
+| Menace | Ce qui est craint | Catégorie | Traitement |
+| --- | --- | --- | --- |
+| `adapters/contenu-dans-l-evenement` | Un contenu de l'agent sort de l'adaptateur dans un événement, un journal ou un compteur | Divulgation | 2 parades |
+| `adapters/agent-retarde` | Le lignage retarde ou interrompt l'agent qui porte l'adaptateur | Déni de service | 3 parades |
+| `adapters/nom-piege` | Un nom ou un identifiant piégé venu du SDK entre dans l'événement | Altération | 2 parades |
+| `adapters/lecture-non-decrite` | Un appel d'outil vu par l'adaptateur ne dit pas ce qu'il a lu | Répudiation | 1 parade, acceptation à signer |
+
 ### Explorateur
 
 | Menace | Ce qui est craint | Catégorie | Traitement |
@@ -216,6 +226,7 @@ Un risque accepté l'est par le mainteneur, pour un motif dit et une conséquenc
 | --- | --- | --- | --- |
 | `proxy/regle-de-lecture-trompee` | Une règle de lecture se fie à l'outil : le proxy relaie l'appel sans en lire le résultat, et ne peut savoir ce que l'outil a lu au-delà de ce que déclare son exploitant. | Une réponse fondée sur une lecture non déclarée n'est pas rappelée, et la couverture ne le montre pas, puisque l'appel est vu. | à signer |
 | `proxy/perimetre-usurpe` | Le proxy n'authentifie pas encore l'API : il se fie au TLS de l'adresse que règle l'exploitant, et le périmètre n'agit encore sur aucun appel. Avant que le proxy annote ou bloque des lectures, la diffusion devra être authentifiée, par un périmètre signé ou l'identité vérifiée de l'API. | Qui compromet l'API, ou la joint en http sur un réseau qu'il écoute, fait croire aux proxys une quarantaine fausse ou en tait une vraie : aujourd'hui sans effet sur les appels ; le jour où le proxy agira, il annotera ou bloquera à tort, ou laissera passer des lectures en quarantaine. | à signer |
+| `adapters/lecture-non-decrite` | Les crochets du Claude Agent SDK ne portent ni contexte de trace ni description des lectures : l'adaptateur rattache l'appel à l'agent, il ne sait pas ce que l'outil a lu. | Une réponse fondée sur une lecture faite par un outil de l'agent n'est pas rappelée d'après cette lecture, tant qu'aucune règle ni aucun contexte partagé avec le proxy ne la relie au run de l'agent. | à signer |
 | `proxy/secret-client-divulgue` | Le secret est partagé avec l'émetteur et lu en clair d'un fichier ou de l'environnement du proxy : sa protection sur ce poste, et sa rotation, reviennent à l'exploitant. | Qui lit le secret sur le poste du proxy obtient des jetons d'émetteur jusqu'à sa rotation : il écrit dans le lignage au nom de n'importe quel émetteur. | à signer |
 | `api/emetteur-usurpe` | Le lien entre un émetteur et l'espace de noms de ses événements n'est pas encore fait : un client qui a le rôle d'émetteur est cru pour tous les espaces de noms. | Un client émetteur, ou qui en a volé le secret, peut inventer des lectures au nom d'un autre émetteur, donc faire rappeler des réponses saines, fausser le décompte des doublons d'un émetteur, et faire proposer des incidents qu'un humain devra écarter. | à signer |
 | `api/releve-usurpe` | Un relevé n'est pas lié à son émetteur plus qu'un événement, et deux relevés d'une même fenêtre se fusionnent au plus grand. | Un client émetteur, ou qui en a volé le secret, peut faire croire à des appels que le graphe n'a pas : la couverture d'une fenêtre se lit alors partielle à tort. | à signer |

@@ -39,6 +39,12 @@ KEYS_FACET_SCHEMA: Final = _OWN + "1-0-0/KeysInputDatasetFacet.json#/$defs/KeysI
 # Qualité de service d'un run : latence, latence ajoutée, issue, reprises (spec/facets/1-1-0/).
 QOS_FACET: Final = "answerlineage_qos"
 QOS_FACET_SCHEMA: Final = _OWN + "1-1-0/QosRunFacet.json#/$defs/QosRunFacet"
+# L'agent qui exécute un run : le graphe reconnaît un run d'agent à cette facette.
+AGENT_FACET: Final = "answerlineage_agent"
+AGENT_FACET_SCHEMA: Final = _OWN + "1-0-0/AgentRunFacet.json#/$defs/AgentRunFacet"
+# Facette standard : le run parent, celui de l'agent pour un appel d'outil ou un sous-agent.
+PARENT_FACET: Final = "parent"
+PARENT_FACET_SCHEMA: Final = _STANDARD + "1-2-0/ParentRunFacet.json#/$defs/ParentRunFacet"
 # Facette standard : les champs d'un jeu de données lu sont ceux que l'appel lit.
 SCHEMA_FACET_SCHEMA: Final = _STANDARD + "1-2-0/SchemaDatasetFacet.json#/$defs/SchemaDatasetFacet"
 # Facette de job standard : la requête SQL du job, sans ses littéraux.
@@ -63,6 +69,11 @@ def format_event_time(moment: datetime) -> str:
 def facet(producer: str, schema_url: str, **fields: Any) -> dict[str, Any]:
     """Une facette : son producteur et l'adresse de son schéma, puis ses champs."""
     return {"_producer": producer, "_schemaURL": schema_url, **fields}
+
+
+def parent_facet(producer: str, run_id: UUID, job: dict[str, str]) -> dict[str, Any]:
+    """La facette standard ``parent`` : le run parent et son job."""
+    return facet(producer, PARENT_FACET_SCHEMA, run={"runId": str(run_id)}, job=job)
 
 
 def schema_facet(producer: str, columns: Sequence[str]) -> dict[str, Any]:
