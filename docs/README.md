@@ -10,6 +10,7 @@
 ## Les composants
 
 - [Proxy MCP](proxy.md)
+- [Adaptateurs d'agents](adaptateurs.md) : l'adaptateur Claude Agent SDK, branché par les crochets de l'agent
 - [API d'ingestion](ingestion.md)
 - [API de lecture](lecture.md) : remonter d'une réponse à ses sources, propager un incident, classer les données par exposition
 - [Facettes OpenLineage d'AnswerLineage](facettes.md)

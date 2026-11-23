@@ -51,6 +51,7 @@ L'API de lecture interroge ce graphe dans les deux sens : d'une réponse vers se
 | Tables et colonnes lues, déduites des requêtes SQL (BigQuery, Snowflake, PostgreSQL), analysées dans un processus à part sous un budget | Disponible |
 | Règles de lecture déclaratives en YAML pour les outils non SQL : jeux de données, colonnes, clés lues sous forme d'empreinte | Disponible |
 | Envoi des événements et des relevés du proxy vers l'API, par une boîte d'envoi en mémoire qui ne retarde jamais un appel | Disponible |
+| Adaptateur Claude Agent SDK : les appels d'outils captés par les crochets de l'agent, sans toucher à sa logique ni le retarder | Disponible |
 | API d'ingestion OpenLineage, par événement ou par lot | Disponible |
 | Schéma du graphe de lignage dans PostgreSQL, avec ses migrations | Disponible |
 | Alimentation du graphe à partir des événements reçus, par des workers concurrents | Disponible |
@@ -249,6 +250,7 @@ Pour comprendre le projet en une demi-heure :
 Chaque composant :
 
 - [Proxy MCP](docs/proxy.md) : ce qui est relayé, ce qui est lu, analyse du SQL, boîte d'envoi, mode stdio, limites connues
+- [Adaptateurs d'agents](docs/adaptateurs.md) : brancher AnswerLineage sur un agent Claude Agent SDK par ses crochets, ce qui sort et ce qui ne sort jamais
 - [API d'ingestion](docs/ingestion.md) : routes, lots, validation, rejeu, relevés de couverture
 - [API de lecture](docs/lecture.md) : retrouver une réponse, remonter à ses sources, propager un incident, exposition, couverture, graphe à une date
 - [Incidents](docs/incidents.md) : déclarer un incident, son analyse d'impact, ses états
