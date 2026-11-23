@@ -168,8 +168,11 @@ class RunRecord:
 _RECORDED = "COALESCE(CAST(:recorded_at AS timestamptz), now())"
 
 # Le dernier événement fixe l'état du run. À heure égale, un état terminal
-# l'emporte, pour que le résultat ne dépende pas de l'ordre d'arrivée. Un run
-# « job » se précise en outil ou en agent, jamais l'inverse.
+# l'emporte, pour que le résultat ne dépende pas de l'ordre d'arrivée. Un
+# événement OTHER complète un run sans changer son état (OpenLineage) : il ne
+# fixe l'état que d'un run qu'il est seul à faire connaître, et le premier état
+# véritable le remplace. Un run « job » se précise en outil ou en agent, jamais
+# l'inverse.
 _UPSERT_RUN = text(
     f"""
     INSERT INTO run (run_id, kind, agent_id, tool_id, parent_run_id, trace_id, span_id,
@@ -189,14 +192,19 @@ _UPSERT_RUN = text(
         started_at = LEAST(run.started_at, EXCLUDED.started_at),
         ended_at = GREATEST(run.ended_at, EXCLUDED.ended_at),
         state = CASE
+            WHEN EXCLUDED.state = 'OTHER' THEN run.state
+            WHEN run.state = 'OTHER' THEN EXCLUDED.state
             WHEN (EXCLUDED.state_time,
-                  array_position(ARRAY['OTHER', 'START', 'RUNNING', 'ABORT', 'FAIL', 'COMPLETE'],
+                  array_position(ARRAY['START', 'RUNNING', 'ABORT', 'FAIL', 'COMPLETE'],
                                  EXCLUDED.state))
                > (run.state_time,
-                  array_position(ARRAY['OTHER', 'START', 'RUNNING', 'ABORT', 'FAIL', 'COMPLETE'],
+                  array_position(ARRAY['START', 'RUNNING', 'ABORT', 'FAIL', 'COMPLETE'],
                                  run.state))
             THEN EXCLUDED.state ELSE run.state END,
-        state_time = GREATEST(run.state_time, EXCLUDED.state_time),
+        state_time = CASE
+            WHEN EXCLUDED.state = 'OTHER' AND run.state <> 'OTHER' THEN run.state_time
+            WHEN run.state = 'OTHER' AND EXCLUDED.state <> 'OTHER' THEN EXCLUDED.state_time
+            ELSE GREATEST(run.state_time, EXCLUDED.state_time) END,
         recorded_at = LEAST(run.recorded_at, EXCLUDED.recorded_at)
     """  # noqa: S608 — seul un fragment constant est interpolé.
 )

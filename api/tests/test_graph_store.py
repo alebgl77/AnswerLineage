@@ -355,6 +355,34 @@ async def test_terminal_state_wins_when_two_events_share_a_timestamp(engine: Asy
     assert await rows(engine, "SELECT DISTINCT state FROM run") == [("FAIL",)]
 
 
+async def test_an_other_event_never_changes_the_state_of_a_run(engine: AsyncEngine) -> None:
+    """OpenLineage : un événement OTHER complète un run, il ne change pas son état."""
+    after, before, alone = uuid4(), uuid4(), uuid4()
+    late = T0 + timedelta(minutes=5)
+
+    def completed_then_completed_further(run_id: UUID) -> list[RunRecord]:
+        return [
+            RunRecord(run_id, "agent", "COMPLETE", T0),
+            RunRecord(run_id, "agent", "OTHER", late),
+        ]
+
+    await record(engine, *completed_then_completed_further(after))
+    await record(engine, *reversed(completed_then_completed_further(before)))
+    await record(engine, RunRecord(alone, "agent", "OTHER", T0))
+    assert await rows(engine, "SELECT state, state_time, ended_at FROM run ORDER BY state") == [
+        ("COMPLETE", T0, T0),
+        ("COMPLETE", T0, T0),
+        ("OTHER", T0, None),
+    ]
+
+    # Le premier état véritable remplace celui d'un run connu seulement par un OTHER.
+    await record(engine, RunRecord(alone, "agent", "RUNNING", T0 - timedelta(minutes=1)))
+    assert await rows(engine, "SELECT DISTINCT state FROM run ORDER BY state") == [
+        ("COMPLETE",),
+        ("RUNNING",),
+    ]
+
+
 async def test_two_reads_of_a_dataset_by_a_run_merge_into_one_edge(engine: AsyncEngine) -> None:
     run_id = uuid4()
     await record(
