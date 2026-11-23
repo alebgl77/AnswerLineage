@@ -10,7 +10,7 @@ Une version sort quand le mainteneur pose une étiquette `v1.2.3` ; le workflow 
 | --- | --- | --- |
 | Image `ghcr.io/alebgl77/answerlineage:1.2.3` | Registre de conteneurs de GitHub | Signature cosign, par l'empreinte de l'image ; attestation de provenance SLSA ; SBOM CycloneDX attesté |
 | Paquets Python des composants, roues et sources | PyPI | Attestation de provenance SLSA ; attestation de publication de PyPI (PEP 740) |
-| Version GitHub `v1.2.3` : notes de version, paquets, SBOM | Page des versions du dépôt | `SHA256SUMS`, l'empreinte de chaque fichier joint |
+| Version GitHub `v1.2.3` : notes de version, paquets, SBOM, [relevé des vulnérabilités connues](#le-relevé-des-vulnérabilités-connues) | Page des versions du dépôt | `SHA256SUMS`, l'empreinte de chaque fichier joint |
 
 Toutes ces preuves portent la même identité : le workflow `release` de ce dépôt, lancé par l'étiquette de la version. Elles sont faites sans clé : le workflow obtient de GitHub un jeton OIDC, Fulcio, l'autorité de Sigstore, lui délivre en échange un certificat de quelques minutes au nom de cette identité, et la signature est inscrite au journal de transparence public de Sigstore (Rekor). PyPI accepte les paquets sur la même identité, par publication de confiance. Aucune clé de signature ni aucun jeton de publication n'existe, ni dans le dépôt ni dans ses secrets.
 
@@ -85,7 +85,7 @@ Les dépendances tierces (FastAPI, SQLAlchemy…) ne sont pas attestées par ce 
 
 ## Ce qu'elle ne prouve pas
 
-- Que le code est sain : la vérification dit d'où vient l'artefact, pas ce qu'il fait. L'image a été analysée par Grype le jour de sa publication, pas depuis.
+- Que le code est sain : la vérification dit d'où vient l'artefact, pas ce qu'il fait. L'image, les paquets Python et l'explorateur ont été analysés par Grype le jour de la publication, pas depuis : le relevé joint à la version dit ce qui était connu ce jour-là, et [se rejoue](#le-rejouer) avec la base du jour.
 - Que l'étiquette a été posée par le mainteneur : quiconque peut pousser une étiquette `v*` déclenche une publication valablement signée. D'où la protection des étiquettes, plus bas.
 - Que le workflow de publication est celui que l'on croit : son contenu à l'étiquette fait partie de l'identité signée, et une modification fusionnée produirait elle aussi des signatures valables. Les workflows sont des chemins protégés ([Agents de code](ci.md#agents-de-code)).
 - Que les dépendances sont saines : les versions verrouillées et les images de base épinglées sont celles qui ont été construites, rien de plus.
@@ -93,6 +93,116 @@ Les dépendances tierces (FastAPI, SQLAlchemy…) ne sont pas attestées par ce 
 - Qu'une version signée est toujours sûre : une signature ne se révoque pas. Une version reconnue vulnérable reste valablement signée ; elle est signalée par un avis de sécurité ([Politique de sécurité](../SECURITY.md)).
 
 Une vérification ne vaut que par l'identité exigée : une expression régulière trop large (`--certificate-identity-regexp '.*'`) accepterait la signature de n'importe quel workflow de GitHub.
+
+## Le relevé des vulnérabilités connues
+
+Chaque version dit quelles vulnérabilités connues de ses dépendances la concernent, le jour de sa publication. Le relevé en liste chacune, quelle que soit sa gravité, avec son état.
+
+### Où le trouver
+
+| Où | Fichiers |
+| --- | --- |
+| Version GitHub `v1.2.3`, parmi ses fichiers ; ses notes y renvoient | `answerlineage-1.2.3.known-vulnerabilities.md`, à lire ; `answerlineage-1.2.3.known-vulnerabilities.json`, pour un outil. `SHA256SUMS` donne leur empreinte |
+| Pipeline d'une merge request, job `image` | L'artefact `known-vulnerabilities` du job, ou sur GitLab les artefacts du job `image-sbom` : le relevé du commit, sans rien publier |
+| Poste | `build/image/known-vulnerabilities.md` et `.json`, après `scripts/image.sh vulnerabilities` |
+
+### Le lire
+
+Le relevé couvre trois sources, chacune analysée par Grype ; il dit pour chacune la version de Grype et celle de sa base de vulnérabilités, avec sa date de construction : ce que la base savait ce jour-là.
+
+| Source | Ce qui est analysé | D'après |
+| --- | --- | --- |
+| `image` | Les paquets du système (Alpine) et les paquets Python installés dans l'image | Le SBOM de l'image, celui qui lui est attaché |
+| `python` | Les dépendances des paquets Python publiés sur PyPI, et celles des extras qu'ils demandent | `uv.lock`, sans le groupe de développement ; les marqueurs d'environnement ne sont pas évalués, si bien qu'un paquet réservé à Windows y figure aussi |
+| `npm` | Les paquets npm que l'explorateur construit embarque | `ui/package-lock.json`, sans les outils de construction (`dev`) ; le verrou n'entre pas dans l'image, l'explorateur y est sous sa forme construite |
+
+Un paquet Python installé dans l'image figure aussi dans la source `python` : ses vulnérabilités s'y lisent deux fois, une fois par source.
+
+Syft lit `uv.lock`, mais il en inventorie chaque entrée, le groupe de développement (pytest, mypy…) et les membres de l'espace de travail compris, sans les distinguer : l'inventaire Python se tire donc du verrou par `scripts/known_vulnerabilities.py`, et un test vérifie qu'il est celui qu'exporte uv sans le groupe de développement. Les inventaires Python et npm sont des SBOM CycloneDX, que Grype analyse comme celui de l'image.
+
+Chaque vulnérabilité a l'un de trois états, selon [la règle de l'analyse](ci.md#image--sbom-vulnérabilités-et-signature) :
+
+| État | Ce que c'est |
+| --- | --- |
+| Bloquante (`blocking`) | Haute ou critique, sans exception valable. La publication refuse une version qui en a une, quelle que soit sa source : une version publiée n'en a donc aucune |
+| Écartée par une exception (`excepted`) | Haute ou critique, écartée après examen par une exception de `vulnerability-exceptions.toml`, dont le relevé reprend le motif et la date de revue |
+| Non bloquante (`non_blocking`) | Gravité moyenne, faible, négligeable ou inconnue |
+
+La colonne « Corrigée dans » donne la version qui corrige, ou dit qu'il n'y en a pas : « aucune pour l'instant » quand le fournisseur, Alpine par exemple, n'a pas encore publié de correctif. Une vulnérabilité bloquante sans correctif ne se corrige pas en mettant à jour : elle attend son correctif, ou une exception que le mainteneur accepte après examen. Le relevé d'une merge request la montre ainsi, et la publication refuse la version tant qu'elle reste bloquante.
+
+Le relevé ne reprend du rapport de Grype que des identifiants publics : la vulnérabilité et ses alias, sa gravité, le paquet, sa version et son type, l'état du correctif et ses versions. Une valeur hors de sa forme admise n'est pas recopiée et s'écrit `?`, sans que la vulnérabilité perde son état. Les vulnérabilités sont triées par état, gravité, source, paquet, version et identifiant : les mêmes rapports donnent le même relevé, à sa date près. Un relevé vide le dit en une phrase.
+
+### Son format
+
+Le relevé JSON est un objet ; son format est stable : un champ garde son sens, et un changement incompatible change `format_version`. `scripts/known_vulnerabilities.py` vérifie chaque relevé qu'il écrit, et la publication celui qu'elle joint (`python3 -m scripts.check_release vulnerabilities`).
+
+| Champ | Type | Ce qu'il dit |
+| --- | --- | --- |
+| `format` | texte | `answerlineage-known-vulnerabilities` |
+| `format_version` | entier | `1` |
+| `version` | texte | La version de l'image (`1.2.3`, `1.2.3-rc.1`), ou le commit dans le pipeline d'une merge request |
+| `generated_at` | texte | Date et heure UTC du relevé : `2026-11-23T01:30:00Z` |
+| `sources` | liste | Une entrée par source analysée, dans l'ordre `image`, `python`, `npm` |
+| `summary` | objet | Le nombre de vulnérabilités de chaque état : `blocking`, `excepted`, `non_blocking` |
+| `refused_exceptions` | liste de textes | Les exceptions refusées (motif absent, date de revue passée…), qui ne s'appliquent pas ; vide dans une version publiée |
+| `findings` | liste | Une entrée par vulnérabilité et par paquet de chaque source, dans l'ordre du relevé |
+
+Une entrée de `sources` :
+
+| Champ | Type | Ce qu'il dit |
+| --- | --- | --- |
+| `name` | texte | `image`, `python` ou `npm` |
+| `scanner` | texte | `grype` |
+| `scanner_version` | texte | La version de Grype |
+| `database_schema` | texte | Le schéma de sa base de vulnérabilités, par exemple `v6.1.3` |
+| `database_built_at` | texte | La date de construction de cette base, en RFC 3339 |
+
+Une entrée de `findings` :
+
+| Champ | Type | Ce qu'il dit |
+| --- | --- | --- |
+| `state` | texte | `blocking`, `excepted` ou `non_blocking` |
+| `source` | texte | La source où la vulnérabilité a été trouvée |
+| `severity` | texte | Sa gravité selon Grype : `Critical`, `High`, `Medium`, `Low`, `Negligible` ou `Unknown` |
+| `vulnerability` | texte | Son identifiant : `CVE-…`, `GHSA-…`… |
+| `aliases` | liste de textes | Ses autres identifiants, seize au plus |
+| `package` | texte | Le nom du paquet |
+| `package_version` | texte | Sa version, installée ou verrouillée |
+| `package_type` | texte | Son type selon Grype : `apk` pour un paquet Alpine, `python`, `npm`, `binary`… |
+| `fix_state` | texte | `fixed`, `not-fixed`, `wont-fix` ou `unknown` |
+| `fixed_in` | liste de textes | Les versions qui la corrigent, seize au plus ; vide sans correctif connu |
+| `exception` | objet ou `null` | Pour une vulnérabilité `excepted`, son exception ; `null` sinon |
+
+Une exception :
+
+| Champ | Type | Ce qu'il dit |
+| --- | --- | --- |
+| `reason` | texte | Son motif, sur une ligne, tel que l'écrit `vulnerability-exceptions.toml` |
+| `review_by` | texte | Sa date de revue, `AAAA-MM-JJ` |
+
+### Le rejouer
+
+Docker suffit, avec Python 3.12 ou plus. Le relevé du commit courant, avec la base du jour :
+
+```bash
+scripts/image.sh build
+scripts/image.sh sbom
+scripts/image.sh vulnerabilities      # build/image/known-vulnerabilities.md et .json
+python3 -m scripts.check_release vulnerabilities build/image/known-vulnerabilities.json
+```
+
+Celui d'une version publiée, avec la base du jour, sans reconstruire l'image : les verrous de son étiquette et le SBOM joint à la version, ou celui de son attestation, que [la vérification d'une image](#vérifier-une-image) écrit dans `sbom.cdx.json`.
+
+```bash
+VERSION=1.2.3
+git switch --detach "v$VERSION"
+mkdir -p build/image
+gh release download "v$VERSION" --repo alebgl77/AnswerLineage \
+  --pattern "answerlineage-$VERSION.sbom.cdx.json" --output build/image/sbom.cdx.json
+IMAGE_VERSION=$VERSION scripts/image.sh vulnerabilities
+```
+
+Une vulnérabilité publiée depuis la version apparaît dans le relevé rejoué, et non dans celui de la version : la comparaison des deux dit ce que la version a appris depuis sa sortie.
 
 ## Comment sort une version
 
@@ -110,14 +220,14 @@ Une vérification ne vaut que par l'identité exigée : une expression réguliè
 | Job | Ce qu'il fait | Ce qu'il publie |
 | --- | --- | --- |
 | `prepare` | Vérifie que l'étiquette est la version déclarée par chaque composant, et que le modèle de menaces a été revu pour elle sans acceptation à signer, sinon s'arrête ; construit les paquets (`uv build`) et contrôle leurs métadonnées ; rédige les notes de version | Rien |
-| `image` | Construit l'image, produit son SBOM, l'analyse ; la pousse, la signe sans clé, vérifie la signature, attache le SBOM et la provenance | L'image et ses preuves |
+| `image` | Construit l'image, produit son SBOM et le relevé des vulnérabilités connues de la version, l'analyse, et exige du relevé qu'il n'ait aucune vulnérabilité bloquante ; la pousse, la signe sans clé, vérifie la signature, attache le SBOM et la provenance | L'image et ses preuves |
 | `pypi` | Atteste la provenance des paquets ; les publie sur PyPI par publication de confiance, dans l'environnement `pypi`, avec leurs attestations de publication | Les paquets |
-| `github-release` | Crée la version en brouillon, y joint les paquets, le SBOM et `SHA256SUMS`, puis la publie | La version GitHub |
+| `github-release` | Crée la version en brouillon, y joint les paquets, le SBOM, le relevé des vulnérabilités connues et `SHA256SUMS`, puis la publie | La version GitHub |
 | `report` | Toujours, même après un échec : dit ce qui est publié et ce qui ne l'est pas, dans le résumé de l'exécution | Rien |
 
 L'ordre est voulu. Tout ce qui peut échouer sans rien publier passe d'abord : l'étiquette, les métadonnées, les notes, puis l'analyse de l'image. L'image, qui se republie, précède les paquets, que PyPI ne laisse jamais remplacer. La version GitHub vient en dernier : elle n'apparaît qu'une fois tout le reste publié. Chaque job reçoit ses seules permissions, et aucun ne lit de secret ; `make policy` refuse un job qui publie avec un secret.
 
-**Les notes de version** sont tirées des commits conventionnels depuis la version précédente (`scripts/release_notes.py`) : la précédente version finale pour une version finale, la précédente étiquette pour une préversion. Elles sont groupées par type (nouveautés, corrections…), les ruptures en tête. Elles ne citent que la ligne de résumé des commits et le texte de leurs ruptures : ni auteur, ni empreinte, ni commit de fusion, donc jamais un nom de branche ; une clé de ticket entre parenthèses est retirée, et un message qui renvoie aux documents de cadrage, privés, est écarté. Les entrées sont triées : les mêmes commits donnent les mêmes notes. Le workflow y ajoute la référence de l'image par son empreinte et un renvoi vers ce document.
+**Les notes de version** sont tirées des commits conventionnels depuis la version précédente (`scripts/release_notes.py`) : la précédente version finale pour une version finale, la précédente étiquette pour une préversion. Elles sont groupées par type (nouveautés, corrections…), les ruptures en tête. Elles ne citent que la ligne de résumé des commits et le texte de leurs ruptures : ni auteur, ni empreinte, ni commit de fusion, donc jamais un nom de branche ; une clé de ticket entre parenthèses est retirée, et un message qui renvoie aux documents de cadrage, privés, est écarté. Les entrées sont triées : les mêmes commits donnent les mêmes notes. Le workflow y ajoute la référence de l'image par son empreinte, les liens du relevé des vulnérabilités connues joint à la version, et un renvoi vers ce document.
 
 **Une publication interrompue** se lit dans le bilan du job `report`, puis se reprend :
 
@@ -128,7 +238,7 @@ L'ordre est voulu. Tout ce qui peut échouer sans rien publier passe d'abord : l
 | `pypi` | L'image, et peut-être une partie des paquets | Si aucun fichier n'est parti, relancer. Sinon, PyPI refuse un fichier déjà reçu : une version incomplète se remplace par la suivante |
 | `github-release` | L'image et les paquets | Relancer : un brouillon laissé par l'échec est remplacé, une version publiée ne l'est jamais |
 
-**Ce qui est éprouvé à chaque merge request**, sans rien publier : `make packages` (job `static`) construit les paquets de chaque composant, contrôle leurs métadonnées (nom, version, licence et son texte, description, classifieurs, adresse des sources, épinglage des frères), vérifie qu'une étiquette fictive, celle de la version déclarée, est acceptée et qu'une autre est refusée, que le modèle de menaces a été revu pour elle, en listant les acceptations qui restent à signer, et rédige les notes qu'aurait cette étiquette. `scripts/image.sh signtest` (job `image`) éprouve la signature, comme le dit la section suivante. Ce qui ne s'éprouve qu'à la publication : la poussée de l'image, sa signature sans clé, les attestations, l'envoi sur PyPI et la version GitHub.
+**Ce qui est éprouvé à chaque merge request**, sans rien publier : `make packages` (job `static`) construit les paquets de chaque composant, contrôle leurs métadonnées (nom, version, licence et son texte, description, classifieurs, adresse des sources, épinglage des frères), vérifie qu'une étiquette fictive, celle de la version déclarée, est acceptée et qu'une autre est refusée, que le modèle de menaces a été revu pour elle, en listant les acceptations qui restent à signer, et rédige les notes qu'aurait cette étiquette. `scripts/image.sh signtest` (job `image`) éprouve la signature, comme le dit la section suivante. Le même job produit le relevé des vulnérabilités connues du commit, le garde comme artefact (`known-vulnerabilities`) et l'exige comme la publication, sans étiquette : un changement du format de Grype ou du relevé casse la merge request, pas la publication. Ce qui ne s'éprouve qu'à la publication : la poussée de l'image, sa signature sans clé, les attestations, l'envoi sur PyPI et la version GitHub.
 
 ## La signature éprouvée à chaque merge request
 

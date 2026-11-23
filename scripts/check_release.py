@@ -14,7 +14,12 @@ workflow ``release`` ne publie rien tant que ces contrôles ne sont pas verts :
 - la roue et les sources de chaque composant portent les bonnes métadonnées :
   nom, version, licence et son texte, description, classifieurs cohérents,
   adresse des sources, dépendances entre frères ; elles ne contiennent que le
-  module du composant.
+  module du composant ;
+- le relevé des vulnérabilités connues de la version
+  (``scripts/known_vulnerabilities.py``) est là, à son format, pour l'image,
+  les paquets Python et l'explorateur, et n'a ni vulnérabilité bloquante ni
+  exception refusée : ``vulnerabilities``, avant que l'image soit poussée, et à
+  chaque merge request sur le relevé du commit.
 
 À chaque merge request, ``rehearse`` éprouve les mêmes contrôles avec une
 étiquette fictive, celle de la version déclarée ; les acceptations qui restent à
@@ -26,6 +31,7 @@ Usage :
   ``python3 -m scripts.check_release tag ÉTIQUETTE [--github-output FICHIER]``
   ``python3 -m scripts.check_release dist DOSSIER --tag ÉTIQUETTE``
   ``python3 -m scripts.check_release rehearse DOSSIER``
+  ``python3 -m scripts.check_release vulnerabilities RELEVÉ.json [--tag ÉTIQUETTE]``
   ``python3 -m scripts.check_release report``
 
 Codes de sortie : 0 conforme, 1 écart, 2 étiquette illisible ou fichier absent.
@@ -52,7 +58,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from scripts import check_threat_model
+from scripts import check_threat_model, known_vulnerabilities
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -570,6 +576,61 @@ def unsigned_acceptances(root: Path = ROOT) -> list[str]:
     return [] if model is None else check_threat_model.unsigned(model)
 
 
+def vulnerability_problems(document: object, version: Version | None) -> list[str]:
+    """Ce qui, dans le relevé des vulnérabilités connues, interdit de publier.
+
+    Le relevé doit être à son format, couvrir chaque source, porter la version
+    de l'étiquette quand elle est donnée, et n'avoir ni vulnérabilité bloquante
+    ni exception refusée. Les valeurs citées ont la forme que son format admet.
+    """
+    found = known_vulnerabilities.problems(document)
+    if found or not isinstance(document, Mapping):
+        return [f"relevé : {problem}" for problem in found]
+    names = {source["name"] for source in document["sources"]}
+    problems = [
+        f"relevé : source {name} absente"
+        for name in known_vulnerabilities.SOURCES
+        if name not in names
+    ]
+    if version is not None and document["version"] != version.image:
+        problems.append(
+            f"relevé de la version {document['version']}, l'étiquette {version.tag} "
+            f"demande {version.image}"
+        )
+    problems.extend(
+        f"vulnérabilité bloquante : {row['vulnerability']}, {row['package']} "
+        f"{row['package_version']} ({row['package_type']}, source {row['source']}), "
+        f"corrigée dans : {known_vulnerabilities.fixed_in(row)}"
+        for row in document["findings"]
+        if row["state"] == "blocking"
+    )
+    problems.extend(f"exception refusée : {problem}" for problem in document["refused_exceptions"])
+    return problems
+
+
+def _vulnerabilities(path: Path, tag: str | None) -> int:
+    version = None if tag is None else parse_tag(tag)
+    if tag is not None and version is None:
+        print("Étiquette refusée : une version s'écrit v1.2.3 ou v1.2.3-rc.1.")
+        return 2
+    try:
+        document = known_vulnerabilities.read_document(path)
+    except known_vulnerabilities.InputError as error:
+        print(f"Relevé des vulnérabilités refusé : {error}.")
+        return 2
+    problems = vulnerability_problems(document, version)
+    if problems or not isinstance(document, Mapping):
+        return _print(problems, "")
+    summary = document["summary"]
+    built = ", ".join(sorted({source["database_built_at"] for source in document["sources"]}))
+    return _print(
+        [],
+        f"Relevé des vulnérabilités connues de {document['version']} : aucune bloquante ; "
+        f"{summary['excepted']} écartée(s) par une exception, {summary['non_blocking']} non "
+        f"bloquante(s) ; base de Grype construite le {built}.",
+    )
+
+
 # Les jobs du workflow de publication, dans l'ordre, et ce que chacun publie.
 STAGES = (
     ("PREPARE", "Préparation", "rien : étiquette, modèle de menaces, paquets et notes contrôlés"),
@@ -689,8 +750,16 @@ def main(
     dist_command.add_argument("--tag", required=True)
     rehearse_command = commands.add_parser("rehearse", help="la publication, sans rien publier")
     rehearse_command.add_argument("directory", type=Path)
+    vulnerabilities_command = commands.add_parser(
+        "vulnerabilities", help="relevé des vulnérabilités connues, sans vulnérabilité bloquante"
+    )
+    vulnerabilities_command.add_argument("statement", type=Path)
+    vulnerabilities_command.add_argument("--tag")
     commands.add_parser("report", help="bilan d'une publication, d'après son environnement")
     arguments = parser.parse_args(argv)
+
+    if arguments.command == "vulnerabilities":
+        return _vulnerabilities(arguments.statement, arguments.tag)
 
     if arguments.command == "report":
         code, summary = publication_report(

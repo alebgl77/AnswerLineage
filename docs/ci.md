@@ -10,7 +10,7 @@ Le pipeline est décrit dans `.github/workflows/ci.yml`. Il tourne sur chaque me
 | `tests` | Porte de qualité du moteur d'impact : sur le [corpus de vérité](corpus.md#mesure-du-moteur-dimpact), un rappel au niveau table d'au moins 0,99 et aucune réponse hors d'atteinte ; un échec nomme les réponses manquées | `make measure` |
 | `tests`, `explorer` | Corpus d'abus : chaque cas d'attaque est rejoué et doit être bloqué. Détail plus bas | `make abuse` |
 | `secrets` | Aucun secret dans tout l'historique (gitleaks), après un canari qui prouve que le détecteur bloque. Une trouvaille est affichée avec son fichier, sa ligne et sa règle, valeur masquée ; une exception se déclare dans `.gitleaksignore`, chemin protégé | `make secrets` |
-| `image` | L'image de `deploy/Dockerfile` se construit ; son SBOM est produit (Syft, CycloneDX) et gardé comme artefact du job ; Grype l'analyse, après un canari qui prouve que l'analyse bloque. Une vulnérabilité haute ou critique sans exception valable fait échouer le job. La signature est éprouvée sans rien publier : l'image signée se vérifie, une image modifiée sous la même étiquette ne passe pas. Détail plus bas | `make image` |
+| `image` | L'image de `deploy/Dockerfile` se construit ; son SBOM est produit (Syft, CycloneDX) et gardé comme artefact du job ; Grype l'analyse, après un canari qui prouve que l'analyse bloque. Le relevé des vulnérabilités connues du commit (image, paquets Python, explorateur) est produit, gardé comme artefact et exigé comme à la publication. Une vulnérabilité haute ou critique sans exception valable, dans l'image, les paquets Python ou l'explorateur, fait échouer le job. La signature est éprouvée sans rien publier : l'image signée se vérifie, une image modifiée sous la même étiquette ne passe pas. Détail plus bas | `make image` |
 | `codeql` | Analyse de sécurité du code Python et des workflows (CodeQL, requêtes étendues) | |
 | `agent-config` | Une merge request qui modifie la configuration d'agents ou un garde-fou porte l'approbation d'un mainteneur | |
 | `devcontainer` | Le conteneur de développement se construit, installe le projet et passe les tests | |
@@ -69,13 +69,16 @@ Le job `image` et la publication d'une version (`.github/workflows/release.yml`)
 | `sbom` | Syft inventorie les composants de l'archive : `build/image/sbom.cdx.json` |
 | `selftest` | Canari : un SBOM écrit à la main qui déclare PyYAML 5.3 (CVE-2020-14343, critique) doit faire échouer l'analyse |
 | `signtest` | Signe l'image dans un registre éphémère avec une clé jetable et la vérifie ; une image modifiée sous la même étiquette, puis signée par une autre clé, doit être refusée. Détail dans [Publication](publication.md#la-signature-éprouvée-à-chaque-merge-request) |
+| `vulnerabilities` | Relève les vulnérabilités connues de la version : Grype analyse le SBOM de l'image et les inventaires que `scripts/known_vulnerabilities.py` tire de `uv.lock` et de `ui/package-lock.json` ; le relevé s'écrit dans `build/image/known-vulnerabilities.json` et `.md`. Il dit l'état de chaque vulnérabilité sans rendre de verdict |
 | `scan` | Grype analyse le SBOM ; `scripts/check_vulnerabilities.py` rend le verdict |
+
+Le pipeline enchaîne `vulnerabilities` avant `scan`, pour que le relevé existe même quand l'image est bloquée, puis exige le relevé comme la publication : `python3 -m scripts.check_release vulnerabilities build/image/known-vulnerabilities.json` échoue s'il manque, s'il sort de son format, s'il lui manque une source, ou s'il a une vulnérabilité bloquante ou une exception refusée. Le relevé, ses sources, ses états et son format sont décrits dans [Publication](publication.md#le-relevé-des-vulnérabilités-connues).
 
 **Format du SBOM.** CycloneDX en JSON : un format standard pensé pour l'analyse de sécurité, où chaque composant porte son identifiant de paquet (purl). Grype le lit sans perte, l'attestation de GitHub l'accepte, et un SBOM s'y écrit à la main en quelques lignes, comme celui du canari. Grype analyse ce SBOM, pas l'image : ce qui est analysé est exactement ce qui est publié, et quiconque tire l'image peut rejouer l'analyse sur son SBOM.
 
 **Outils.** Syft et Grype tournent depuis leurs images officielles, épinglées par empreinte dans `scripts/image.sh` et tenues à jour par Renovate. Ils n'ont ni le socket Docker ni aucun privilège : l'image leur est passée en archive, montée en lecture seule. Syft tourne sans réseau. Grype télécharge sa base de vulnérabilités à chaque exécution : une vulnérabilité publiée hier fait échouer la merge request d'aujourd'hui, même si rien n'a changé dans le dépôt.
 
-**La règle.** Une vulnérabilité de gravité haute (`High`) ou critique (`Critical`) sans exception valable fait échouer le job. Les autres gravités sont comptées dans le journal, sans bloquer.
+**La règle.** Une vulnérabilité de gravité haute (`High`) ou critique (`Critical`) sans exception valable fait échouer le job, qu'elle soit dans l'image (`scan`) ou dans les dépendances des paquets Python publiés ou de l'explorateur (le relevé). Les autres gravités sont comptées dans le journal et listées dans le relevé, sans bloquer.
 
 **Lire une trouvaille.** Le journal de l'étape d'analyse, et le résumé du job, donnent une ligne par vulnérabilité haute ou critique :
 
@@ -102,20 +105,24 @@ Ce fichier est un chemin protégé : le modifier demande la revue d'un mainteneu
 **Rejouer sur le poste.** Docker suffit, avec Python 3.12 ou plus :
 
 ```bash
-make image                   # ou scripts/image.sh : build, sbom, selftest, signtest, scan
+make image                   # scripts/image.sh (build, sbom, selftest, signtest, vulnerabilities, scan), puis le relevé exigé
 scripts/image.sh scan        # rejoue l'analyse du dernier SBOM, avec la base du jour
+scripts/image.sh vulnerabilities   # rejoue le relevé : build/image/known-vulnerabilities.md
+python3 -m scripts.check_release vulnerabilities build/image/known-vulnerabilities.json   # l'exige
 python3 -m scripts.check_vulnerabilities exceptions   # vérifie les exceptions seules
 ```
+
+Grype télécharge sa base à chaque analyse : le relevé en fait trois de plus que `scan`, une par source, et dit pour chacune la date de la base qu'elle a lue.
 
 ## Publication d'une version
 
 Le mainteneur publie une version en posant une étiquette `v1.2.3` (ou `v1.2.3-rc.1`). Le workflow `release` :
 
 1. vérifie que l'étiquette est la version déclarée par chaque composant publiable, et que le [modèle de menaces](securite/modele-de-menaces.md) a été revu pour elle sans acceptation à signer, construit leurs paquets, contrôle leurs métadonnées et rédige les notes de version, avant de rien publier ;
-2. construit l'image, produit son SBOM, joue le canari et l'analyse, comme le job `image` : une vulnérabilité haute ou critique sans exception valable arrête la publication avant que l'image soit poussée ;
+2. construit l'image, produit son SBOM, joue le canari, relève les vulnérabilités connues de la version et l'analyse, comme le job `image` : une vulnérabilité haute ou critique sans exception valable, dans l'image, les paquets Python ou l'explorateur, arrête la publication avant que l'image soit poussée, et le relevé doit être celui de la version de l'étiquette ;
 3. pousse l'image analysée dans le registre de conteneurs de GitHub, `ghcr.io/alebgl77/answerlineage:1.2.3`, la signe sans clé par son empreinte (cosign, identité OIDC du workflow, journal de transparence public), vérifie la signature publiée, et lui attache son SBOM et sa provenance (SLSA) ;
 4. atteste la provenance des paquets et les publie sur PyPI par publication de confiance, avec leurs attestations de publication ;
-5. crée la version GitHub, avec ses notes, les paquets, le SBOM et l'empreinte de chaque fichier ;
+5. crée la version GitHub, avec ses notes, les paquets, le SBOM, le relevé des vulnérabilités connues, en Markdown et en JSON, et l'empreinte de chaque fichier ;
 6. dit dans tous les cas, dans le résumé de l'exécution, ce qui est publié et ce qui ne l'est pas.
 
 Il ne tourne jamais sur une merge request et ne lit aucun secret : il publie par l'identité OIDC du workflow ou par son jeton éphémère, avec les seules permissions de chaque job.
@@ -196,7 +203,7 @@ Chaque stage porte le nom du job GitHub qu'il reproduit. `tests/test_ci_parity.p
 | `static` | `static` | `BASE_SHA` vient de `CI_MERGE_REQUEST_DIFF_BASE_SHA`, la base de la merge request ; tout l'historique et les étiquettes sont récupérés (`GIT_DEPTH: "0"`) |
 | `tests` | `tests-postgres-17` et `tests-postgres-18`, chacun sur Python 3.13 et 3.14 (`parallel:matrix`) | PostgreSQL est un service du job, et non un conteneur de Testcontainers ; ses images sont épinglées (17.11 et 18.6) |
 | `secrets` | `secrets` | Le démon Docker tourne dans le conteneur du job |
-| `image` | `image-sbom` | `image` est un mot-clé de GitLab, interdit comme nom de job. Le SBOM est gardé comme artefact du job, même quand une étape suivante échoue |
+| `image` | `image-sbom` | `image` est un mot-clé de GitLab, interdit comme nom de job. Le SBOM et le relevé des vulnérabilités connues sont gardés comme artefacts du job, même quand une étape suivante échoue |
 | `codeql` | aucun | Voir [Ce qui n'a pas d'équivalent](#ce-qui-na-pas-déquivalent) |
 | `agent-config` | `agent-config` | Les labels viennent de `CI_MERGE_REQUEST_LABELS`, que le script lit lui-même ; poser le label ne relance rien |
 | `devcontainer` | `devcontainer` | Le démon Docker tourne dans le conteneur du job |
@@ -244,7 +251,7 @@ Un workflow GitHub déclare ses permissions ; un fichier `.gitlab-ci.yml` ne le 
 
 - **CodeQL.** Hors de GitHub Advanced Security, la licence de CodeQL n'autorise l'analyse automatisée, en CI, que d'un code ouvert hébergé et maintenu sur GitHub.com ; un projet adopté sur GitLab en sort. L'équivalent GitLab est l'analyse SAST (Semgrep), à imposer par une politique d'exécution des analyses du groupe, tenue hors du dépôt. Elle n'est pas dans `.gitlab-ci.yml` : elle s'inclut par un modèle de GitLab (`include: template`) et tire ses analyseurs par étiquette, ce que la politique du dépôt refuse. Ses résultats ne bloquent une fusion qu'avec une politique d'approbation (GitLab Ultimate).
 - **L'événement d'étiquette.** Voir plus haut : le mainteneur relance le pipeline.
-- **Le banc de latence et la publication.** `bench.yml` et `release.yml` ne sont pas des étapes bloquantes et ne sont pas reproduits. Le banc se lancerait d'un pipeline programmé, sur un runner qui ne fait que cela ; la publication repose sur l'identité OIDC des workflows GitHub, que vérifient la signature sans clé et la publication de confiance de PyPI.
+- **Le banc de latence et la publication.** `bench.yml` et `release.yml` ne sont pas des étapes bloquantes et ne sont pas reproduits. Le banc se lancerait d'un pipeline programmé, sur un runner qui ne fait que cela ; la publication repose sur l'identité OIDC des workflows GitHub, que vérifient la signature sans clé et la publication de confiance de PyPI. Le relevé des vulnérabilités connues se produit et s'exige donc à chaque merge request GitLab, comme sur GitHub, mais seule une version GitHub le reçoit.
 
 ### Monter un miroir
 

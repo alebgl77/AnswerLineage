@@ -50,6 +50,8 @@ _FIX_STATES = {
     "not-fixed": "aucune pour l'instant",
     "wont-fix": "aucune, ne sera pas corrigée",
 }
+# États du correctif que Grype écrit ; tout autre se lit « unknown ».
+FIX_STATES = ("fixed", "not-fixed", "wont-fix", "unknown")
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,9 @@ class Finding:
     version: str
     package_type: str
     fixed_in: str
+    # Le correctif tel que Grype le décrit : son état et les versions qui corrigent.
+    fix_state: str = "unknown"
+    fix_versions: tuple[str, ...] = ()
 
 
 @dataclass
@@ -80,6 +85,8 @@ class Verdict:
     blocking: list[Finding] = field(default_factory=list)
     excepted: list[tuple[Finding, VulnerabilityException]] = field(default_factory=list)
     others: Counter[str] = field(default_factory=Counter)
+    # Les trouvailles de gravité moyenne ou moins, que others compte.
+    minor: list[Finding] = field(default_factory=list)
     unused: list[VulnerabilityException] = field(default_factory=list)
 
     @property
@@ -195,6 +202,8 @@ def findings(report: object) -> list[Finding]:
             version=_cell(artifact.get("version", "")),
             package_type=_cell(artifact.get("type", "")),
             fixed_in=_fixed_in(vulnerability.get("fix")),
+            fix_state=_fix_state(vulnerability.get("fix")),
+            fix_versions=_fix_versions(vulnerability.get("fix")),
         )
         key = (finding.vulnerability, finding.package, finding.version, finding.package_type)
         found.setdefault(key, finding)
@@ -210,12 +219,25 @@ def _fixed_in(fix: object) -> str:
     return _FIX_STATES.get(str(fix.get("state")), "inconnue")
 
 
+def _fix_state(fix: object) -> str:
+    state = fix.get("state") if isinstance(fix, Mapping) else None
+    return state if isinstance(state, str) and state in FIX_STATES else "unknown"
+
+
+def _fix_versions(fix: object) -> tuple[str, ...]:
+    versions = fix.get("versions") if isinstance(fix, Mapping) else None
+    if not isinstance(versions, list):
+        return ()
+    return tuple(dict.fromkeys(_cell(version) for version in versions))
+
+
 def evaluate(found: Sequence[Finding], exceptions: Sequence[VulnerabilityException]) -> Verdict:
     verdict = Verdict()
     used: set[int] = set()
     for finding in sorted(found, key=_order):
         if finding.severity not in BLOCKING:
             verdict.others[finding.severity] += 1
+            verdict.minor.append(finding)
             continue
         rule = next((rule for rule in exceptions if rule.covers(finding)), None)
         if rule is None:

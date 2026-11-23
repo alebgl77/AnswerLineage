@@ -3,12 +3,18 @@
 # analyse de vulnérabilités et signature. Le pipeline de chaque merge request
 # et celui de publication d'une version enchaînent les mêmes sous-commandes.
 #
-#   scripts/image.sh            tout, dans l'ordre : build, sbom, selftest, signtest, scan
+#   scripts/image.sh            tout, dans l'ordre : build, sbom, selftest, signtest,
+#                               vulnerabilities, scan
 #   scripts/image.sh build      construit l'image de deploy/Dockerfile et l'exporte en archive
 #   scripts/image.sh sbom       inventorie ses composants avec Syft, en CycloneDX JSON
 #   scripts/image.sh selftest   vérifie que l'analyse bloque une vulnérabilité critique connue
 #   scripts/image.sh signtest   éprouve la signature, sans réseau public : l'image signée se
 #                               vérifie, une image modifiée sous la même étiquette ne se vérifie pas
+#   scripts/image.sh vulnerabilities
+#                               relève les vulnérabilités connues de la version, quelle que soit
+#                               leur gravité : l'image (son SBOM), les paquets Python publiés
+#                               (uv.lock) et l'explorateur (ui/package-lock.json), chacun analysé
+#                               par Grype ; le relevé s'écrit en JSON et en Markdown
 #   scripts/image.sh scan       analyse le SBOM avec Grype : une vulnérabilité haute ou
 #                               critique sans exception valable fait échouer la commande
 #
@@ -46,6 +52,8 @@ OUT=$(cd "${IMAGE_OUT:-build/image}" && pwd)
 ARCHIVE="$OUT/image.tar"
 SBOM="$OUT/sbom.cdx.json"
 REPORT="$OUT/grype.json"
+# Le relevé des vulnérabilités connues : KNOWN.json et KNOWN.md.
+KNOWN="$OUT/known-vulnerabilities"
 EXCEPTIONS=vulnerability-exceptions.toml
 
 # Ressources temporaires : hors des fonctions, pour que le nettoyage à la sortie
@@ -172,6 +180,34 @@ JSON
     fail "le canari n'a pas été bloqué (code de sortie $status) : l'analyse ne bloque rien."
   fi
   echo "Canari bloqué : PyYAML 5.3 et sa vulnérabilité critique CVE-2020-14343 font échouer l'analyse."
+}
+
+# Le relevé des vulnérabilités connues de la version. Les paquets Python publiés et
+# l'explorateur n'ont pas d'image : leur inventaire se tire de leur verrou, en SBOM
+# CycloneDX, que Grype analyse comme celui de l'image. Le relevé dit l'état de chaque
+# vulnérabilité ; c'est la publication qui refuse une vulnérabilité bloquante
+# (python3 -m scripts.check_release vulnerabilities). Il se produit avant le verdict
+# de « scan », pour exister même quand l'image est bloquée.
+vulnerabilities() {
+  local source
+  [ -f "$SBOM" ] || fail "SBOM absent ($SBOM) : lancer d'abord « $0 sbom »"
+  python3 -m scripts.known_vulnerabilities inventory python --output "$OUT/python.cdx.json" \
+    || fail "l'inventaire des paquets Python ne se tire pas de uv.lock"
+  python3 -m scripts.known_vulnerabilities inventory npm --output "$OUT/npm.cdx.json" \
+    || fail "l'inventaire de l'explorateur ne se tire pas de ui/package-lock.json"
+  chmod a+r "$OUT/python.cdx.json" "$OUT/npm.cdx.json"
+  echo "Analyse de l'image, des paquets Python et de l'explorateur avec Grype ($GRYPE_IMAGE)."
+  grype "$SBOM" >"$OUT/grype-image.json" || fail "Grype n'a pas analysé le SBOM de l'image"
+  for source in python npm; do
+    grype "$OUT/$source.cdx.json" >"$OUT/grype-$source.json" \
+      || fail "Grype n'a pas analysé l'inventaire $source"
+  done
+  python3 -m scripts.known_vulnerabilities build --version "$IMAGE_VERSION" \
+    --source image="$OUT/grype-image.json" \
+    --source python="$OUT/grype-python.json" \
+    --source npm="$OUT/grype-npm.json" \
+    --exceptions "$EXCEPTIONS" --json "$KNOWN.json" --markdown "$KNOWN.md" \
+    || fail "le relevé des vulnérabilités connues ne s'écrit pas"
 }
 
 scan() {
@@ -303,7 +339,7 @@ sign() {
 }
 
 case "${1:-all}" in
-  build | sbom | selftest | signtest | scan) "$1" ;;
+  build | sbom | selftest | signtest | vulnerabilities | scan) "$1" ;;
   push | sign)
     [ $# -eq 2 ] || fail "usage : $0 $1 IMAGE"
     "$1" "$2"
@@ -313,10 +349,11 @@ case "${1:-all}" in
     sbom
     selftest
     signtest
+    vulnerabilities
     scan
     ;;
   *)
-    echo "Usage : $0 [all | build | sbom | selftest | signtest | scan | push IMAGE | sign IMAGE@sha256:…]" >&2
+    echo "Usage : $0 [all | build | sbom | selftest | signtest | vulnerabilities | scan | push IMAGE | sign IMAGE@sha256:…]" >&2
     exit 2
     ;;
 esac

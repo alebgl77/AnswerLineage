@@ -133,14 +133,31 @@ jobs:
       # la publication s'éprouve sans rien publier.
       - name: Vérifie qu'une image signée se vérifie et qu'une image modifiée ne passe pas
         run: scripts/image.sh signtest
+      # Le relevé que la publication joint à la version, produit avant le verdict
+      # de l'analyse : il existe même quand l'image est bloquée, et un changement
+      # de son format casse ici plutôt qu'à la publication.
+      - name: Relève les vulnérabilités connues de l'image, des paquets Python et de l'explorateur
+        id: known
+        run: scripts/image.sh vulnerabilities
       - name: Analyse ses vulnérabilités (Grype), hautes et critiques bloquantes
         run: scripts/image.sh scan
+      - name: Exige le relevé, sans vulnérabilité bloquante, comme la publication
+        run: python3 -m scripts.check_release vulnerabilities build/image/known-vulnerabilities.json
       - name: Garde le SBOM
         if: ${{ always() && steps.sbom.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom-answerlineage
           path: build/image/sbom.cdx.json
+          if-no-files-found: error
+      - name: Garde le relevé des vulnérabilités connues
+        if: ${{ always() && steps.known.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: known-vulnerabilities
+          path: |
+            build/image/known-vulnerabilities.json
+            build/image/known-vulnerabilities.md
           if-no-files-found: error
 
   codeql:

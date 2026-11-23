@@ -190,6 +190,26 @@ def test_the_fixed_version_is_said_plainly(fixed: list[str], state: str, expecte
     assert found.fixed_in == expected
 
 
+@pytest.mark.parametrize(
+    ("fix", "state", "versions"),
+    [
+        ({"versions": ["2.0", "1.9.3", "2.0"], "state": "fixed"}, "fixed", ("2.0", "1.9.3")),
+        ({"versions": [], "state": "not-fixed"}, "not-fixed", ()),
+        ({"versions": [], "state": "wont-fix"}, "wont-fix", ()),
+        ({"state": "corrigée demain"}, "unknown", ()),
+        ({"state": 3, "versions": "2.0"}, "unknown", ()),
+        (None, "unknown", ()),
+    ],
+)
+def test_the_fix_is_kept_as_grype_describes_it(
+    fix: object, state: str, versions: tuple[str, ...]
+) -> None:
+    item = match()
+    item["vulnerability"]["fix"] = fix
+    (found,) = findings(report(item))
+    assert (found.fix_state, found.fix_versions) == (state, versions)
+
+
 def test_a_vulnerability_found_twice_in_a_package_is_counted_once() -> None:
     assert len(findings(report(match(), match()))) == 1
 
@@ -220,6 +240,7 @@ def test_high_and_critical_findings_without_exception_block() -> None:
     )
     assert [found.vulnerability for found in verdict.blocking] == ["CVE-2026-0001", "CVE-2026-0002"]
     assert verdict.others == {"Medium": 1}
+    assert [found.vulnerability for found in verdict.minor] == ["CVE-2026-0003"]
     assert not verdict.passed
 
 

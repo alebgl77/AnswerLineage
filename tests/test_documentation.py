@@ -419,3 +419,19 @@ def test_the_overview_documents_lead_to_the_guide_the_concepts_the_architecture_
     prefix = "docs/" if document == "README.md" else ""
     for target in ("demarrage.md", "concepts.md", "architecture.md", "decisions/README.md"):
         assert f"]({prefix}{target})" in text, f"{document} ne renvoie pas à {target}"
+
+
+# Les délais de la politique de sécurité : un seul tableau, que la procédure des avis cite.
+_DURATION = re.compile(r"\b[0-9]+ (?:heures?|jours?)\b")
+
+
+def test_the_advisory_procedure_says_no_delay_other_than_the_security_policy() -> None:
+    policy = sections((ROOT / "SECURITY.md").read_text(encoding="utf-8"))["Délais"]
+    table = [line for line in policy.splitlines() if line.startswith("|")]
+    delays = {delay for line in table for delay in _DURATION.findall(line)}
+    procedure = (ROOT / "docs" / "securite" / "avis.md").read_text(encoding="utf-8")
+    assert delays
+    assert "](../../SECURITY.md#délais)" in procedure
+    assert set(_DURATION.findall(procedure)) <= delays
+    # La procédure renvoie au tableau, elle n'en tient pas un second.
+    assert not [line for line in procedure.splitlines() if _DURATION.search(line) and "|" in line]

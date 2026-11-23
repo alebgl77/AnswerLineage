@@ -147,12 +147,19 @@ image-sbom:
     # Registre éphémère, clés jetables, aucun journal public : la signature de la
     # publication s'éprouve sans rien publier.
     - scripts/image.sh signtest
+    # Le relevé des vulnérabilités connues, avant le verdict de l'analyse : il existe
+    # même quand l'image est bloquée. Ce pipeline ne publie rien : la publication
+    # d'une version, et le relevé qu'elle joint, n'existent que sur GitHub.
+    - scripts/image.sh vulnerabilities
     - scripts/image.sh scan
+    - python3 -m scripts.check_release vulnerabilities build/image/known-vulnerabilities.json
   artifacts:
     name: sbom-answerlineage
     when: always
     paths:
       - build/image/sbom.cdx.json
+      - build/image/known-vulnerabilities.json
+      - build/image/known-vulnerabilities.md
 
 agent-config:
   extends: .uv

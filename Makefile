@@ -62,8 +62,9 @@ secrets: ## Détection de secrets sur tout l'historique (gitleaks, Docker requis
 	scripts/gitleaks.sh selftest
 	scripts/gitleaks.sh scan
 
-image: ## Construit l'image, produit son SBOM, éprouve sa signature et l'analyse : hautes et critiques bloquantes (Docker requis)
+image: ## Construit l'image, produit son SBOM, éprouve sa signature, relève les vulnérabilités connues et les analyse : hautes et critiques bloquantes (Docker requis)
 	scripts/image.sh
+	python3 -m scripts.check_release vulnerabilities build/image/known-vulnerabilities.json
 
 ui: ## Construit l'explorateur dans ui/dist (Node requis)
 	npm ci --prefix ui --ignore-scripts --no-audit --no-fund
