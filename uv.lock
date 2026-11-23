@@ -18,6 +18,7 @@ members = [
     "answerlineage-cli",
     "answerlineage-conformance",
     "answerlineage-corpus",
+    "answerlineage-emitter",
     "answerlineage-proxy",
     "answerlineage-workers",
 ]
@@ -154,10 +155,22 @@ version = "0.0.0"
 source = { editable = "corpus" }
 
 [[package]]
+name = "answerlineage-emitter"
+version = "0.0.0"
+source = { editable = "emitter" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.28" }]
+
+[[package]]
 name = "answerlineage-proxy"
 version = "0.0.0"
 source = { editable = "proxy" }
 dependencies = [
+    { name = "answerlineage-emitter" },
     { name = "httpx" },
     { name = "pyyaml" },
     { name = "sqlglot" },
@@ -166,6 +179,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "answerlineage-emitter", editable = "emitter" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlglot", specifier = ">=27.0" },

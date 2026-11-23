@@ -30,6 +30,7 @@ COPY api/ api/
 COPY cli/ cli/
 COPY conformance/ conformance/
 COPY corpus/ corpus/
+COPY emitter/ emitter/
 COPY proxy/ proxy/
 COPY workers/ workers/
 RUN uv sync --locked --all-packages --no-dev --no-editable

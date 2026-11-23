@@ -206,7 +206,7 @@ Une vulnérabilité publiée depuis la version apparaît dans le relevé rejoué
 
 ## Comment sort une version
 
-**Préparer.** Une merge request change la version des composants publiables, dans le `pyproject.toml` de chacun : leur `version`, et la contrainte qui épingle un composant frère (`answerlineage-api==…` dans `workers/`, `answerlineage-workers==…` dans `conformance/`). Les paquets publiés s'installent ainsi toujours ensemble, à la même version. La même merge request porte la [revue du modèle de menaces](securite/modele-de-menaces.md#la-revue-dune-version) pour cette version, et le mainteneur y signe les acceptations qu'il retient. `make packages` vérifie l'accord sur le poste, et le pipeline à chaque merge request ; il refuse une version pour laquelle le modèle n'a pas été revu, et liste les acceptations qui restent à signer.
+**Préparer.** Une merge request change la version des composants publiables, dans le `pyproject.toml` de chacun : leur `version`, et la contrainte qui épingle un composant frère (`answerlineage-api==…` dans `workers/`, `answerlineage-workers==…` dans `conformance/`, `answerlineage-emitter==…` dans `proxy/`). Les paquets publiés s'installent ainsi toujours ensemble, à la même version. La même merge request porte la [revue du modèle de menaces](securite/modele-de-menaces.md#la-revue-dune-version) pour cette version, et le mainteneur y signe les acceptations qu'il retient. `make packages` vérifie l'accord sur le poste, et le pipeline à chaque merge request ; il refuse une version pour laquelle le modèle n'a pas été revu, et liste les acceptations qui restent à signer.
 
 **Étiqueter.** Après la fusion, le mainteneur pose l'étiquette sur le commit de `main` et la pousse. Une version s'écrit `v1.2.3`, ou `v1.2.3-alpha.1`, `v1.2.3-beta.1`, `v1.2.3-rc.1` pour une préversion ; toute autre forme est refusée.
 
@@ -278,6 +278,7 @@ Le nom de distribution du projet est `answerlineage`, celui de son `pyproject.to
 | PyPI | `answerlineage-cli` | Le job `pypi` |
 | PyPI | `answerlineage-conformance` | Le job `pypi` |
 | PyPI | `answerlineage-corpus` | Le job `pypi` |
+| PyPI | `answerlineage-emitter` | Le job `pypi` |
 | PyPI | `answerlineage-proxy` | Le job `pypi` |
 | PyPI | `answerlineage-workers` | Le job `pypi` |
 | npm | `answerlineage` | Aucun job : le nom de distribution, à réserver |

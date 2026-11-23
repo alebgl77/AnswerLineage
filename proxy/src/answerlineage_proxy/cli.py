@@ -435,7 +435,7 @@ def token_source(credentials: ClientCredentials | None) -> Tokens | None:
     if credentials is None:
         return None
     logger.info("Envois à l'API authentifiés par un jeton OIDC du proxy (client_credentials).")
-    return ClientCredentialsTokens(credentials)
+    return ClientCredentialsTokens(credentials, logger=logger)
 
 
 def sql_tools_from_args(args: argparse.Namespace) -> dict[str, SqlTool]:
@@ -542,7 +542,7 @@ def event_sink(outbox: OutboxSettings | None, tokens: Tokens | None = None) -> E
         outbox.max_bytes,
         outbox.flush_seconds,
     )
-    return Outbox(outbox, tokens=tokens)
+    return Outbox(outbox, tokens=tokens, logger=logger)
 
 
 def quarantine_sync(

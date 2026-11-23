@@ -25,8 +25,8 @@ from typing import Any
 import httpx
 import pytest
 
+from answerlineage_emitter import outbox as outbox_module
 from answerlineage_proxy import cli
-from answerlineage_proxy import outbox as outbox_module
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import ProxyConfigurationError, ProxySettings
 from answerlineage_proxy.fingerprint import FingerprintKey

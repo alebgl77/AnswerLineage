@@ -42,6 +42,7 @@ members = [
     "cli",
     "conformance",
     "corpus",
+    "emitter",
     "proxy",
     "workers",
 ]
@@ -54,6 +55,7 @@ src = [
     "cli/src",
     "conformance/src",
     "corpus/src",
+    "emitter/src",
     "proxy/src",
     "workers/src",
     ".",
@@ -79,6 +81,7 @@ mypy_path = [
     "cli/src",
     "conformance/src",
     "corpus/src",
+    "emitter/src",
     "proxy/src",
     "workers/src",
     ".",
@@ -88,6 +91,7 @@ files = [
     "cli",
     "conformance",
     "corpus",
+    "emitter",
     "proxy",
     "workers",
     "scripts",
@@ -108,6 +112,7 @@ testpaths = [
     "cli",
     "conformance",
     "corpus",
+    "emitter",
     "proxy",
     "workers",
 ]
@@ -129,6 +134,7 @@ source = [
     "cli/src",
     "conformance/src",
     "corpus/src",
+    "emitter/src",
     "proxy/src",
     "workers/src",
 ]
@@ -147,6 +153,7 @@ paths = [
     "cli/src",
     "conformance/src",
     "corpus/src",
+    "emitter/src",
     "proxy/src",
     "workers/src",
 ]

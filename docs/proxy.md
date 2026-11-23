@@ -471,6 +471,8 @@ Sans adresse d'API, la destination par défaut compte les événements et les re
 
 Avec `--api-url`, les événements et les relevés de couverture partent vers l'API d'AnswerLineage par une boîte d'envoi locale, bornée, hors du chemin des appels : une panne d'AnswerLineage ne ralentit ni ne bloque un agent.
 
+La boîte d'envoi, comme le [jeton du proxy](#le-jeton-du-proxy-envers-lapi), les [empreintes à clé](#empreintes-à-clé) et la [dérivation de l'identifiant de run](#la-dérivation-à-loctet-près), est celle de l'émetteur commun (`emitter/`), que partage tout émetteur d'AnswerLineage : ce qui suit vaut pour chacun. Le proxy lui donne son journal, `answerlineage_proxy`.
+
 ```bash
 uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --api-url https://answerlineage.interne
 ```

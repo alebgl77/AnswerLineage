@@ -252,7 +252,7 @@ async def test_after_a_failure_the_issuer_is_not_asked_again_before_a_delay() ->
 async def test_a_black_hole_issuer_is_cut_by_the_request_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("answerlineage_proxy.credentials.REQUEST_TIMEOUT", 0.05)
+    monkeypatch.setattr("answerlineage_emitter.credentials.REQUEST_TIMEOUT", 0.05)
 
     async def silent(_: httpx.Request) -> httpx.Response:
         await asyncio.sleep(10)

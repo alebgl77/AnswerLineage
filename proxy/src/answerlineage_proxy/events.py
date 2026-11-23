@@ -3,97 +3,81 @@
 Un événement ne porte aucun contenu : ni argument, ni résultat, ni en-tête,
 ni jeton. Des arguments et du résultat, il ne garde que des empreintes à clé et
 une taille ; d'une requête SQL, que sa forme sans littéraux ; d'une clé lue
-d'après une règle de lecture, que son empreinte à clé.
+d'après une règle de lecture, que son empreinte à clé. Le RunEvent et ses
+facettes se construisent avec les briques de tout émetteur
+(``answerlineage_emitter.events``).
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from answerlineage_proxy import __version__
+from answerlineage_emitter.events import (
+    KEYS_FACET,
+    KEYS_FACET_SCHEMA,
+    QOS_FACET,
+    QOS_FACET_SCHEMA,
+    RUN_EVENT_SCHEMA,
+    SCHEMA_FACET_SCHEMA,
+    SQL_FACET,
+    SQL_FACET_SCHEMA,
+    TOOL_CALL_FACET,
+    TOOL_CALL_FACET_SCHEMA,
+    TOOL_CALL_FACET_SCHEMA_READ_KEYS,
+    TOOL_CALL_FACET_SCHEMA_RUN_ID_TAG,
+    UNDESCRIBED_TOOL,
+    UNRESOLVED_TOOL,
+    facet,
+    format_event_time,
+    producer,
+    run_event,
+    schema_facet,
+)
 from answerlineage_proxy.inspection import Inspection
 from answerlineage_proxy.rules import DeclaredDataset, DeclaredReads
 from answerlineage_proxy.signals import CallSignals
 from answerlineage_proxy.sql import SqlAnalysis
 from answerlineage_proxy.tracecontext import CallTrace
 
+__all__ = [
+    "KEYS_FACET",
+    "KEYS_FACET_SCHEMA",
+    "PRODUCER",
+    "QOS_FACET",
+    "QOS_FACET_SCHEMA",
+    "RUN_EVENT_SCHEMA",
+    "SCHEMA_FACET_SCHEMA",
+    "SQL_FACET",
+    "SQL_FACET_SCHEMA",
+    "TOOL_CALL_FACET",
+    "TOOL_CALL_FACET_SCHEMA",
+    "TOOL_CALL_FACET_SCHEMA_READ_KEYS",
+    "TOOL_CALL_FACET_SCHEMA_RUN_ID_TAG",
+    "UNDESCRIBED_TOOL",
+    "UNRESOLVED_TOOL",
+    "Outcome",
+    "Transport",
+    "build_tool_call_event",
+    "format_event_time",
+]
+
 Outcome = Literal["COMPLETE", "FAIL", "ABORT"]
 # Transport de l'appel relayé : un serveur MCP en HTTP, ou lancé par le proxy en stdio.
 Transport = Literal["http", "stdio"]
 
-PRODUCER = f"https://github.com/alebgl77/AnswerLineage/tree/{__version__}/proxy"
-RUN_EVENT_SCHEMA = "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent"
-TOOL_CALL_FACET = "answerlineage_toolCall"
-# Schéma publié de la facette, à une adresse qui ne change plus (spec/facets/1-0-0/). La
-# version 1-1-0 ajoute ce qu'est devenue la clé lue d'après une règle de lecture : la
-# facette ne s'en réclame que lorsqu'elle le dit.
-TOOL_CALL_FACET_SCHEMA = (
-    "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/"
-    "ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
-)
-TOOL_CALL_FACET_SCHEMA_READ_KEYS = (
-    "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-1-0/"
-    "ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
-)
-# La version 1-2-0 dit si la requête SQL relayée a reçu le commentaire qui porte
-# l'identifiant de run : la facette ne s'en réclame que lorsqu'elle le dit.
-TOOL_CALL_FACET_SCHEMA_RUN_ID_TAG = (
-    "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-2-0/"
-    "ToolCallRunFacet.json#/$defs/ToolCallRunFacet"
-)
-# Clés lues dans un jeu de données d'entrée, sous leurs empreintes à clé (spec/facets/1-0-0/).
-KEYS_FACET = "answerlineage_keys"
-KEYS_FACET_SCHEMA = (
-    "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/"
-    "KeysInputDatasetFacet.json#/$defs/KeysInputDatasetFacet"
-)
-# Qualité de service de l'appel : latence, latence ajoutée, issue, reprises (spec/facets/1-1-0/).
-QOS_FACET = "answerlineage_qos"
-QOS_FACET_SCHEMA = (
-    "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-1-0/"
-    "QosRunFacet.json#/$defs/QosRunFacet"
-)
-# Facette standard : les champs d'un jeu de données lu sont ceux que la requête lit.
-SCHEMA_FACET_SCHEMA = (
-    "https://openlineage.io/spec/facets/1-2-0/SchemaDatasetFacet.json#/$defs/SchemaDatasetFacet"
-)
-# Facette de job standard : la requête SQL du job, ici sans ses littéraux.
-SQL_FACET = "sql"
-SQL_FACET_SCHEMA = "https://openlineage.io/spec/facets/1-1-0/SQLJobFacet.json#/$defs/SQLJobFacet"
-# Nom de job d'un appel dont le nom d'outil n'a pas une forme admise.
-UNRESOLVED_TOOL = "outil-non-resolu"
-# Motif d'une lecture non résolue : l'outil n'a ni règle de lecture ni SQL déclaré.
-UNDESCRIBED_TOOL = "undescribed_tool"
-
-
-def _schema_facet(columns: tuple[str, ...]) -> dict[str, Any]:
-    return {
-        "_producer": PRODUCER,
-        "_schemaURL": SCHEMA_FACET_SCHEMA,
-        "fields": [{"name": column} for column in columns],
-    }
+PRODUCER = producer("proxy")
 
 
 def _declared_input(dataset: DeclaredDataset, keys: tuple[str, ...]) -> dict[str, Any]:
     """Un jeu de données qu'une règle déclare lu : ses colonnes, et les clés lues."""
     item: dict[str, Any] = {"namespace": dataset.namespace, "name": dataset.name}
     if dataset.columns:
-        item["facets"] = {"schema": _schema_facet(dataset.columns)}
+        item["facets"] = {"schema": schema_facet(PRODUCER, dataset.columns)}
     if keys:
-        item["inputFacets"] = {
-            KEYS_FACET: {
-                "_producer": PRODUCER,
-                "_schemaURL": KEYS_FACET_SCHEMA,
-                "hmacs": list(keys),
-            }
-        }
+        item["inputFacets"] = {KEYS_FACET: facet(PRODUCER, KEYS_FACET_SCHEMA, hmacs=list(keys))}
     return item
-
-
-def format_event_time(moment: datetime) -> str:
-    return moment.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def build_tool_call_event(
@@ -133,78 +117,69 @@ def build_tool_call_event(
     requête relayée doit porter l'identifiant de run en commentaire, si elle l'a
     reçu : un indicateur, jamais la requête.
     """
-    facet: dict[str, Any] = {
-        "_producer": PRODUCER,
-        "_schemaURL": TOOL_CALL_FACET_SCHEMA,
-        "server": server,
-        "transport": transport,
-        "headerMismatch": sorted(inspection.header_mismatches),
-        "invalidToolName": inspection.invalid_tool_name,
-    }
+    described = facet(
+        PRODUCER,
+        TOOL_CALL_FACET_SCHEMA,
+        server=server,
+        transport=transport,
+        headerMismatch=sorted(inspection.header_mismatches),
+        invalidToolName=inspection.invalid_tool_name,
+    )
     if inspection.tool is not None:
-        facet["tool"] = inspection.tool
+        described["tool"] = inspection.tool
     if inspection.protocol_version is not None:
-        facet["protocolVersion"] = inspection.protocol_version
+        described["protocolVersion"] = inspection.protocol_version
     if http_status is not None:
-        facet["httpStatus"] = http_status
+        described["httpStatus"] = http_status
     if proxy_error is not None:
-        facet["proxyError"] = proxy_error
+        described["proxyError"] = proxy_error
     if arguments_fingerprint is not None:
-        facet["argumentsFingerprint"] = arguments_fingerprint
+        described["argumentsFingerprint"] = arguments_fingerprint
     if result_fingerprint is not None:
-        facet["resultFingerprint"] = result_fingerprint
+        described["resultFingerprint"] = result_fingerprint
     if result_size is not None:
-        facet["resultSize"] = result_size
+        described["resultSize"] = result_size
     if trace is not None:
-        facet["traceId"] = trace.context.trace_id
-        facet["spanId"] = trace.context.parent_id
-        facet["traceOrigin"] = trace.origin
+        described["traceId"] = trace.context.trace_id
+        described["spanId"] = trace.context.parent_id
+        described["traceOrigin"] = trace.origin
     inputs: list[dict[str, Any]] = []
     job: dict[str, Any] = {
         "namespace": f"mcp://{server}",
         "name": inspection.tool or UNRESOLVED_TOOL,
     }
     if reads is not None and reads.shape is not None:
-        sql: dict[str, Any] = {
-            "_producer": PRODUCER,
-            "_schemaURL": SQL_FACET_SCHEMA,
-            "query": reads.shape,
-        }
+        sql = facet(PRODUCER, SQL_FACET_SCHEMA, query=reads.shape)
         if dialect is not None:
             sql["dialect"] = dialect
         job["facets"] = {SQL_FACET: sql}
     if reads is not None:
-        facet["readResolution"] = "resolved" if reads.resolved else "unresolved"
+        described["readResolution"] = "resolved" if reads.resolved else "unresolved"
         if reads.reason is not None:
-            facet["unresolvedReason"] = reads.reason
+            described["unresolvedReason"] = reads.reason
         for table in reads.tables:
             dataset: dict[str, Any] = {"namespace": namespace or "", "name": table.name}
             if table.precision == "columns":
-                dataset["facets"] = {"schema": _schema_facet(table.columns)}
+                dataset["facets"] = {"schema": schema_facet(PRODUCER, table.columns)}
             inputs.append(dataset)
     if declared is not None:
-        facet["readResolution"] = "resolved"
+        described["readResolution"] = "resolved"
         if declared.key_status is not None:
-            facet["readKeys"] = declared.key_status
-            facet["_schemaURL"] = TOOL_CALL_FACET_SCHEMA_READ_KEYS
+            described["readKeys"] = declared.key_status
+            described["_schemaURL"] = TOOL_CALL_FACET_SCHEMA_READ_KEYS
         inputs.extend(_declared_input(dataset, declared.keys) for dataset in declared.datasets)
     if tagged_with_run_id is not None:
-        facet["taggedWithRunId"] = tagged_with_run_id
-        facet["_schemaURL"] = TOOL_CALL_FACET_SCHEMA_RUN_ID_TAG
-    run_facets: dict[str, Any] = {TOOL_CALL_FACET: facet}
+        described["taggedWithRunId"] = tagged_with_run_id
+        described["_schemaURL"] = TOOL_CALL_FACET_SCHEMA_RUN_ID_TAG
+    run_facets: dict[str, Any] = {TOOL_CALL_FACET: described}
     if signals is not None:
-        run_facets[QOS_FACET] = {
-            "_producer": PRODUCER,
-            "_schemaURL": QOS_FACET_SCHEMA,
-            **signals.fields(),
-        }
-    return {
-        "eventType": outcome,
-        "eventTime": format_event_time(event_time),
-        "producer": PRODUCER,
-        "schemaURL": RUN_EVENT_SCHEMA,
-        "run": {"runId": str(run_id), "facets": run_facets},
-        "job": job,
-        "inputs": inputs,
-        "outputs": [],
-    }
+        run_facets[QOS_FACET] = facet(PRODUCER, QOS_FACET_SCHEMA, **signals.fields())
+    return run_event(
+        producer=PRODUCER,
+        event_type=outcome,
+        event_time=event_time,
+        run_id=run_id,
+        run_facets=run_facets,
+        job=job,
+        inputs=inputs,
+    )

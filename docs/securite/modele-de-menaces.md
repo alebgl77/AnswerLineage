@@ -173,6 +173,14 @@ Le détail de chaque menace, son scénario, ses parades avec leur code et leur t
 | `conformance/schema-substitue` | Le kit juge contre un schéma substitué | Altération | 2 parades |
 | `conformance/resume-a2a-mensonger` | Un agent appelé en A2A déclare des lectures fausses dans son résumé | Usurpation | 2 parades, acceptation à signer |
 
+### Émetteur commun
+
+| Menace | Ce qui est craint | Catégorie | Traitement |
+| --- | --- | --- | --- |
+| `emitter/empreinte-retournee` | Une empreinte de l'émetteur commun se retourne en valeur | Divulgation | 2 parades |
+| `emitter/boite-d-envoi-bloquante` | La boîte d'envoi de l'émetteur commun fait attendre son émetteur, ou grossit sans fin | Déni de service | 2 parades |
+| `emitter/secret-du-client-cite` | Le secret du client ou le jeton d'accès sort de l'émetteur commun par un message ou un journal | Divulgation | 2 parades |
+
 ### Explorateur
 
 | Menace | Ce qui est craint | Catégorie | Traitement |

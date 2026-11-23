@@ -18,6 +18,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "answerlineage-emitter==0.0.0",
     "httpx>=0.28",
     "pyyaml>=6.0",
     "sqlglot>=27.0",
@@ -31,6 +32,9 @@ answerlineage-proxy = "answerlineage_proxy.cli:main"
 Source = "https://github.com/alebgl77/AnswerLineage"
 Documentation = "https://github.com/alebgl77/AnswerLineage/tree/main/docs"
 Issues = "https://github.com/alebgl77/AnswerLineage/issues"
+
+[tool.uv.sources]
+answerlineage-emitter = { workspace = true }
 
 [build-system]
 requires = ["hatchling>=1.27"]

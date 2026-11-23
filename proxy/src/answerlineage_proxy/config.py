@@ -6,11 +6,13 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Literal, Protocol, cast
 
 import httpx
 
+from answerlineage_emitter.config import ConfigurationError
+from answerlineage_emitter.fingerprint import read_key
 from answerlineage_proxy.fingerprint import FingerprintKey
 from answerlineage_proxy.guard import LOOPBACK_HOSTS, RequestGuard
 from answerlineage_proxy.names import INSTANCE_MAX, name_fault, normalize_name
@@ -69,8 +71,6 @@ _SERVER_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _ARGUMENT_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _NAMESPACE = re.compile(r"[A-Za-z0-9_.:/@-]{1,255}")
-# Taille lue d'un fichier de clé : une clé hexadécimale y tient largement.
-_KEY_FILE_BYTES = 4096
 
 # Le mode passerelle refusé pour un serveur MCP dont les jetons sont liés à son URL : un
 # texte fixe, qui ne cite ni l'adresse du serveur ni rien de ses métadonnées.
@@ -92,8 +92,9 @@ GATEWAY_REFUSED_BY_METADATA = (
 Mode = Literal["transparent", "gateway"]
 
 
-class ProxyConfigurationError(ValueError):
-    """Un réglage du proxy est absent ou invalide."""
+# Un réglage du proxy absent ou invalide. L'erreur est celle de tout émetteur : un réglage
+# que refusent la boîte d'envoi ou le jeton du proxy arrête le proxy de la même façon.
+ProxyConfigurationError = ConfigurationError
 
 
 class CaptureSettings(Protocol):
@@ -201,30 +202,12 @@ def fingerprint_key(
     Aucun message d'erreur ne cite la clé, ni le chemin du fichier, qui pourrait
     être une clé passée par erreur.
     """
-    path = key_file or environment.get(ENV_FINGERPRINT_KEY_FILE) or None
-    text = environment.get(ENV_FINGERPRINT_KEY) or None
-    if path is not None and text is not None:
-        raise ProxyConfigurationError(
-            f"La clé d'empreinte vient d'un fichier ou de {ENV_FINGERPRINT_KEY}, pas des deux."
-        )
-    if path is not None:
-        try:
-            with Path(path).open("rb") as source:
-                content = source.read(_KEY_FILE_BYTES + 1)
-        except OSError:
-            raise ProxyConfigurationError(
-                "Le fichier de la clé d'empreinte est illisible."
-            ) from None
-        if len(content) > _KEY_FILE_BYTES:
-            raise ProxyConfigurationError("Le fichier de la clé d'empreinte est trop grand.")
-        text = content.decode("ascii", errors="replace")
-    if text is None:
-        return None
-    try:
-        return FingerprintKey.from_hex(text)
-    except ValueError as error:
-        # Le message de FingerprintKey ne cite jamais la valeur.
-        raise ProxyConfigurationError(str(error)) from None
+    return read_key(
+        environment,
+        key_file,
+        variable=ENV_FINGERPRINT_KEY,
+        file_variable=ENV_FINGERPRINT_KEY_FILE,
+    )
 
 
 def read_rules(

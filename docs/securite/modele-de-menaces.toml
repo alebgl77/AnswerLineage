@@ -171,6 +171,11 @@ path = "conformance"
 name = "Kit de conformité"
 
 [[component]]
+id = "emitter"
+path = "emitter"
+name = "Émetteur commun"
+
+[[component]]
 id = "ui"
 path = "ui"
 name = "Explorateur"
@@ -210,7 +215,7 @@ description = "Les arguments, le résultat d'outil ou un littéral de requête S
 
 [[threat.mitigation]]
 description = "Les arguments et le résultat ne sortent que sous forme d'empreinte à clé."
-code = "proxy/src/answerlineage_proxy/fingerprint.py"
+code = "emitter/src/answerlineage_emitter/fingerprint.py"
 test = "proxy/tests/test_fingerprint_capture.py::test_fingerprints_are_those_of_the_canonical_arguments_and_the_relayed_bytes"
 
 [[threat.mitigation]]
@@ -238,7 +243,7 @@ description = "Une valeur pauvre (un numéro de client, un montant) se retrouve 
 
 [[threat.mitigation]]
 description = "Empreinte HMAC à clé : la même valeur a deux empreintes chez deux locataires."
-code = "proxy/src/answerlineage_proxy/fingerprint.py"
+code = "emitter/src/answerlineage_emitter/fingerprint.py"
 test = "proxy/tests/test_fingerprint.py::test_two_tenants_get_two_fingerprints_for_the_same_value"
 
 [[threat.mitigation]]
@@ -299,7 +304,7 @@ description = "Une API d'ingestion lente ou en panne, une analyse SQL longue ou 
 
 [[threat.mitigation]]
 description = "La boîte d'envoi prend un événement par un ajout en mémoire, bornée, et n'attend rien."
-code = "proxy/src/answerlineage_proxy/outbox.py"
+code = "emitter/src/answerlineage_emitter/outbox.py"
 test = "proxy/tests/test_outbox.py::test_emit_only_appends_the_event_and_waits_for_nothing"
 
 [[threat.mitigation]]
@@ -309,7 +314,7 @@ test = "proxy/tests/test_relay.py::test_failing_sink_never_reaches_the_call"
 
 [[threat.mitigation]]
 description = "Dix mille appels passent pendant que l'API est coupée, puis atteignent le graphe une fois."
-code = "proxy/src/answerlineage_proxy/outbox.py"
+code = "emitter/src/answerlineage_emitter/outbox.py"
 test = "tests/test_outbox_chaos.py::test_ten_thousand_calls_pass_while_the_api_is_down_then_reach_the_graph_once"
 
 [[threat.mitigation]]
@@ -617,13 +622,69 @@ description = "Un émetteur OIDC en panne, lent ou qui refuse le client ferait a
 
 [[threat.mitigation]]
 description = "Le jeton n'est demandé que par la boîte d'envoi et la synchronisation des quarantaines, dans leurs tâches de fond : sans jeton, les événements attendent dans la boîte et l'appel passe."
-code = "proxy/src/answerlineage_proxy/outbox.py"
+code = "emitter/src/answerlineage_emitter/outbox.py"
 test = "proxy/tests/test_credentials.py::test_an_issuer_that_hangs_never_delays_a_relayed_call"
 
 [[threat.mitigation]]
 description = "Une demande à l'émetteur est bornée à 10 secondes, et un échec n'est pas retenté avant 5 secondes."
-code = "proxy/src/answerlineage_proxy/credentials.py::ClientCredentialsTokens"
+code = "emitter/src/answerlineage_emitter/credentials.py::ClientCredentialsTokens"
 test = "proxy/tests/test_credentials.py::test_after_a_failure_the_issuer_is_not_asked_again_before_a_delay"
+
+# Émetteur commun
+
+[[threat]]
+id = "emitter/empreinte-retournee"
+name = "Une empreinte de l'émetteur commun se retourne en valeur"
+category = "information-disclosure"
+boundary = "emetteur-ingestion"
+assets = ["contenus", "cle-des-empreintes"]
+description = "Tout émetteur qui s'appuie sur l'émetteur commun empreint arguments et résultats avec lui : une empreinte sans clé, ou une clé courte, lue de la ligne de commande ou citée dans un message, rendrait les valeurs pauvres retrouvables par énumération."
+
+[[threat.mitigation]]
+description = "Une empreinte est un HMAC-SHA-256 avec la clé du locataire, de 32 à 64 octets ; sans clé, aucune empreinte n'est calculée."
+code = "emitter/src/answerlineage_emitter/fingerprint.py::FingerprintKey"
+test = "proxy/tests/test_fingerprint.py::test_two_tenants_get_two_fingerprints_for_the_same_value"
+
+[[threat.mitigation]]
+description = "La clé se lit d'un fichier ou d'une variable que l'émetteur nomme ; aucun message ne cite la clé ni le chemin de son fichier."
+code = "emitter/src/answerlineage_emitter/fingerprint.py::read_key"
+test = "emitter/tests/test_settings.py::test_an_unusable_key_source_is_refused_without_being_cited"
+
+[[threat]]
+id = "emitter/boite-d-envoi-bloquante"
+name = "La boîte d'envoi de l'émetteur commun fait attendre son émetteur, ou grossit sans fin"
+category = "denial-of-service"
+boundary = "emetteur-ingestion"
+assets = ["continuite-des-agents", "disponibilite"]
+description = "Une API d'ingestion lente, muette ou en panne, ou un émetteur OIDC qui ne donne pas de jeton, feraient attendre l'émetteur qui remet un événement, ou garder en mémoire tout ce qui n'est pas parti."
+
+[[threat.mitigation]]
+description = "Prendre un événement en charge est un ajout en mémoire, sans attente ; la sérialisation, l'envoi et le jeton se font dans des tâches de fond."
+code = "emitter/src/answerlineage_emitter/outbox.py::Outbox"
+test = "proxy/tests/test_outbox.py::test_emit_only_appends_the_event_and_waits_for_nothing"
+
+[[threat.mitigation]]
+description = "La boîte est bornée en nombre et en octets ; pleine, elle abandonne le plus ancien et le compte perdu."
+code = "emitter/src/answerlineage_emitter/outbox.py::Outbox"
+test = "proxy/tests/test_outbox.py::test_a_full_outbox_drops_the_oldest_event_and_counts_it"
+
+[[threat]]
+id = "emitter/secret-du-client-cite"
+name = "Le secret du client ou le jeton d'accès sort de l'émetteur commun par un message ou un journal"
+category = "information-disclosure"
+boundary = "api-emetteur-oidc"
+assets = ["jetons-de-l-api"]
+description = "L'émetteur commun lit le secret du client et obtient le jeton d'accès à l'API pour tout émetteur : un message d'erreur, une représentation ou un journal qui les citerait les donnerait à qui lit le terminal ou les journaux."
+
+[[threat.mitigation]]
+description = "Le secret se lit d'un fichier ou d'une variable que l'émetteur nomme ; aucun message ne cite le secret ni le chemin de son fichier."
+code = "emitter/src/answerlineage_emitter/credentials.py::client_secret"
+test = "emitter/tests/test_settings.py::test_the_secret_comes_from_the_variables_the_emitter_names"
+
+[[threat.mitigation]]
+description = "Le secret et le jeton ne s'affichent jamais, pas même dans une représentation ; le journal ne dit qu'une classe ou un statut."
+code = "emitter/src/answerlineage_emitter/credentials.py::ClientCredentialsTokens"
+test = "proxy/tests/test_credentials.py::test_the_secret_is_never_shown"
 
 # API
 
