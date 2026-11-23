@@ -37,6 +37,11 @@ name = "Lecteur, API de lecture et explorateur"
 description = "Un navigateur, la ligne de commande ou un script lit le lignage, déclare un incident ou ouvre une adresse partagée de l'explorateur. L'appelant n'est pas authentifié ; l'adresse, les paramètres et les corps sont hostiles, et les noms affichés viennent des émetteurs."
 
 [[boundary]]
+id = "workers-catalogue"
+name = "Workers et catalogue externe"
+description = "Les workers réémettent les événements projetés vers un consommateur OpenLineage externe (Marquez, DataHub, OpenMetadata, Dataplex), à l'adresse que règle l'exploitant. Le catalogue, le réseau qui y mène et ses réponses sont hors du contrôle d'AnswerLineage."
+
+[[boundary]]
 id = "pipeline-publication"
 name = "Pipeline et publication"
 description = "Une merge request, écrite par un contributeur ou un agent de code, fait tourner le pipeline ; une étiquette de version publie l'image et les paquets. Le contenu de la merge request, les actions, les images et les dépendances tierces sont hors de confiance."
@@ -847,6 +852,99 @@ test = "workers/tests/test_rebuild.py::test_an_analysis_waits_until_the_rebuild_
 [threat.acceptance]
 reason = "La reconstruction ne bloque pas les lectures de l'API, pour qu'elle reste disponible : un événement est à tout instant dans la file ou dans le graphe, et la couverture du lignage compte comme trous les appels d'outil encore en file."
 consequence = "Pendant une reconstruction, une lecture voit un graphe partiel : une réponse dont l'événement d'agent attend encore dans la file manque sans que la couverture le dise."
+
+[[threat]]
+id = "workers/reemission-fuite"
+name = "La réémission livre le lignage à une destination mal réglée ou écoutée"
+category = "information-disclosure"
+boundary = "workers-catalogue"
+assets = ["lignage", "destinataires"]
+description = "Une destination réglée en clair hors de la boucle locale, ou vers l'adresse de métadonnées d'un cloud, livrerait les événements et l'en-tête d'authentification à qui écoute ; une adresse porteuse d'un identifiant, ou un journal qui recopierait l'adresse, l'en-tête ou un événement, les ferait sortir ; un événement refusé à l'ingestion ou au rebut partirait vers le catalogue."
+
+[[threat.mitigation]]
+description = "En clair, la boucle locale seulement ; ni identifiant, ni paramètre, ni fragment dans l'adresse, ni adresse de métadonnées ou de lien local, écrite ou enveloppée ; un refus ne cite ni l'adresse ni l'en-tête."
+code = "workers/src/answerlineage_workers/destination.py::parse_destination"
+test = "workers/tests/test_destination.py::test_a_refused_destination_is_never_cited"
+
+[[threat.mitigation]]
+description = "TLS est vérifié, certificat et nom de la destination ; une autorité interne se déclare par le réglage du système."
+code = "workers/src/answerlineage_workers/destination.py::tls_context"
+test = "workers/tests/test_destination.py::test_tls_is_verified_and_an_internal_authority_is_trusted_through_the_system_setting"
+
+[[threat.mitigation]]
+description = "Le journal et la base ne gardent que des nombres, des statuts et des classes d'erreur : ni l'adresse, ni l'en-tête d'authentification, ni rien d'un événement."
+code = "workers/src/answerlineage_workers/reemission.py::run_reemission"
+test = "workers/tests/test_reemission.py::test_neither_the_journal_nor_the_base_keep_the_address_the_header_or_any_content"
+
+[[threat.mitigation]]
+description = "Seul part ce que la projection a intégré au graphe, tel qu'il a été accepté : ni un événement refusé, ni un doublon, ni un événement au rebut."
+code = "workers/src/answerlineage_workers/queue.py::project_batch"
+test = "workers/tests/test_reemission.py::test_only_what_the_projection_integrates_into_the_graph_is_queued_for_reemission"
+
+[[threat]]
+id = "workers/reemission-detournee"
+name = "La destination de la réémission est détournée vers une autre adresse"
+category = "elevation-of-privilege"
+boundary = "workers-catalogue"
+assets = ["hote", "lignage"]
+description = "Si un événement, une réponse ou une redirection choisissait l'adresse, la réémission deviendrait une requête sortante au service d'un tiers, depuis le réseau des workers : vers le service de métadonnées d'un cloud, qui sert les identifiants de la machine, ou vers un service interne. Un nom qui mène à une telle adresse, ou qui en change entre deux résolutions, contournerait le contrôle de l'adresse écrite."
+
+[[threat.mitigation]]
+description = "La destination est réglée par l'exploitant au démarrage ; une destination interdite empêche le worker de démarrer, sans être citée."
+code = "workers/src/answerlineage_workers/cli.py::reemission_from"
+test = "workers/tests/test_reemission.py::test_a_forbidden_destination_stops_the_worker_at_startup_without_being_cited"
+
+[[threat.mitigation]]
+description = "Aucune redirection n'est suivie : une réponse 3xx est un échec, l'événement reste en file."
+code = "workers/src/answerlineage_workers/destination.py::Sender"
+test = "workers/tests/test_destination.py::test_a_redirect_is_not_followed"
+
+[[threat.mitigation]]
+description = "Un nom qui mène, par une seule de ses adresses, à une adresse interdite est refusé au démarrage."
+code = "workers/src/answerlineage_workers/destination.py::check_resolution"
+test = "workers/tests/test_destination.py::test_a_name_that_leads_to_a_forbidden_address_is_refused_at_startup"
+
+[[threat.mitigation]]
+description = "Chaque connexion résout le nom, contrôle chaque adresse et se fait à l'adresse contrôlée : une seconde résolution ne mène pas ailleurs."
+code = "workers/src/answerlineage_workers/destination.py::addresses_of"
+test = "workers/tests/test_destination.py::test_each_connection_checks_what_the_name_leads_to_and_goes_there"
+
+[threat.acceptance]
+reason = "Les adresses internes autres que les métadonnées et le lien local sont admises : le catalogue d'une entreprise est souvent sur son réseau privé, et l'adresse ne vient que de l'exploitant."
+consequence = "Un exploitant qui règle par erreur l'adresse d'un service interne y envoie les événements projetés, sans contenu ; le contrôle ne le distingue pas d'un catalogue."
+
+[[threat]]
+id = "workers/reemission-file-epuisante"
+name = "Une destination en panne fait grossir la file sans fin ou retarde la projection"
+category = "denial-of-service"
+boundary = "workers-catalogue"
+assets = ["disponibilite", "lignage"]
+description = "Un catalogue arrêté, lent ou qui répond goutte à goutte retiendrait l'envoi : la file de réémission grossirait dans la base jusqu'à l'épuiser, la projection et l'ingestion attendraient le catalogue, des workers revenant tous ensemble l'empêcheraient de se relever, et un événement envoyé deux fois par deux workers fausserait les compteurs."
+
+[[threat.mitigation]]
+description = "La file est bornée en âge et en nombre : ce qui déborde, les plus anciens d'abord, est retiré, compté perdu et dit au journal."
+code = "workers/src/answerlineage_workers/reemission.py::trim"
+test = "workers/tests/test_reemission.py::test_the_overflow_of_the_queue_is_counted_and_said"
+
+[[threat.mitigation]]
+description = "L'envoi tourne dans une boucle à part, ses entrées-sorties dans un fil à part : une destination qui ne répond pas ne retarde ni l'ingestion ni la projection, et l'arrêt coupe l'envoi en cours."
+code = "workers/src/answerlineage_workers/queue.py::run_worker"
+test = "workers/tests/test_reemission.py::test_a_destination_down_slows_neither_the_ingestion_nor_the_projection"
+
+[[threat.mitigation]]
+description = "Chaque envoi a un délai total, qu'une réponse servie goutte à goutte ne prolonge pas."
+code = "workers/src/answerlineage_workers/destination.py::Sender"
+test = "workers/tests/test_destination.py::test_a_destination_that_does_not_answer_is_given_up_at_the_deadline"
+
+[[threat.mitigation]]
+description = "Une panne arrête le lot au premier échec ; la reprise attend de plus en plus, jusqu'à un plafond, tirée au hasard ; rien ne se perd quand la destination revient."
+code = "workers/src/answerlineage_workers/reemission.py::retry_delay"
+test = "workers/tests/test_reemission.py::test_a_destination_down_then_back_loses_nothing"
+
+[[threat.mitigation]]
+description = "Deux workers réclament leurs lots avec FOR UPDATE SKIP LOCKED : jamais deux fois le même événement."
+code = "workers/src/answerlineage_workers/reemission.py::reemit_batch"
+test = "workers/tests/test_reemission.py::test_two_workers_never_send_an_event_twice"
 
 # Ligne de commande
 

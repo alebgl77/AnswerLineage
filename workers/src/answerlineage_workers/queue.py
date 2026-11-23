@@ -25,6 +25,13 @@ citer l'événement.
 Le graphe reçoit, avec chaque événement, l'heure à laquelle AnswerLineage l'a
 reçu : c'est son heure d'enregistrement, que le passage du worker ne change pas.
 
+Quand les workers ont une destination de réémission (``reemission.py``), un
+événement projeté entre dans la file de réémission dans la transaction qui le
+projette et le retire de la file : il part une fois intégré au graphe, jamais
+avant, et pas s'il va au rebut. Un événement que la reconstruction remet en file
+est déjà parti : il n'y entre pas. La boucle de réémission tourne à côté de
+celle du worker, sans la retarder.
+
 Entre deux lots, la boucle du worker analyse aussi un incident déclaré, quand
 une demande attend (``incidents.py``).
 
@@ -60,6 +67,7 @@ from answerlineage_workers.partitions import (
     maintain_partitions,
 )
 from answerlineage_workers.projection import project
+from answerlineage_workers.reemission import Reemission, run_reemission
 from answerlineage_workers.silence import DEFAULT_SILENCE, check_silent_emitters
 
 logger = logging.getLogger("answerlineage_workers")
@@ -106,6 +114,19 @@ _CLAIM = text(
     """
 )
 _DONE = text("DELETE FROM ingest_queue WHERE id = ANY(:ids)")
+# Retirés de la file, et mis en file de réémission dans l'ordre de leur projection,
+# sauf ceux que la reconstruction du graphe y avait remis (déjà partis).
+_DONE_AND_REEMITTED = text(
+    """
+    WITH done AS (
+        DELETE FROM ingest_queue WHERE id = ANY(:ids)
+        RETURNING id, event_id, recorded_month, reemit
+    )
+    INSERT INTO reemission_queue (event_id, recorded_month)
+    SELECT event_id, recorded_month FROM done WHERE reemit ORDER BY id
+    ON CONFLICT (event_id) DO NOTHING
+    """
+)
 _POSTPONE = text(
     """
     UPDATE ingest_queue
@@ -194,16 +215,23 @@ async def process_batch(
     batch_size: int = DEFAULT_BATCH_SIZE,
     handler: Handler = record_event,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    reemit: bool = False,
 ) -> BatchResult:
     """Réclame un lot, le traite et le retire de la file, dans une transaction.
 
     Un événement en échec est remis à plus tard, ou mis au rebut quand son motif
     ne se corrigera pas en réessayant ou qu'il atteint ``max_attempts`` essais.
-    Pendant une reconstruction du graphe, rien n'est réclamé (``gate.py``).
+    Avec ``reemit``, un événement projeté entre dans la file de réémission, dans
+    la même transaction. Pendant une reconstruction du graphe, rien n'est
+    réclamé (``gate.py``).
     """
     async with engine.connect() as conn:
         return await project_batch(
-            conn, batch_size=batch_size, handler=handler, max_attempts=max_attempts
+            conn,
+            batch_size=batch_size,
+            handler=handler,
+            max_attempts=max_attempts,
+            reemit=reemit,
         )
 
 
@@ -213,6 +241,7 @@ async def project_batch(
     batch_size: int = DEFAULT_BATCH_SIZE,
     handler: Handler = record_event,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    reemit: bool = False,
 ) -> BatchResult:
     """``process_batch`` sur cette connexion, dans une transaction qu'elle ouvre.
 
@@ -239,6 +268,7 @@ async def project_batch(
                 handler=handler,
                 max_attempts=max_attempts,
                 retrying=retried < MAX_BATCH_RETRIES,
+                reemit=reemit,
             )
         except DBAPIError as error:
             if retried >= MAX_BATCH_RETRIES or not transient(error):
@@ -266,6 +296,7 @@ async def _attempt(
     handler: Handler,
     max_attempts: int,
     retrying: bool,
+    reemit: bool,
 ) -> BatchResult:
     """Réclame un lot, le projette et le retire de la file, dans une transaction."""
     async with conn.begin():
@@ -315,7 +346,7 @@ async def _attempt(
                 },
             )
         if done:
-            await conn.execute(_DONE, {"ids": done})
+            await conn.execute(_DONE_AND_REEMITTED if reemit else _DONE, {"ids": done})
     return BatchResult(processed=len(done), postponed=postponed, dead_lettered=buried)
 
 
@@ -418,6 +449,7 @@ async def run_worker(
     maintenance_every: timedelta = DEFAULT_MAINTENANCE_EVERY,
     analysis_timeout: timedelta = DEFAULT_ANALYSIS_TIMEOUT,
     clock: Callable[[], datetime] = _now,
+    reemission: Reemission | None = None,
 ) -> None:
     """Traite la file jusqu'à ce que ``stop`` soit levé.
 
@@ -432,8 +464,58 @@ async def run_worker(
     Au démarrage, puis toutes les ``maintenance_every``, il entretient les
     partitions mensuelles selon ``retention`` : création à l'avance, purge,
     contrôle.
+
+    Avec ``reemission``, les événements projetés entrent dans la file de
+    réémission, et une seconde boucle, à côté, les envoie à la destination
+    (``run_reemission``) : une destination en panne ne retarde pas la projection.
     """
     checked_batch_size(batch_size)
+    reemitting = (
+        None
+        if reemission is None
+        else asyncio.create_task(run_reemission(engine, stop, reemission))
+    )
+    try:
+        await _project_loop(
+            engine,
+            stop,
+            batch_size=batch_size,
+            idle_delay=idle_delay,
+            error_delay=error_delay,
+            handler=handler,
+            max_attempts=max_attempts,
+            silence_threshold=silence_threshold,
+            silence_every=silence_every,
+            retention=retention,
+            maintenance_every=maintenance_every,
+            analysis_timeout=analysis_timeout,
+            clock=clock,
+            reemit=reemission is not None,
+        )
+    finally:
+        if reemitting is not None:
+            if not stop.is_set():
+                reemitting.cancel()
+            await asyncio.gather(reemitting, return_exceptions=True)
+
+
+async def _project_loop(
+    engine: AsyncEngine,
+    stop: asyncio.Event,
+    *,
+    batch_size: int,
+    idle_delay: float,
+    error_delay: float,
+    handler: Handler,
+    max_attempts: int,
+    silence_threshold: timedelta,
+    silence_every: timedelta,
+    retention: Retention,
+    maintenance_every: timedelta,
+    analysis_timeout: timedelta,
+    clock: Callable[[], datetime],
+    reemit: bool,
+) -> None:
     next_check: datetime | None = None
     next_maintenance: datetime | None = None
     while not stop.is_set():
@@ -455,7 +537,11 @@ async def run_worker(
         delay = 0.0
         try:
             result = await process_batch(
-                engine, batch_size=batch_size, handler=handler, max_attempts=max_attempts
+                engine,
+                batch_size=batch_size,
+                handler=handler,
+                max_attempts=max_attempts,
+                reemit=reemit,
             )
             analysed = await process_analysis(engine, timeout=analysis_timeout)
         except Exception as error:

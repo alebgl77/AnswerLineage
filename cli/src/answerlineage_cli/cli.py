@@ -375,7 +375,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="vérifie chaque composant d'une installation et liste les anomalies",
         description=(
             "Vérifie l'API, l'adresse, la base et ses migrations, la file d'ingestion, la file "
-            "de rebut, les émetteurs, les partitions et l'explorateur. Codes de sortie : 0 aucune "
+            "de rebut, les émetteurs, les partitions, la réémission et l'explorateur. Codes de "
+            "sortie : 0 aucune "
             "anomalie ; "
             "1 au moins une anomalie ; 2 usage."
         ),
@@ -387,6 +388,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "âge du plus ancien événement en attente au-delà duquel la file est en retard, "
             f"en secondes, {doctor.DEFAULT_QUEUE_MAX_AGE} par défaut"
+        ),
+    )
+    check.add_argument(
+        "--reemission-max-age",
+        type=_bounded(0, doctor.MAX_QUEUE_MAX_AGE, "de secondes"),
+        default=doctor.DEFAULT_REEMISSION_MAX_AGE,
+        help=(
+            "âge du plus ancien événement à réémettre au-delà duquel la réémission est en "
+            f"retard, en secondes, {doctor.DEFAULT_REEMISSION_MAX_AGE} par défaut"
         ),
     )
     check.add_argument("--format", choices=("text", "json"), default="text")
@@ -532,7 +542,9 @@ def _dead_letters(api: Api, args: argparse.Namespace) -> Exit:
 
 
 def _doctor(api: Api, args: argparse.Namespace) -> Exit:
-    checks = doctor.diagnose(api, queue_max_age=args.queue_max_age)
+    checks = doctor.diagnose(
+        api, queue_max_age=args.queue_max_age, reemission_max_age=args.reemission_max_age
+    )
     render = doctor.render_json if args.format == "json" else doctor.render_text
     out(render(api.base, checks))
     return Exit.ANOMALY if doctor.anomalies(checks) else Exit.OK

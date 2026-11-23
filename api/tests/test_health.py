@@ -1,4 +1,5 @@
-"""L'état de l'installation : base, migrations, file d'ingestion, rebut, émetteurs, partitions.
+"""L'état de l'installation : base, migrations, file d'ingestion, rebut, émetteurs, partitions,
+réémission.
 
 La route sert la vérification d'une installation (``answerlineage doctor``) :
 elle dit des états et des décomptes bornés, jamais un détail interne.
@@ -77,6 +78,15 @@ async def test_a_sound_installation_says_so_with_empty_tallies(engine: AsyncEngi
         "dead_letters": {"events": 0, "lower_bound": False, "oldest_age_seconds": None},
         "emitters": {"known": 0, "muted": 0, "lower_bound": False},
         "partitions": {"missing": 0, "lower_bound": False},
+        "reemission": {
+            "queued": 0,
+            "retrying": 0,
+            "lower_bound": False,
+            "oldest_age_seconds": None,
+            "sent": 0,
+            "lost": 0,
+            "rejected": 0,
+        },
     }
 
 
@@ -89,6 +99,7 @@ async def test_a_database_without_schema_is_not_migrated(bare: AsyncEngine) -> N
         "dead_letters": None,
         "emitters": None,
         "partitions": None,
+        "reemission": None,
     }
 
 
@@ -108,6 +119,7 @@ async def test_a_schema_with_migrations_left_to_apply_is_behind(
     body = await state(bare)
     assert (body["migrations"], body["queue"], body["emitters"]) == ("behind", None, None)
     assert body["dead_letters"] is None
+    assert body["reemission"] is None
 
 
 async def test_a_revision_the_api_does_not_know_is_reported_without_being_cited(
@@ -141,6 +153,7 @@ async def test_an_unreachable_database_is_unavailable_and_nothing_else_is_said()
         "dead_letters": None,
         "emitters": None,
         "partitions": None,
+        "reemission": None,
     }
     assert "canari" not in response.text
     assert str(port) not in response.text
@@ -257,6 +270,60 @@ async def test_missing_partitions_signalled_by_the_workers_are_counted(engine: A
             text("INSERT INTO partition_alert VALUES ('coverage_report', '2030-01-01', now())")
         )
     assert (await state(engine))["partitions"] == {"missing": 1, "lower_bound": False}
+
+
+async def test_the_reemission_says_what_waits_since_when_and_what_left_or_was_lost(
+    engine: AsyncEngine,
+) -> None:
+    async with engine.begin() as conn:
+        for rank in range(3):
+            await conn.execute(
+                text(
+                    "INSERT INTO reemission_queue (event_id, recorded_month, enqueued_at,"
+                    " attempts, last_error)"
+                    " VALUES (:event_id, '2026-11-01', now() - make_interval(hours => :rank),"
+                    " :attempts, :error)"
+                ),
+                {
+                    "event_id": f"{rank:064x}",
+                    "rank": rank,
+                    "attempts": rank,
+                    "error": "HTTP 503" if rank else None,
+                },
+            )
+        await conn.execute(
+            text("INSERT INTO reemission_stats (sent, rejected, dropped) VALUES (12, 2, 5)")
+        )
+    reemission = (await state(engine))["reemission"]
+    oldest = reemission.pop("oldest_age_seconds")
+    assert 7200 <= oldest < 7260
+    assert reemission == {
+        "queued": 3,
+        "retrying": 2,
+        "lower_bound": False,
+        "sent": 12,
+        "lost": 7,
+        "rejected": 2,
+    }
+
+
+async def test_the_reemission_count_stops_at_its_bound_and_says_so(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(health, "COUNT_LIMIT", 2)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO reemission_queue (event_id, recorded_month)"
+                " SELECT md5(n::text) || md5(n::text), '2026-11-01' FROM generate_series(1, 3) n"
+            )
+        )
+    reemission = (await state(engine))["reemission"]
+    assert (reemission["queued"], reemission["retrying"], reemission["lower_bound"]) == (
+        2,
+        0,
+        True,
+    )
 
 
 async def test_the_route_answers_only_an_expected_host(engine: AsyncEngine) -> None:

@@ -28,6 +28,8 @@ Les onze tables d'`agent` à `delivery_recipient` forment le graphe (`schema.GRA
 | `event_raw` | empreinte de l'événement | Événement OpenLineage reçu tel quel, rejouable |
 | `ingest_queue` | événement | File de traitement : événements à projeter dans le graphe, leurs essais en échec |
 | `dead_letter` | événement | File de rebut : événements que la projection n'a pas pu intégrer, leur émetteur et le motif de l'échec |
+| `reemission_queue` | événement | File de réémission : événements projetés qui attendent d'être envoyés au consommateur OpenLineage externe, leurs envois en échec |
+| `reemission_stats` | une seule ligne | Événements réémis, refusés par la destination et abandonnés, depuis la mise en service |
 | `ingest_duplicate` | émetteur et jour | Nombre d'événements reçus en double, par émetteur et par jour UTC |
 | `coverage_report` | émetteur, début et fin de fenêtre | Relevé de couverture : appels vus, événements émis et perdus, requêtes non inspectées |
 | `coverage_emitter` | émetteur | Émetteur connu : réception de son dernier relevé, silence signalé |
@@ -151,6 +153,20 @@ Un événement que la projection n'a pas pu intégrer au graphe quitte `ingest_q
 `dead_letter.emitter` est l'émetteur d'`event_raw`, sous sa forme normalisée : la même définition que le compteur de doublons et la couverture. `reason` est un code, jamais le message d'une exception ; ajouter un motif demande une révision de la base, qui étend sa contrainte. Un index range le rebut par heure du dernier échec, pour ses pages ; un autre par émetteur et par motif, pour ses décomptes.
 
 La migration `0011` crée la table et ajoute `first_failed_at` à la file. Un événement déjà remis à plus tard n'avait pas d'heure de premier échec : il prend son heure de mise en file, la plus ancienne possible. La descente remet en file les événements du rebut, avec leurs essais et leur motif pour dernière erreur, avant de retirer la table : aucun n'est perdu.
+
+## File de réémission
+
+Quand les workers ont une destination de [réémission](reemission.md), un événement que la projection intègre au graphe quitte `ingest_queue` pour `reemission_queue`, dans la transaction du lot ; il en sort dans la transaction qui enregistre l'issue de son envoi, avec les compteurs de `reemission_stats`. Comme la file de traitement, la file de réémission désigne l'événement brut par son identifiant et son mois de réception, sans clé étrangère ni copie ; la purge retire les événements du mois qu'elle supprime, et les compte perdus.
+
+| Table | Contraintes |
+| --- | --- |
+| `ingest_queue` | `reemit` : vrai pour un événement jamais entré au graphe, qui partira une fois projeté ; la reconstruction du graphe remet les événements en file à faux |
+| `reemission_queue` | Un événement une fois (`uq_reemission_queue_event_id`). Des essais positifs (`ck_reemission_queue_attempts`) ; la classe du dernier échec, ou le statut de la réponse, dès le premier échec, et seulement alors (`ck_reemission_queue_last_error`) |
+| `reemission_stats` | Une seule ligne (`ck_reemission_stats_single_row`), des compteurs positifs (`ck_reemission_stats_counts`) |
+
+Un index range la file par heure de mise en file, pour son âge et sa borne d'âge ; un index partiel tient les événements en reprise. `last_error` est un code, `HTTP 503` ou `ConnectionRefusedError`, jamais un message.
+
+La migration `0013` crée les deux tables et la colonne ; sa descente les retire : ce qui attendait d'être réémis ne l'est pas, le graphe et la file de traitement ne changent pas.
 
 ## Incidents
 

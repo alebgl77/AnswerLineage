@@ -17,7 +17,10 @@ rangés à côté du graphe (``incident`` et les tables qui en dépendent) : des
 identifiants, des heures et des décomptes, jamais de texte libre.
 
 Les événements que la projection n'a pas pu intégrer au graphe attendent dans
-la file de rebut (``dead_letter``), qui les désigne sans les recopier.
+la file de rebut (``dead_letter``), qui les désigne sans les recopier. Ceux
+qu'elle a intégrés attendent d'être réémis vers un consommateur OpenLineage
+externe dans la file de réémission (``reemission_queue``), quand les workers en
+ont un ; ``reemission_stats`` compte ce qui est parti et ce qui s'est perdu.
 
 Les tables du graphe (``GRAPH``) se déduisent toutes des événements bruts : la
 reconstruction les vide et les rejoue, et garde la trace de chaque
@@ -366,6 +369,10 @@ ingest_queue = Table(
     Column("last_error", Text),
     # Premier essai en échec : nul tant qu'aucun n'a échoué.
     Column("first_failed_at", DateTime(timezone=True)),
+    # Vrai quand l'événement n'est jamais entré au graphe : projeté, il part vers la
+    # destination de la réémission, si les workers en ont une. Faux pour un événement
+    # que la reconstruction du graphe remet en file : il a déjà été projeté.
+    Column("reemit", Boolean, nullable=False, server_default=text("true")),
     UniqueConstraint("event_id"),
     CheckConstraint("(attempts = 0) = (first_failed_at IS NULL)", name="first_failure"),
     Index(None, "available_at", "id"),
@@ -394,6 +401,52 @@ dead_letter = Table(
     Index(None, "last_failed_at", "event_id"),
     # Les décomptes par motif d'un émetteur.
     Index(None, "emitter", "reason"),
+)
+
+# File de réémission : les événements projetés, à envoyer au consommateur
+# OpenLineage externe que règlent les workers. Un worker y met un événement dans
+# la transaction qui le projette et le retire de la file de traitement ; un autre
+# l'en retire dans celle qui enregistre l'issue de son envoi. Comme la file, elle
+# désigne l'événement brut sans le recopier, sans clé étrangère, et la purge
+# retire les événements du mois qu'elle supprime. Bornée en âge et en nombre par
+# les workers : ce qui déborde est compté dans ``reemission_stats``.
+reemission_queue = Table(
+    "reemission_queue",
+    metadata,
+    Column("id", BigInteger, Identity(always=True), primary_key=True),
+    Column("event_id", Text, nullable=False),
+    Column("recorded_month", Date, nullable=False),
+    Column("enqueued_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    # Envois en échec : la destination n'a pas dit si elle avait pris l'événement.
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    # Classe de la dernière erreur, ou statut de la réponse : jamais un message.
+    Column("last_error", Text),
+    UniqueConstraint("event_id"),
+    CheckConstraint("attempts >= 0", name="attempts"),
+    CheckConstraint("(attempts = 0) = (last_error IS NULL)", name="last_error"),
+    # Les plus anciens : l'âge de la file, et ce qui dépasse sa borne d'âge.
+    Index(None, "enqueued_at"),
+)
+# Les événements en reprise, que la route de santé compte.
+Index(
+    "ix_reemission_queue_retrying",
+    reemission_queue.c.id,
+    postgresql_where=reemission_queue.c.attempts > 0,
+)
+
+# Compteurs de la réémission depuis la mise en service, en une seule ligne :
+# événements remis à la destination, refusés par elle, abandonnés par la borne
+# de la file ou par la purge. Ils grandissent dans la transaction qui retire les
+# événements de la file : la file et ses compteurs s'accordent.
+reemission_stats = Table(
+    "reemission_stats",
+    metadata,
+    Column("id", Boolean, primary_key=True, server_default=text("true")),
+    Column("sent", BigInteger, nullable=False, server_default="0"),
+    Column("rejected", BigInteger, nullable=False, server_default="0"),
+    Column("dropped", BigInteger, nullable=False, server_default="0"),
+    CheckConstraint("id", name="single_row"),
+    CheckConstraint("sent >= 0 AND rejected >= 0 AND dropped >= 0", name="counts"),
 )
 
 # Doublons reçus, par émetteur et par jour (date UTC de réception). Une ligne

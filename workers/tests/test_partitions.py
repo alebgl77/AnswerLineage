@@ -319,6 +319,28 @@ async def test_dead_letters_of_a_purged_month_leave_the_dead_letters(
     assert "event_raw_2025_01 purgée : 1 événement(s) retiré(s) du rebut" in caplog.text
 
 
+async def test_events_of_a_purged_month_waiting_to_be_reemitted_are_counted_lost(
+    engine: AsyncEngine, caplog: pytest.LogCaptureFixture
+) -> None:
+    await maintain_partitions(engine, now=at(2025, 1, 10), retention=THIRTEEN)
+    await received_in(engine, at(2025, 1, 20))
+    await execute(
+        engine,
+        "INSERT INTO reemission_queue (event_id, recorded_month)"
+        " VALUES ('2025-01-0', '2025-01-01')",
+    )
+    with caplog.at_level(logging.WARNING, logger="answerlineage_workers"):
+        await maintain_partitions(engine, now=at(2026, 3, 15), retention=THIRTEEN)
+    async with engine.connect() as conn:
+        assert (await conn.execute(text("SELECT count(*) FROM reemission_queue"))).scalar_one() == 0
+        lost = await conn.execute(text("SELECT sent, rejected, dropped FROM reemission_stats"))
+        assert tuple(lost.one()) == (0, 0, 1)
+    assert (
+        "event_raw_2025_01 purgée : 1 événement(s) jamais réémis retiré(s) de la file de"
+        " réémission, comptés perdus." in caplog.text
+    )
+
+
 @pytest.mark.parametrize(
     ("months", "ahead"), [(0, 2), (-1, 2), (3, 4), (13, 1), (13, 25), (1201, 2)]
 )

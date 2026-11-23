@@ -11,6 +11,14 @@ partitions mensuelles : ``--partitions-ahead`` mois créés à l'avance,
 (nulle, négative, plus courte que l'avance), un lot ou un nombre d'essais hors
 de leurs bornes empêchent le worker de démarrer.
 
+Avec une destination de réémission (``--reemit-url`` ou
+``ANSWERLINEAGE_REEMIT_URL``, et ``ANSWERLINEAGE_REEMIT_AUTHORIZATION`` pour son
+en-tête d'authentification), les événements projetés partent vers un
+consommateur OpenLineage externe (``reemission.py``), par une file bornée à
+``--reemit-max-events`` événements et ``--reemit-max-age-hours`` heures. Une
+destination refusée (adresse de métadonnées, ``http`` hors de la boucle locale,
+identifiant dans l'adresse) empêche le worker de démarrer, sans être citée.
+
 ``answerlineage-worker rebuild`` reconstruit le graphe depuis les événements
 bruts (``rebuild.py``). Sans ``--yes``, il n'en donne qu'un aperçu et ne change
 rien ; quand des lignes du graphe, plus anciennes que le premier événement
@@ -24,9 +32,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import timedelta
 
@@ -36,6 +45,15 @@ from answerlineage_api.store.engine import (
     DatabaseConfigurationError,
     create_engine,
     database_url_from_environment,
+)
+from answerlineage_workers.destination import (
+    AUTHORIZATION_VARIABLE,
+    URL_VARIABLE,
+    DestinationError,
+    Resolver,
+    check_resolution,
+    parse_destination,
+    resolve,
 )
 from answerlineage_workers.partitions import (
     DEFAULT_RETENTION,
@@ -57,6 +75,13 @@ from answerlineage_workers.rebuild import (
     assess,
     rebuild_graph,
 )
+from answerlineage_workers.reemission import (
+    DEFAULT_MAX_AGE,
+    DEFAULT_MAX_EVENTS,
+    MAX_MAX_AGE,
+    MAX_MAX_EVENTS,
+    Reemission,
+)
 from answerlineage_workers.silence import DEFAULT_SILENCE
 
 logger = logging.getLogger("answerlineage_workers")
@@ -75,12 +100,47 @@ def _stopped_by_signals(stop: asyncio.Event) -> Iterator[None]:
             loop.remove_signal_handler(signum)
 
 
+class ReemissionConfigurationError(ValueError):
+    """Le réglage de la réémission est refusé. Le message est un gabarit fixe."""
+
+
+def reemission_from(
+    url: str | None,
+    environ: Mapping[str, str],
+    *,
+    max_events: int = DEFAULT_MAX_EVENTS,
+    max_age: timedelta = DEFAULT_MAX_AGE,
+    resolver: Resolver = resolve,
+) -> Reemission | None:
+    """La destination réglée par l'exploitant, contrôlée ; aucune sans adresse.
+
+    L'adresse vient de l'option, sinon de ``ANSWERLINEAGE_REEMIT_URL`` ; l'en-tête
+    d'authentification, de ``ANSWERLINEAGE_REEMIT_AUTHORIZATION`` seulement :
+    une option se lit dans la liste des processus. Une variable vide ne règle
+    rien.
+    """
+    url = url or environ.get(URL_VARIABLE) or None
+    if url is None:
+        if environ.get(AUTHORIZATION_VARIABLE):
+            raise ReemissionConfigurationError(
+                f"{AUTHORIZATION_VARIABLE} est réglée sans destination de réémission."
+            )
+        return None
+    try:
+        destination = parse_destination(url, environ.get(AUTHORIZATION_VARIABLE) or None)
+        check_resolution(destination, resolver)
+    except DestinationError as error:
+        raise ReemissionConfigurationError(str(error)) from None
+    return Reemission(destination, max_events=max_events, max_age=max_age)
+
+
 async def serve(
     batch_size: int,
     stop: asyncio.Event | None = None,
     silence_threshold: timedelta = DEFAULT_SILENCE,
     retention: Retention = DEFAULT_RETENTION,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    reemission: Reemission | None = None,
 ) -> None:
     engine = create_engine(database_url_from_environment())
     stop = stop or asyncio.Event()
@@ -94,6 +154,7 @@ async def serve(
                 silence_threshold=silence_threshold,
                 retention=retention,
                 max_attempts=max_attempts,
+                reemission=reemission,
             )
     finally:
         await engine.dispose()
@@ -106,6 +167,7 @@ async def rebuild(
     accept_loss: bool = False,
     batch_size: int = DEFAULT_BATCH_SIZE,
     stop: asyncio.Event | None = None,
+    reemit: bool = False,
 ) -> int:
     """Reconstruit le graphe, ou n'en donne que l'aperçu sans ``confirmed``.
 
@@ -123,7 +185,11 @@ async def rebuild(
             return 1
         with _stopped_by_signals(stop):
             report = await rebuild_graph(
-                engine, accept_loss=accept_loss, batch_size=batch_size, stop=stop
+                engine,
+                accept_loss=accept_loss,
+                batch_size=batch_size,
+                stop=stop,
+                reemit=reemit,
             )
     except RebuildRefusedError as refusal:
         logger.error("%s", refusal)
@@ -162,6 +228,19 @@ def _attempts(value: str) -> int:
     if not value.isdigit() or not 1 <= int(value) <= MAX_MAX_ATTEMPTS:
         raise argparse.ArgumentTypeError(f"un nombre entier d'essais, de 1 à {MAX_MAX_ATTEMPTS}")
     return int(value)
+
+
+def _reemit_events(value: str) -> int:
+    if not value.isdigit() or not 1 <= int(value) <= MAX_MAX_EVENTS:
+        raise argparse.ArgumentTypeError(f"un nombre entier d'événements, de 1 à {MAX_MAX_EVENTS}")
+    return int(value)
+
+
+def _reemit_hours(value: str) -> timedelta:
+    most = MAX_MAX_AGE // timedelta(hours=1)
+    if not value.isdigit() or not 1 <= int(value) <= most:
+        raise argparse.ArgumentTypeError(f"un nombre entier d'heures, de 1 à {most}")
+    return timedelta(hours=int(value))
 
 
 def _batch_size(value: str) -> int:
@@ -211,6 +290,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"({DEFAULT_MAX_ATTEMPTS} par défaut)"
         ),
     )
+    parser.add_argument(
+        "--reemit-url",
+        metavar="URL",
+        help=(
+            "point d'entrée OpenLineage d'un consommateur externe où réémettre les événements"
+            f" projetés, en https ({URL_VARIABLE} par défaut ; aucun sinon). L'en-tête"
+            f" d'authentification se lit de {AUTHORIZATION_VARIABLE}"
+        ),
+    )
+    parser.add_argument(
+        "--reemit-max-events",
+        type=_reemit_events,
+        default=DEFAULT_MAX_EVENTS,
+        help=(
+            "événements gardés au plus dans la file de réémission ; au-delà, les plus anciens"
+            f" sont perdus ({DEFAULT_MAX_EVENTS} par défaut)"
+        ),
+    )
+    parser.add_argument(
+        "--reemit-max-age-hours",
+        type=_reemit_hours,
+        default=DEFAULT_MAX_AGE,
+        help=(
+            "heures pendant lesquelles un événement attend au plus d'être réémis"
+            f" ({DEFAULT_MAX_AGE // timedelta(hours=1)} par défaut)"
+        ),
+    )
     commands = parser.add_subparsers(dest="command", title="sous-commandes")
     rebuilding = commands.add_parser(
         "rebuild",
@@ -246,6 +352,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         retention = Retention(months=args.retention_months, ahead=args.partitions_ahead)
     except ValueError as error:
         parser.error(str(error))
+    try:
+        reemission = reemission_from(
+            args.reemit_url,
+            os.environ,
+            max_events=args.reemit_max_events,
+            max_age=args.reemit_max_age_hours,
+        )
+    except ReemissionConfigurationError as error:
+        print(f"Configuration invalide : {error}", file=sys.stderr)
+        return 2
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     if args.command == "rebuild":
         try:
@@ -254,6 +370,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     confirmed=args.yes,
                     accept_loss=args.accept_loss,
                     batch_size=args.rebuild_batch_size,
+                    reemit=reemission is not None,
                 )
             )
         except DatabaseConfigurationError as error:
@@ -266,6 +383,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 silence_threshold=args.silence_minutes,
                 retention=retention,
                 max_attempts=args.max_attempts,
+                reemission=reemission,
             )
         )
     except DatabaseConfigurationError as error:

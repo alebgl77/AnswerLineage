@@ -215,6 +215,15 @@ def health(**changes: Any) -> dict[str, Any]:
         "dead_letters": {"events": 0, "lower_bound": False, "oldest_age_seconds": None},
         "emitters": {"known": 2, "muted": 0, "lower_bound": False},
         "partitions": {"missing": 0, "lower_bound": False},
+        "reemission": {
+            "queued": 0,
+            "retrying": 0,
+            "lower_bound": False,
+            "oldest_age_seconds": None,
+            "sent": 40,
+            "lost": 0,
+            "rejected": 0,
+        },
     }
     state.update(changes)
     return state

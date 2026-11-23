@@ -105,6 +105,8 @@ async def test_a_sound_installation_has_no_anomaly(
         "dead_letters": "ok",
         "emitters": "ok",
         "partitions": "ok",
+        # Sans destination réglée aux workers, rien n'est réémis : rien à juger.
+        "reemission": "not_checked",
         "explorer": "ok",
         "workers": "not_checked",
     }
@@ -220,3 +222,25 @@ async def test_a_missing_partition_is_named(
         code, report = await doctor(monkeypatch, url)
     assert code == Exit.ANOMALY
     only(report, "partitions_missing")
+
+
+async def test_a_reemission_left_behind_is_named(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine, explorer: Path
+) -> None:
+    async with served(engine, explorer) as url:
+        await feed(url)
+        # Un worker qui a une destination projette ; la destination ne prend rien depuis une heure.
+        while not (await process_batch(engine, reemit=True)).empty:
+            pass
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE reemission_queue SET enqueued_at = now() - interval '1 hour'")
+            )
+        code, report = await doctor(monkeypatch, url)
+    assert code == Exit.ANOMALY
+    only(report, "reemission_lagging")
+    (late,) = [check for check in report["checks"] if check["check"] == "reemission"]
+    assert late["message"].startswith(
+        "La réémission vers le consommateur OpenLineage externe est en retard : 1 événement à"
+        " réémettre, le plus ancien depuis 1 h 00 min"
+    )

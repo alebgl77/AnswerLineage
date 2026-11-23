@@ -3,8 +3,9 @@
 Les vérifications, dans l'ordre : l'API répond et sa version ; elle accepte
 l'adresse utilisée (en-têtes Host et Origin) ; elle lit sa base ; le schéma
 est à jour ; la file d'ingestion avance ; aucun événement n'attend au rebut ;
-aucun émetteur n'est muet ; aucune partition mensuelle ne manque ;
-l'explorateur est servi. Les six du milieu viennent de la route
+aucun émetteur n'est muet ; aucune partition mensuelle ne manque ; la
+réémission vers un consommateur OpenLineage externe n'est pas en retard ;
+l'explorateur est servi. Les sept du milieu viennent de la route
 ``GET /api/v1/health``.
 
 Chaque anomalie a un code stable, un message et un remède écrits d'avance :
@@ -29,6 +30,7 @@ MAX_HEALTH_BYTES: Final = 64 * 1024
 MAX_PAGE_BYTES: Final = 1024 * 1024
 DEFAULT_QUEUE_MAX_AGE: Final = 300
 MAX_QUEUE_MAX_AGE: Final = 7 * 24 * 3600
+DEFAULT_REEMISSION_MAX_AGE: Final = 300
 # La version majeure de l'API que la commande sait lire.
 API_MAJOR: Final = 1
 
@@ -44,6 +46,7 @@ CHECKS: Final = (
     "dead_letters",
     "emitters",
     "partitions",
+    "reemission",
     "explorer",
     "workers",
 )
@@ -56,6 +59,7 @@ _LABELS: Final = {
     "dead_letters": "Rebut",
     "emitters": "Émetteurs",
     "partitions": "Partitions",
+    "reemission": "Réémission",
     "explorer": "Explorateur",
     "workers": "Workers",
 }
@@ -163,6 +167,15 @@ ANOMALIES: Final[Mapping[str, Anomaly]] = {
         "Vérifier qu'un worker tourne : il crée les partitions chaque heure, et son journal "
         "nomme la table et le mois qui manquent.",
     ),
+    "reemission_lagging": Anomaly(
+        "reemission",
+        "La réémission vers le consommateur OpenLineage externe est en retard : {queued}, le "
+        "plus ancien depuis {age} (seuil : {threshold}) ; {lost} depuis la mise en service.",
+        "Vérifier que la destination répond et que les workers la joignent : leur journal donne "
+        "la classe de l'échec ou le statut de la réponse. Vérifier ANSWERLINEAGE_REEMIT_URL et "
+        "ANSWERLINEAGE_REEMIT_AUTHORIZATION dans l'environnement des workers, et qu'un worker "
+        "tourne avec ce réglage. Au-delà des bornes de la file, les plus anciens sont perdus.",
+    ),
     "explorer_missing": Anomaly(
         "explorer",
         "L'explorateur n'est pas servi à cette adresse.",
@@ -227,6 +240,8 @@ class _Tallies:
     dead_letters: dict[str, Any]
     emitters: dict[str, Any]
     partitions: dict[str, Any]
+    # Absente d'une API qui ne la publie pas encore.
+    reemission: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -263,7 +278,7 @@ def parse_health(document: Any) -> _Health:
         "emitters",
         "partitions",
     )
-    found = shape.obj(document, "", fields)
+    found = shape.obj(document, "", fields, ("reemission",))
     version = shape.version(found["api_version"], "/api_version")
     database = shape.choice(found["database"], "/database", DATABASE_STATES)
     migrations = found["migrations"]
@@ -275,6 +290,11 @@ def parse_health(document: Any) -> _Health:
     )
     emitters = _tally(found["emitters"], "/emitters", ("known", "muted", "lower_bound"))
     partitions = _tally(found["partitions"], "/partitions", ("missing", "lower_bound"))
+    reemission = _tally(
+        found.get("reemission"),
+        "/reemission",
+        ("queued", "retrying", "lower_bound", "oldest_age_seconds", "sent", "lost", "rejected"),
+    )
     # Une base disponible a un état de ses migrations ; un schéma à jour, ses décomptes.
     if (database == "available") != (migrations is not None):
         raise shape.fault("/migrations")
@@ -287,7 +307,17 @@ def parse_health(document: Any) -> _Health:
     # Le rebut a un plus ancien dès qu'il n'est pas vide, et seulement alors.
     if (buried["events"] == 0) != (buried["oldest_age_seconds"] is None):
         raise shape.fault("/dead_letters/oldest_age_seconds")
-    return _Health(version, database, migrations, _Tallies(queue, buried, emitters, partitions))
+    if "reemission" in found and reemission is None:
+        # Une API qui publie la réémission la donne dès que le schéma est à jour.
+        raise shape.fault("/reemission")
+    if reemission is not None:
+        if (reemission["queued"] == 0) != (reemission["oldest_age_seconds"] is None):
+            raise shape.fault("/reemission/oldest_age_seconds")
+        if reemission["rejected"] > reemission["lost"]:
+            raise shape.fault("/reemission/rejected")
+    return _Health(
+        version, database, migrations, _Tallies(queue, buried, emitters, partitions, reemission)
+    )
 
 
 def _refusal_code(received: Received) -> str | None:
@@ -320,7 +350,12 @@ class _Report:
         return [self.checks[name] for name in CHECKS]
 
 
-def diagnose(api: Api, *, queue_max_age: int = DEFAULT_QUEUE_MAX_AGE) -> list[Check]:
+def diagnose(
+    api: Api,
+    *,
+    queue_max_age: int = DEFAULT_QUEUE_MAX_AGE,
+    reemission_max_age: int = DEFAULT_REEMISSION_MAX_AGE,
+) -> list[Check]:
     report = _Report()
     try:
         received = api.get(
@@ -366,7 +401,7 @@ def diagnose(api: Api, *, queue_max_age: int = DEFAULT_QUEUE_MAX_AGE) -> list[Ch
 
     report.add(_ok("api", f"L'API répond : API {health.version}."))
     report.add(_ok("address", "L'API accepte cette adresse (en-têtes Host et Origin)."))
-    _installation(health, report, queue_max_age)
+    _installation(health, report, queue_max_age, reemission_max_age)
     _explorer(api, report)
     return report.finish(_unchecked_reason(health))
 
@@ -377,7 +412,9 @@ def _unchecked_reason(health: _Health) -> str:
     return "le schéma de la base n'est pas à jour."
 
 
-def _installation(health: _Health, report: _Report, queue_max_age: int) -> None:
+def _installation(
+    health: _Health, report: _Report, queue_max_age: int, reemission_max_age: int
+) -> None:
     if health.database != "available":
         report.add(_anomaly("database_unavailable"))
         return
@@ -410,6 +447,7 @@ def _installation(health: _Health, report: _Report, queue_max_age: int) -> None:
         report.add(_anomaly("partitions_missing", missing=_sentence(missing)))
     else:
         report.add(_ok("partitions", "Aucune partition mensuelle ne manque."))
+    report.add(_reemission(health.tallies.reemission, reemission_max_age))
 
 
 def _sentence(text: str) -> str:
@@ -455,6 +493,34 @@ def _emitters(emitters: Mapping[str, Any]) -> Check:
         return _anomaly("emitters_muted", muted=_sentence(muted))
     known = _plural(emitters["known"], "émetteur connu", "émetteurs connus", beyond=beyond)
     return _ok("emitters", f"{_sentence(known)}, aucun muet.")
+
+
+def _reemission(reemission: Mapping[str, Any] | None, max_age: int) -> Check:
+    if reemission is None:
+        return _unchecked("reemission", "l'API ne publie pas l'état de la réémission.")
+    if not (reemission["queued"] or reemission["sent"] or reemission["lost"]):
+        return _unchecked(
+            "reemission",
+            "aucun événement n'a été mis en file de réémission : sans destination réglée aux "
+            "workers, rien n'est réémis.",
+        )
+    beyond = reemission["lower_bound"]
+    queued = _plural(
+        reemission["queued"], "événement à réémettre", "événements à réémettre", beyond=beyond
+    )
+    lost = _plural(reemission["lost"], "perdu", "perdus")
+    age = reemission["oldest_age_seconds"]
+    if age is not None and age > max_age:
+        return _anomaly(
+            "reemission_lagging",
+            queued=queued,
+            age=duration(age),
+            threshold=duration(max_age),
+            lost=lost,
+        )
+    sent = _plural(reemission["sent"], "remis", "remis")
+    waiting = "file vide" if age is None else f"{queued}, le plus ancien depuis {duration(age)}"
+    return _ok("reemission", f"La réémission avance : {waiting} ; {sent}, {lost}.")
 
 
 def _explorer(api: Api, report: _Report) -> None:

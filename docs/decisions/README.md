@@ -26,6 +26,7 @@ Elles décrivent le code tel qu'il est : une décision qui n'est plus celle du c
 | [0013](0013-artefacts-signes-sans-cle.md) | Des artefacts signés sans clé et attestés | Une clé de signature stockée |
 | [0014](0014-regles-de-lecture-en-yaml.md) | Règles de lecture des outils non SQL : un fichier YAML déclaratif | Un format de la bibliothèque standard (TOML, JSON) |
 | [0015](0015-requete-etiquetee-par-le-run-sur-option.md) | La requête SQL relayée porte l'identifiant de run, sur option et par outil | Lire puis réécrire le corps ; un commentaire en fin de requête ; l'option pour tous les outils |
+| [0016](0016-reemission-a-la-projection.md) | Réémission vers un catalogue OpenLineage : mise en file à la projection, dans PostgreSQL | La mise en file à l'ingestion ; l'envoi depuis la projection ; une file en mémoire |
 
 ## Ajouter ou réviser une décision
 

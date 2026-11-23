@@ -47,6 +47,7 @@ def test_a_sound_installation_has_no_anomaly(monkeypatch: pytest.MonkeyPatch) ->
         "dead_letters": ("ok", None),
         "emitters": ("ok", None),
         "partitions": ("ok", None),
+        "reemission": ("ok", None),
         "explorer": ("ok", None),
         "workers": ("not_checked", None),
     }
@@ -146,12 +147,12 @@ def test_an_origin_refused_by_the_api_is_named_and_the_rest_is_checked(
 def test_a_database_or_schema_anomaly_leaves_what_depends_on_it_unchecked(
     monkeypatch: pytest.MonkeyPatch, changes: dict[str, Any], check: str, code: str
 ) -> None:
-    changes |= {"dead_letters": None, "emitters": None, "partitions": None}
+    changes |= {"dead_letters": None, "emitters": None, "partitions": None, "reemission": None}
     result = doctor(with_health(**changes), monkeypatch)
 
     found = statuses(result.out)
     assert found[check] == ("anomaly", code)
-    for later in ("queue", "dead_letters", "emitters", "partitions"):
+    for later in ("queue", "dead_letters", "emitters", "partitions", "reemission"):
         assert found[later] == ("not_checked", None)
     assert found["explorer"] == ("ok", None)
     assert json.loads(result.out)["anomalies"] == [code]
@@ -232,6 +233,81 @@ def test_without_any_emitter_their_silence_is_not_checked(monkeypatch: pytest.Mo
     assert statuses(result.out)["emitters"] == ("not_checked", None)
 
 
+def reemission(**changes: Any) -> dict[str, Any]:
+    state = {
+        "queued": 0,
+        "retrying": 0,
+        "lower_bound": False,
+        "oldest_age_seconds": None,
+        "sent": 0,
+        "lost": 0,
+        "rejected": 0,
+    }
+    return state | changes
+
+
+def test_a_reemission_behind_its_threshold_is_an_anomaly_with_its_remedy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = with_health(
+        reemission=reemission(
+            queued=12, retrying=12, oldest_age_seconds=900, sent=3, lost=2, rejected=1
+        )
+    )
+    result = doctor(api, monkeypatch)
+
+    assert result.code == Exit.ANOMALY
+    report = json.loads(result.out)
+    assert report["anomalies"] == ["reemission_lagging"]
+    (late,) = [item for item in report["checks"] if item["check"] == "reemission"]
+    assert late["message"] == (
+        "La réémission vers le consommateur OpenLineage externe est en retard : 12 événements à"
+        " réémettre, le plus ancien depuis 15 min (seuil : 5 min) ; 2 perdus depuis la mise en"
+        " service."
+    )
+    assert late["remedy"] == ANOMALIES["reemission_lagging"].remedy
+    assert "ANSWERLINEAGE_REEMIT_URL" in late["remedy"]
+    relaxed = doctor(api, monkeypatch, "--reemission-max-age", "1000")
+    assert relaxed.code == Exit.OK
+    (moving,) = [
+        item for item in json.loads(relaxed.out)["checks"] if item["check"] == "reemission"
+    ]
+    assert moving["status"] == "ok"
+    assert moving["message"] == (
+        "La réémission avance : 12 événements à réémettre, le plus ancien depuis 15 min ;"
+        " 3 remis, 2 perdus."
+    )
+
+
+def test_a_reemission_that_keeps_up_says_what_left_and_what_was_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = with_health(reemission=reemission(sent=1, lost=1, rejected=1))
+    (found,) = [
+        item
+        for item in json.loads(doctor(api, monkeypatch).out)["checks"]
+        if item["check"] == "reemission"
+    ]
+    assert (found["status"], found["message"]) == (
+        "ok",
+        "La réémission avance : file vide ; 1 remis, 1 perdu.",
+    )
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [health(reemission=reemission()), {k: v for k, v in health().items() if k != "reemission"}],
+    ids=["no-destination", "older-api"],
+)
+def test_a_reemission_that_cannot_be_judged_is_not_checked(
+    monkeypatch: pytest.MonkeyPatch, answer: dict[str, Any]
+) -> None:
+    api = FakeApi.sound().answer("/api/v1/health", answer)
+    result = doctor(api, monkeypatch)
+    assert result.code == Exit.OK
+    assert statuses(result.out)["reemission"] == ("not_checked", None)
+
+
 @pytest.mark.parametrize(
     "explorer",
     [
@@ -281,6 +357,11 @@ def test_an_address_that_does_not_serve_the_explorer_is_an_anomaly(
         httpx.Response(
             200, json={k: v for k, v in health().items() if k != "dead_letters"} | {CANARY: 1}
         ),
+        httpx.Response(200, json=health(reemission=None)),
+        httpx.Response(200, json=health(reemission=reemission(queued=CANARY))),
+        httpx.Response(200, json=health(reemission=reemission(oldest_age_seconds=5))),
+        httpx.Response(200, json=health(reemission=reemission(queued=1, oldest_age_seconds=None))),
+        httpx.Response(200, json=health(reemission=reemission(lost=1, rejected=2))),
         httpx.Response(500, json={"detail": CANARY}),
         httpx.Response(404, json={"detail": "Not Found"}),
         httpx.Response(403, json={"error": CANARY}),
@@ -296,6 +377,11 @@ def test_an_address_that_does_not_serve_the_explorer_is_an_anomaly(
         "dead-letters-empty-with-age",
         "dead-letters-null",
         "dead-letters-missing",
+        "reemission-null",
+        "reemission-text",
+        "reemission-empty-with-age",
+        "reemission-without-age",
+        "reemission-more-rejected-than-lost",
         "server-error",
         "no-route",
         "403",
@@ -334,5 +420,6 @@ def test_every_anomaly_has_a_message_and_a_remedy_written_in_advance() -> None:
 def test_a_usage_error_of_doctor_has_its_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
     api = FakeApi.sound()
     assert run(["doctor", "--queue-max-age", "-1"], api, monkeypatch).code == Exit.USAGE
+    assert run(["doctor", "--reemission-max-age", "un"], api, monkeypatch).code == Exit.USAGE
     assert run(["doctor", "--url", "ftp://127.0.0.1"], api, monkeypatch).code == Exit.USAGE
     assert api.requests == []

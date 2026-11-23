@@ -52,14 +52,20 @@ def _admin_execute(server: URL, statement: str) -> None:
 
 
 @pytest.fixture(scope="session")
-def postgres_server() -> Iterator[URL]:
+def postgres_image() -> str:
+    """L'image PostgreSQL des tests : celle que fixe l'environnement, sinon l'image épinglée."""
+    return os.environ.get("ANSWERLINEAGE_TEST_POSTGRES_IMAGE", DEFAULT_POSTGRES_IMAGE)
+
+
+@pytest.fixture(scope="session")
+def postgres_server(postgres_image: str) -> Iterator[URL]:
     """URL d'administration d'un serveur PostgreSQL jetable."""
     provided = os.environ.get("ANSWERLINEAGE_TEST_DATABASE_URL")
     if provided:
         yield make_url(provided).set(drivername="postgresql+psycopg")
         return
 
-    image = os.environ.get("ANSWERLINEAGE_TEST_POSTGRES_IMAGE", DEFAULT_POSTGRES_IMAGE)
+    image = postgres_image
     try:
         from testcontainers.community.postgres import PostgresContainer
 

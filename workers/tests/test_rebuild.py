@@ -810,9 +810,12 @@ def test_the_command_line_rebuilds_only_when_confirmed(monkeypatch: pytest.Monke
     assert cli.main(["rebuild"]) == 1
     assert cli.main(["rebuild", "--yes", "--accept-loss", "--batch-size", "500"]) == 0
     assert calls == [
-        {"confirmed": False, "accept_loss": False, "batch_size": 100},
-        {"confirmed": True, "accept_loss": True, "batch_size": 500},
+        {"confirmed": False, "accept_loss": False, "batch_size": 100, "reemit": False},
+        {"confirmed": True, "accept_loss": True, "batch_size": 500, "reemit": False},
     ]
+    # Avec une destination de réémission, ce qui n'était jamais entré au graphe partira.
+    assert cli.main(["--reemit-url", "http://127.0.0.1:5000/api/v1/lineage", "rebuild"]) == 1
+    assert calls[-1]["reemit"] is True
 
 
 @pytest.mark.parametrize("value", ["0", "10001", "-1", "cent"])

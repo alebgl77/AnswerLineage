@@ -21,7 +21,10 @@ Pas à pas (``rebuild_graph``) :
    lot par lot, par la projection des workers (``project_batch``), dans l'ordre
    de la file : les événements remis en file, puis ceux reçus depuis, que
    l'ingestion continue d'y mettre. Un événement que la projection refuse va au
-   rebut, comme avec un worker.
+   rebut, comme avec un worker. Quand les workers ont une destination de
+   réémission, un événement reçu depuis, ou qui attendait dans la file, y part
+   une fois projeté ; un événement remis en file par la reconstruction est
+   déjà parti : il ne repart pas.
 5. **La fin.** Quand la file a rendu au graphe tout ce qui y était au départ, la
    reconstruction est close, et la barrière rendue.
 
@@ -85,10 +88,11 @@ _EVENTS = text(
 _QUEUED = text("SELECT count(*) FROM ingest_queue")
 _DEAD_LETTERS = text("SELECT count(*) FROM dead_letter")
 # Dans l'ordre de réception ; un événement déjà en file y garde sa place et ses essais.
+# Un événement remis en file a déjà été projeté, et réémis : il ne repart pas.
 _REQUEUE = text(
     """
-    INSERT INTO ingest_queue (event_id, recorded_month)
-    SELECT e.event_id, e.recorded_month FROM event_raw e
+    INSERT INTO ingest_queue (event_id, recorded_month, reemit)
+    SELECT e.event_id, e.recorded_month, false FROM event_raw e
     WHERE NOT EXISTS (SELECT 1 FROM dead_letter d WHERE d.event_id = e.event_id)
     ORDER BY e.recorded_at, e.event_id
     ON CONFLICT (event_id) DO NOTHING
@@ -344,6 +348,7 @@ async def _project(
     handler: Handler,
     progress_every: timedelta,
     clock: Callable[[], float],
+    reemit: bool,
 ) -> RebuildReport:
     """Projette la file, lot par lot, jusqu'à ce qu'elle ait rendu ce qui y était au départ."""
     projected = buried = 0
@@ -353,7 +358,11 @@ async def _project(
             await _progress(conn, rebuild, projected, buried)
             return await _report(conn, rebuild, resumed=resumed)
         result = await project_batch(
-            conn, batch_size=batch_size, handler=handler, max_attempts=max_attempts
+            conn,
+            batch_size=batch_size,
+            handler=handler,
+            max_attempts=max_attempts,
+            reemit=reemit,
         )
         projected += result.processed
         buried += result.dead_lettered
@@ -380,8 +389,12 @@ async def rebuild_graph(
     handler: Handler = record_event,
     progress_every: timedelta = DEFAULT_PROGRESS_EVERY,
     clock: Callable[[], float] = time.monotonic,
+    reemit: bool = False,
 ) -> RebuildReport:
     """Vide le graphe et le rejoue depuis les événements bruts, ou reprend une reconstruction.
+
+    Avec ``reemit``, quand les workers ont une destination de réémission, les
+    événements qui n'étaient jamais entrés au graphe y partent une fois projetés.
 
     Lève ``RebuildRefusedError`` quand une autre reconstruction tourne, ou quand des
     lignes du graphe ne seraient pas rendues et que ``accept_loss`` est faux : rien
@@ -412,6 +425,7 @@ async def rebuild_graph(
                 handler=handler,
                 progress_every=progress_every,
                 clock=clock,
+                reemit=reemit,
             )
         finally:
             # La session se ferme avec ses verrous : la barrière est rendue aux workers,

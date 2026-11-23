@@ -7,7 +7,8 @@ boucle du worker les entretient au démarrage, puis toutes les heures :
 - **création à l'avance** : le mois courant et les ``ahead`` suivants (deux par
   défaut) ont leur partition, pour qu'aucune écriture n'échoue faute de partition ;
 - **purge** : une partition entièrement plus ancienne que la conservation (13 mois
-  par défaut) est supprimée, et ses événements quittent la file et le rebut.
+  par défaut) est supprimée, et ses événements quittent la file, le rebut et la
+  file de réémission, où ils sont comptés perdus.
   Jamais le mois courant : la conservation compte au moins deux mois, et la
   limite est prise sur la plus prudente de deux horloges, celle du worker et
   celle de la base ;
@@ -45,6 +46,7 @@ from answerlineage_api.store.partitions import (
     partition_name,
     shift,
 )
+from answerlineage_workers.reemission import COUNT
 
 logger = logging.getLogger("answerlineage_workers")
 
@@ -80,6 +82,7 @@ _BOUND = re.compile(
 _MONTHS = "(CAST(:lower AS date) IS NULL OR recorded_month >= :lower) AND recorded_month < :upper"
 _UNQUEUE = text(f"DELETE FROM ingest_queue WHERE {_MONTHS}")  # noqa: S608 — constant.
 _UNBURY = text(f"DELETE FROM dead_letter WHERE {_MONTHS}")  # noqa: S608 — constant.
+_UNSEND = text(f"DELETE FROM reemission_queue WHERE {_MONTHS}")  # noqa: S608 — constant.
 # L'état du contrôle : les épisodes en cours. Un épisode clos s'efface.
 _CLOSE = text(
     """
@@ -264,6 +267,15 @@ async def _purge(
                             "Partition %s purgée : %d événement(s) retiré(s) du rebut.",
                             partition.name,
                             buried.rowcount,
+                        )
+                    unsent = (await conn.execute(_UNSEND, months)).rowcount
+                    if unsent:
+                        await conn.execute(COUNT, {"sent": 0, "rejected": 0, "dropped": unsent})
+                        logger.warning(
+                            "Partition %s purgée : %d événement(s) jamais réémis retiré(s) de la"
+                            " file de réémission, comptés perdus.",
+                            partition.name,
+                            unsent,
                         )
                 await conn.execute(text(f"DROP TABLE {_quoted(partition.name)}"))
         except DBAPIError as error:

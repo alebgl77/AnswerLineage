@@ -2,7 +2,8 @@
 
 La route dit si l'API lit sa base, si le schéma est à jour, si la file
 d'ingestion avance, combien d'événements attendent au rebut, combien
-d'émetteurs sont muets et combien de partitions manquent. Elle reste petite et
+d'émetteurs sont muets, combien de partitions manquent, et où en est la
+réémission vers un consommateur OpenLineage externe. Elle reste petite et
 bornée : quelques requêtes indexées, des décomptes plafonnés, sous le délai
 maximal des lectures. Elle ne dit aucun détail interne : ni révision du
 schéma, ni adresse de la base, ni message d'erreur, seulement des états d'une
@@ -70,6 +71,21 @@ _MUTED = text(
     """
 )
 _MISSING = text("SELECT count(*) FROM (SELECT 1 FROM partition_alert LIMIT :limit) AS missing")
+_REEMIT_QUEUED = text(
+    "SELECT count(*) FROM (SELECT 1 FROM reemission_queue LIMIT :limit) AS queued"
+)
+# Par l'index partiel des événements en reprise.
+_REEMIT_RETRYING = text(
+    "SELECT count(*) FROM (SELECT 1 FROM reemission_queue WHERE attempts > 0 LIMIT :limit) AS r"
+)
+_REEMIT_OLDEST = text(
+    """
+    SELECT GREATEST(0, floor(EXTRACT(EPOCH FROM now() - enqueued_at)))::bigint
+    FROM reemission_queue ORDER BY enqueued_at LIMIT 1
+    """
+)
+# Une ligne au plus ; aucune tant que rien n'a été réémis ni perdu.
+_REEMIT_COUNTS = text("SELECT sent, rejected, dropped FROM reemission_stats")
 
 
 class QueueHealth(BaseModel):
@@ -125,6 +141,38 @@ class PartitionHealth(BaseModel):
     )
 
 
+class ReemissionHealth(BaseModel):
+    """La réémission vers un consommateur OpenLineage externe, que règlent les workers."""
+
+    queued: int = Field(description="Événements projetés qui attendent d'être réémis.")
+    retrying: int = Field(
+        description=(
+            "Parmi eux, ceux dont un envoi a échoué sans que la destination dise les avoir pris :"
+            " ils seront renvoyés."
+        )
+    )
+    lower_bound: bool = Field(
+        description=(
+            f"Vrai au-delà de {COUNT_LIMIT} événements : « queued » et « retrying » sont des"
+            " minimums."
+        )
+    )
+    oldest_age_seconds: int | None = Field(
+        description=(
+            "Depuis combien de secondes le plus ancien attend, à l'horloge de la base ;"
+            " nul quand la file est vide."
+        )
+    )
+    sent: int = Field(description="Événements remis à la destination depuis la mise en service.")
+    lost: int = Field(
+        description=(
+            "Événements perdus depuis la mise en service : refusés par la destination,"
+            " abandonnés par les bornes de la file ou par la purge."
+        )
+    )
+    rejected: int = Field(description="Parmi les perdus, ceux que la destination a refusés.")
+
+
 class Health(BaseModel):
     """L'état de l'installation : des états d'une liste fermée et des décomptes bornés."""
 
@@ -151,6 +199,11 @@ class Health(BaseModel):
     )
     partitions: PartitionHealth | None = Field(
         description="Les partitions manquantes ; nulles tant que le schéma n'est pas à jour."
+    )
+    reemission: ReemissionHealth | None = Field(
+        description=(
+            "La file de réémission et ses compteurs ; nuls tant que le schéma n'est pas à jour."
+        )
     )
 
 
@@ -212,6 +265,23 @@ async def _partitions(reader: Reader) -> PartitionHealth:
     return PartitionHealth(missing=missing, lower_bound=beyond)
 
 
+async def _reemission(reader: Reader) -> ReemissionHealth:
+    queued, beyond_queued = await _count(reader, _REEMIT_QUEUED)
+    retrying, beyond_retrying = await _count(reader, _REEMIT_RETRYING)
+    oldest = (await reader.execute(_REEMIT_OLDEST, {})).scalar_one_or_none()
+    counts = (await reader.execute(_REEMIT_COUNTS, {})).first()
+    sent, rejected, dropped = (0, 0, 0) if counts is None else tuple(counts)
+    return ReemissionHealth(
+        queued=queued,
+        retrying=retrying,
+        lower_bound=beyond_queued or beyond_retrying,
+        oldest_age_seconds=None if oldest is None else int(oldest),
+        sent=sent,
+        lost=rejected + dropped,
+        rejected=rejected,
+    )
+
+
 @router.get(
     "/health",
     response_model=Health,
@@ -219,7 +289,8 @@ async def _partitions(reader: Reader) -> PartitionHealth:
     responses={**TIMED_OUT},
 )
 async def installation_health(request: Request) -> Health:
-    """Base, migrations, file d'ingestion, rebut, émetteurs muets, partitions manquantes.
+    """Base, migrations, file d'ingestion, rebut, émetteurs muets, partitions manquantes,
+    réémission.
 
     Une base injoignable n'est pas une erreur de la route : elle répond
     « unavailable », sans dire pourquoi.
@@ -244,6 +315,7 @@ async def installation_health(request: Request) -> Health:
                     dead_letters=None,
                     emitters=None,
                     partitions=None,
+                    reemission=None,
                 )
             return Health(
                 api_version=version,
@@ -253,6 +325,7 @@ async def installation_health(request: Request) -> Health:
                 dead_letters=await _dead_letters(reader),
                 emitters=await _emitters(reader),
                 partitions=await _partitions(reader),
+                reemission=await _reemission(reader),
             )
         except (TimeoutError, DBAPIError, OSError):
             return Health(
@@ -263,4 +336,5 @@ async def installation_health(request: Request) -> Health:
                 dead_letters=None,
                 emitters=None,
                 partitions=None,
+                reemission=None,
             )

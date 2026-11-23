@@ -6,7 +6,7 @@ Un worker lit la file de traitement et projette chaque événement reçu dans le
 ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run answerlineage-worker
 ```
 
-Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Un événement qu'il ne parvient pas à projeter va à la [file de rebut](#file-de-rebut), où il se consulte et se rejoue. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés, contrôle les [émetteurs muets](#émetteurs-muets) et entretient les [partitions mensuelles](#partitions-mensuelles). La même commande [reconstruit le graphe](#reconstruire-le-graphe) depuis les événements bruts, quand il est corrompu.
+Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Un événement qu'il ne parvient pas à projeter va à la [file de rebut](#file-de-rebut), où il se consulte et se rejoue. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés, contrôle les [émetteurs muets](#émetteurs-muets), entretient les [partitions mensuelles](#partitions-mensuelles) et, quand une destination est réglée, [réémet les événements](#réémission) vers un catalogue OpenLineage. La même commande [reconstruit le graphe](#reconstruire-le-graphe) depuis les événements bruts, quand il est corrompu.
 
 ## Garanties
 
@@ -146,6 +146,19 @@ Mesuré sur la machine de test : 4 processeurs virtuels Intel Xeon à 2,10 GHz, 
 | 4 | 43 à 161 événements par seconde ; 83 à 279 interblocages par passage, autant d'événements remis à plus tard avec un essai compté | 593 à 649 événements par seconde ; aucun interblocage, aucune reprise, aucun événement remis à plus tard |
 
 Avant, le débit de quatre workers tombait sous celui d'un seul : chaque interblocage attendait une seconde que PostgreSQL le détecte, puis remettait un événement à plus tard de 5 s, 10 s, 20 s. Un seul worker va aussi plus vite : la projection de chaque événement reprend les lignes que son lot a posées d'avance, sans les relire.
+
+## Réémission
+
+Avec une destination (`--reemit-url` ou `ANSWERLINEAGE_REEMIT_URL`), chaque événement que la projection intègre au graphe entre dans la file de réémission, dans la transaction de son lot, et une seconde boucle du worker l'envoie à un consommateur OpenLineage externe : Marquez, DataHub, OpenMetadata, Dataplex. Un événement au rebut ne part pas ; un événement que la [reconstruction](#reconstruire-le-graphe) projette de nouveau ne repart pas. La boucle tourne à côté de la projection : une destination en panne ne la retarde pas.
+
+| Réglage | Option | Défaut |
+| --- | --- | --- |
+| Point d'entrée OpenLineage de la destination | `--reemit-url`, ou `ANSWERLINEAGE_REEMIT_URL` | aucun : rien n'est réémis |
+| En-tête `Authorization` | `ANSWERLINEAGE_REEMIT_AUTHORIZATION` seulement | aucun |
+| Événements gardés au plus dans la file de réémission | `--reemit-max-events` | 1 000 000 (1 à 100 000 000) |
+| Heures d'attente au plus dans la file de réémission | `--reemit-max-age-hours` | 168 (1 à 2 160) |
+
+Le réglage, l'adresse admise, ce qui est réémis, les garanties, les compteurs et les limites : [Réémission vers un catalogue OpenLineage](reemission.md).
 
 ## Analyse des incidents
 
@@ -315,7 +328,7 @@ L'ordre n'y fait rien. Les workers avaient projeté les événements dans l'ordr
 
 ### Ce qu'elle ne touche pas
 
-Seules les tables du graphe sont vidées. Les événements bruts, la file, où elle remet les événements, le rebut, le compteur de doublons, les relevés de couverture et les émetteurs connus, les alertes de partition, les incidents et leurs analyses restent tels quels.
+Seules les tables du graphe sont vidées. Les événements bruts, la file, où elle remet les événements, le rebut, la file de réémission, le compteur de doublons, les relevés de couverture et les émetteurs connus, les alertes de partition, les incidents et leurs analyses restent tels quels.
 
 De tout cela, seul le résultat d'une analyse d'incident dérive du graphe : ses réponses touchées, leurs destinataires, ses décomptes et sa couverture, lus tels que le graphe était connu à l'heure de l'analyse (`known_at`). La reconstruction ne les recalcule pas. Elle rend chaque ligne avec son heure d'enregistrement : le graphe tel que connu à `known_at` est celui d'avant la corruption, et une analyse faite avant elle reste juste. Une analyse faite sur le graphe corrompu se rejoue en gardant son `known_at` ([rejouer une analyse](incidents.md#rejouer-une-analyse)) : elle lit alors ce qu'elle aurait dû lire. La couverture du lignage se calcule à la lecture, des événements bruts et de la file : rien n'est à recalculer.
 

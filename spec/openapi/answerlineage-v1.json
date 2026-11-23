@@ -1437,6 +1437,17 @@
               }
             ],
             "description": "La file d'ingestion ; nulle tant que le schéma n'est pas à jour."
+          },
+          "reemission": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReemissionHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "La file de réémission et ses compteurs ; nuls tant que le schéma n'est pas à jour."
           }
         },
         "required": [
@@ -1446,7 +1457,8 @@
           "queue",
           "dead_letters",
           "emitters",
-          "partitions"
+          "partitions",
+          "reemission"
         ],
         "title": "Health",
         "type": "object"
@@ -1966,6 +1978,64 @@
           "pseudonym"
         ],
         "title": "RecipientNode",
+        "type": "object"
+      },
+      "ReemissionHealth": {
+        "description": "La réémission vers un consommateur OpenLineage externe, que règlent les workers.",
+        "properties": {
+          "lost": {
+            "description": "Événements perdus depuis la mise en service : refusés par la destination, abandonnés par les bornes de la file ou par la purge.",
+            "title": "Lost",
+            "type": "integer"
+          },
+          "lower_bound": {
+            "description": "Vrai au-delà de 10000 événements : « queued » et « retrying » sont des minimums.",
+            "title": "Lower Bound",
+            "type": "boolean"
+          },
+          "oldest_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Depuis combien de secondes le plus ancien attend, à l'horloge de la base ; nul quand la file est vide.",
+            "title": "Oldest Age Seconds"
+          },
+          "queued": {
+            "description": "Événements projetés qui attendent d'être réémis.",
+            "title": "Queued",
+            "type": "integer"
+          },
+          "rejected": {
+            "description": "Parmi les perdus, ceux que la destination a refusés.",
+            "title": "Rejected",
+            "type": "integer"
+          },
+          "retrying": {
+            "description": "Parmi eux, ceux dont un envoi a échoué sans que la destination dise les avoir pris : ils seront renvoyés.",
+            "title": "Retrying",
+            "type": "integer"
+          },
+          "sent": {
+            "description": "Événements remis à la destination depuis la mise en service.",
+            "title": "Sent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "queued",
+          "retrying",
+          "lower_bound",
+          "oldest_age_seconds",
+          "sent",
+          "lost",
+          "rejected"
+        ],
+        "title": "ReemissionHealth",
         "type": "object"
       },
       "Rejection": {
@@ -2934,7 +3004,7 @@
     },
     "/api/v1/health": {
       "get": {
-        "description": "Base, migrations, file d'ingestion, rebut, émetteurs muets, partitions manquantes.\n\nUne base injoignable n'est pas une erreur de la route : elle répond\n« unavailable », sans dire pourquoi.",
+        "description": "Base, migrations, file d'ingestion, rebut, émetteurs muets, partitions manquantes,\nréémission.\n\nUne base injoignable n'est pas une erreur de la route : elle répond\n« unavailable », sans dire pourquoi.",
         "operationId": "installation_health_api_v1_health_get",
         "responses": {
           "200": {
