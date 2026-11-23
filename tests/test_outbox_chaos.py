@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from answerlineage_api.app import create_app
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import ProxySettings
-from answerlineage_proxy.outbox import Outbox, OutboxSettings
+from answerlineage_proxy.outbox import BACKOFF_CAP, Outbox, OutboxSettings
 from answerlineage_proxy.sink import EventSink, NullSink
 from answerlineage_workers.queue import process_batch
 from proxy.tests.conftest import TOOL_RESULT, FakeMcpServer, running, tool_call
@@ -385,7 +385,9 @@ async def test_ten_thousand_calls_pass_while_the_api_is_down_then_reach_the_grap
             # Puis un trou noir : la connexion est acceptée, rien n'est jamais répondu.
             await switch.black_hole()
             phases["trou noir"] = await calls(url, CALLS // 3)
-            assert switch.held > 0
+            # La boîte attend peut-être encore sa reprise, jusqu'au plafond : le trou noir
+            # n'est éprouvé qu'une fois qu'une connexion y est retenue.
+            await until(lambda: switch.held > 0, timeout=BACKOFF_CAP + 10)
             assert box.stats.sent == 0
             # Puis l'API revient : la boîte se vide.
             switch.forward(api_port)
