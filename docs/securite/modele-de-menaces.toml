@@ -1290,9 +1290,14 @@ description = "Un événement reçu ou daté de plus de 31 jours ne propose rien
 code = "workers/src/answerlineage_workers/quality.py::record"
 test = "workers/tests/test_proposals.py::test_an_old_failure_proposes_nothing"
 
+[[threat.mitigation]]
+description = "Une proposition sans nouvel échec depuis 7 jours expire et libère sa place, sans rien annoncer ; les signaux de plus de 62 jours sont purgés ; doctor signale les propositions qui attendent depuis plus d'un jour."
+code = "workers/src/answerlineage_workers/proposals.py::maintain_proposals"
+test = "workers/tests/test_proposals.py::test_a_proposal_without_a_new_failure_for_a_week_expires_and_announces_nothing"
+
 [threat.acceptance]
 reason = "Les émetteurs ne sont pas authentifiés, et une borne par émetteur se contournerait en changeant d'espace de noms : seule la borne globale des propositions ouvertes tient la table et la liste."
-consequence = "Un émetteur hostile peut remplir les 100 propositions ouvertes et faire refuser les signaux des vrais tests en échec, jusqu'à ce que des propositions soient décidées ; le refus se compte et se dit au journal."
+consequence = "Un émetteur hostile peut remplir les 100 propositions ouvertes et faire refuser les signaux des vrais tests en échec, jusqu'à ce que des propositions soient décidées ou expirent ; le refus se compte, se dit au journal, et doctor signale les propositions qui attendent."
 
 # Ligne de commande
 

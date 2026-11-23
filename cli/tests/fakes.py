@@ -291,6 +291,7 @@ def health(**changes: Any) -> dict[str, Any]:
             "lost": 0,
             "rejected": 0,
         },
+        "proposals": {"open": 0, "oldest_age_seconds": None, "refused": 0, "lost": 0},
     }
     state.update(changes)
     return state

@@ -26,6 +26,9 @@ analyses, en fait des propositions, dans sa propre transaction :
   quarantaine : seule sa confirmation par un humain déclare l'incident
   (``answerlineage_api.incidents.proposals``).
 - **Fraîcheur.** Un signal reçu ou daté de plus de ``FRESHNESS`` ne propose rien.
+- **Entretien.** Une proposition sans nouvel échec depuis ``EXPIRY`` expire, sans
+  rien annoncer ; les signaux reçus il y a plus de ``RETENTION`` sont purgés
+  (``maintain_proposals``, chaque minute).
 
 Ni le journal ni les compteurs ne citent une valeur reçue : des identifiants tirés
 par la base et des nombres.
@@ -36,6 +39,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import groupby
 from typing import Any, Final
@@ -59,6 +63,14 @@ SIGNAL_BATCH: Final = 500
 LOOKBACK: Final = timedelta(days=7)
 MAX_LOOKBACK: Final = timedelta(days=INCIDENT_WINDOW_DAYS)
 MUTE: Final = timedelta(hours=24)
+# Une proposition sans nouvel échec rattaché depuis une semaine expire, sans rien annoncer.
+EXPIRY: Final = timedelta(days=7)
+# Les signaux reçus il y a plus de deux mois sont purgés, par lots : un vieil événement
+# rejoué ne ressuscite pas une proposition, puisqu'il est trop ancien pour en proposer.
+RETENTION: Final = timedelta(days=2 * INCIDENT_WINDOW_DAYS)
+PURGE_BATCH: Final = 10_000
+# L'entretien des propositions revient chaque minute.
+DEFAULT_PROPOSALS_EVERY: Final = timedelta(minutes=1)
 
 _CLAIM = text(
     """
@@ -307,3 +319,62 @@ async def _account(conn: AsyncConnection, tally: Counter[str], now: datetime) ->
         )
     elif tally["created"] and not tally["refused"] and since is not None:
         await conn.execute(_EPISODE, {"since": None})
+
+
+# L'entretien : expiration des propositions, purge des signaux.
+
+_EXPIRE = text(
+    """
+    UPDATE incident_proposal
+    SET state = 'expired', decided_at = GREATEST(clock_timestamp(), proposed_at)
+    WHERE state = 'signaled' AND signaled_at < now() - :expiry
+    RETURNING id
+    """
+)
+_PURGE = text(
+    """
+    DELETE FROM quality_signal WHERE ctid = ANY(ARRAY(
+        SELECT ctid FROM quality_signal WHERE recorded_at < now() - :retention
+        ORDER BY recorded_at LIMIT :limit
+    ))
+    """
+)
+
+
+@dataclass(frozen=True)
+class Maintenance:
+    """Ce qu'un entretien a fait : propositions expirées, signaux purgés."""
+
+    expired: int
+    purged: int
+
+
+async def maintain_proposals(engine: AsyncEngine) -> Maintenance:
+    """Expire les propositions sans nouvel échec depuis ``EXPIRY``, sous le verrou de leur
+    table, sans rien annoncer ; puis purge, dans une autre transaction, au plus
+    ``PURGE_BATCH`` signaux reçus il y a plus de ``RETENTION``.
+
+    La purge ne prend pas le verrou des propositions : elle n'attend ainsi que les signaux
+    qu'un worker traite, et lui ne l'attend jamais.
+    """
+    async with engine.begin() as conn:
+        await conn.execute(_LOCK)
+        expired = list((await conn.execute(_EXPIRE, {"expiry": EXPIRY})).scalars())
+    async with engine.begin() as conn:
+        purged = (
+            await conn.execute(_PURGE, {"retention": RETENTION, "limit": PURGE_BATCH})
+        ).rowcount
+    for proposal in expired:
+        # L'identifiant est tiré par la base : rien de l'émetteur n'est cité.
+        logger.info(
+            "Proposition d'incident %s expirée, sans nouvel échec depuis %d jours.",
+            proposal,
+            EXPIRY.days,
+        )
+    if purged:
+        logger.info(
+            "%d signal(aux) de qualité purgé(s), reçus il y a plus de %d jours.",
+            purged,
+            RETENTION.days,
+        )
+    return Maintenance(expired=len(expired), purged=purged)

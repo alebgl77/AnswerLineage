@@ -49,6 +49,7 @@ def test_a_sound_installation_has_no_anomaly(monkeypatch: pytest.MonkeyPatch) ->
         "partitions": ("ok", None),
         "reemission": ("ok", None),
         "webhooks": ("ok", None),
+        "proposals": ("ok", None),
         "explorer": ("ok", None),
         "workers": ("not_checked", None),
     }
@@ -522,3 +523,68 @@ def test_a_usage_error_of_doctor_has_its_exit_code(monkeypatch: pytest.MonkeyPat
     assert run(["doctor", "--webhook-max-age", "-5"], api, monkeypatch).code == Exit.USAGE
     assert run(["doctor", "--url", "ftp://127.0.0.1"], api, monkeypatch).code == Exit.USAGE
     assert api.requests == []
+
+
+def proposals(**changes: Any) -> dict[str, Any]:
+    return {"open": 0, "oldest_age_seconds": None, "refused": 0, "lost": 0} | changes
+
+
+def test_proposals_waiting_more_than_a_day_are_an_anomaly_with_its_remedy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = with_health(proposals=proposals(open=3, oldest_age_seconds=90_000, refused=2, lost=1))
+    result = doctor(api, monkeypatch)
+    report = json.loads(result.out)
+    assert result.code == Exit.ANOMALY
+    assert report["anomalies"] == ["proposals_waiting"]
+    (waiting,) = [item for item in report["checks"] if item["check"] == "proposals"]
+    assert waiting["message"] == (
+        "Des incidents proposés par des tests de qualité en échec attendent une décision : "
+        "3 propositions en attente, la plus ancienne depuis 1 j 1 h (seuil : 1 j 0 h) ; "
+        "2 signaux refusés, 1 perdu depuis la mise en service."
+    )
+    assert waiting["remedy"] == ANOMALIES["proposals_waiting"].remedy
+    assert "answerlineage incident proposals --state signaled" in waiting["remedy"]
+
+
+def test_recent_or_no_proposals_are_no_anomaly(monkeypatch: pytest.MonkeyPatch) -> None:
+    recent = doctor(with_health(proposals=proposals(open=1, oldest_age_seconds=3_600)), monkeypatch)
+    (found,) = [item for item in json.loads(recent.out)["checks"] if item["check"] == "proposals"]
+    assert (found["status"], found["message"]) == (
+        "ok",
+        "1 proposition en attente, la plus ancienne depuis 1 h 00 min ; 0 signal refusé, 0 perdu.",
+    )
+    none = doctor(with_health(proposals=proposals(refused=4)), monkeypatch)
+    (found,) = [item for item in json.loads(none.out)["checks"] if item["check"] == "proposals"]
+    assert (
+        found["message"]
+        == "Aucun incident proposé n'attend de décision ; 4 signaux refusés, 0 perdu."
+    )
+
+
+def test_an_api_that_does_not_publish_the_proposals_leaves_them_unchecked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    older = {key: value for key, value in health().items() if key != "proposals"}
+    result = doctor(FakeApi.sound().answer("/api/v1/health", older), monkeypatch)
+    assert statuses(result.out)["proposals"] == ("not_checked", None)
+
+
+@pytest.mark.parametrize(
+    "published",
+    [
+        None,
+        proposals(open=1),
+        proposals(oldest_age_seconds=5),
+        proposals(open=CANARY),
+        {CANARY: 1},
+    ],
+    ids=["null", "waiting-without-age", "age-without-waiting", "not-a-count", "unknown-field"],
+)
+def test_proposals_of_another_shape_make_the_response_invalid(
+    published: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = doctor(with_health(proposals=published), monkeypatch)
+    assert result.code == Exit.ANOMALY
+    assert json.loads(result.out)["anomalies"] == ["api_invalid_response"]
+    assert CANARY not in result.out

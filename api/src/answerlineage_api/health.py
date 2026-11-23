@@ -3,8 +3,9 @@
 La route dit si l'API lit sa base, si le schéma est à jour, si la file
 d'ingestion avance, combien d'événements attendent au rebut, combien
 d'émetteurs sont muets, combien de partitions manquent, où en est la
-réémission vers un consommateur OpenLineage externe, et où en sont les
-webhooks qui annoncent les incidents. Elle reste petite et
+réémission vers un consommateur OpenLineage externe, où en sont les
+webhooks qui annoncent les incidents, et combien d'incidents proposés par des
+tests de qualité attendent un humain. Elle reste petite et
 bornée : quelques requêtes indexées, des décomptes plafonnés, sous le délai
 maximal des lectures. Elle ne dit aucun détail interne : ni révision du
 schéma, ni adresse de la base, ni message d'erreur, seulement des états d'une
@@ -29,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.lineage.reading import TIMED_OUT, Reader
 from answerlineage_api.store.migrate import MIGRATIONS
+from answerlineage_api.store.schema import MAX_OPEN_PROPOSALS
 
 router = APIRouter(prefix="/api/v1", tags=["installation"])
 
@@ -97,6 +99,21 @@ _WEBHOOK_OLDEST = text(
     SELECT GREATEST(0, floor(EXTRACT(EPOCH FROM now() - enqueued_at)))::bigint
     FROM webhook_queue ORDER BY enqueued_at LIMIT 1
     """
+)
+# Les propositions signalées, 100 au plus, et l'âge de la plus ancienne.
+_PROPOSALS = text(
+    """
+    SELECT count(*) AS open,
+           CASE WHEN count(*) > 0 THEN
+               GREATEST(0, floor(EXTRACT(EPOCH FROM now() - min(proposed_at))))::bigint
+           END AS oldest
+    FROM incident_proposal WHERE state = 'signaled'
+    """
+)
+# Deux lignes au plus, une par étape ; aucune tant qu'aucun signal n'a été écarté.
+_PROPOSAL_COUNTS = text(
+    "SELECT coalesce(sum(refused), 0) AS refused, coalesce(sum(dropped), 0) AS lost"
+    " FROM quality_stats"
 )
 # Une ligne au plus ; aucune tant qu'aucun worker n'a eu de webhook.
 _WEBHOOK_STATE = text(
@@ -230,6 +247,34 @@ class WebhookHealth(BaseModel):
     rejected: int = Field(description="Parmi les perdus, ceux que le récepteur a refusés.")
 
 
+class ProposalHealth(BaseModel):
+    """Les incidents proposés par des tests de qualité en échec, qui attendent un humain."""
+
+    open: int = Field(
+        description=(
+            f"Propositions signalées, en attente d'une décision ; {MAX_OPEN_PROPOSALS} au plus."
+        )
+    )
+    oldest_age_seconds: int | None = Field(
+        description=(
+            "Depuis combien de secondes la plus ancienne attend, à l'horloge de la base ;"
+            " nul quand aucune n'attend."
+        )
+    )
+    refused: int = Field(
+        description=(
+            "Signaux d'échec refusés depuis la mise en service, la borne des propositions"
+            " ouvertes atteinte."
+        )
+    )
+    lost: int = Field(
+        description=(
+            "Signaux d'échec perdus depuis la mise en service : au-delà d'une borne, ou faute"
+            " d'avoir pu être écrits."
+        )
+    )
+
+
 class Health(BaseModel):
     """L'état de l'installation : des états d'une liste fermée et des décomptes bornés."""
 
@@ -266,6 +311,12 @@ class Health(BaseModel):
         description=(
             "Les webhooks des incidents, leur file et leurs compteurs ; nuls tant que le schéma"
             " n'est pas à jour."
+        )
+    )
+    proposals: ProposalHealth | None = Field(
+        description=(
+            "Les incidents proposés par des tests de qualité qui attendent une décision ; nuls"
+            " tant que le schéma n'est pas à jour."
         )
     )
 
@@ -363,6 +414,17 @@ async def _webhooks(reader: Reader) -> WebhookHealth:
     )
 
 
+async def _proposals(reader: Reader) -> ProposalHealth:
+    found = (await reader.execute(_PROPOSALS, {})).one()
+    counts = (await reader.execute(_PROPOSAL_COUNTS, {})).one()
+    return ProposalHealth(
+        open=found.open,
+        oldest_age_seconds=None if found.oldest is None else int(found.oldest),
+        refused=int(counts.refused),
+        lost=int(counts.lost),
+    )
+
+
 @router.get(
     "/health",
     response_model=Health,
@@ -371,7 +433,7 @@ async def _webhooks(reader: Reader) -> WebhookHealth:
 )
 async def installation_health(request: Request) -> Health:
     """Base, migrations, file d'ingestion, rebut, émetteurs muets, partitions manquantes,
-    réémission, webhooks.
+    réémission, webhooks, incidents proposés en attente.
 
     Une base injoignable n'est pas une erreur de la route : elle répond
     « unavailable », sans dire pourquoi.
@@ -398,6 +460,7 @@ async def installation_health(request: Request) -> Health:
                     partitions=None,
                     reemission=None,
                     webhooks=None,
+                    proposals=None,
                 )
             return Health(
                 api_version=version,
@@ -409,6 +472,7 @@ async def installation_health(request: Request) -> Health:
                 partitions=await _partitions(reader),
                 reemission=await _reemission(reader),
                 webhooks=await _webhooks(reader),
+                proposals=await _proposals(reader),
             )
         except (TimeoutError, DBAPIError, OSError):
             return Health(
@@ -421,4 +485,5 @@ async def installation_health(request: Request) -> Health:
                 partitions=None,
                 reemission=None,
                 webhooks=None,
+                proposals=None,
             )

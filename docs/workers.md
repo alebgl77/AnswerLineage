@@ -214,6 +214,8 @@ Un signal reçu ou daté de plus de 31 jours ne propose rien (`stale`). Pendant 
 INFO answerlineage_workers Incident proposé par un test de qualité en échec : proposition 5b0f6a52-2c1e-4f0e-9d7b-8b4ea1d0c3f2.
 ```
 
+Chaque minute, la boucle en fait aussi l'entretien : une proposition sans nouvel échec rattaché depuis 7 jours expire, sans rien annoncer ([expiration](incidents.md#expiration)) ; les signaux reçus il y a plus de 62 jours sont purgés, 10 000 au plus par passage, dans une transaction à part qui ne prend pas le verrou des propositions. Un entretien en échec est dit au journal par sa classe et repris au passage suivant.
+
 Les signaux, les colonnes suivies et les propositions sont hors du graphe : une reconstruction ne les vide pas, et rejoue les événements sans rien proposer deux fois.
 
 ## Émetteurs muets

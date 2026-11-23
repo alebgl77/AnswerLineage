@@ -5,8 +5,10 @@ l'adresse utilisée (en-têtes Host et Origin) ; elle lit sa base ; le schéma
 est à jour ; la file d'ingestion avance ; aucun événement n'attend au rebut ;
 aucun émetteur n'est muet ; aucune partition mensuelle ne manque ; la
 réémission vers un consommateur OpenLineage externe n'est pas en retard ; les
-webhooks qui annoncent les incidents ne sont pas en retard ; l'explorateur est
-servi. Les huit du milieu viennent de la route ``GET /api/v1/health``.
+webhooks qui annoncent les incidents ne sont pas en retard ; aucun incident
+proposé par un test de qualité n'attend une décision depuis plus d'un jour ;
+l'explorateur est servi. Les neuf du milieu viennent de la route
+``GET /api/v1/health``.
 
 Chaque anomalie a un code stable, un message et un remède écrits d'avance :
 aucun texte reçu de l'API n'y est recopié, seulement des nombres et l'adresse
@@ -32,6 +34,8 @@ DEFAULT_QUEUE_MAX_AGE: Final = 300
 MAX_QUEUE_MAX_AGE: Final = 7 * 24 * 3600
 DEFAULT_REEMISSION_MAX_AGE: Final = 300
 DEFAULT_WEBHOOK_MAX_AGE: Final = 300
+# Une proposition qui attend plus d'un jour attend un humain qui ne la voit pas.
+PROPOSAL_MAX_AGE: Final = 24 * 3600
 # La version majeure de l'API que la commande sait lire.
 API_MAJOR: Final = 1
 
@@ -49,6 +53,7 @@ CHECKS: Final = (
     "partitions",
     "reemission",
     "webhooks",
+    "proposals",
     "explorer",
     "workers",
 )
@@ -63,6 +68,7 @@ _LABELS: Final = {
     "partitions": "Partitions",
     "reemission": "Réémission",
     "webhooks": "Webhooks",
+    "proposals": "Propositions",
     "explorer": "Explorateur",
     "workers": "Workers",
 }
@@ -189,6 +195,17 @@ ANOMALIES: Final[Mapping[str, Anomaly]] = {
         "et ANSWERLINEAGE_WEBHOOK_SECRET dans l'environnement des workers, et qu'un worker "
         "tourne avec ce réglage. Au-delà des bornes de la file, les plus anciens sont perdus.",
     ),
+    "proposals_waiting": Anomaly(
+        "proposals",
+        "Des incidents proposés par des tests de qualité en échec attendent une décision : "
+        "{waiting}, la plus ancienne depuis {age} (seuil : {threshold}) ; {refused}, {lost} "
+        "depuis la mise en service.",
+        "Les lire (answerlineage incident proposals --state signaled), puis confirmer chacune "
+        "(answerlineage incident confirm <identifiant> --severity <gravité>) ou l'écarter "
+        "(answerlineage incident dismiss <identifiant>). Sans décision, une proposition expire "
+        "après 7 jours sans nouvel échec, et au-delà de 100 ouvertes, les échecs suivants sont "
+        "refusés.",
+    ),
     "explorer_missing": Anomaly(
         "explorer",
         "L'explorateur n'est pas servi à cette adresse.",
@@ -256,6 +273,7 @@ class _Tallies:
     # Absentes d'une API qui ne les publie pas encore.
     reemission: dict[str, Any] | None
     webhooks: dict[str, Any] | None
+    proposals: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -292,7 +310,7 @@ def parse_health(document: Any) -> _Health:
         "emitters",
         "partitions",
     )
-    found = shape.obj(document, "", fields, ("reemission", "webhooks"))
+    found = shape.obj(document, "", fields, ("reemission", "webhooks", "proposals"))
     version = shape.version(found["api_version"], "/api_version")
     database = shape.choice(found["database"], "/database", DATABASE_STATES)
     migrations = found["migrations"]
@@ -323,6 +341,9 @@ def parse_health(document: Any) -> _Health:
             "rejected",
         ),
     )
+    proposals = _tally(
+        found.get("proposals"), "/proposals", ("open", "oldest_age_seconds", "refused", "lost")
+    )
     # Une base disponible a un état de ses migrations ; un schéma à jour, ses décomptes.
     if (database == "available") != (migrations is not None):
         raise shape.fault("/migrations")
@@ -335,6 +356,13 @@ def parse_health(document: Any) -> _Health:
     # Le rebut a un plus ancien dès qu'il n'est pas vide, et seulement alors.
     if (buried["events"] == 0) != (buried["oldest_age_seconds"] is None):
         raise shape.fault("/dead_letters/oldest_age_seconds")
+    if "proposals" in found and proposals is None:
+        raise shape.fault("/proposals")
+    # Des propositions qui attendent ont une plus ancienne, et seulement alors.
+    if proposals is not None and (proposals["open"] == 0) != (
+        proposals["oldest_age_seconds"] is None
+    ):
+        raise shape.fault("/proposals/oldest_age_seconds")
     for name, tally in (("reemission", reemission), ("webhooks", webhooks)):
         if name in found and tally is None:
             # Une API qui publie cet état le donne dès que le schéma est à jour.
@@ -348,7 +376,7 @@ def parse_health(document: Any) -> _Health:
         version,
         database,
         migrations,
-        _Tallies(queue, buried, emitters, partitions, reemission, webhooks),
+        _Tallies(queue, buried, emitters, partitions, reemission, webhooks, proposals),
     )
 
 
@@ -486,6 +514,7 @@ def _installation(
         report.add(_ok("partitions", "Aucune partition mensuelle ne manque."))
     report.add(_reemission(health.tallies.reemission, reemission_max_age))
     report.add(_webhooks(health.tallies.webhooks, webhook_max_age))
+    report.add(_proposals(health.tallies.proposals))
 
 
 def _sentence(text: str) -> str:
@@ -589,6 +618,33 @@ def _webhooks(webhooks: Mapping[str, Any] | None, max_age: int) -> Check:
     sent = _plural(webhooks["sent"], "remis", "remis")
     waiting = "file vide" if age is None else f"{queued}, le plus ancien depuis {duration(age)}"
     return _ok("webhooks", f"Les webhooks avancent : {waiting} ; {sent}, {lost}.")
+
+
+def _proposals(proposals: Mapping[str, Any] | None) -> Check:
+    if proposals is None:
+        return _unchecked("proposals", "l'API ne publie pas l'état des incidents proposés.")
+    refused = _plural(proposals["refused"], "signal refusé", "signaux refusés")
+    lost = _plural(proposals["lost"], "perdu", "perdus")
+    age = proposals["oldest_age_seconds"]
+    if age is None:
+        return _ok(
+            "proposals",
+            f"Aucun incident proposé n'attend de décision ; {refused}, {lost}.",
+        )
+    waiting = _plural(proposals["open"], "proposition en attente", "propositions en attente")
+    if age > PROPOSAL_MAX_AGE:
+        return _anomaly(
+            "proposals_waiting",
+            waiting=waiting,
+            age=duration(age),
+            threshold=duration(PROPOSAL_MAX_AGE),
+            refused=refused,
+            lost=lost,
+        )
+    return _ok(
+        "proposals",
+        f"{_sentence(waiting)}, la plus ancienne depuis {duration(age)} ; {refused}, {lost}.",
+    )
 
 
 def _explorer(api: Api, report: _Report) -> None:

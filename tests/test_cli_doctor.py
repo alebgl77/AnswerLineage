@@ -111,6 +111,7 @@ async def test_a_sound_installation_has_no_anomaly(
         "reemission": "not_checked",
         # Sans webhook réglé aux workers, rien n'est annoncé : rien à juger.
         "webhooks": "not_checked",
+        "proposals": "ok",
         "explorer": "ok",
         "workers": "not_checked",
     }
@@ -278,4 +279,34 @@ async def test_webhooks_left_behind_are_named(
     assert late["message"].startswith(
         "Les webhooks des incidents sont en retard : 1 message à envoyer, le plus ancien depuis"
         " 10 min"
+    )
+
+
+async def test_an_incident_proposed_more_than_a_day_ago_is_named(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine, explorer: Path
+) -> None:
+    # Un test en échec a proposé un incident hier ; personne ne l'a décidé.
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                INSERT INTO incident_proposal (
+                    namespace, name, whole_table, classes, severity, first_failed_at,
+                    last_failed_at, window_start, window_basis, emitter, proposed_at
+                )
+                VALUES ('postgres://entrepot:5432', 'analytique.public.clients', false,
+                        ARRAY['not_null'], 'error', now() - interval '26 hours',
+                        now() - interval '26 hours', now() - interval '8 days', 'lookback',
+                        'dbt', now() - interval '25 hours')
+                """
+            )
+        )
+    async with served(engine, explorer) as url:
+        code, report = await doctor(monkeypatch, url)
+    assert code == Exit.ANOMALY
+    only(report, "proposals_waiting")
+    (waiting,) = [check for check in report["checks"] if check["check"] == "proposals"]
+    assert waiting["message"].startswith(
+        "Des incidents proposés par des tests de qualité en échec attendent une décision :"
+        " 1 proposition en attente, la plus ancienne depuis 1 j 1 h"
     )

@@ -19,8 +19,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
-from answerlineage_workers import gate, proposals, quality
-from answerlineage_workers.proposals import process_signals
+from answerlineage_workers import gate, proposals, quality, queue
+from answerlineage_workers.proposals import Maintenance, maintain_proposals, process_signals
 from answerlineage_workers.queue import process_batch, record_event, run_worker
 from answerlineage_workers.rebuild import rebuild_graph
 from workers.tests.dbt import (
@@ -446,3 +446,104 @@ async def test_the_worker_loop_makes_the_proposals(engine: AsyncEngine) -> None:
         stop.set()
         await worker
     assert await scalar(engine, "SELECT count(*) FROM incident_proposal") == 1
+
+
+# L'entretien : expiration, purge.
+
+
+async def age(engine: AsyncEngine, sql: str, **params: Any) -> None:
+    async with engine.begin() as conn:
+        await conn.execute(text(sql), params)
+
+
+async def test_a_proposal_without_a_new_failure_for_a_week_expires_and_announces_nothing(
+    engine: AsyncEngine, caplog: pytest.LogCaptureFixture
+) -> None:
+    await in_service(engine)
+    await received(engine, failing(1, 3, "email"), failing(2, 3, "montant", name=ORDERS))
+    aged = "UPDATE incident_proposal SET signaled_at = now() - :ago WHERE name = :name"
+    await age(engine, aged, ago=timedelta(days=8), name=CUSTOMERS)
+    await age(engine, aged, ago=timedelta(days=6), name=ORDERS)
+    with caplog.at_level(logging.INFO, logger="answerlineage_workers"):
+        assert await maintain_proposals(engine) == Maintenance(expired=1, purged=0)
+
+    assert await rows(
+        engine, "SELECT name, state, decided_at IS NOT NULL FROM incident_proposal ORDER BY name"
+    ) == [(CUSTOMERS, "expired", True), (ORDERS, "signaled", False)]
+    assert await scalar(engine, "SELECT count(*) FROM webhook_queue") == 0
+    assert "expirée, sans nouvel échec depuis 7 jours" in caplog.text
+    assert "analytique" not in caplog.text
+
+    # Une proposition expirée ne met pas en sourdine : un nouvel échec en ouvre une autre.
+    await received(engine, failing(3, 6, "email"))
+    assert await rows(
+        engine,
+        "SELECT state FROM incident_proposal WHERE name = :name ORDER BY proposed_at",
+        name=CUSTOMERS,
+    ) == [("expired",), ("signaled",)]
+
+
+async def test_a_new_failure_keeps_a_proposal_from_expiring(engine: AsyncEngine) -> None:
+    await received(engine, failing(1, 3, "email"))
+    await age(engine, "UPDATE incident_proposal SET signaled_at = now() - interval '8 days'")
+    await received(engine, failing(2, 4, "email"))
+    assert await maintain_proposals(engine) == Maintenance(expired=0, purged=0)
+    assert await rows(engine, "SELECT state FROM incident_proposal") == [("signaled",)]
+
+
+async def test_signals_received_more_than_two_months_ago_are_purged(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await received(engine, *(failing(rank, 3, f"c{rank}") for rank in range(4)))
+    await age(
+        engine,
+        "UPDATE quality_signal SET recorded_at = now() - interval '63 days'"
+        " WHERE column_name IN ('c0', 'c1', 'c2')",
+    )
+    monkeypatch.setattr(proposals, "PURGE_BATCH", 2)
+    assert await maintain_proposals(engine) == Maintenance(expired=0, purged=2)
+    assert await maintain_proposals(engine) == Maintenance(expired=0, purged=1)
+    assert await rows(engine, "SELECT column_name FROM quality_signal") == [("c3",)]
+    # La proposition garde ce qu'elle a réuni.
+    assert await scalar(engine, "SELECT count(*) FROM incident_proposal_column") == 4
+
+
+async def test_the_worker_loop_keeps_the_proposals(engine: AsyncEngine) -> None:
+    await received(engine, failing(1, 3, "email"))
+    await age(engine, "UPDATE incident_proposal SET signaled_at = now() - interval '8 days'")
+    stop = asyncio.Event()
+    worker = asyncio.create_task(run_worker(engine, stop, idle_delay=0.05))
+    try:
+        for _ in range(200):
+            if await scalar(
+                engine, "SELECT count(*) FROM incident_proposal WHERE state = 'expired'"
+            ):
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        stop.set()
+        await worker
+    assert await rows(engine, "SELECT state FROM incident_proposal") == [("expired",)]
+
+
+async def test_a_failing_upkeep_of_the_proposals_does_not_stop_the_worker(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def broken(_: AsyncEngine) -> Maintenance:
+        raise RuntimeError("canari5e3a")
+
+    monkeypatch.setattr(queue, "maintain_proposals", broken)
+    await ingest(engine, [failing(1, 3, "email")])
+    stop = asyncio.Event()
+    worker = asyncio.create_task(run_worker(engine, stop, idle_delay=0.05))
+    try:
+        for _ in range(200):
+            if await scalar(engine, "SELECT count(*) FROM incident_proposal"):
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        stop.set()
+        await worker
+    assert await scalar(engine, "SELECT count(*) FROM incident_proposal") == 1
+    assert "Entretien des propositions d'incident en échec (RuntimeError)" in caplog.text
+    assert "canari5e3a" not in caplog.text

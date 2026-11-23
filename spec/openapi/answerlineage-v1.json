@@ -1651,6 +1651,17 @@
             ],
             "description": "Les partitions manquantes ; nulles tant que le schéma n'est pas à jour."
           },
+          "proposals": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProposalHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Les incidents proposés par des tests de qualité qui attendent une décision ; nuls tant que le schéma n'est pas à jour."
+          },
           "queue": {
             "anyOf": [
               {
@@ -1694,7 +1705,8 @@
           "emitters",
           "partitions",
           "reemission",
-          "webhooks"
+          "webhooks",
+          "proposals"
         ],
         "title": "Health",
         "type": "object"
@@ -2613,6 +2625,46 @@
           "proposal"
         ],
         "title": "ProposalDecision",
+        "type": "object"
+      },
+      "ProposalHealth": {
+        "description": "Les incidents proposés par des tests de qualité en échec, qui attendent un humain.",
+        "properties": {
+          "lost": {
+            "description": "Signaux d'échec perdus depuis la mise en service : au-delà d'une borne, ou faute d'avoir pu être écrits.",
+            "title": "Lost",
+            "type": "integer"
+          },
+          "oldest_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Depuis combien de secondes la plus ancienne attend, à l'horloge de la base ; nul quand aucune n'attend.",
+            "title": "Oldest Age Seconds"
+          },
+          "open": {
+            "description": "Propositions signalées, en attente d'une décision ; 100 au plus.",
+            "title": "Open",
+            "type": "integer"
+          },
+          "refused": {
+            "description": "Signaux d'échec refusés depuis la mise en service, la borne des propositions ouvertes atteinte.",
+            "title": "Refused",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "open",
+          "oldest_age_seconds",
+          "refused",
+          "lost"
+        ],
+        "title": "ProposalHealth",
         "type": "object"
       },
       "ProposedWindow": {
@@ -4077,7 +4129,7 @@
     },
     "/api/v1/health": {
       "get": {
-        "description": "Base, migrations, file d'ingestion, rebut, émetteurs muets, partitions manquantes,\nréémission, webhooks.\n\nUne base injoignable n'est pas une erreur de la route : elle répond\n« unavailable », sans dire pourquoi.",
+        "description": "Base, migrations, file d'ingestion, rebut, émetteurs muets, partitions manquantes,\nréémission, webhooks, incidents proposés en attente.\n\nUne base injoignable n'est pas une erreur de la route : elle répond\n« unavailable », sans dire pourquoi.",
         "operationId": "installation_health_api_v1_health_get",
         "responses": {
           "200": {

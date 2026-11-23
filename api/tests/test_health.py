@@ -98,6 +98,7 @@ async def test_a_sound_installation_says_so_with_empty_tallies(engine: AsyncEngi
             "lost": 0,
             "rejected": 0,
         },
+        "proposals": {"open": 0, "oldest_age_seconds": None, "refused": 0, "lost": 0},
     }
 
 
@@ -112,6 +113,7 @@ async def test_a_database_without_schema_is_not_migrated(bare: AsyncEngine) -> N
         "partitions": None,
         "reemission": None,
         "webhooks": None,
+        "proposals": None,
     }
 
 
@@ -133,6 +135,7 @@ async def test_a_schema_with_migrations_left_to_apply_is_behind(
     assert body["dead_letters"] is None
     assert body["reemission"] is None
     assert body["webhooks"] is None
+    assert body["proposals"] is None
 
 
 async def test_a_revision_the_api_does_not_know_is_reported_without_being_cited(
@@ -168,6 +171,7 @@ async def test_an_unreachable_database_is_unavailable_and_nothing_else_is_said()
         "partitions": None,
         "reemission": None,
         "webhooks": None,
+        "proposals": None,
     }
     assert "canari" not in response.text
     assert str(port) not in response.text
@@ -425,3 +429,34 @@ async def test_the_route_answers_only_an_expected_host(engine: AsyncEngine) -> N
         response = await api.get("/api/v1/health", headers={"host": "attaquant.example"})
     assert response.status_code == 403
     assert response.json() == {"error": "host_not_allowed"}
+
+
+async def test_the_proposals_say_how_many_wait_since_when_and_what_was_refused_or_lost(
+    engine: AsyncEngine,
+) -> None:
+    async with engine.begin() as conn:
+        for rank, waited in enumerate(("2 hours", "30 minutes")):
+            await conn.execute(
+                text(
+                    f"""
+                    INSERT INTO incident_proposal (
+                        namespace, name, whole_table, classes, severity, first_failed_at,
+                        last_failed_at, window_start, window_basis, emitter, proposed_at
+                    )
+                    VALUES ('dbt', :name, true, ARRAY['other'], 'error', now(), now(),
+                            now() - interval '7 days', 'lookback', 'dbt',
+                            now() - interval '{waited}')
+                    """  # noqa: S608 — des durées constantes.
+                ),
+                {"name": f"analytique.public.t{rank}"},
+            )
+        await conn.execute(
+            text(
+                "INSERT INTO quality_stats (stage, refused, dropped) VALUES"
+                " ('projection', 0, 4), ('proposals', 3, 0)"
+            )
+        )
+    proposals = (await state(engine))["proposals"]
+    oldest = proposals.pop("oldest_age_seconds")
+    assert 7_190 <= oldest <= 7_300
+    assert proposals == {"open": 2, "refused": 3, "lost": 4}

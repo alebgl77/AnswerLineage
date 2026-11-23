@@ -70,7 +70,11 @@ from answerlineage_workers.partitions import (
     maintain_partitions,
 )
 from answerlineage_workers.projection import project
-from answerlineage_workers.proposals import process_signals
+from answerlineage_workers.proposals import (
+    DEFAULT_PROPOSALS_EVERY,
+    maintain_proposals,
+    process_signals,
+)
 from answerlineage_workers.reemission import Reemission, run_reemission
 from answerlineage_workers.silence import DEFAULT_SILENCE, check_silent_emitters
 from answerlineage_workers.webhooks import Webhook, run_webhooks
@@ -477,6 +481,7 @@ async def run_worker(
     silence_every: timedelta = DEFAULT_SILENCE_CHECK_EVERY,
     retention: Retention = DEFAULT_RETENTION,
     maintenance_every: timedelta = DEFAULT_MAINTENANCE_EVERY,
+    proposals_every: timedelta = DEFAULT_PROPOSALS_EVERY,
     analysis_timeout: timedelta = DEFAULT_ANALYSIS_TIMEOUT,
     clock: Callable[[], datetime] = _now,
     reemission: Reemission | None = None,
@@ -494,7 +499,9 @@ async def run_worker(
     worker contrôle les émetteurs muets depuis plus que ``silence_threshold``.
     Au démarrage, puis toutes les ``maintenance_every``, il entretient les
     partitions mensuelles selon ``retention`` : création à l'avance, purge,
-    contrôle.
+    contrôle. Au démarrage, puis toutes les ``proposals_every``, il expire les
+    propositions d'incident sans nouvel échec et purge les vieux signaux de
+    qualité (``maintain_proposals``).
 
     Avec ``reemission``, les événements projetés entrent dans la file de
     réémission, et une seconde boucle, à côté, les envoie à la destination
@@ -521,6 +528,7 @@ async def run_worker(
             silence_every=silence_every,
             retention=retention,
             maintenance_every=maintenance_every,
+            proposals_every=proposals_every,
             analysis_timeout=analysis_timeout,
             clock=clock,
             reemit=reemission is not None,
@@ -545,12 +553,14 @@ async def _project_loop(
     silence_every: timedelta,
     retention: Retention,
     maintenance_every: timedelta,
+    proposals_every: timedelta,
     analysis_timeout: timedelta,
     clock: Callable[[], datetime],
     reemit: bool,
 ) -> None:
     next_check: datetime | None = None
     next_maintenance: datetime | None = None
+    next_proposals: datetime | None = None
     while not stop.is_set():
         now = clock()
         if next_check is None or now >= next_check:
@@ -567,6 +577,15 @@ async def _project_loop(
             except Exception as error:
                 # Reprise au prochain passage ; les partitions sont créées des mois à l'avance.
                 logger.error("Maintenance des partitions en échec (%s).", type(error).__name__)
+        if next_proposals is None or now >= next_proposals:
+            next_proposals = now + proposals_every
+            try:
+                await maintain_proposals(engine)
+            except Exception as error:
+                # Reprise au prochain passage : une semaine d'attente n'est pas à la minute.
+                logger.error(
+                    "Entretien des propositions d'incident en échec (%s).", type(error).__name__
+                )
         delay = 0.0
         try:
             result = await process_batch(

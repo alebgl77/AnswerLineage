@@ -355,7 +355,7 @@ Le nom du test, sa description, son corps SQL, les valeurs attendue et observée
 | Champ | Contenu |
 | --- | --- |
 | `id` | Identifiant de la proposition, tiré par la base |
-| `state` | `signaled` : signalée, elle attend un humain et s'enrichit des échecs suivants ; `confirmed` : confirmée, l'incident est déclaré ; `dismissed` : écartée. Une décision est définitive |
+| `state` | `signaled` : signalée, elle attend un humain et s'enrichit des échecs suivants ; `confirmed` : confirmée, l'incident est déclaré ; `dismissed` : écartée ; `expired` : expirée, sans nouvel échec depuis 7 jours. Une décision est définitive |
 | `dataset` | Le jeu de données, par son espace de noms et son nom |
 | `columns`, `whole_table` | Les colonnes en échec, nommées, 100 au plus ; `whole_table` vaut `true` quand un échec porte sur la table entière, ou au-delà de 100 colonnes |
 | `assertions`, `severity` | Les classes des assertions en échec, et leur plus forte gravité. Ce n'est pas la gravité d'un incident, que seul un humain donne |
@@ -363,7 +363,7 @@ Le nom du test, sa description, son corps SQL, les valeurs attendue et observée
 | `first_failed_at`, `last_failed_at` | Le premier et le dernier échec, à l'heure des événements |
 | `resolved_at` | Quand toutes les colonnes en échec réussissent de nouveau : la plus récente de leurs réussites. Nulle tant que l'une échoue encore, ou au-delà de 100 colonnes, quand toutes ne sont pas connues |
 | `window` | Le début de la fenêtre déduite (`from`) et ce qui le fonde (`basis`, plus bas) |
-| `proposed_at`, `decided_at`, `incident_id` | L'heure de la proposition et celle de sa décision, posées par la base ; l'incident déclaré à la confirmation. Les deux derniers sont nuls tant qu'elle est signalée |
+| `proposed_at`, `decided_at`, `incident_id` | L'heure de la proposition et celle de sa décision ou de son expiration, posées par la base ; l'incident déclaré à la confirmation. Les deux derniers sont nuls tant qu'elle est signalée |
 | `counts` | Sur `GET /api/v1/incident-proposals/{id}` seulement : les runs de test en échec qui s'y rattachent (`failed_runs`), comptés jusqu'à 10 000 (`lower_bound`) |
 
 **La fenêtre déduite** commence à la dernière réussite connue des assertions de la colonne avant le premier échec (`basis` vaut `last_pass`) : la donnée était juste alors. Elle remonte au plus 31 jours avant le premier échec. Sans réussite connue avant lui, ou quand la seule connue le suit (des événements reçus dans le désordre), elle commence 7 jours avant le premier échec (`lookback`) : ce repli peut être trop court ou trop long, et `basis` le dit. Elle finit à la fin de l'échec, `resolved_at`, quand elle est connue. Ni la dernière écriture du jeu, lue dans le graphe, ni la valeur observée d'une assertion ne la fondent : la première manquerait des écritures faites sans test, la seconde est du texte libre.
@@ -416,6 +416,12 @@ La réponse `200` est la proposition telle qu'elle est désormais, et `changed` 
 
 Rien n'est enregistré ni annoncé pour une demande refusée. Une décision prend un verrou sur la table des propositions le temps de sa transaction, comme les workers qui les créent : une décision ne croise ni une création ni une autre décision. Par la ligne de commande : [`answerlineage incident proposals`, `confirm` et `dismiss`](cli.md#answerlineage-incident-proposals).
 
+### Expiration
+
+Une proposition à laquelle aucun nouvel échec ne s'est rattaché depuis 7 jours expire : elle passe `expired`, sans rien déclarer ni annoncer, et ne se décide plus. Un échec qui revient ensuite ouvre une nouvelle proposition. Les workers en font l'entretien chaque minute ; le journal nomme une proposition expirée par son identifiant. Pour qu'une proposition ne s'oublie pas en silence, la [route de santé](cli.md#la-route-de-santé) dit combien attendent et depuis quand la plus ancienne, et `answerlineage doctor` signale celles qui attendent depuis plus de 24 heures (`proposals_waiting`).
+
+Les signaux d'échec reçus il y a plus de 62 jours sont purgés, par lots : un vieil événement rejoué ne fait pas renaître une proposition, puisqu'il est trop ancien pour en proposer. Une proposition garde ce qu'elle a réuni.
+
 ### Bornes
 
 Un émetteur n'est pas authentifié : il peut envoyer des échecs en nombre. Chaque borne dit ce qu'elle écarte, par un compteur, jamais par une valeur.
@@ -426,7 +432,7 @@ Un émetteur n'est pas authentifié : il peut envoyer des échecs en nombre. Cha
 | 1 000 colonnes relevées par événement, échecs d'abord | Perdues, comptées (`dropped`) |
 | 100 000 signaux en attente d'un worker | Les nouveaux sont perdus, comptés (`dropped`) |
 | 100 000 colonnes suivies (dernière réussite, dernier échec) | Seules celles déjà suivies sont mises à jour : la fenêtre d'une colonne nouvelle se replie sur `lookback` |
-| 100 propositions signalées à la fois | Le signal est refusé (`refused`), et l'épisode dit une fois au journal des workers, jusqu'à ce qu'une proposition soit décidée. Un émetteur hostile peut ainsi masquer les vraies : c'est une [acceptation du modèle de menaces](securite/modele-de-menaces.md#acceptations) |
+| 100 propositions signalées à la fois | Le signal est refusé (`refused`), et l'épisode dit une fois au journal des workers, jusqu'à ce qu'une proposition soit décidée ou expire. Un émetteur hostile peut ainsi masquer les vraies : c'est une [acceptation du modèle de menaces](securite/modele-de-menaces.md#acceptations) |
 | Un événement reçu ou daté de plus de 31 jours | Il ne propose rien (`stale`) |
 
 ## Ce qui n'existe pas encore
