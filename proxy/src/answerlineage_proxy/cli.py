@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import sys
@@ -64,9 +65,12 @@ from answerlineage_proxy.quarantine import (
     QuarantineSettings,
     QuarantineSync,
 )
+from answerlineage_proxy.resource import check_gateway
 from answerlineage_proxy.sink import EventSink, NullSink
 
 logger = logging.getLogger("answerlineage_proxy")
+
+_MODE_NAMES = {"transparent": "transparent", "gateway": "passerelle"}
 
 ENV_COVERAGE_WINDOW = "ANSWERLINEAGE_PROXY_COVERAGE_WINDOW_SECONDS"
 # Boîte d'envoi : l'adresse de l'API d'AnswerLineage, ses bornes, son délai de vidage.
@@ -120,7 +124,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-preserve-host",
         action="store_true",
-        help="remplace l'en-tête Host par celui du serveur MCP (mode passerelle)",
+        help=(
+            "mode passerelle : les clients joignent le proxy à sa propre URL, et l'en-tête Host "
+            "devient celui du serveur MCP ; refusé pour un serveur dont les jetons sont liés à "
+            "son URL"
+        ),
+    )
+    parser.add_argument(
+        "--audience-bound-tokens",
+        action="store_true",
+        help=(
+            "déclare les jetons du serveur MCP liés à son URL (audience) : le mode passerelle "
+            "est alors refusé, sans lire les métadonnées OAuth du serveur"
+        ),
     )
     parser.add_argument(
         "--max-inspected-bytes",
@@ -381,6 +397,7 @@ def settings_from_args(argv: Sequence[str] | None, environment: Mapping[str, str
         host=args.host or environment.get(ENV_HOST, DEFAULT_HOST),
         port=port,
         preserve_host=not args.no_preserve_host,
+        audience_bound_tokens=args.audience_bound_tokens,
         max_inspected_bytes=args.max_inspected_bytes,
         sql_tools=sql_tools_from_args(args),
         allowed_hosts=args.allow_host or listed(environment.get(ENV_ALLOWED_HOSTS)),
@@ -468,15 +485,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         coverage_window = coverage_window_from_args(argv, os.environ)
         outbox = outbox_settings_from_args(argv, os.environ)
         quarantine = quarantine_settings_from_args(argv, os.environ, outbox)
+        if settings.mode == "gateway":
+            # Les métadonnées OAuth du serveur disent si ses jetons sont liés à son URL :
+            # elles se lisent avant de servir, jamais sur le chemin d'un appel.
+            asyncio.run(check_gateway(settings))
     except ProxyConfigurationError as error:
         print(f"Configuration invalide : {error}", file=sys.stderr)
         return 2
 
     logger.info(
-        "Proxy MCP du serveur « %s » : écoute sur %s:%d.",
+        "Proxy MCP du serveur « %s » : écoute sur %s:%d, mode %s.",
         settings.server_name,
         settings.host,
         settings.port,
+        _MODE_NAMES[settings.mode],
     )
     if settings.host not in LOOPBACK_HOSTS and not settings.allowed_hosts:
         logger.warning(

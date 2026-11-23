@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 import httpx
 
@@ -71,6 +71,25 @@ _ARGUMENT_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _NAMESPACE = re.compile(r"[A-Za-z0-9_.:/@-]{1,255}")
 # Taille lue d'un fichier de clé : une clé hexadécimale y tient largement.
 _KEY_FILE_BYTES = 4096
+
+# Le mode passerelle refusé pour un serveur MCP dont les jetons sont liés à son URL : un
+# texte fixe, qui ne cite ni l'adresse du serveur ni rien de ses métadonnées.
+_GATEWAY_REFUSED = "Le mode passerelle (--no-preserve-host) est refusé"
+_GATEWAY_WHY = (
+    "un client qui joint le proxy à sa propre URL obtient un jeton pour une autre audience, que "
+    "le serveur refuse, et le proxy ne termine pas OAuth pour en obtenir un autre. Placer le "
+    "proxy en mode transparent, sous l'URL du serveur MCP."
+)
+GATEWAY_REFUSED_BY_DECLARATION = (
+    f"{_GATEWAY_REFUSED} : les jetons de ce serveur MCP sont déclarés liés à son URL "
+    f"(--audience-bound-tokens) ; {_GATEWAY_WHY}"
+)
+GATEWAY_REFUSED_BY_METADATA = (
+    f"{_GATEWAY_REFUSED} : le serveur MCP publie des métadonnées de ressource protégée OAuth "
+    f"(RFC 9728), ses jetons sont donc liés à son URL ; {_GATEWAY_WHY}"
+)
+
+Mode = Literal["transparent", "gateway"]
 
 
 class ProxyConfigurationError(ValueError):
@@ -297,8 +316,13 @@ class ProxySettings:
     server_name: str
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
-    # Mode transparent : le serveur reçoit l'en-tête Host envoyé par le client.
+    # Mode transparent : les clients joignent le proxy à l'URL du serveur MCP, et le serveur
+    # reçoit l'en-tête Host qu'ils envoient. Sinon, mode passerelle : ils le joignent à sa
+    # propre URL, et Host devient celui du serveur.
     preserve_host: bool = True
+    # L'exploitant déclare les jetons du serveur MCP liés à son URL : le mode passerelle
+    # est alors refusé sans rien lire du serveur.
+    audience_bound_tokens: bool = False
     # Au-delà, le corps est relayé sans être lu.
     max_inspected_bytes: int = DEFAULT_MAX_INSPECTED_BYTES
     connect_timeout: float = 10.0
@@ -351,6 +375,8 @@ class ProxySettings:
             raise ProxyConfigurationError("Le port doit être compris entre 0 et 65535.")
         _check_lifecycle(self)
         _check_capture(self)
+        if not self.preserve_host and self.audience_bound_tokens:
+            raise ProxyConfigurationError(GATEWAY_REFUSED_BY_DECLARATION)
         try:
             RequestGuard.create([self.upstream_host])
         except ValueError as error:
@@ -362,6 +388,12 @@ class ProxySettings:
             RequestGuard.create(self.allowed_hosts, self.allowed_origins)
         except ValueError as error:
             raise ProxyConfigurationError(str(error)) from error
+
+    @property
+    def mode(self) -> Mode:
+        """Transparent, quand les clients joignent le proxy à l'URL du serveur MCP ; passerelle,
+        quand ils le joignent à la sienne."""
+        return "transparent" if self.preserve_host else "gateway"
 
     @property
     def upstream_host(self) -> str:
@@ -387,6 +419,7 @@ class ProxySettings:
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         preserve_host: bool = True,
+        audience_bound_tokens: bool = False,
         max_inspected_bytes: int = DEFAULT_MAX_INSPECTED_BYTES,
         sql_tools: Mapping[str, SqlTool] | None = None,
         allowed_hosts: Sequence[str] = (),
@@ -412,6 +445,7 @@ class ProxySettings:
             host=host,
             port=port,
             preserve_host=preserve_host,
+            audience_bound_tokens=audience_bound_tokens,
             max_inspected_bytes=max_inspected_bytes,
             sql_tools=dict(sql_tools or {}),
             allowed_hosts=tuple(allowed_hosts),

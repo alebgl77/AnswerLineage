@@ -1074,6 +1074,7 @@ _HTTP_ONLY: Final = {
     "allow_host": "--allow-host",
     "allow_origin": "--allow-origin",
     "no_preserve_host": "--no-preserve-host",
+    "audience_bound_tokens": "--audience-bound-tokens",
     "admin_port": "--admin-port",
     "shutdown_delay_seconds": "--shutdown-delay-seconds",
     "shutdown_grace_seconds": "--shutdown-grace-seconds",

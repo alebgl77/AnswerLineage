@@ -7,7 +7,7 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --server-name entrep
 uv run answerlineage-proxy --server-name fichiers --api-url http://127.0.0.1:8000 -- /opt/mcp/serveur-fichiers --racine /srv/partage
 ```
 
-La première ligne écoute devant un serveur HTTP. La seconde lance un serveur local en stdio et se place entre lui et le client : voir [Mode stdio](#mode-stdio). En HTTP, le proxy peut tourner en plusieurs [réplicas](#plusieurs-réplicas). Sauf mention contraire, ce qui suit décrit le mode HTTP ; le mode stdio en reprend l'inspection, l'analyse du SQL, l'étiquetage des requêtes, les règles de lecture, les empreintes, la qualité de service, les relevés de couverture, la boîte d'envoi et la synchronisation des périmètres en quarantaine.
+La première ligne écoute devant un serveur HTTP. La seconde lance un serveur local en stdio et se place entre lui et le client : voir [Mode stdio](#mode-stdio). En HTTP, le proxy se place sous l'URL du serveur sans rien changer à ses jetons ([Modes transparent et passerelle](#modes-transparent-et-passerelle)), et peut tourner en plusieurs [réplicas](#plusieurs-réplicas). Sauf mention contraire, ce qui suit décrit le mode HTTP ; le mode stdio en reprend l'inspection, l'analyse du SQL, l'étiquetage des requêtes, les règles de lecture, les empreintes, la qualité de service, les relevés de couverture, la boîte d'envoi et la synchronisation des périmètres en quarantaine.
 
 | Réglage | Option | Variable | Défaut |
 | --- | --- | --- | --- |
@@ -17,7 +17,8 @@ La première ligne écoute devant un serveur HTTP. La seconde lance un serveur l
 | Port d'écoute | `--port` | `ANSWERLINEAGE_PROXY_PORT` | `8717` |
 | Hôtes attendus dans `Host` | `--allow-host` | `ANSWERLINEAGE_PROXY_ALLOWED_HOSTS` | boucle locale et serveur MCP |
 | Origines attendues dans `Origin` | `--allow-origin` | `ANSWERLINEAGE_PROXY_ALLOWED_ORIGINS` | celles des hôtes attendus |
-| En-tête `Host` du serveur MCP | `--no-preserve-host` | | celui du client |
+| Mode passerelle : les clients joignent le proxy à sa propre URL, et le serveur MCP reçoit son propre nom dans `Host` ([Modes](#modes-transparent-et-passerelle)) | `--no-preserve-host` | | mode transparent : le serveur reçoit le `Host` du client |
+| Jetons du serveur MCP déclarés liés à son URL : le mode passerelle est refusé | `--audience-bound-tokens` | | non déclarés : en mode passerelle, lus dans ses métadonnées OAuth |
 | Taille de corps lue | `--max-inspected-bytes` | | 1 Mo |
 | Outil dont un argument porte du SQL | `--sql-tool` | | aucun |
 | Outil SQL dont la requête relayée porte l'identifiant de run en commentaire | `--sql-run-comment` | | aucun : la requête n'est jamais modifiée |
@@ -75,6 +76,74 @@ uv run answerlineage-proxy --upstream http://mcp.interne:9000 --host 0.0.0.0 --a
 ```
 
 `--allow-host '*'` accepte tout hôte, toute origine et toute requête inter-sites : à réserver à un proxy placé derrière un autre contrôle. Les variables d'environnement prennent une liste séparée par des virgules.
+
+## Modes transparent et passerelle
+
+Le proxy se place devant un serveur MCP de deux façons, selon l'URL que les clients joignent.
+
+| Mode | Les clients joignent | Le serveur MCP reçoit dans `Host` | Réglage |
+| --- | --- | --- | --- |
+| Transparent | L'URL du serveur MCP, celle qu'ils connaissaient : son nom mène désormais au proxy | Le nom que le client a joint, inchangé | Par défaut |
+| Passerelle | L'URL du proxy, qui n'est pas celle du serveur | Le nom du serveur MCP, que le proxy substitue | `--no-preserve-host` |
+
+Dans les deux modes, le chemin et les paramètres reçus suivent celui de `--upstream`, et rien d'autre ne change : l'en-tête `Authorization`, le défi `401` et les métadonnées OAuth passent tels quels, sans être lus ([Autorisation](#autorisation)). Le proxy dit son mode au démarrage (« écoute sur 127.0.0.1:8717, mode transparent. »).
+
+### Un jeton lié à son URL ne passe pas une passerelle
+
+Un serveur MCP protégé par OAuth publie ses métadonnées de ressource protégée (RFC 9728) : elles nomment sa ressource, l'URL pour laquelle un jeton lui est émis. Le client MCP demande un jeton pour l'URL qu'il joint (indicateur de ressource, RFC 8707), et le serveur n'accepte qu'un jeton dont l'audience est sa ressource : un jeton émis pour un autre service ne vaut rien chez lui.
+
+En mode transparent, l'URL que joint le client est celle du serveur : le jeton qu'il obtient est le bon, et il passe tel quel. Derrière une passerelle, le client joint l'URL du proxy :
+
+- les métadonnées du serveur, relayées par le proxy, désignent une autre ressource que l'URL jointe : le client doit les écarter (RFC 9728, section 3.3) ;
+- un jeton obtenu pour l'URL du proxy n'a pas la bonne audience : le serveur le refuse, comme il le doit.
+
+Pour passer, le proxy devrait échanger ce jeton contre un autre, émis pour le serveur : il terminerait OAuth et détiendrait les jetons des agents, ce qu'il ne fait jamais. Relâcher la vérification d'audience du serveur n'est pas une issue non plus : un jeton émis pour n'importe quel service y serait accepté.
+
+### La passerelle refusée
+
+Le mode passerelle est donc refusé pour un serveur dont les jetons sont liés à son URL. Le proxy le sait de deux façons, avant de servir :
+
+- l'exploitant le déclare (`--audience-bound-tokens`) : rien n'est lu du serveur ;
+- sinon, en mode passerelle seulement, le proxy lit les métadonnées du serveur aux adresses de la RFC 9728 : `/.well-known/oauth-protected-resource` suivi du chemin de `--upstream`, puis le même préfixe à la racine. Un document qui déclare sa ressource (`resource`, une URL absolue sans fragment) suffit.
+
+Le proxy s'arrête alors avec le code 2, sans rien citer du serveur ni de ses métadonnées :
+
+```text
+Configuration invalide : Le mode passerelle (--no-preserve-host) est refusé : le serveur MCP publie des métadonnées de ressource protégée OAuth (RFC 9728), ses jetons sont donc liés à son URL ; un client qui joint le proxy à sa propre URL obtient un jeton pour une autre audience, que le serveur refuse, et le proxy ne termine pas OAuth pour en obtenir un autre. Placer le proxy en mode transparent, sous l'URL du serveur MCP.
+```
+
+En mode passerelle, `--upstream` est donc l'URL du point MCP du serveur, chemin compris (`https://mcp.interne/mcp`) : les adresses des métadonnées s'en déduisent.
+
+La réponse du serveur est une entrée hostile. La lecture n'envoie que `Accept` et `Accept-Encoding: identity`, aucun identifiant ; elle ne suit aucune redirection, ne lit rien de l'environnement, ne déploie pas un corps compressé, lit 64 Kio au plus, en JSON strict (une clé répétée ou une constante non numérique écartent le document), et s'arrête au bout de 10 s pour les deux adresses. Elle n'a lieu qu'au démarrage, jamais sur le chemin d'un appel. Un serveur qui ne publie rien (`404`, `410`) n'a pas de jetons liés connus : la passerelle démarre. Une réponse qui ne dit rien de sûr ne bloque pas non plus le démarrage, la capture restant ouverte en cas de panne : le journal le dit par un motif, sans rien recopier de la réponse, et rappelle `--audience-bound-tokens`.
+
+| Motif | Réponse |
+| --- | --- |
+| `unreachable` | Serveur injoignable |
+| `timeout` | Aucune réponse complète dans les 10 s |
+| `redirect` | Une redirection, qui n'est pas suivie |
+| `status` | Un autre statut que `200`, `404`, `410` ou une redirection |
+| `encoded` | Un corps compressé |
+| `not_json` | Un autre type que `application/json`, ou un JSON qui n'est pas strict |
+| `too_large` | Plus de 64 Kio |
+| `invalid_document` | Un document sans ressource lisible : absente, autre chose qu'une URL `http` ou `https`, avec un fragment, ou de plus de 2 048 caractères |
+
+```text
+WARNING answerlineage_proxy Mode passerelle : métadonnées OAuth du serveur MCP illisibles (timeout) ; le proxy ne peut pas dire si ses jetons sont liés à son URL. S'ils le sont, le serveur refusera les appels : le déclarer avec --audience-bound-tokens, ou placer le proxy en mode transparent.
+```
+
+### Placer le proxy en mode transparent
+
+Le nom du serveur MCP mène au proxy, qui joint le serveur à une autre adresse :
+
+1. le nom public (`mcp.exemple.fr`) désigne désormais le proxy, dans le DNS ou dans l'équilibreur qui termine TLS devant lui ; le serveur reste joignable du proxy, à son adresse interne ;
+2. `--upstream` est cette adresse interne, sans chemin : le chemin que joint le client arrive inchangé au serveur ;
+3. `--allow-host` ajoute le nom public aux [hôtes attendus](#hôtes-et-origines-attendus) dans `Host`.
+
+```bash
+uv run answerlineage-proxy --upstream http://10.0.4.12:9000 --server-name entrepot --host 0.0.0.0 --allow-host mcp.exemple.fr
+```
+
+Le serveur reçoit le `Host`, le chemin et le jeton du client : rien ne change pour lui. Un test le vérifie devant un serveur MCP protégé par OAuth, qui contrôle la signature et l'audience du jeton et publie ses métadonnées : le jeton du client passe octet pour octet et le serveur l'accepte. Derrière une passerelle, le jeton obtenu pour l'URL du proxy est refusé par le même serveur, et la configuration l'est aussi.
 
 ## Plusieurs réplicas
 
@@ -853,7 +922,7 @@ Dans la configuration d'un client MCP, la commande devient `answerlineage-proxy`
 - Sa sortie d'erreur est celle du proxy : le proxy ne la lit pas et ne la recopie pas, ce sont les journaux du serveur. Le journal du proxy y passe aussi. Sur sa sortie standard, le proxy n'écrit que ce que l'enfant écrit.
 - Une commande qui ne démarre pas arrête le proxy avec un message fixe, qui ne cite ni la commande ni ses arguments : « Serveur MCP non lancé : commande introuvable. » (code 127) ou « Serveur MCP non lancé : commande non exécutable. » (code 126), comme un shell POSIX.
 - Sans `--server-name` ni `ANSWERLINEAGE_PROXY_SERVER_NAME`, le nom du serveur dans le lignage est celui du programme lancé, sans son chemin (`serveur-fichiers` pour `/opt/mcp/serveur-fichiers`). Un lanceur (`npx`, `uvx`, `docker`, `python`) n'est pas un nom de serveur : il confondrait tous les serveurs qu'il lance, d'où `--server-name`.
-- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-run-comment`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, `--instance-id`, l'adresse de l'API et les bornes de la [boîte d'envoi](#boîte-denvoi), l'intervalle des [périmètres en quarantaine](#périmètres-en-quarantaine), et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin`, `--no-preserve-host`, `--admin-port`, `--shutdown-delay-seconds` et `--shutdown-grace-seconds` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
+- Les réglages de la capture valent comme en HTTP : `--server-name`, `--max-inspected-bytes`, `--sql-tool`, `--sql-run-comment`, `--sql-budget-ms`, `--sql-queue-size`, `--sql-cache-size`, la clé d'empreinte, `--read-rules-file`, `--coverage-window-seconds`, `--instance-id`, l'adresse de l'API et les bornes de la [boîte d'envoi](#boîte-denvoi), l'intervalle des [périmètres en quarantaine](#périmètres-en-quarantaine), et leurs variables. Ceux du réseau n'ont pas de sens : `--upstream`, `--host`, `--port`, `--allow-host`, `--allow-origin`, `--no-preserve-host`, `--audience-bound-tokens`, `--admin-port`, `--shutdown-delay-seconds` et `--shutdown-grace-seconds` arrêtent le proxy avec « Configuration invalide : L'option --upstream est sans objet en mode stdio. » et le code 2 ; leurs variables d'environnement sont ignorées.
 
 ### Le relais
 
@@ -915,6 +984,7 @@ Le relais n'attend jamais l'inspection ni l'émission : il remet sa copie et con
 | Statut HTTP | `httpStatus`, issue `http_error` | Aucun |
 | Portée d'une reprise | Session MCP, puis trace, puis le proxy | Trace, puis le proxy, qui ne sert qu'un client |
 | Requête étiquetée, sur option | Le corps lu en entier, sa longueur mise à jour | La ligne rassemblée avant d'être écrite |
+| Mode transparent ou passerelle | Selon l'URL que joint le client | Sans objet : le client lance le serveur |
 | Sondes de santé | Port d'administration, sur option | Aucune |
 | Arrêt | Retrait, grâce, puis vidage de la boîte | Celui du serveur, puis vidage de la boîte |
 
@@ -926,7 +996,9 @@ Aucun argument, résultat, en-tête ni jeton n'est stocké ou journalisé : des 
 
 Le proxy ne prend aucune part à l'autorisation. Le défi `401` d'un serveur MCP protégé, ses métadonnées OAuth (`/.well-known/…`) et les échanges d'un client avec le serveur d'autorisation passent tels quels : le proxy n'y répond jamais lui-même, ne s'authentifie pas à la place du client et ne garde aucun jeton d'un appel au suivant.
 
-Un test fait traverser un jeton, un cookie, un paramètre recopié en en-tête et un argument d'outil sur tout le parcours, du proxy au graphe, puis les cherche dans les événements, la base entière, les réponses de l'API, les compteurs et tous les journaux : il n'en reste rien.
+Un test fait traverser un jeton, un cookie, un paramètre recopié en en-tête et un argument d'outil sur tout le parcours, du proxy au graphe, puis les cherche dans les événements, la base entière, les réponses de l'API, les compteurs et tous les journaux : il n'en reste rien. Le proxy y est placé en mode transparent devant un serveur MCP protégé par OAuth, qui contrôle la signature et l'audience du jeton : le jeton lui arrive octet pour octet, et il l'accepte.
+
+Le mode passerelle, où un jeton lié à l'URL du serveur ne peut pas passer, est refusé pour un tel serveur ([Modes transparent et passerelle](#modes-transparent-et-passerelle)). Pour le savoir, le proxy lit au démarrage les métadonnées publiques du serveur, sans s'authentifier.
 
 ## L'événement émis
 
@@ -955,6 +1027,8 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - La santé ne dit pas si le serveur MCP ou l'API d'AnswerLineage répondent : un réplica reste prêt quand ils tombent, pour que la capture reste ouverte.
 - Un appel plus long que le délai de grâce est coupé à l'arrêt. Son événement dit `transport_error` : la facette de qualité de service n'a pas d'issue propre à l'arrêt du proxy.
 - Le délai de retrait se règle à la main, d'après le répartiteur : le proxy ne sait pas quand celui-ci l'a retiré.
+- En mode passerelle, seules les adresses bien connues de la RFC 9728 sont lues : un serveur qui ne désigne ses métadonnées que dans son défi `401` n'est pas reconnu, et `--audience-bound-tokens` le déclare. Des métadonnées illisibles au démarrage, serveur injoignable par exemple, laissent démarrer la passerelle : si les jetons du serveur sont liés à son URL, il refusera ensuite les appels.
+- Le mode transparent ne se règle pas dans le proxy seul : le nom du serveur doit mener au proxy, dans le DNS ou dans l'équilibreur qui le précède.
 - Tué par SIGKILL, le proxy ne peut rien transmettre à son enfant : celui-ci voit la fin de son entrée, sur laquelle un serveur MCP s'arrête, mais un serveur qui l'ignore lui survit. Arrêter le groupe de processus les arrête ensemble.
 - Un Ctrl-C au terminal atteint tout le groupe de processus : en stdio, l'enfant reçoit alors SIGINT deux fois, du terminal et du proxy.
 - En stdio, une réponse plus grande que la taille lue, dont l'identifiant suit le résultat au-delà des 16 premiers Ko, ne se rattache pas à son appel : l'appel n'a pas d'événement et compte comme perdu. De même, un appel d'outil plus grand que la taille lue dont l'identifiant suit les arguments n'est pas décrit. Relever `--max-inspected-bytes` en réduit le nombre.

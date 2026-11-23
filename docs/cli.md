@@ -592,7 +592,7 @@ Dans la configuration d'un client MCP, la commande du serveur devient `answerlin
 
 La sous-commande cède la place : le processus devient le proxy installé dans le même environnement, `python -m answerlineage_proxy.cli` avec les mêmes arguments. Rien ne s'intercale donc entre le client et le proxy : entrée, sorties, signaux, réglages (`answerlineage proxy --help` donne ceux du proxy) et codes de sortie sont ceux du proxy, en stdio celui du serveur ([Mode stdio](proxy.md#mode-stdio)). Elle n'emploie ni `--url` ni `--timeout`.
 
-En HTTP, les réglages d'un déploiement en plusieurs réplicas passent de même : `--admin-port` pour les sondes de santé, `--shutdown-delay-seconds` et `--shutdown-grace-seconds` pour l'arrêt gracieux ([Plusieurs réplicas](proxy.md#plusieurs-réplicas)). Le proxy sort avec `0` après un arrêt gracieux, `2` sur un réglage invalide, `3` quand il ne peut pas écouter.
+En HTTP, les réglages d'un déploiement en plusieurs réplicas passent de même : `--admin-port` pour les sondes de santé, `--shutdown-delay-seconds` et `--shutdown-grace-seconds` pour l'arrêt gracieux ([Plusieurs réplicas](proxy.md#plusieurs-réplicas)), et `--audience-bound-tokens` pour refuser le mode passerelle devant un serveur dont les jetons sont liés à son URL ([Modes transparent et passerelle](proxy.md#modes-transparent-et-passerelle)). Le proxy sort avec `0` après un arrêt gracieux, `2` sur un réglage invalide, `3` quand il ne peut pas écouter.
 
 Le paquet `answerlineage-cli` ne dépend pas du proxy. Sans le paquet `answerlineage-proxy` dans le même environnement, la commande le dit et sort avec le code `2`.
 

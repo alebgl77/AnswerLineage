@@ -479,6 +479,57 @@ reason = "Le proxy n'authentifie pas encore l'API : il se fie au TLS de l'adress
 consequence = "Qui compromet l'API, ou la joint en http sur un réseau qu'il écoute, fait croire aux proxys une quarantaine fausse ou en tait une vraie : aujourd'hui sans effet sur les appels ; le jour où le proxy agira, il annotera ou bloquera à tort, ou laissera passer des lectures en quarantaine."
 
 [[threat]]
+id = "proxy/jeton-hors-audience"
+name = "Une passerelle pousse à accepter un jeton hors de son audience"
+category = "elevation-of-privilege"
+boundary = "agent-proxy-mcp"
+assets = ["jetons", "continuite-des-agents"]
+description = "Placé en passerelle devant un serveur MCP dont les jetons sont liés à son URL, le proxy ne laisserait passer que des jetons émis pour une autre audience, que le serveur refuse. Pour en sortir, on relâcherait la vérification d'audience du serveur, qui accepterait alors un jeton émis pour n'importe quel service, ou l'on ferait terminer OAuth au proxy, qui détiendrait les jetons des agents."
+
+[[threat.mitigation]]
+description = "Le mode passerelle est refusé, avec son explication, pour un serveur dont les métadonnées de ressource protégée (RFC 9728) déclarent la ressource : la configuration s'arrête avant de servir."
+code = "proxy/src/answerlineage_proxy/resource.py::check_gateway"
+test = "proxy/tests/test_modes.py::test_through_a_gateway_a_token_bound_to_the_url_of_the_server_cannot_pass"
+
+[[threat.mitigation]]
+description = "L'exploitant qui sait les jetons du serveur liés à son URL le déclare : le mode passerelle est refusé sans rien lire du serveur."
+code = "proxy/src/answerlineage_proxy/config.py::ProxySettings"
+test = "proxy/tests/test_modes.py::test_the_gateway_mode_is_refused_when_the_operator_declares_bound_tokens"
+
+[[threat.mitigation]]
+description = "En mode transparent, le jeton du client atteint le serveur protégé octet pour octet, sous le nom du serveur, et le serveur l'accepte : rien n'oblige à relâcher l'audience."
+code = "proxy/src/answerlineage_proxy/app.py"
+test = "proxy/tests/test_modes.py::test_in_transparent_mode_the_token_of_the_client_passes_untouched_and_is_accepted"
+
+[[threat]]
+id = "proxy/metadonnees-hostiles"
+name = "Les métadonnées OAuth du serveur MCP, lues au démarrage, retiennent ou trompent le proxy"
+category = "denial-of-service"
+boundary = "agent-proxy-mcp"
+assets = ["disponibilite", "continuite-des-agents"]
+description = "En mode passerelle, le proxy lit au démarrage les métadonnées de ressource protégée du serveur MCP. Un serveur hostile, ou ce qui se place sur le chemin, répond goutte à goutte, sans fin, par une redirection vers une autre adresse, un corps démesuré, compressé ou piégé, ou un texte fait pour entrer dans le journal ou dans un message d'erreur."
+
+[[threat.mitigation]]
+description = "Une réponse hostile est lue bornée, sans décompression, en JSON strict, et ne dit rien : le journal ne donne qu'un motif d'une liste fermée, rien de la réponse."
+code = "proxy/src/answerlineage_proxy/resource.py::read_metadata"
+test = "proxy/tests/test_modes.py::test_a_hostile_metadata_answer_says_nothing_and_is_never_copied"
+
+[[threat.mitigation]]
+description = "Seules les adresses bien connues du serveur réglé sont jointes : aucune redirection suivie, rien de l'environnement, aucun identifiant envoyé."
+code = "proxy/src/answerlineage_proxy/resource.py::read_metadata"
+test = "proxy/tests/test_modes.py::test_a_redirect_of_the_metadata_is_not_followed"
+
+[[threat.mitigation]]
+description = "Un serveur muet est abandonné dans le délai de lecture, et la passerelle démarre : la capture reste ouverte."
+code = "proxy/src/answerlineage_proxy/resource.py::read_metadata"
+test = "proxy/tests/test_modes.py::test_a_server_that_never_answers_is_given_up_within_the_deadline"
+
+[[threat.mitigation]]
+description = "Rien n'est lu en mode transparent, et rien jamais sur le chemin d'un appel : la lecture précède le démarrage."
+code = "proxy/src/answerlineage_proxy/cli.py::main"
+test = "proxy/tests/test_modes.py::test_in_transparent_mode_nothing_is_read_from_the_server_at_start"
+
+[[threat]]
 id = "proxy/port-d-administration"
 name = "Le port d'administration fait sortir l'état du proxy ou sert à le gêner"
 category = "information-disclosure"

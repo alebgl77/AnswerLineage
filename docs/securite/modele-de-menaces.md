@@ -90,6 +90,8 @@ Le détail de chaque menace, son scénario, ses parades avec leur code et leur t
 | `proxy/lecture-omise` | L'analyse du SQL omet une colonne lue | Altération | 2 parades |
 | `proxy/regle-de-lecture-trompee` | Un outil non SQL lit autre chose que ce que sa règle de lecture déclare | Altération | 1 parade, acceptation à signer |
 | `proxy/perimetre-usurpe` | Une API compromise ou usurpée pousse aux proxys un faux périmètre en quarantaine | Usurpation | 4 parades, acceptation à signer |
+| `proxy/jeton-hors-audience` | Une passerelle pousse à accepter un jeton hors de son audience | Élévation de privilège | 3 parades |
+| `proxy/metadonnees-hostiles` | Les métadonnées OAuth du serveur MCP, lues au démarrage, retiennent ou trompent le proxy | Déni de service | 4 parades |
 | `proxy/port-d-administration` | Le port d'administration fait sortir l'état du proxy ou sert à le gêner | Divulgation | 2 parades |
 | `proxy/arret-sous-charge` | L'arrêt ou le redéploiement d'un proxy fait échouer des appels d'agents | Déni de service | 3 parades |
 
