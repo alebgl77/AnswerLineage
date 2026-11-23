@@ -32,7 +32,17 @@ from answerlineage_workers.destination import Sender, parse_destination
 from answerlineage_workers.queue import run_worker
 from answerlineage_workers.reemission import Reemission, body
 
-pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+# Marquez pèse près d'un gigaoctet : le test ne tourne que là où on le demande, dans une
+# seule case de la matrice du pipeline, et sur le poste à la demande.
+CATALOG = "ANSWERLINEAGE_TEST_CATALOG"
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.anyio,
+    pytest.mark.skipif(
+        os.environ.get(CATALOG) != "1",
+        reason=f"Catalogue non visé : {CATALOG}=1 lance ce test sur un vrai Marquez.",
+    ),
+]
 
 # Marquez 0.51.1, publié le 27 mars 2025.
 MARQUEZ_IMAGE = (

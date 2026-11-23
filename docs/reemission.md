@@ -35,7 +35,7 @@ Le point d'entrée dépend du catalogue :
 | OpenMetadata | Le point d'entrée OpenLineage que donne sa documentation | `Bearer` et le jeton d'un robot |
 | Dataplex | `https://datalineage.googleapis.com/v1/projects/PROJET/locations/REGION:processOpenLineageRunEvent` | `Bearer` et un jeton OAuth, qui expire ([limites](#limites-connues)) |
 
-Seul Marquez est éprouvé par les tests ; pour les autres, l'adresse et l'authentification sont à vérifier dans la documentation du catalogue.
+Seul Marquez est éprouvé par les tests ; pour les autres, l'adresse et l'authentification sont à vérifier dans la documentation du catalogue. L'image de Marquez pèse près d'un gigaoctet : son test ne tourne que si `ANSWERLINEAGE_TEST_CATALOG=1`, dans une seule case de la matrice du pipeline (Python 3.13, PostgreSQL 18) et sur le poste à la demande.
 
 ### L'adresse de la destination
 

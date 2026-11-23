@@ -116,6 +116,9 @@ tests-postgres-17:
 
 tests-postgres-18:
   extends: [.tests, .postgres-18]
+  variables:
+    # La réémission vers un vrai Marquez ne tourne qu'avec PostgreSQL 18.
+    ANSWERLINEAGE_TEST_CATALOG: "1"
 
 secrets:
   extends: .docker

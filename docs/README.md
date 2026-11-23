@@ -21,6 +21,7 @@
 - [Ligne de commande](cli.md)
 - [Explorateur](explorateur.md)
 - [Entreprise synthétique, corpus de vérité et corpus d'abus](corpus.md)
+- [Réémission vers un catalogue OpenLineage](reemission.md)
 
 ## Faire tourner et publier
 
