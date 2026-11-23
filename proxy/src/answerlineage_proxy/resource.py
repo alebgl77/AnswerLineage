@@ -53,6 +53,9 @@ WELL_KNOWN: Final = b"/.well-known/oauth-protected-resource"
 # ressource, et les délais (connexion, chaque lecture, puis la lecture entière).
 MAX_METADATA_BYTES: Final = 64 * 1024
 MAX_RESOURCE_LENGTH: Final = 2048
+# Profondeur d'imbrication admise : un document de métadonnées n'en a que deux. Bornée
+# ici, elle ne dépend pas de la pile que l'interpréteur accorde à l'analyseur JSON.
+MAX_NESTING: Final = 16
 CONNECT_TIMEOUT: Final = 5.0
 READ_TIMEOUT: Final = 5.0
 READ_DEADLINE: Final = 10.0
@@ -100,9 +103,34 @@ def _refuse_constant(_: str) -> Any:
     raise ValueError
 
 
+def _nesting_within(body: bytes, limit: int) -> bool:
+    """Vrai quand tableaux et objets s'imbriquent sur ``limit`` niveaux au plus, chaînes exclues."""
+    depth = 0
+    in_string = escaped = False
+    for byte in body:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:  # \
+                escaped = True
+            elif byte == 0x22:  # "
+                in_string = False
+        elif byte == 0x22:
+            in_string = True
+        elif byte in (0x5B, 0x7B):  # [ {
+            depth += 1
+            if depth > limit:
+                return False
+        elif byte in (0x5D, 0x7D):  # ] }
+            depth -= 1
+    return True
+
+
 def check_document(body: bytes) -> None:
     """Contrôle un document de métadonnées : JSON strict, un objet qui déclare sa ressource
     par une URL absolue sans fragment (RFC 9728, section 2). ``_RefusedError`` sinon."""
+    if not _nesting_within(body, MAX_NESTING):
+        raise _RefusedError("not_json")
     try:
         document = json.loads(
             body.decode("utf-8"), object_pairs_hook=_unique_keys, parse_constant=_refuse_constant

@@ -285,6 +285,19 @@ def document(text: str) -> bytes:
         (200, document('{"resource":"https://a/","resource":"https://CANARI/"}'), JSON, "not_json"),
         (200, document('{"resource":"https://CANARI/","n":NaN}'), JSON, "not_json"),
         (200, document("[" * 30_000 + "]" * 30_000), JSON, "not_json"),
+        # Une profondeur que tout interpréteur lit sans erreur est refusée quand même.
+        (
+            200,
+            document('{"resource":' + "[" * 40 + '"https://CANARI/"' + "]" * 40 + "}"),
+            JSON,
+            "not_json",
+        ),
+        (
+            200,
+            document('{"resource":"ftp://CANARI/' + "[" * 40 + '"}'),
+            JSON,
+            "invalid_document",
+        ),
         (200, b'{"resource":"https://\xff/"}', JSON, "not_json"),
         (200, document('["https://CANARI/"]'), JSON, "invalid_document"),
         (200, document('{"authorization_servers":["https://CANARI/"]}'), JSON, "invalid_document"),
