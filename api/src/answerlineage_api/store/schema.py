@@ -24,7 +24,10 @@ ont un ; ``reemission_stats`` compte ce qui est parti et ce qui s'est perdu.
 
 La quarantaine d'un incident (``incident_quarantine``) est un objet à part,
 rattaché à l'incident : une ligne par activation, active puis levée. Ses états
-et ses transitions forment une liste fermée que la base tient elle-même.
+et ses transitions forment une liste fermée que la base tient elle-même. Sa zone,
+les jeux dérivés de son périmètre que le graphe connaît, est rangée à côté
+(``incident_quarantine_zone``, ``incident_quarantine_derived``) : un instantané
+du graphe, par des noms, que les workers rafraîchissent.
 
 Chaque changement d'état d'un incident attend d'être annoncé au récepteur de
 webhooks dans la file des webhooks (``webhook_queue``), quand un webhook est en
@@ -136,6 +139,10 @@ QUARANTINE_TRANSITIONS: Final[tuple[tuple[str | None, str], ...]] = (
 # Quarantaines actives au plus, tous incidents confondus : les proxys les reçoivent
 # toutes, d'une seule lecture bornée.
 MAX_ACTIVE_QUARANTINES: Final = 100
+# La zone d'une quarantaine : les jeux dérivés de son périmètre, jusqu'à trois écritures
+# de distance, cinquante au plus. Au-delà, la zone se dit tronquée.
+MAX_ZONE_DEPTH: Final = 3
+MAX_ZONE_DERIVED: Final = 50
 # Événement d'incident annoncé par webhook, d'une liste fermée : un par
 # changement d'état qui existe. La déclaration ; l'analyse faite ; l'analyse en
 # échec pour de bon ; la quarantaine activée ; la quarantaine levée. Une analyse
@@ -861,6 +868,43 @@ def create_quarantine_transitions(target: Table, connection: Connection, **_: ob
 
 
 event.listen(incident_quarantine, "after_create", create_quarantine_transitions)
+
+# La zone d'une quarantaine, calculée par les workers depuis le graphe : une ligne par
+# quarantaine, à côté d'elle, que ses transitions laissent intacte. ``computed_at`` est
+# l'heure du graphe lu qui a donné la zone telle qu'elle est ; ``checked_at``, celle du
+# dernier calcul, qui la retrouve parfois inchangée. ``derived`` compte ses jeux dérivés
+# (``incident_quarantine_derived``), ``truncated`` dit qu'une borne en a écarté d'autres.
+incident_quarantine_zone = Table(
+    "incident_quarantine_zone",
+    metadata,
+    Column("quarantine_id", BigInteger, ForeignKey("incident_quarantine.id"), primary_key=True),
+    Column("computed_at", DateTime(timezone=True), nullable=False),
+    Column("checked_at", DateTime(timezone=True), nullable=False),
+    Column("truncated", Boolean, nullable=False),
+    Column("derived", Integer, nullable=False),
+    CheckConstraint("computed_at <= checked_at", name="checked_after"),
+    CheckConstraint(f"derived BETWEEN 0 AND {MAX_ZONE_DERIVED}", name="derived"),
+)
+
+# Les jeux dérivés d'une zone, par espace de noms et nom, comme le périmètre : le graphe
+# se reconstruit, ses identifiants changeraient. La profondeur compte les écritures qui
+# séparent le jeu du périmètre, de 1 à ``MAX_ZONE_DEPTH``.
+incident_quarantine_derived = Table(
+    "incident_quarantine_derived",
+    metadata,
+    Column("quarantine_id", BigInteger, nullable=False),
+    Column("namespace", Text, nullable=False),
+    Column("name", Text, nullable=False),
+    Column("depth", Integer, nullable=False),
+    PrimaryKeyConstraint("quarantine_id", "namespace", "name"),
+    # Le nom que la convention donnerait dépasse les 63 caractères d'un nom PostgreSQL.
+    ForeignKeyConstraint(
+        ["quarantine_id"],
+        [incident_quarantine_zone.c.quarantine_id],
+        name="fk_incident_quarantine_derived_zone",
+    ),
+    CheckConstraint(f"depth BETWEEN 1 AND {MAX_ZONE_DEPTH}", name="depth"),
+)
 
 # File des webhooks : chaque changement d'état d'un incident, à annoncer au
 # récepteur que règlent les workers. Le message y entre dans la transaction qui

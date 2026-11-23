@@ -8,7 +8,8 @@ transaction met en file l'annonce de la déclaration (``webhooks.py``).
 
 Chaque lecture est bornée : une page d'incidents, une page des réponses
 touchées d'un incident, et les destinataires de ces réponses. Un incident se lit
-avec sa dernière quarantaine, active ou levée (``quarantine.py``).
+avec sa dernière quarantaine, active ou levée, et sa zone telle que les proxys la
+reçoivent (``quarantine.py``).
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from answerlineage_api.incidents.models import (
     MAX_DATASETS,
+    MAX_DIFFUSED_DERIVED,
     Analysis,
     AnalysisResult,
     Incident,
@@ -31,11 +33,13 @@ from answerlineage_api.incidents.models import (
     IncidentDeclaration,
     IncidentDetail,
     IncidentList,
+    IncidentQuarantine,
     IncidentScope,
-    Quarantine,
+    QuarantineZone,
     TouchedAnswer,
     in_utc,
 )
+from answerlineage_api.incidents.quarantine import DIFFUSED
 from answerlineage_api.incidents.webhooks import announce
 from answerlineage_api.lineage.models import Coverage, ImpactCounts, Window
 from answerlineage_api.lineage.paging import (
@@ -60,18 +64,28 @@ _COLUMNS = """i.id, i.state, i.severity, i.window_start, i.window_end, i.declare
            s.finished_at, s.answers, s.recipients, s.truncated,
            q.state AS quarantine_state, q.mode AS quarantine_mode,
            q.activated_at AS quarantine_activated_at, q.lifted_at AS quarantine_lifted_at,
+           z.computed_at AS zone_computed_at, z.checked_at AS zone_checked_at,
+           coalesce(b.budget, z.derived) AS zone_derived,
+           z.truncated OR coalesce(b.budget < z.derived, false) AS zone_truncated,
            pr.id AS proposal_id"""
-# L'incident, son analyse, sa dernière quarantaine, s'il en a une, et la proposition dont la
+# L'incident, son analyse, sa dernière quarantaine, s'il en a une, avec sa zone et, quand
+# elle est active, la part de la zone que les proxys reçoivent ; et la proposition dont la
 # confirmation l'a déclaré, s'il en vient une.
 _FROM = """incident i JOIN incident_analysis s ON s.incident_id = i.id
     LEFT JOIN LATERAL (
-        SELECT state, mode, activated_at, lifted_at FROM incident_quarantine
+        SELECT id, state, mode, activated_at, lifted_at FROM incident_quarantine
         WHERE incident_id = i.id ORDER BY id DESC LIMIT 1
     ) q ON true
+    LEFT JOIN incident_quarantine_zone z ON z.quarantine_id = q.id
+    LEFT JOIN budgets b ON b.quarantine_id = q.id
     LEFT JOIN incident_proposal pr ON pr.incident_id = i.id"""
+_BUDGETS = f"WITH budgets AS ({DIFFUSED})"
+# La borne des jeux dérivés diffusés, que la part de chaque quarantaine suit.
+_DIFFUSED = {"diffused": MAX_DIFFUSED_DERIVED}
 
 _ONE = text(
     f"""
+    {_BUDGETS}
     SELECT {_COLUMNS}, s.coverage, s.unknown_datasets
     FROM {_FROM}
     WHERE i.id = :id
@@ -102,6 +116,7 @@ def _incidents(cursor: IncidentCursor | None) -> TextClause:
     after = "" if cursor is None else "WHERE (i.declared_at, i.id) < (:cursor_time, :cursor_id)"
     return text(
         f"""
+        {_BUDGETS}
         SELECT {_COLUMNS}
         FROM {_FROM}
         {after}
@@ -209,14 +224,23 @@ def _optional(value: datetime | None) -> datetime | None:
     return None if value is None else in_utc(value)
 
 
-def _quarantine(row: Row[Any]) -> Quarantine | None:
+def _quarantine(row: Row[Any]) -> IncidentQuarantine | None:
     if row.quarantine_state is None:
         return None
-    return Quarantine(
+    zone = None
+    if row.zone_computed_at is not None:
+        zone = QuarantineZone(
+            computed_at=in_utc(row.zone_computed_at),
+            checked_at=in_utc(row.zone_checked_at),
+            derived=row.zone_derived,
+            truncated=row.zone_truncated,
+        )
+    return IncidentQuarantine(
         state=row.quarantine_state,
         mode=row.quarantine_mode,
         activated_at=in_utc(row.quarantine_activated_at),
         lifted_at=_optional(row.quarantine_lifted_at),
+        zone=zone,
     )
 
 
@@ -258,7 +282,7 @@ async def _perimeters(reader: Reader, ids: list[UUID]) -> dict[UUID, list[Incide
 
 async def incidents(reader: Reader, *, limit: int, cursor: IncidentCursor | None) -> IncidentList:
     """Les ``limit`` incidents déclarés les plus récents, après ``cursor``."""
-    params = {} if cursor is None else cursor.parameters()
+    params = _DIFFUSED | ({} if cursor is None else cursor.parameters())
     page = await reader.fetch(_incidents(cursor), params, limit=limit)
     perimeters = await _perimeters(reader, [row.id for row in page.rows])
     last = page.rows[-1] if page.rows else None
@@ -275,7 +299,7 @@ async def incident(
     reader: Reader, incident_id: UUID, *, limit: int, cursor: Cursor | None
 ) -> IncidentDetail | None:
     """L'incident, son analyse et, quand elle est faite, une page des réponses touchées."""
-    found = await reader.fetch(_ONE, {"id": incident_id}, limit=1)
+    found = await reader.fetch(_ONE, {"id": incident_id, **_DIFFUSED}, limit=1)
     if not found.rows:
         return None
     row = found.rows[0]

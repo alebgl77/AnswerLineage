@@ -6,7 +6,7 @@ Un test de données en échec, émis en OpenLineage par dbt ou un autre outil, [
 
 La déclaration se fait par l'API (`POST /api/v1/incidents`) ou par la [ligne de commande](cli.md#answerlineage-incident) (`answerlineage incident declare`), avec le rôle de responsable de données, de gestionnaire d'incident ou d'administrateur ; toute personne qui a un rôle lit les incidents ([Authentification et rôles](securite/authentification.md#la-matrice-des-droits)). Les [workers](workers.md#analyse-des-incidents) font l'analyse ; elle se lit sur l'incident (`GET /api/v1/incidents/{id}`, `answerlineage incident show`).
 
-Pendant l'incident, le responsable peut aussi le [mettre en quarantaine](#quarantaine) : chaque proxy apprend alors le périmètre de l'incident, en moins de 30 secondes, et, en mode avertir, le résultat d'une lecture de ces données porte un avertissement pour l'agent qui le reçoit.
+Pendant l'incident, le responsable peut aussi le [mettre en quarantaine](#quarantaine) : chaque proxy apprend alors le périmètre de l'incident, en moins de 30 secondes, et sa [zone](#la-zone--vues-et-tables-dérivées), les vues et les tables dérivées de ces données que le graphe connaît ; en mode avertir, le résultat d'une lecture de ces données porte un avertissement pour l'agent qui le reçoit.
 
 Chaque changement d'état, la déclaration, l'analyse faite, l'analyse en échec, la quarantaine activée, la quarantaine levée, s'annonce aussi par un [webhook signé](webhooks.md) (`incident.declared`, `incident.analysed`, `incident.analysis_failed`, `incident.quarantined`, `incident.quarantine_lifted`) quand les workers en ont un, dans la transaction qui le fait.
 
@@ -21,7 +21,7 @@ Chaque changement d'état, la déclaration, l'analyse faite, l'analyse en échec
 | `state` | L'état de l'incident, d'une liste fermée ([plus bas](#états)) |
 | `declared_at` | L'heure de la déclaration, posée par la base |
 | `analysis` | L'état de l'analyse d'impact et ses décomptes ([plus bas](#lanalyse)) |
-| `quarantine` | La dernière quarantaine de l'incident, active ou levée, ou `null` ([plus bas](#quarantaine)) |
+| `quarantine` | La dernière quarantaine de l'incident, active ou levée, et sa [zone](#la-zone--vues-et-tables-dérivées), ou `null` ([plus bas](#quarantaine)) |
 | `proposal_id` | La [proposition](#incidents-proposés-par-un-test-de-qualité) dont la confirmation a déclaré l'incident, ou `null` pour un incident déclaré à la main |
 
 Un incident ne porte aucun texte libre : ni titre, ni description, ni commentaire. Ce qu'écrirait un déclarant pourrait finir dans un message de rappel ; AnswerLineage ne produit que des textes écrits d'avance. Le périmètre se dit par des noms, que la déclaration contrôle comme l'[ingestion](ingestion.md#identifiants) : lettres, chiffres et ponctuation des noms de données, sans espace, sans caractère de contrôle ou invisible, sans balise ni mot de passe ; un espace de noms compte au plus 512 caractères, un nom 1 024. Ils sont gardés sous leur forme normalisée NFC : deux écritures d'une même table n'en font qu'une.
@@ -232,9 +232,9 @@ WHERE incident_id = '974e7c80-6643-4065-a541-e4c029abbdab';
 
 Mettre un incident en quarantaine, c'est dire aux proxys : les données de ce périmètre sont fausses, agissez sur leurs lectures. Chaque proxy apprend le périmètre des quarantaines actives en interrogeant l'API, 10 secondes par défaut, 30 au plus ([synchronisation](proxy.md#périmètres-en-quarantaine)) : moins de 30 secondes après l'activation, tous le connaissent.
 
-En mode avertir (`warn`, le seul mode aujourd'hui), un proxy HTTP qui vérifie la [diffusion signée](#signée-et-datée) insère en tête du résultat d'un appel qui lit le périmètre un avertissement à gabarit fixe : l'incident, l'heure de sa mise en quarantaine, les jeux lus. Un appel dont la lecture ne peut pas être établie à temps reçoit un avertissement incertain. Aucune lecture n'est bloquée, aucun destinataire n'est contacté : c'est une information pour l'agent et l'humain qui le lit, pas un rappel ([le proxy](proxy.md#avertir--lavertissement-dans-le-résultat)). Un proxy en stdio, ou sans le secret de la diffusion, apprend le périmètre sans annoter.
+En mode avertir (`warn`, le seul mode aujourd'hui), un proxy HTTP qui vérifie la [diffusion signée](#signée-et-datée) insère en tête du résultat d'un appel qui lit le périmètre, ou sa [zone](#la-zone--vues-et-tables-dérivées), un avertissement à gabarit fixe : l'incident, l'heure de sa mise en quarantaine, les jeux lus. Un appel dont la lecture ne peut pas être établie à temps reçoit un avertissement incertain. Aucune lecture n'est bloquée, aucun destinataire n'est contacté : c'est une information pour l'agent et l'humain qui le lit, pas un rappel ([le proxy](proxy.md#avertir--lavertissement-dans-le-résultat)). Un proxy en stdio, ou sans le secret de la diffusion, apprend le périmètre sans annoter.
 
-Le périmètre est celui de l'incident, ses jeux de données, sans texte libre ; il ne se modifie pas, puisque l'incident ne se modifie pas.
+Le périmètre est celui de l'incident, ses jeux de données, sans texte libre ; il ne se modifie pas, puisque l'incident ne se modifie pas. Les proxys reçoivent aussi sa [zone](#la-zone--vues-et-tables-dérivées) : les vues et les tables dérivées du périmètre que le graphe connaît, que les workers calculent et tiennent à jour.
 
 ### Activer
 
@@ -292,7 +292,42 @@ La quarantaine n'est pas un état de l'incident (`ck_incident_state`) : c'est un
 - **la levée à la clôture** se fera dans la transaction qui clôt l'incident, en levant sa quarantaine active ;
 - **le journal** des activations, avec leur auteur une fois l'authentification en place, leur mode, leur périmètre et leur durée (de `activated_at` à `lifted_at`), est déjà la liste de ces lignes.
 
-`GET /api/v1/incidents/{id}` et la liste des incidents rendent la dernière quarantaine de chaque incident (`quarantine`), active ou levée, ou `null`.
+`GET /api/v1/incidents/{id}` et la liste des incidents rendent la dernière quarantaine de chaque incident (`quarantine`), active ou levée, avec sa zone (`zone`), ou `null`.
+
+### La zone : vues et tables dérivées
+
+Une donnée fausse ne reste pas dans sa table : une vue la lit en direct, un job en bâtit une autre table. Un agent qui lit la vue lit la donnée fausse. La zone d'une quarantaine, ce sont ces jeux dérivés, que le graphe connaît par ses [écritures](schema.md#du-jeu-de-données-au-destinataire) :
+
+- **Dériver.** Un jeu Y dérive d'un jeu X quand un même run a lu X et écrit Y. La dérivation se suit en largeur depuis le périmètre, jusqu'à 3 écritures : la vue qui lit la table a la profondeur 1, la table bâtie de la vue la profondeur 2. Chaque jeu garde sa plus courte distance au périmètre ; un cycle s'arrête de lui-même, et un jeu du périmètre n'est jamais dérivé.
+- **Sans filtre de temps.** Une vue créée bien avant l'incident lit la table en direct, et le graphe ne distingue pas une vue d'une table : toute écriture connue compte, quelle que soit son heure. Une table dérivée bâtie avant l'incident, encore saine, entre donc dans la zone : pour un avertissement, l'excès vaut mieux que l'oubli, comme l'[analyse du SQL](proxy.md#analyse-du-sql) qui échoue du côté sûr.
+- **Ce que le graphe connaît.** La zone est calculée sur le graphe tel qu'il était connu à l'heure du calcul, son `computed_at`. Un jeu du périmètre que le graphe ne connaît pas ne dérive de rien ; une écriture qui n'est pas encore projetée entre au calcul suivant.
+- **Bornée.** 50 jeux dérivés au plus par quarantaine, les plus proches du périmètre d'abord, puis par espace de noms et par nom ; 500 pour toutes les quarantaines actives, les plus anciennement activées d'abord. Une zone coupée par l'une ou l'autre borne se dit tronquée, dans la diffusion comme sur l'incident. Le périmètre, lui, n'est jamais coupé.
+- **Calculée par les workers.** Une boucle des [workers](workers.md#zone-des-quarantaines) calcule la zone d'une quarantaine moins de 10 secondes après son activation, puis la recalcule toutes les 5 minutes tant qu'elle est active : une vue que le graphe apprend y entre au plus tard au calcul suivant. Un calcul qui retrouve la même zone ne change pas son heure : la version de la diffusion ne bouge pas sans raison. Un calcul en échec garde la zone précédente.
+- **Gardée à côté.** Les transitions d'une quarantaine refusent toute écriture d'une quarantaine active : sa zone est rangée dans deux tables à part, par des noms, comme le périmètre ([schéma](schema.md#incidents)). Une quarantaine levée garde sa dernière zone, qui n'est plus diffusée ni recalculée.
+
+Sur l'incident, la quarantaine porte sa zone, nulle tant que les workers ne l'ont pas calculée :
+
+```json
+"quarantine": {
+  "state": "active",
+  "mode": "warn",
+  "activated_at": "2026-11-16T08:55:01.204517Z",
+  "lifted_at": null,
+  "zone": {
+    "computed_at": "2026-11-16T08:55:04.117602Z",
+    "checked_at": "2026-11-16T09:00:05.302118Z",
+    "derived": 2,
+    "truncated": false
+  }
+}
+```
+
+| Champ | Contenu |
+| --- | --- |
+| `computed_at` | L'heure du graphe lu qui a donné la zone telle qu'elle est |
+| `checked_at` | Le dernier calcul, qui la suit : il a peut-être retrouvé la même zone |
+| `derived` | Les jeux dérivés que les proxys reçoivent ; pour une quarantaine levée, ceux de sa dernière zone |
+| `truncated` | Vrai quand une borne, celle de la quarantaine ou celle de toutes, a écarté des jeux dérivés |
 
 ### Refus
 
@@ -318,15 +353,22 @@ Rien n'est enregistré ni annoncé pour une demande refusée. Une activation pre
       "incident_id": "974e7c80-6643-4065-a541-e4c029abbdab",
       "mode": "warn",
       "activated_at": "2026-11-16T08:55:01.204517Z",
-      "datasets": [{ "namespace": "bigquery", "name": "ventes.suivi.commandes" }]
+      "datasets": [{ "namespace": "bigquery", "name": "ventes.suivi.commandes" }],
+      "derived": [
+        { "namespace": "bigquery", "name": "ventes.vues.commandes_du_jour", "depth": 1 },
+        { "namespace": "bigquery", "name": "finance.marts.chiffre_affaires", "depth": 2 }
+      ],
+      "derived_truncated": false,
+      "zone_computed_at": "2026-11-16T08:55:04.117602Z"
     }
   ]
 }
 ```
 
-- **La version** est l'empreinte SHA-256 de la liste : elle ne change que si la liste change. C'est aussi l'`ETag` de la réponse : un proxy la rend dans `If-None-Match` et reçoit `304`, sans corps, tant que rien n'a changé. Une valeur d'`If-None-Match` de plus de 1 024 caractères n'est pas lue, et n'est jamais recopiée.
-- **La lecture est bornée** : 100 quarantaines au plus, que l'activation garantit, de 20 jeux chacune, sous le [délai maximal des lectures](lecture.md#délai-maximal).
-- **Pas de `known_at`.** La route sert l'état d'aujourd'hui aux proxys ; une quarantaine telle qu'elle était à une date se lit dans les heures d'activation et de levée de l'incident. Le jour où le périmètre comprendra les tables dérivées connues du graphe, la question se posera de nouveau.
+- **La zone** (`derived`, `derived_truncated`, `zone_computed_at`) suit le périmètre : ses jeux dérivés par profondeur, puis par espace de noms et par nom, si une borne en a écarté, et l'heure du graphe lu ([la zone](#la-zone--vues-et-tables-dérivées)). Les trois champs sont absents, ensemble, tant que les workers ne l'ont pas calculée ; une zone calculée vide a ses trois champs, `derived` vide.
+- **La version** est l'empreinte SHA-256 de la liste, zones comprises : elle ne change que si la liste change, une zone qui change aussi. C'est aussi l'`ETag` de la réponse : un proxy la rend dans `If-None-Match` et reçoit `304`, sans corps, tant que rien n'a changé. Une valeur d'`If-None-Match` de plus de 1 024 caractères n'est pas lue, et n'est jamais recopiée.
+- **La lecture est bornée** : 100 quarantaines au plus, que l'activation garantit, de 20 jeux chacune, et 500 jeux dérivés pour toutes, sous le [délai maximal des lectures](lecture.md#délai-maximal). La zone et ses jeux se lisent d'une seule requête : ils s'accordent toujours.
+- **Pas de `known_at`.** La route sert l'état d'aujourd'hui aux proxys ; une quarantaine telle qu'elle était à une date se lit dans les heures d'activation et de levée de l'incident. Sa zone est celle que les workers ont calculée à `zone_computed_at`, sur le graphe connu à cette heure, et elle reste gardée avec la quarantaine : la route ne recalcule rien.
 - **L'heure d'activation** est relue strictement par le proxy (RFC 3339 en UTC, suffixée de `Z`) : c'est elle que l'avertissement d'une lecture annotée cite, à la minute. Une réponse dont l'heure n'a pas cette forme est écartée en entier.
 
 Plusieurs proxys l'interrogent chacun de leur côté, sans s'accorder : la route est faite pour cela.
@@ -465,7 +507,8 @@ Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses évé
 ## Ce qui n'existe pas encore
 
 - **Une signature asymétrique de la diffusion.** Chaque route exige un jeton et un rôle ([Authentification et rôles](securite/authentification.md)) : déclarer, mettre en quarantaine et lever reviennent au responsable de données, au gestionnaire d'incident et à l'administrateur ; les proxys lisent les périmètres avec le jeton d'un émetteur, et vérifient la [signature](#signée-et-datée) de la diffusion. Mais elle est faite sous un secret partagé : qui le lit sur l'hôte de l'API ou d'un proxy signe comme l'API ([modèle de menaces](securite/modele-de-menaces.md#acceptations)).
-- **Ce que la quarantaine fait des lectures.** Les proxys connaissent le périmètre, sans encore annoter ni bloquer une lecture. Le périmètre se limite aux jeux de l'incident, sans les vues ni les tables dérivées connues du graphe.
+- **Bloquer une lecture.** En mode avertir, un proxy HTTP annote les lectures du périmètre et de sa zone ; aucun mode ne les bloque encore, et un proxy en stdio n'annote pas.
+- **Une zone plus fine.** Le graphe ne distingue pas une vue d'une table : la zone ne filtre donc pas les écritures par leur heure, et comprend les tables dérivées bâties avant l'incident, encore saines. Une dérivation tient à un même run qui lit et écrit : une écriture faite par le run parent, ou par un autre appel d'outil du même agent, n'est pas suivie. Les noms se comparent tels quels : une vue que deux émetteurs écrivent avec une casse différente fait deux jeux.
 - **Le journal des quarantaines** : qui a activé ou levé. L'API vérifie l'identité de l'appelant, mais ne la garde pas encore. Les heures, le mode et le périmètre sont déjà gardés.
 - **L'interface.** L'explorateur ne déclare pas encore d'incident ; l'API et la ligne de commande le font.
 - **La suite du cycle de vie.** Un incident reste `qualified` : ni modification, ni clôture pour l'instant. Une déclaration fautive ne se corrige pas, elle se refait. Sa quarantaine se lève à la main.

@@ -12,7 +12,7 @@ read_edge ── run ── answer ── delivery ── delivery_recipient ─
 write_edge   agent, tool
 ```
 
-Les onze tables d'`agent` à `delivery_recipient` forment le graphe (`schema.GRAPH`) : la projection des événements les écrit, elles seules, et tout ce qu'elles tiennent se déduit des événements bruts. La [reconstruction](workers.md#reconstruire-le-graphe) les vide et les remplit de nouveau en rejouant les événements. Hors d'elles, seul le résultat d'une analyse d'incident dérive du graphe : un instantané, lu tel que le graphe était connu à l'heure de l'analyse ([ce que la reconstruction ne touche pas](workers.md#ce-quelle-ne-touche-pas)).
+Les onze tables d'`agent` à `delivery_recipient` forment le graphe (`schema.GRAPH`) : la projection des événements les écrit, elles seules, et tout ce qu'elles tiennent se déduit des événements bruts. La [reconstruction](workers.md#reconstruire-le-graphe) les vide et les remplit de nouveau en rejouant les événements. Hors d'elles, seuls le résultat d'une analyse d'incident et la zone d'une quarantaine dérivent du graphe : des instantanés, lus tels que le graphe était connu à l'heure de l'analyse ou du calcul ([ce que la reconstruction ne touche pas](workers.md#ce-quelle-ne-touche-pas)).
 
 | Table | Clé naturelle | Contenu |
 | --- | --- | --- |
@@ -40,6 +40,8 @@ Les onze tables d'`agent` à `delivery_recipient` forment le graphe (`schema.GRA
 | `incident_answer` | incident, run et empreinte | Réponse touchée par un incident |
 | `incident_recipient` | incident, réponse et pseudonyme | Destinataire d'une réponse touchée |
 | `incident_quarantine` | identifiant tiré par la base | Quarantaine d'un incident, une ligne par activation : mode, état, heures d'activation et de levée |
+| `incident_quarantine_zone` | quarantaine | Zone d'une quarantaine, calculée par les workers : heure du graphe lu, heure du dernier calcul, nombre de jeux dérivés, troncature |
+| `incident_quarantine_derived` | quarantaine, espace de noms et nom | Jeu dérivé de la zone, avec sa profondeur |
 | `webhook_queue` | identifiant de livraison | File des webhooks : changements d'état des incidents qui attendent d'être annoncés au récepteur, figés à l'heure du changement, leurs envois en échec |
 | `webhook_stats` | une seule ligne | Échéance de la mise en service des webhooks ; messages remis, refusés par le récepteur et abandonnés, depuis la mise en service |
 | `graph_rebuild` | identifiant tiré par la base | Reconstruction du graphe depuis les événements bruts : départ, fin, événements rejoués, période des événements conservés |
@@ -220,14 +222,18 @@ Un [incident de données](incidents.md) se range à côté du graphe, sans clé 
 | `incident_answer` | Une réponse une fois par incident, clé étrangère vers l'incident |
 | `incident_recipient` | Un pseudonyme une fois par réponse touchée, clé étrangère vers elle |
 | `incident_quarantine` | Clé étrangère vers l'incident. Mode (`ck_incident_quarantine_mode`) et état (`ck_incident_quarantine_state`) de leurs listes fermées ; une quarantaine levée, et elle seule, a son heure de levée (`ck_incident_quarantine_lifted`), qui suit l'activation (`ck_incident_quarantine_lifted_after`) ; une quarantaine active au plus par incident (`uq_incident_quarantine_active`, un index unique partiel) ; les transitions d'une liste fermée (`ck_incident_quarantine_transition`) |
+| `incident_quarantine_zone` | Une zone par quarantaine, clé étrangère vers elle. Le dernier calcul suit l'heure de la zone (`ck_incident_quarantine_zone_checked_after`) ; de 0 à 50 jeux dérivés (`ck_incident_quarantine_zone_derived`) |
+| `incident_quarantine_derived` | Un jeu une fois par zone, clé étrangère vers elle (`fk_incident_quarantine_derived_zone`) ; une profondeur de 1 à 3 (`ck_incident_quarantine_derived_depth`) |
 
 Un index partiel range les demandes en attente par heure de reprise : c'est ce que les [workers](workers.md#analyse-des-incidents) réclament. Un autre range les incidents par heure de déclaration, pour la liste, et un troisième les réponses d'un incident par heure, pour leurs pages. Un dernier range les quarantaines d'un incident, la dernière d'abord.
 
 La [quarantaine](incidents.md#quarantaine) est un objet à part, rattaché à l'incident : une ligne par activation, que sa levée complète et qui ne change plus ensuite. Ses heures sont posées par la base. Ses transitions sont tenues par une contrainte nommée que la base vérifie à chaque écriture, une contrainte de déclencheur (`CREATE CONSTRAINT TRIGGER`) et sa fonction `incident_quarantine_transition()` : une ligne naît active ; seule une ligne active se lève, sans changer d'incident, de mode ni d'heure d'activation ; une ligne levée ne change plus. Toute autre écriture est refusée comme une contrainte de vérification (`check_violation`), sous le nom de la contrainte. L'API n'en active pas plus de 100 à la fois, sous un verrou de la table pris par l'activation.
 
+La [zone](incidents.md#la-zone--vues-et-tables-dérivées) d'une quarantaine, les vues et les tables dérivées de son périmètre que le graphe connaît, est rangée à côté d'elle, dans deux tables : les transitions d'une quarantaine refusent toute écriture d'une quarantaine active, qui ne peut donc rien porter de plus. Comme le périmètre, un jeu dérivé se désigne par son espace de noms et son nom, sans clé vers `dataset`. Les [workers](workers.md#zone-des-quarantaines) l'écrivent : `computed_at` est l'heure du graphe lu qui a donné la zone telle qu'elle est, `checked_at` celle du dernier calcul, qui la retrouve parfois inchangée et ne change alors qu'elle.
+
 `incident_analysis.coverage` garde la couverture du lignage de la fenêtre à l'heure de l'analyse, sous la forme que rend l'API (état, taux, compteurs, trous) ; `unknown_datasets`, les jeux du périmètre que le graphe ne connaissait pas. Ce sont des colonnes `jsonb` : un instantané, qu'aucune requête ne parcourt.
 
-Les incidents ne sont ni partitionnés ni purgés : ils sont rares, et un rappel s'appuie sur eux. La migration `0010` crée ces tables ; sa descente les retire, incidents compris. La migration `0015` crée `incident_quarantine`, sa contrainte de transitions et sa fonction ; sa descente les retire, les quarantaines perdues, les incidents inchangés.
+Les incidents ne sont ni partitionnés ni purgés : ils sont rares, et un rappel s'appuie sur eux. La migration `0010` crée ces tables ; sa descente les retire, incidents compris. La migration `0015` crée `incident_quarantine`, sa contrainte de transitions et sa fonction ; sa descente les retire, les quarantaines perdues, les incidents inchangés. La migration `0020` crée `incident_quarantine_zone` et `incident_quarantine_derived` ; sa descente les retire, les zones perdues, les quarantaines inchangées : les workers les recalculent à la montée suivante.
 
 ## Propositions d'incident et signaux de qualité
 

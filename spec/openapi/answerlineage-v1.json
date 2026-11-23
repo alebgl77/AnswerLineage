@@ -2,7 +2,7 @@
   "components": {
     "schemas": {
       "ActiveQuarantine": {
-        "description": "Le périmètre d'une quarantaine active : celui de son incident.",
+        "description": "Le périmètre d'une quarantaine active : celui de son incident, et sa zone.",
         "properties": {
           "activated_at": {
             "format": "date-time",
@@ -18,6 +18,20 @@
             "title": "Datasets",
             "type": "array"
           },
+          "derived": {
+            "description": "La zone : les vues et les tables dérivées du périmètre que le graphe connaît, par profondeur, puis par espace de noms et par nom. Absent tant que les workers ne l'ont pas calculée. 50 au plus, et 500 pour toutes les quarantaines, les plus anciennes d'abord.",
+            "items": {
+              "$ref": "#/components/schemas/DerivedDataset"
+            },
+            "maxItems": 50,
+            "title": "Derived",
+            "type": "array"
+          },
+          "derived_truncated": {
+            "description": "Vrai quand une borne a écarté des jeux dérivés. Absent tant que la zone n'est pas calculée.",
+            "title": "Derived Truncated",
+            "type": "boolean"
+          },
           "incident_id": {
             "format": "uuid",
             "title": "Incident Id",
@@ -28,6 +42,12 @@
               "warn"
             ],
             "title": "Mode",
+            "type": "string"
+          },
+          "zone_computed_at": {
+            "description": "L'heure du graphe lu qui a donné la zone : un calcul qui la retrouve inchangée ne la change pas, ni la version. Absent tant que la zone n'est pas calculée.",
+            "format": "date-time",
+            "title": "Zone Computed At",
             "type": "string"
           }
         },
@@ -1280,6 +1300,33 @@
         "title": "DeclaredWindow",
         "type": "object"
       },
+      "DerivedDataset": {
+        "description": "Un jeu dérivé du périmètre : un run a lu un jeu de la zone, et l'a écrit.",
+        "properties": {
+          "depth": {
+            "description": "Les écritures qui le séparent du périmètre. 1 : écrit par un run qui a lu un jeu du périmètre ; 2 et 3 : par un run qui a lu un jeu de la profondeur précédente.",
+            "maximum": 3.0,
+            "minimum": 1.0,
+            "title": "Depth",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name",
+          "depth"
+        ],
+        "title": "DerivedDataset",
+        "type": "object"
+      },
       "DuplicateCount": {
         "description": "Doublons reçus d'un émetteur, un jour.",
         "properties": {
@@ -1879,7 +1926,7 @@
           "quarantine": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Quarantine"
+                "$ref": "#/components/schemas/IncidentQuarantine"
               },
               {
                 "type": "null"
@@ -2009,7 +2056,7 @@
           "quarantine": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Quarantine"
+                "$ref": "#/components/schemas/IncidentQuarantine"
               },
               {
                 "type": "null"
@@ -2453,6 +2500,67 @@
         "title": "IncidentProposalList",
         "type": "object"
       },
+      "IncidentQuarantine": {
+        "description": "La dernière quarantaine d'un incident, et sa zone.",
+        "properties": {
+          "activated_at": {
+            "description": "Activation, à l'heure de la base.",
+            "format": "date-time",
+            "title": "Activated At",
+            "type": "string"
+          },
+          "lifted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Levée, à l'heure de la base. Nulle tant que la quarantaine est active.",
+            "title": "Lifted At"
+          },
+          "mode": {
+            "description": "Ce que les proxys feront des lectures du périmètre. « warn » : les signaler.",
+            "enum": [
+              "warn"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "state": {
+            "description": "« active » : les proxys la reçoivent. « lifted » : levée, définitivement.",
+            "enum": [
+              "active",
+              "lifted"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "zone": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuarantineZone"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Les jeux dérivés de son périmètre que le graphe connaît. Nulle tant que les workers ne l'ont pas calculée."
+          }
+        },
+        "required": [
+          "state",
+          "mode",
+          "activated_at",
+          "lifted_at",
+          "zone"
+        ],
+        "title": "IncidentQuarantine",
+        "type": "object"
+      },
       "IncidentScope": {
         "properties": {
           "datasets": {
@@ -2858,6 +2966,41 @@
           "mode"
         ],
         "title": "QuarantineRequest",
+        "type": "object"
+      },
+      "QuarantineZone": {
+        "description": "La zone d'une quarantaine : les vues et les tables dérivées de son périmètre que le\ngraphe connaît, telle que les proxys la reçoivent.",
+        "properties": {
+          "checked_at": {
+            "description": "Le dernier calcul, qui la suit. Les workers recalculent la zone toutes les cinq minutes tant que la quarantaine est active.",
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "computed_at": {
+            "description": "L'heure du graphe lu qui a donné cette zone. Un calcul qui la retrouve inchangée ne la change pas.",
+            "format": "date-time",
+            "title": "Computed At",
+            "type": "string"
+          },
+          "derived": {
+            "description": "Les jeux dérivés que les proxys reçoivent, de 0 à 50 ; pour une quarantaine levée, ceux de sa dernière zone.",
+            "title": "Derived",
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "Vrai quand une borne en a écarté d'autres : 50 jeux dérivés par quarantaine, 500 pour toutes les quarantaines actives, les plus anciennes d'abord.",
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "computed_at",
+          "checked_at",
+          "derived",
+          "truncated"
+        ],
+        "title": "QuarantineZone",
         "type": "object"
       },
       "QuarantinedDataset": {

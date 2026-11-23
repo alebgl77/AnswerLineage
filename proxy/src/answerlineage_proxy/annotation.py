@@ -9,7 +9,8 @@ déclarées fausses. Ce module en porte tout ce qui ne dépend pas du transport 
 - **la zone** (``Zone``) : un instantané immuable des jeux en quarantaine,
   indexés par espace de noms puis par nom, avec les incidents qui les y mettent
   et leur profondeur : 0 pour un jeu d'un périmètre, au-delà pour une vue ou une
-  table dérivée (``derived``), que la diffusion ne porte pas encore ;
+  table dérivée (``derived``), que la diffusion porte avec chaque quarantaine dont
+  les workers ont calculé la zone (``QuarantineScope.derived``) ;
 - **qui est retenu** (``retention``) : un outil SQL déclaré dont l'espace de
   noms porte au moins un jeu de la zone, ou un outil dont la règle de lecture
   déclare un jeu de la zone. Un outil non décrit ne l'est jamais : on ne lui

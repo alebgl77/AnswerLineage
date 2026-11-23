@@ -37,12 +37,15 @@ une demande attend (``incidents.py``), puis fait des propositions d'incident des
 signaux de qualité que la projection a relevés (``quality.py``, ``proposals.py``).
 Chaque minute, elle fait remonter au responsable de données les listes de rappel
 restées sans décision au-delà de leur délai (``recall.py``).
+Une boucle à côté calcule et rafraîchit la zone de chaque quarantaine active, les
+vues et les tables dérivées de son périmètre (``quarantine_zone.py``), sans
+retarder la projection.
 Quand le worker a un webhook, une autre boucle annonce les changements d'état
 des incidents au récepteur (``webhooks.py``), sans retarder la projection.
 
 Pendant une reconstruction du graphe (``rebuild.py``), le worker ne réclame ni
-lot ni analyse : la reconstruction tient la barrière du graphe et projette la
-file seule (``gate.py``). Il les reprend dès qu'elle la rend.
+lot ni analyse, ni ne calcule de zone : la reconstruction tient la barrière du
+graphe et projette la file seule (``gate.py``). Il les reprend dès qu'elle la rend.
 """
 
 from __future__ import annotations
@@ -76,6 +79,12 @@ from answerlineage_workers.proposals import (
     DEFAULT_PROPOSALS_EVERY,
     maintain_proposals,
     process_signals,
+)
+from answerlineage_workers.quarantine_zone import (
+    DEFAULT_ZONE_CHECK_EVERY,
+    DEFAULT_ZONE_EVERY,
+    DEFAULT_ZONE_TIMEOUT,
+    run_zones,
 )
 from answerlineage_workers.recall import (
     DEFAULT_DECISION_DELAY,
@@ -496,6 +505,9 @@ async def run_worker(
     webhook: Webhook | None = None,
     recall_delay: timedelta = DEFAULT_DECISION_DELAY,
     escalation_every: timedelta = DEFAULT_ESCALATION_EVERY,
+    zone_every: timedelta = DEFAULT_ZONE_EVERY,
+    zone_check_every: timedelta = DEFAULT_ZONE_CHECK_EVERY,
+    zone_timeout: timedelta = DEFAULT_ZONE_TIMEOUT,
 ) -> None:
     """Traite la file jusqu'à ce que ``stop`` soit levé.
 
@@ -516,15 +528,28 @@ async def run_worker(
     rappel restées sans décision plus de ``recall_delay`` (``escalate``) ; un délai
     hors de ses bornes lève ``ValueError`` avant tout lot.
 
-    Avec ``reemission``, les événements projetés entrent dans la file de
-    réémission, et une seconde boucle, à côté, les envoie à la destination
+    Une boucle à côté calcule la zone de chaque quarantaine active qui n'en a pas,
+    et la rafraîchit quand elle date de plus de ``zone_every`` ; elle regarde toutes
+    les ``zone_check_every``, et chaque calcul dispose de ``zone_timeout``
+    (``run_zones``). Avec ``reemission``, les événements projetés entrent dans la
+    file de réémission, et une autre boucle, à côté, les envoie à la destination
     (``run_reemission``) : une destination en panne ne retarde pas la projection.
     Avec ``webhook``, une autre boucle annonce les changements d'état des
     incidents au récepteur (``run_webhooks``), sans la retarder non plus.
     """
     checked_batch_size(batch_size)
     checked_delay(recall_delay)
-    beside: list[asyncio.Task[None]] = []
+    beside: list[asyncio.Task[None]] = [
+        asyncio.create_task(
+            run_zones(
+                engine,
+                stop,
+                every=zone_every,
+                check_every=zone_check_every,
+                timeout=zone_timeout,
+            )
+        )
+    ]
     if reemission is not None:
         beside.append(asyncio.create_task(run_reemission(engine, stop, reemission)))
     if webhook is not None:

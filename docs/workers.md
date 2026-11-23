@@ -6,7 +6,7 @@ Un worker lit la file de traitement et projette chaque événement reçu dans le
 ANSWERLINEAGE_DATABASE_URL=postgresql://utilisateur:motdepasse@hote/base uv run answerlineage-worker
 ```
 
-Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Un événement qu'il ne parvient pas à projeter va à la [file de rebut](#file-de-rebut), où il se consulte et se rejoue. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés et leur liste de rappel, des [propositions d'incident](#propositions-dincident) des tests de qualité en échec, fait [remonter les listes de rappel](#remontée-des-listes-de-rappel) restées sans décision, contrôle les [émetteurs muets](#émetteurs-muets), entretient les [partitions mensuelles](#partitions-mensuelles) et, quand une destination est réglée, [réémet les événements](#réémission) vers un catalogue OpenLineage ; quand un webhook est réglé, il [annonce les changements d'état des incidents](#webhooks) à son récepteur. La même commande [reconstruit le graphe](#reconstruire-le-graphe) depuis les événements bruts, quand il est corrompu.
+Plusieurs workers peuvent tourner en même temps. Un worker s'arrête proprement sur `SIGINT` ou `SIGTERM`, à la fin du lot en cours. Un événement qu'il ne parvient pas à projeter va à la [file de rebut](#file-de-rebut), où il se consulte et se rejoue. Il fait aussi l'[analyse des incidents](#analyse-des-incidents) déclarés et leur liste de rappel, calcule la [zone des quarantaines](#zone-des-quarantaines) actives, fait des [propositions d'incident](#propositions-dincident) des tests de qualité en échec, fait [remonter les listes de rappel](#remontée-des-listes-de-rappel) restées sans décision, contrôle les [émetteurs muets](#émetteurs-muets), entretient les [partitions mensuelles](#partitions-mensuelles) et, quand une destination est réglée, [réémet les événements](#réémission) vers un catalogue OpenLineage ; quand un webhook est réglé, il [annonce les changements d'état des incidents](#webhooks) à son récepteur. La même commande [reconstruit le graphe](#reconstruire-le-graphe) depuis les événements bruts, quand il est corrompu.
 
 ## Garanties
 
@@ -202,6 +202,35 @@ Les garanties sont celles de la file d'ingestion :
 
 Une analyse dispose d'une minute : chaque lecture part sous le temps qui en reste, et PostgreSQL l'annule au-delà, comme les [lectures de l'API](lecture.md#délai-maximal). Le journal ne nomme un incident que par son identifiant, tiré par l'API.
 
+## Zone des quarantaines
+
+La [zone](incidents.md#la-zone--vues-et-tables-dérivées) d'une quarantaine, ce sont les vues et les tables dérivées de son périmètre que le graphe connaît : un jeu Y dérive d'un jeu X quand un même run a lu X et écrit Y, jusqu'à 3 écritures du périmètre. L'API la diffuse aux proxys avec le périmètre ; une boucle de chaque worker, à côté de la projection, la calcule et la tient à jour :
+
+1. toutes les 10 secondes, elle cherche les quarantaines actives sans zone, puis celles dont le dernier calcul date de plus de 5 minutes, les plus anciennes d'abord ;
+2. pour chacune, dans une transaction à elle, elle prend un verrou consultatif propre à la quarantaine, sans l'attendre : un autre worker qui la calcule déjà la lui laisse et passe à la suivante. Sous le verrou, elle relit que la quarantaine est encore active et à calculer : un calcul qui vient de finir ailleurs n'est pas refait ;
+3. elle lit le graphe tel qu'il est connu à cette heure, posée par la base, niveau par niveau, et garde au plus 50 jeux dérivés, les plus proches du périmètre d'abord ;
+4. elle écrit la zone à côté de la quarantaine ([schéma](schema.md#incidents)) ; quand elle retrouve la même, elle ne change que l'heure du dernier calcul : la version de la diffusion, et son `ETag`, ne bougent pas.
+
+Les garanties sont celles de l'analyse des incidents :
+
+- **Sur un graphe entier.** Pendant une [reconstruction du graphe](#reconstruire-le-graphe), et tant que la file n'a pas rendu au graphe ce que la reconstruction y a remis, aucune zone n'est calculée : sur un graphe partiel, elle perdrait des jeux, et les proxys avec elle.
+- **Un échec garde la zone précédente.** Un calcul dispose de 30 secondes ; au-delà, ou en erreur, il n'écrit rien, et la zone d'avant reste diffusée. Le journal donne la classe de l'erreur, jamais son message ; la quarantaine est reprise au passage suivant, après les autres :
+
+  ```text
+  WARNING answerlineage_workers Zone de la quarantaine de l'incident 974e7c80-6643-4065-a541-e4c029abbdab non calculée (ReadTimedOut) : la zone précédente est gardée.
+  ```
+
+- **La projection n'attend pas.** La boucle tourne à côté de celle des lots : un calcul long ne retarde ni la projection ni l'analyse d'un incident. Une base injoignable est dite au journal par sa classe, et la boucle reprend 5 secondes plus tard.
+- **Une quarantaine levée n'est plus recalculée** : sa dernière zone reste avec elle, pour mémoire, et n'est plus diffusée.
+
+Une zone qui change se dit au journal, par l'identifiant de l'incident et des nombres, jamais par un nom de jeu :
+
+```text
+INFO answerlineage_workers Zone de la quarantaine de l'incident 974e7c80-6643-4065-a541-e4c029abbdab : 2 jeu(x) dérivé(s).
+```
+
+**Ce que coûte un calcul.** Chaque niveau part des écritures connues du graphe (`write_edge`) et sonde, pour chacune, les lectures de son run par l'index unique de `read_edge` : les agents lisent beaucoup et n'écrivent pas, et partir des lectures du périmètre parcourrait toutes leurs lectures. PostgreSQL, laissé libre, choisit parfois ce parcours ; la requête lui impose la sonde par écriture, et coupe la compilation à la volée (JIT), qui coûterait plus qu'elle ne fait gagner. Mesuré sur PostgreSQL 18, sur une base de 5,2 millions de lectures dont 3,5 millions sur la table du périmètre, et de 100 000 écritures : environ 0,6 seconde par niveau, moins de 2 secondes pour une zone de trois niveaux, quel que soit le nombre de lectures de la table, quand la semi-jointure choisie par PostgreSQL parcourait les 5,2 millions de lectures en 1,5 seconde. Le coût d'un calcul croît avec les écritures connues, pas avec les lectures des agents ; cent quarantaines actives sur une telle base occupent une boucle environ trois minutes toutes les cinq, que plusieurs workers se partagent.
+
 ## Propositions d'incident
 
 Après les lots et l'analyse, la boucle du worker fait des [propositions d'incident](incidents.md#incidents-proposés-par-un-test-de-qualité) des signaux d'échec que la projection a relevés, dans une transaction à elle :
@@ -356,6 +385,7 @@ Les événements rejoués sont ceux que la reconstruction a remis en file et ceu
 - **L'ingestion continue.** L'API reçoit et enregistre comme d'habitude. Un événement reçu entre en file derrière ceux de la reconstruction et il est projeté à son tour, par elle ou, après elle, par les workers ; un renvoi est compté comme doublon. La file suivant l'ordre de réception, les événements arrivent au graphe dans l'ordre où AnswerLineage les a reçus.
 - **Les lectures voient un graphe partiel.** À tout instant, un événement est dans la file ou dans le graphe : la [couverture du lignage](lecture.md#couverture-du-lignage) compte comme trous `missing_from_graph` les appels d'outil encore en file. Elle ne compte pas les événements des agents : une réponse dont l'événement attend encore manque sans trou. Attendre la fin de la reconstruction avant de conclure.
 - **Les analyses d'incident attendent.** Une demande d'analyse attend que la file ait rendu au graphe tout ce que la reconstruction y a mis ; elle lit ensuite le graphe reconstruit.
+- **Les zones des quarantaines attendent aussi.** Aucune n'est calculée ni recalculée avant que le graphe soit rendu : les proxys gardent la zone d'avant la reconstruction.
 
 ### Interruption et reprise
 
@@ -383,9 +413,11 @@ L'ordre n'y fait rien. Les workers avaient projeté les événements dans l'ordr
 
 ### Ce qu'elle ne touche pas
 
-Seules les tables du graphe sont vidées. Les événements bruts, la file, où elle remet les événements, le rebut, la file de réémission, la file des webhooks, le compteur de doublons, les relevés de couverture et les émetteurs connus, les alertes de partition, les incidents, leurs analyses, leurs listes de rappel et le journal de leurs décisions restent tels quels.
+Seules les tables du graphe sont vidées. Les événements bruts, la file, où elle remet les événements, le rebut, la file de réémission, la file des webhooks, le compteur de doublons, les relevés de couverture et les émetteurs connus, les alertes de partition, les incidents, leurs analyses, leurs quarantaines et leurs zones, leurs listes de rappel et le journal de leurs décisions restent tels quels.
 
-De tout cela, seul le résultat d'une analyse d'incident dérive du graphe : ses réponses touchées, leurs destinataires, ses décomptes, sa couverture et sa liste de rappel, lus tels que le graphe était connu à l'heure de l'analyse (`known_at`). La reconstruction ne les recalcule pas. Elle rend chaque ligne avec son heure d'enregistrement : le graphe tel que connu à `known_at` est celui d'avant la corruption, et une analyse faite avant elle reste juste. Une analyse faite sur le graphe corrompu se rejoue en gardant son `known_at` ([rejouer une analyse](incidents.md#rejouer-une-analyse)) : elle lit alors ce qu'elle aurait dû lire. La couverture du lignage se calcule à la lecture, des événements bruts et de la file : rien n'est à recalculer.
+La zone d'une quarantaine dérive aussi du graphe, mais elle se désigne par des noms et se recalcule toutes les 5 minutes : après la reconstruction, le calcul suivant la refait sur le graphe rendu.
+
+De tout cela, seul le résultat d'une analyse d'incident dérive du graphe sans être recalculé : ses réponses touchées, leurs destinataires, ses décomptes, sa couverture et sa liste de rappel, lus tels que le graphe était connu à l'heure de l'analyse (`known_at`). La reconstruction ne les recalcule pas. Elle rend chaque ligne avec son heure d'enregistrement : le graphe tel que connu à `known_at` est celui d'avant la corruption, et une analyse faite avant elle reste juste. Une analyse faite sur le graphe corrompu se rejoue en gardant son `known_at` ([rejouer une analyse](incidents.md#rejouer-une-analyse)) : elle lit alors ce qu'elle aurait dû lire. La couverture du lignage se calcule à la lecture, des événements bruts et de la file : rien n'est à recalculer.
 
 ### Durée
 

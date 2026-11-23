@@ -34,7 +34,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
 from answerlineage_api.incidents import quarantine
-from answerlineage_api.incidents.models import ActiveQuarantines, validate_quarantine
+from answerlineage_api.incidents.models import (
+    MAX_DIFFUSED_DERIVED,
+    ActiveQuarantines,
+    validate_quarantine,
+)
 from answerlineage_api.incidents.quarantine import Diffusion, version_of
 from answerlineage_api.incidents.signature import (
     ENV_PREVIOUS_SECRET,
@@ -256,7 +260,8 @@ async def test_an_incident_put_in_quarantine_is_active_in_its_mode_from_the_base
     ) == [("active", "warn", True, None)]
     read = (await client.get(f"/api/v1/incidents/{incident_id}")).json()
     listed = (await client.get("/api/v1/incidents")).json()["incidents"][0]
-    assert read["quarantine"] == listed["quarantine"] == quarantine_now
+    # Sur l'incident, la quarantaine porte aussi sa zone : nulle avant le premier calcul.
+    assert read["quarantine"] == listed["quarantine"] == {**quarantine_now, "zone": None}
 
 
 @pytest.mark.integration
@@ -278,7 +283,7 @@ async def test_activating_twice_or_lifting_twice_changes_nothing_the_second_time
 
     assert await rows(engine, "SELECT state FROM incident_quarantine") == [("lifted",)]
     read = (await client.get(f"/api/v1/incidents/{incident_id}")).json()
-    assert read["quarantine"] == lift["quarantine"]
+    assert read["quarantine"] == {**lift["quarantine"], "zone": None}
 
 
 @pytest.mark.integration
@@ -301,7 +306,7 @@ async def test_a_lifted_quarantine_never_returns_a_new_activation_opens_another(
         ("active",),
     ]
     read = (await client.get(f"/api/v1/incidents/{incident_id}")).json()
-    assert read["quarantine"] == second["quarantine"]
+    assert read["quarantine"] == {**second["quarantine"], "zone": None}
 
 
 @pytest.mark.integration
@@ -669,3 +674,242 @@ async def test_the_scope_of_a_quarantine_is_that_of_its_incident(
     incident = (await client.get(f"/api/v1/incidents/{incident_id}")).json()
     (diffused,) = (await client.get("/api/v1/quarantine")).json()["quarantines"]
     assert diffused["datasets"] == incident["scope"]["datasets"] == DECLARATION["scope"]["datasets"]
+
+
+# La zone : les jeux dérivés du périmètre, calculés par les workers, diffusés avec lui.
+
+ZONE_TIME = "2026-11-16T09:00:00.125000Z"
+
+
+async def zoned(
+    engine: AsyncEngine,
+    incident_id: str,
+    derived: Sequence[tuple[str, str, int]],
+    *,
+    truncated: bool = False,
+    computed_at: str = ZONE_TIME,
+    checked_at: str | None = None,
+) -> None:
+    """La zone de la dernière quarantaine de l'incident, telle qu'un worker l'écrit."""
+    async with engine.begin() as conn:
+        quarantine_id = (
+            await conn.execute(
+                text(
+                    "SELECT id FROM incident_quarantine WHERE incident_id = :id"
+                    " ORDER BY id DESC LIMIT 1"
+                ),
+                {"id": UUID(incident_id)},
+            )
+        ).scalar_one()
+        await conn.execute(
+            text("DELETE FROM incident_quarantine_derived WHERE quarantine_id = :id"),
+            {"id": quarantine_id},
+        )
+        await conn.execute(
+            text(
+                """
+                INSERT INTO incident_quarantine_zone
+                    (quarantine_id, computed_at, checked_at, truncated, derived)
+                VALUES (:id, :computed_at, :checked_at, :truncated, :derived)
+                ON CONFLICT (quarantine_id) DO UPDATE SET
+                    computed_at = EXCLUDED.computed_at, checked_at = EXCLUDED.checked_at,
+                    truncated = EXCLUDED.truncated, derived = EXCLUDED.derived
+                """
+            ),
+            {
+                "id": quarantine_id,
+                "computed_at": instant(computed_at),
+                "checked_at": instant(checked_at or computed_at),
+                "truncated": truncated,
+                "derived": len(derived),
+            },
+        )
+        if derived:
+            await conn.execute(
+                text(
+                    "INSERT INTO incident_quarantine_derived"
+                    " (quarantine_id, namespace, name, depth)"
+                    " VALUES (:id, :namespace, :name, :depth)"
+                ),
+                [
+                    {"id": quarantine_id, "namespace": namespace, "name": name, "depth": depth}
+                    for namespace, name, depth in derived
+                ],
+            )
+
+
+def views(prefix: str, count: int = schema.MAX_ZONE_DERIVED) -> list[tuple[str, str, int]]:
+    return [("bigquery", f"{prefix}.vue_{rank:02d}", 1 + rank % 3) for rank in range(count)]
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_the_zone_of_a_quarantine_is_diffused_with_it_and_changes_its_version(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    incident_id = await declared(client)
+    await quarantined(client, incident_id)
+    before = await client.get("/api/v1/quarantine")
+    (alone,) = before.json()["quarantines"]
+    # Tant que les workers ne l'ont pas calculée, la zone est absente, pas vide.
+    assert not {"derived", "derived_truncated", "zone_computed_at"} & set(alone)
+
+    await zoned(
+        engine,
+        incident_id,
+        [
+            ("bigquery", "finance.marts.chiffre_affaires", 2),
+            ("bigquery", "ventes.vues.commandes_du_jour", 1),
+            ("bigquery", "direction.tableau.synthese", 3),
+            ("bigquery", "compta.vues.factures", 1),
+        ],
+    )
+    found = await client.get(
+        "/api/v1/quarantine", headers={"if-none-match": before.headers["etag"]}
+    )
+
+    assert found.status_code == 200
+    (diffused,) = found.json()["quarantines"]
+    assert diffused == {
+        **alone,
+        "derived": [
+            {"namespace": "bigquery", "name": "compta.vues.factures", "depth": 1},
+            {"namespace": "bigquery", "name": "ventes.vues.commandes_du_jour", "depth": 1},
+            {"namespace": "bigquery", "name": "finance.marts.chiffre_affaires", "depth": 2},
+            {"namespace": "bigquery", "name": "direction.tableau.synthese", "depth": 3},
+        ],
+        "derived_truncated": False,
+        "zone_computed_at": ZONE_TIME,
+    }
+    # La version est l'empreinte de la liste, zone comprise.
+    assert found.json()["version"] == version_of(
+        ActiveQuarantines.model_validate(found.json()).quarantines
+    )
+    assert found.headers["etag"] != before.headers["etag"]
+
+    # Un calcul qui retrouve la même zone ne change que son dernier calcul : rien à retélécharger.
+    async with engine.begin() as conn:
+        await conn.execute(text("UPDATE incident_quarantine_zone SET checked_at = now()"))
+    unchanged = await client.get(
+        "/api/v1/quarantine", headers={"if-none-match": found.headers["etag"]}
+    )
+    assert unchanged.status_code == 304
+
+    # La borne d'une quarantaine a écarté des jeux : la diffusion le dit.
+    await zoned(engine, incident_id, views("ventes"), truncated=True)
+    (cut,) = (await client.get("/api/v1/quarantine")).json()["quarantines"]
+    assert len(cut["derived"]) == schema.MAX_ZONE_DERIVED
+    assert cut["derived_truncated"] is True
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_the_incident_says_how_much_of_its_zone_the_proxies_receive(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    incident_id = await declared(client)
+    await quarantined(client, incident_id)
+    await zoned(
+        engine,
+        incident_id,
+        [("bigquery", "ventes.vues.commandes_du_jour", 1)],
+        checked_at="2026-11-16T09:05:00Z",
+    )
+
+    read = (await client.get(f"/api/v1/incidents/{incident_id}")).json()
+    listed = (await client.get("/api/v1/incidents")).json()["incidents"][0]
+
+    assert (
+        read["quarantine"]["zone"]
+        == listed["quarantine"]["zone"]
+        == {
+            "computed_at": ZONE_TIME,
+            "checked_at": "2026-11-16T09:05:00Z",
+            "derived": 1,
+            "truncated": False,
+        }
+    )
+    # Levée, la quarantaine garde sa dernière zone, qui n'est plus diffusée.
+    await lifted(client, incident_id)
+    after = (await client.get(f"/api/v1/incidents/{incident_id}")).json()
+    assert after["quarantine"]["state"] == "lifted"
+    assert after["quarantine"]["zone"] == read["quarantine"]["zone"]
+    assert (await client.get("/api/v1/quarantine")).json()["quarantines"] == []
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_the_diffusion_holds_its_bound_of_derived_datasets_the_oldest_quarantines_first(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    full = MAX_DIFFUSED_DERIVED // schema.MAX_ZONE_DERIVED
+    incidents = [await declared(client, f"ventes.t{rank:02d}") for rank in range(full + 1)]
+    for rank, incident_id in enumerate(incidents):
+        await quarantined(client, incident_id)
+        await zoned(engine, incident_id, views(f"zone{rank:02d}"))
+
+    found = (await client.get("/api/v1/quarantine")).json()["quarantines"]
+
+    assert [item["incident_id"] for item in found] == incidents
+    assert sum(len(item["derived"]) for item in found) == MAX_DIFFUSED_DERIVED
+    assert all(len(item["derived"]) == schema.MAX_ZONE_DERIVED for item in found[:full])
+    assert not any(item["derived_truncated"] for item in found[:full])
+    # La plus récente ne reçoit plus rien : sa zone se dit tronquée, ici comme sur l'incident.
+    assert (found[-1]["derived"], found[-1]["derived_truncated"]) == ([], True)
+    last = (await client.get(f"/api/v1/incidents/{incidents[-1]}")).json()["quarantine"]["zone"]
+    assert (last["derived"], last["truncated"]) == (0, True)
+    first = (await client.get(f"/api/v1/incidents/{incidents[0]}")).json()["quarantine"]["zone"]
+    assert (first["derived"], first["truncated"]) == (schema.MAX_ZONE_DERIVED, False)
+
+    # La plus ancienne levée, la place revient à la suivante.
+    await lifted(client, incidents[0])
+    after = (await client.get("/api/v1/quarantine")).json()["quarantines"]
+    assert len(after) == full
+    assert (len(after[-1]["derived"]), after[-1]["derived_truncated"]) == (
+        schema.MAX_ZONE_DERIVED,
+        False,
+    )
+
+
+@pytest.mark.integration
+def test_the_base_holds_the_bounds_of_a_zone(database: URL) -> None:
+    engine = create_engine(database)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO incident (id, state, severity, window_start, window_end)"
+                    " VALUES (:id, 'qualified', 'high', now() - interval '1 hour', now())"
+                ),
+                {"id": UUID(UNKNOWN)},
+            )
+            quarantine_id = conn.execute(
+                text(
+                    "INSERT INTO incident_quarantine (incident_id, mode) VALUES (:id, 'warn')"
+                    " RETURNING id"
+                ),
+                {"id": UUID(UNKNOWN)},
+            ).scalar_one()
+        zone = "INSERT INTO incident_quarantine_zone VALUES (:id, now(), now(), false, 1)"
+        refused = {
+            "ck_incident_quarantine_zone_derived": (
+                "INSERT INTO incident_quarantine_zone VALUES (:id, now(), now(), false, 51)",
+            ),
+            "ck_incident_quarantine_zone_checked_after": (
+                "INSERT INTO incident_quarantine_zone"
+                " VALUES (:id, now(), now() - interval '1 second', false, 0)",
+            ),
+            "ck_incident_quarantine_derived_depth": (
+                zone,
+                "INSERT INTO incident_quarantine_derived VALUES (:id, 'bigquery', 'v', 4)",
+            ),
+            "fk_incident_quarantine_derived_zone": (
+                "INSERT INTO incident_quarantine_derived VALUES (:id, 'bigquery', 'v', 1)",
+            ),
+        }
+        for constraint, statements in refused.items():
+            with engine.begin() as conn, pytest.raises(IntegrityError, match=constraint):
+                for statement in statements:
+                    conn.execute(text(statement), {"id": quarantine_id})
+    finally:
+        engine.dispose()

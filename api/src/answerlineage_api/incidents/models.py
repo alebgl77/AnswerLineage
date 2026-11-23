@@ -29,6 +29,8 @@ from answerlineage_api.store.schema import (
     MAX_ACTIVE_QUARANTINES,
     MAX_PROPOSAL_COLUMNS,
     MAX_SIGNAL_CLASSES,
+    MAX_ZONE_DEPTH,
+    MAX_ZONE_DERIVED,
     AnalysisError,
     AnalysisState,
     AssertionClass,
@@ -43,6 +45,9 @@ from answerlineage_api.store.schema import (
 
 # Un incident touche une table, parfois les quelques tables d'un même chargement.
 MAX_DATASETS: Final = 20
+# Jeux dérivés diffusés au plus, toutes quarantaines actives confondues, les plus
+# anciennes d'abord : la diffusion tient dans ce que les proxys lisent.
+MAX_DIFFUSED_DERIVED: Final = 500
 # Une fenêtre de validité dure au plus un mois : au-delà, la propagation et la
 # mesure de la couverture dépasseraient leurs bornes.
 MAX_WINDOW: Final = timedelta(days=INCIDENT_WINDOW_DAYS)
@@ -367,6 +372,48 @@ class Quarantine(BaseModel):
     )
 
 
+class QuarantineZone(BaseModel):
+    """La zone d'une quarantaine : les vues et les tables dérivées de son périmètre que le
+    graphe connaît, telle que les proxys la reçoivent."""
+
+    computed_at: AwareDatetime = Field(
+        description=(
+            "L'heure du graphe lu qui a donné cette zone. Un calcul qui la retrouve inchangée"
+            " ne la change pas."
+        )
+    )
+    checked_at: AwareDatetime = Field(
+        description=(
+            "Le dernier calcul, qui la suit. Les workers recalculent la zone toutes les cinq"
+            " minutes tant que la quarantaine est active."
+        )
+    )
+    derived: int = Field(
+        description=(
+            f"Les jeux dérivés que les proxys reçoivent, de 0 à {MAX_ZONE_DERIVED} ; pour une"
+            " quarantaine levée, ceux de sa dernière zone."
+        )
+    )
+    truncated: bool = Field(
+        description=(
+            f"Vrai quand une borne en a écarté d'autres : {MAX_ZONE_DERIVED} jeux dérivés par"
+            f" quarantaine, {MAX_DIFFUSED_DERIVED} pour toutes les quarantaines actives, les plus"
+            " anciennes d'abord."
+        )
+    )
+
+
+class IncidentQuarantine(Quarantine):
+    """La dernière quarantaine d'un incident, et sa zone."""
+
+    zone: QuarantineZone | None = Field(
+        description=(
+            "Les jeux dérivés de son périmètre que le graphe connaît. Nulle tant que les workers"
+            " ne l'ont pas calculée."
+        )
+    )
+
+
 class Incident(BaseModel):
     """Un incident déclaré et l'état de son analyse."""
 
@@ -383,7 +430,7 @@ class Incident(BaseModel):
     window: Window = Field(description="Fenêtre de validité : début inclus, fin exclue.")
     declared_at: AwareDatetime
     analysis: Analysis
-    quarantine: Quarantine | None = Field(
+    quarantine: IncidentQuarantine | None = Field(
         description=(
             "La dernière quarantaine de l'incident, active ou levée. Nulle quand l'incident"
             " n'a jamais été mis en quarantaine."
@@ -417,8 +464,40 @@ class QuarantinedDataset(BaseModel):
     name: str
 
 
+class DerivedDataset(BaseModel):
+    """Un jeu dérivé du périmètre : un run a lu un jeu de la zone, et l'a écrit."""
+
+    namespace: str
+    name: str
+    depth: int = Field(
+        ge=1,
+        le=MAX_ZONE_DEPTH,
+        description=(
+            "Les écritures qui le séparent du périmètre. 1 : écrit par un run qui a lu un jeu du"
+            " périmètre ; 2 et 3 : par un run qui a lu un jeu de la profondeur précédente."
+        ),
+    )
+
+
+def _absent_until_computed(schema: dict[str, Any]) -> None:
+    """Un champ de la zone est absent tant qu'elle n'est pas calculée, jamais nul."""
+    schema.pop("default", None)
+    alternatives = [item for item in schema.pop("anyOf", []) if item.get("type") != "null"]
+    for item in alternatives:
+        schema.update(item)
+
+
+def _derived_list(schema: dict[str, Any]) -> None:
+    _absent_until_computed(schema)
+    schema["maxItems"] = MAX_ZONE_DERIVED
+
+
+def _absent(value: object) -> bool:
+    return value is None
+
+
 class ActiveQuarantine(BaseModel):
-    """Le périmètre d'une quarantaine active : celui de son incident."""
+    """Le périmètre d'une quarantaine active : celui de son incident, et sa zone."""
 
     incident_id: UUID
     mode: QuarantineMode = Field(json_schema_extra=_closed_list)
@@ -426,6 +505,35 @@ class ActiveQuarantine(BaseModel):
     datasets: list[QuarantinedDataset] = Field(
         description="Par espace de noms, puis par nom.",
         json_schema_extra={"maxItems": MAX_DATASETS},
+    )
+    derived: list[DerivedDataset] | None = Field(
+        default=None,
+        exclude_if=_absent,
+        description=(
+            "La zone : les vues et les tables dérivées du périmètre que le graphe connaît, par"
+            " profondeur, puis par espace de noms et par nom. Absent tant que les workers ne"
+            f" l'ont pas calculée. {MAX_ZONE_DERIVED} au plus, et {MAX_DIFFUSED_DERIVED} pour"
+            " toutes les quarantaines, les plus anciennes d'abord."
+        ),
+        json_schema_extra=_derived_list,
+    )
+    derived_truncated: bool | None = Field(
+        default=None,
+        exclude_if=_absent,
+        description=(
+            "Vrai quand une borne a écarté des jeux dérivés. Absent tant que la zone n'est pas"
+            " calculée."
+        ),
+        json_schema_extra=_absent_until_computed,
+    )
+    zone_computed_at: AwareDatetime | None = Field(
+        default=None,
+        exclude_if=_absent,
+        description=(
+            "L'heure du graphe lu qui a donné la zone : un calcul qui la retrouve inchangée ne"
+            " la change pas, ni la version. Absent tant que la zone n'est pas calculée."
+        ),
+        json_schema_extra=_absent_until_computed,
     )
 
 

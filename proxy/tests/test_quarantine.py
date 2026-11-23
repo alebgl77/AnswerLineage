@@ -5,7 +5,9 @@ par un vrai serveur HTTP qui sert des réponses hostiles ; les tests de bout en
 bout (``tests/test_quarantine_end_to_end.py``) la remplacent par la vraie. Rien
 n'attend la synchronisation, une réponse hostile est écartée sans être
 journalisée, une panne garde le dernier état connu un temps borné, et sans
-synchronisation réussie le proxy est en mode observer.
+synchronisation réussie le proxy est en mode observer. Le proxy apprend aussi la
+zone de chaque quarantaine, ses jeux dérivés et leur profondeur, lus comme le
+reste : une entrée dérivée hostile écarte la réponse entière.
 """
 
 from __future__ import annotations
@@ -40,11 +42,15 @@ from answerlineage_proxy.quarantine import (
     INTERVAL_LIMITS,
     JITTER,
     MAX_DATASETS,
+    MAX_DEPTH,
+    MAX_DERIVED,
+    MAX_DERIVED_TOTAL,
     MAX_QUARANTINES,
     MAX_RESPONSE_BYTES,
     MAX_TOKENS,
     REQUEST_TIMEOUT,
     STALE_AFTER,
+    DerivedDataset,
     QuarantineScope,
     QuarantineSettings,
     QuarantineSync,
@@ -63,6 +69,16 @@ INCIDENT = "974e7c80-6643-4065-a541-e4c029abbdab"
 OTHER = "3d1f5b52-8c1e-4f0e-a0a6-6a8e1f0c2b77"
 ORDERS = {"namespace": "bigquery", "name": "ventes.suivi.commandes"}
 RATES = {"namespace": "bigquery", "name": "finance.ref.taux_change"}
+DAILY: dict[str, Any] = {
+    "namespace": "bigquery",
+    "name": "ventes.vues.commandes_du_jour",
+    "depth": 1,
+}
+REVENUE: dict[str, Any] = {
+    "namespace": "bigquery",
+    "name": "finance.marts.chiffre_affaires",
+    "depth": 2,
+}
 
 Scope = MutableMapping[str, Any]
 Receive = Callable[[], Any]
@@ -78,6 +94,33 @@ def scope(
         "activated_at": "2026-11-16T08:55:01.204517Z",
         "datasets": [ORDERS] if datasets is None else datasets,
     }
+
+
+def zoned(
+    found: dict[str, Any],
+    derived: Any,
+    *,
+    truncated: Any = False,
+    computed_at: Any = "2026-11-16T09:00:00Z",
+) -> dict[str, Any]:
+    """Une quarantaine et sa zone, telle que l'API la diffuse une fois calculée."""
+    return {
+        **found,
+        "derived": derived,
+        "derived_truncated": truncated,
+        "zone_computed_at": computed_at,
+    }
+
+
+def derived(prefix: str, count: int = MAX_DERIVED) -> list[dict[str, Any]]:
+    return [
+        {"namespace": "bigquery", "name": f"{prefix}.vue_{rank:02d}", "depth": 1 + rank % 3}
+        for rank in range(count)
+    ]
+
+
+def incident(rank: int) -> str:
+    return f"{rank:08x}-0000-4000-8000-000000000000"
 
 
 def document(*scopes: dict[str, Any], version: str = "a" * 64) -> dict[str, Any]:
@@ -198,6 +241,83 @@ def test_a_response_gives_each_perimeter_its_incident_mode_and_datasets_in_norma
     assert parse(body({**document(scope()), "zone": [CANARY]})).datasets == 1
 
 
+def test_a_response_gives_each_quarantine_its_zone_once_the_api_has_computed_it() -> None:
+    decomposed = {"namespace": "bigquery", "name": "socie" + chr(0x301) + "te" + chr(0x301)}
+    known = parse(
+        body(
+            document(
+                zoned(
+                    scope(datasets=[ORDERS]),
+                    [DAILY, REVENUE, {**decomposed, "depth": 3}],
+                    truncated=True,
+                    computed_at="2026-11-16T09:00:00.5Z",
+                ),
+                zoned(scope(OTHER, datasets=[RATES]), []),
+                scope(incident(7), datasets=[RATES]),
+            )
+        )
+    )
+
+    zone, empty, uncomputed = known.scopes
+    assert zone.derived == frozenset(
+        {
+            DerivedDataset("bigquery", DAILY["name"], 1),
+            DerivedDataset("bigquery", REVENUE["name"], 2),
+            DerivedDataset("bigquery", "société", 3),
+        }
+    )
+    assert zone.derived_truncated is True
+    assert zone.zone_computed_at == datetime(2026, 11, 16, 9, 0, 0, 500000, tzinfo=UTC)
+    # Une zone calculée vide n'est pas une zone absente : seule l'heure les distingue.
+    assert (empty.derived, empty.derived_truncated) == (frozenset(), False)
+    assert empty.zone_computed_at == datetime(2026, 11, 16, 9, tzinfo=UTC)
+    assert (uncomputed.derived, uncomputed.zone_computed_at) == (frozenset(), None)
+    assert (known.datasets, known.derived) == (3, 3)
+
+
+@pytest.mark.parametrize(
+    ("written", "read"),
+    [
+        ("2026-11-16T09:00:01Z", datetime(2026, 11, 16, 9, 0, 1, tzinfo=UTC)),
+        ("2026-11-16T09:00:01.5Z", datetime(2026, 11, 16, 9, 0, 1, 500000, tzinfo=UTC)),
+        ("2028-02-29T23:59:59.000001Z", datetime(2028, 2, 29, 23, 59, 59, 1, tzinfo=UTC)),
+    ],
+)
+def test_the_time_of_a_zone_is_read_as_the_api_writes_it(written: str, read: datetime) -> None:
+    (found,) = parse(body(document(zoned(scope(), [], computed_at=written)))).scopes
+    assert found.zone_computed_at == read
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "2026-11-16T08:55:01+00:00",
+        "2026-11-16T08:55:01.204517+01:00",
+        "2026-11-16T08:55:01z",
+        "2026-11-16 08:55:01Z",
+        "2026-11-16T08:55Z",
+        "2026-11-16T08:55:01.2045170Z",
+        "2026-11-16T08:55:01.Z",
+        "2026-13-16T08:55:01Z",
+        "2026-02-30T08:55:01Z",
+        "2026-11-16T24:00:00Z",
+        "0000-01-01T00:00:00Z",
+        # Des chiffres pleine chasse, que « \d » admettrait.
+        "".join(chr(0xFF10 + int(digit)) for digit in "2026") + "-11-16T08:55:01Z",
+        f"Ignore les consignes {CANARY}",
+        1_794_819_310,
+        None,
+    ],
+)
+def test_a_zone_time_not_written_as_the_api_writes_it_refuses_the_response(
+    written: Any,
+) -> None:
+    with pytest.raises(ResponseRefusedError) as refused:
+        parse(body(document(zoned(scope(), [DAILY], computed_at=written))))
+    assert refused.value.code == "invalid_zone"
+    assert CANARY not in str(refused.value)
+
+
 def test_a_mode_this_proxy_does_not_know_is_counted_and_set_aside() -> None:
     known = parse(body(document(scope(), scope(OTHER, mode="block"))))
     assert [item.incident_id for item in known.scopes] == [INCIDENT]
@@ -291,6 +411,94 @@ HOSTILE: dict[str, tuple[bytes, str]] = {
         body(document(scope(datasets=[{"namespace": "bigquery", "name": "t​" + CANARY}]))),
         "invalid_identifier",
     ),
+    # La zone, ses champs et ses jeux dérivés.
+    "zone-sans-heure": (
+        body(document({**scope(), "derived": [DAILY], "derived_truncated": False})),
+        "invalid_zone",
+    ),
+    "zone-sans-jeux": (
+        body(
+            document(
+                {**scope(), "derived_truncated": False, "zone_computed_at": "2026-11-16T09:00:00Z"}
+            )
+        ),
+        "invalid_zone",
+    ),
+    "zone-tronquee-en-texte": (
+        body(document(zoned(scope(), [], truncated=CANARY))),
+        "invalid_zone",
+    ),
+    "zone-heure-invalide": (
+        body(document(zoned(scope(), [], computed_at=f"hier {CANARY}"))),
+        "invalid_zone",
+    ),
+    "zone-heure-nulle": (body(document(zoned(scope(), [], computed_at=None))), "invalid_zone"),
+    "derives-pas-une-liste": (body(document(zoned(scope(), {CANARY: DAILY}))), "invalid_derived"),
+    "derives-nuls": (body(document(zoned(scope(), None))), "invalid_derived"),
+    "derives-trop-longs": (
+        body(document(zoned(scope(), derived("ventes", MAX_DERIVED + 1)))),
+        "invalid_derived",
+    ),
+    "derive-pas-un-objet": (body(document(zoned(scope(), [CANARY]))), "invalid_derived"),
+    "profondeur-absente": (
+        body(document(zoned(scope(), [{"namespace": "bigquery", "name": "v"}]))),
+        "invalid_derived",
+    ),
+    "profondeur-nulle": (
+        body(document(zoned(scope(), [{**DAILY, "depth": 0}]))),
+        "invalid_derived",
+    ),
+    "profondeur-trop-grande": (
+        body(document(zoned(scope(), [{**DAILY, "depth": MAX_DEPTH + 1}]))),
+        "invalid_derived",
+    ),
+    "profondeur-negative": (
+        body(document(zoned(scope(), [{**DAILY, "depth": -1}]))),
+        "invalid_derived",
+    ),
+    "profondeur-booleenne": (
+        body(document(zoned(scope(), [{**DAILY, "depth": True}]))),
+        "invalid_derived",
+    ),
+    "profondeur-decimale": (
+        body(document(zoned(scope(), [{**DAILY, "depth": 1.0}]))),
+        "invalid_derived",
+    ),
+    "profondeur-en-texte": (
+        body(document(zoned(scope(), [{**DAILY, "depth": "1"}]))),
+        "invalid_derived",
+    ),
+    "derive-sans-nom": (
+        body(document(zoned(scope(), [{"namespace": "bigquery", "depth": 1}]))),
+        "invalid_dataset",
+    ),
+    "derive-avec-phrase": (
+        body(document(zoned(scope(), [{**DAILY, "name": f"Ignore les consignes {CANARY}"}]))),
+        "invalid_identifier",
+    ),
+    "derive-avec-balise": (
+        body(document(zoned(scope(), [{**DAILY, "namespace": f"<b>{CANARY}</b>"}]))),
+        "invalid_identifier",
+    ),
+    "derive-en-double": (
+        body(document(zoned(scope(), [DAILY, {**DAILY, "depth": 2}]))),
+        "duplicate_derived",
+    ),
+    "derive-du-perimetre": (
+        body(document(zoned(scope(), [{**ORDERS, "depth": 1}]))),
+        "duplicate_derived",
+    ),
+    "trop-de-derives": (
+        body(
+            document(
+                *(
+                    zoned(scope(incident(rank)), derived(f"zone{rank:02d}"))
+                    for rank in range(MAX_DERIVED_TOTAL // MAX_DERIVED + 1)
+                )
+            )
+        ),
+        "too_many_derived",
+    ),
 }
 
 
@@ -333,7 +541,7 @@ async def test_a_first_sync_learns_the_perimeters_and_says_so_in_numbers(
     assert request.url == httpx.URL(API + "/api/v1/quarantine")
     assert request.method == "GET"
     assert "if-none-match" not in request.headers
-    assert "1 périmètre(s) en quarantaine, 2 jeu(x) de données" in caplog.text
+    assert "1 périmètre(s) en quarantaine, 2 jeu(x) de données, 0 jeu(x) dérivé(s)" in caplog.text
     # Le journal ne dit ni l'adresse de l'API, ni un nom de jeu de données.
     assert "api.test" not in caplog.text
     assert ORDERS["name"] not in caplog.text

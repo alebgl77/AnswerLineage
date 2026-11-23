@@ -580,7 +580,7 @@ Le journal ne cite ni l'adresse de l'API, ni une réponse, ni rien d'un événem
 
 ## Périmètres en quarantaine
 
-Quand un responsable de données [met un incident en quarantaine](incidents.md#quarantaine), chaque proxy apprend le périmètre de l'incident : il interroge l'API qu'il connaît déjà pour sa boîte d'envoi (`--api-url`), sur `GET /api/v1/quarantine`, toutes les 10 secondes par défaut (`--quarantine-interval-seconds`, de 1 à 30). En mode avertir, et quand la [diffusion est vérifiée](#une-diffusion-signée-et-datée), le proxy HTTP en [avertit les lectures](#avertir--lavertissement-dans-le-résultat) : le résultat d'un appel qui lit ce périmètre porte, en tête de son contenu, un avertissement à gabarit fixe. Aucun appel n'est bloqué. Un appel qui ne lit pas le périmètre est relayé comme sans quarantaine. Le mode stdio apprend le périmètre sans annoter.
+Quand un responsable de données [met un incident en quarantaine](incidents.md#quarantaine), chaque proxy apprend le périmètre de l'incident : il interroge l'API qu'il connaît déjà pour sa boîte d'envoi (`--api-url`), sur `GET /api/v1/quarantine`, toutes les 10 secondes par défaut (`--quarantine-interval-seconds`, de 1 à 30). Il apprend aussi la [zone](incidents.md#la-zone--vues-et-tables-dérivées) de chaque quarantaine, quand les workers l'ont calculée : les vues et les tables dérivées du périmètre que le graphe connaît, chacune avec sa profondeur, de 1 à 3 écritures du périmètre. En mode avertir, et quand la [diffusion est vérifiée](#une-diffusion-signée-et-datée), le proxy HTTP en [avertit les lectures](#avertir--lavertissement-dans-le-résultat) : le résultat d'un appel qui lit ce périmètre ou sa zone porte, en tête de son contenu, un avertissement à gabarit fixe. Aucun appel n'est bloqué. Un appel qui ne lit pas le périmètre est relayé comme sans quarantaine. Le mode stdio apprend le périmètre sans annoter.
 
 ```bash
 uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --api-url https://answerlineage.interne --quarantine-interval-seconds 10
@@ -595,10 +595,13 @@ uv run answerlineage-proxy --upstream http://127.0.0.1:9000 --api-url https://an
 Une réponse de l'API est une entrée comme une autre. Elle est écartée en entier, et le proxy garde son dernier état, quand :
 
 - elle n'est pas un `200` (ou un `304` pour la version tenue), pas du JSON, ou arrive compressée : elle n'est jamais décompressée ;
-- elle dépasse 2 Mio : sa lecture s'arrête là ;
+- elle dépasse 4 Mio : sa lecture s'arrête là ;
 - elle n'est pas du JSON strict : clé répétée, constante non numérique, échappement (ni l'API ni un nom admis n'en écrivent) ;
-- elle compte plus de 20 000 éléments JSON : un premier passage les compte, fait de courtes recherches que l'interpréteur interrompt pour rendre la main aux appels, avant que l'analyseur JSON, qui ne la rend pas, ne lise une réponse ainsi bornée, dans un fil à part ;
-- un identifiant d'incident n'a pas la forme d'un UUID, ou revient deux fois ; une heure d'activation n'est pas une heure RFC 3339 en UTC, à la seconde ou à la microseconde, suffixée de `Z` (`invalid_activation`) ; un nom de jeu de données n'a pas la forme que l'[ingestion](ingestion.md#identifiants) admet (contrôle écrit dans le proxy, `names.py`) ; plus de 100 quarantaines, ou un périmètre vide ou de plus de 20 jeux.
+- elle compte plus de 40 000 éléments JSON : un premier passage les compte, fait de courtes recherches que l'interpréteur interrompt pour rendre la main aux appels, avant que l'analyseur JSON, qui ne la rend pas, ne lise une réponse ainsi bornée, dans un fil à part ;
+- un identifiant d'incident n'a pas la forme d'un UUID, ou revient deux fois ; une heure d'activation n'est pas une heure RFC 3339 en UTC, à la seconde ou à la microseconde, suffixée de `Z` (`invalid_activation`) ; un nom de jeu de données n'a pas la forme que l'[ingestion](ingestion.md#identifiants) admet (contrôle écrit dans le proxy, `names.py`) ; plus de 100 quarantaines, ou un périmètre vide ou de plus de 20 jeux ;
+- la zone d'une quarantaine n'a pas ses trois champs ensemble (`derived`, `derived_truncated`, `zone_computed_at`), ou l'un est d'un autre type ou d'une autre forme (`invalid_zone`) ; plus de 50 jeux dérivés, une profondeur qui n'est pas un entier de 1 à 3 (`invalid_derived`) ; un jeu dérivé deux fois, ou qui est un jeu du périmètre (`duplicate_derived`) ; plus de 500 jeux dérivés pour toutes les quarantaines (`too_many_derived`).
+
+Une réponse aux bornes de l'API, cent quarantaines de vingt jeux et 500 jeux dérivés, aux noms les plus longs qu'elle admet écrits en ASCII, pèse 3,8 Mio et compte 15 005 éléments ; aux noms d'un entrepôt ordinaire, moins d'un Mio. La borne des éléments laisse place aux champs qu'une API plus récente ajouterait, et qu'un proxy plus ancien ignore. Un test de contrat le vérifie (`tests/test_contract_quarantine.py`).
 
 Le journal dit le motif par un code (`réponse écartée, invalid_identifier`), jamais la réponse ni un nom. Les champs que le proxy ne lit pas sont ignorés. Une quarantaine d'un mode que le proxy ne connaît pas, après une mise à jour de l'API, est comptée et laissée de côté, avec un avertissement : mettre le proxy à jour.
 
@@ -630,14 +633,16 @@ API injoignable, lente (coupée à 10 s), en erreur ou hostile : le proxy garde 
 Tant qu'aucune synchronisation n'a réussi (API injoignable au démarrage, sans `--api-url`, ou périmètre oublié après une heure de panne), le proxy est en mode observer : il relaie et décrit les appels comme toujours. Il le dit :
 
 - **au journal**, en nombres, à chaque changement : le démarrage en mode observer, chaque synchronisation qui change le périmètre, le premier échec d'un épisode avec l'âge de la dernière synchronisation, le retour de l'API, l'oubli du périmètre ;
-- **dans son état**, `McpProxy.quarantine_status()` (et `StdioProxy`), à côté de `ProxyStats` : `mode` (`observe` ou `synced`), le nombre de périmètres et de jeux connus, l'âge de la dernière synchronisation réussie (`last_sync_age`, nul sans aucune), `failing` tant que les interrogations échouent, et `annotating`, vrai quand le périmètre connu vient d'une [diffusion vérifiée](#une-diffusion-signée-et-datée), jamais sans secret.
+- **dans son état**, `McpProxy.quarantine_status()` (et `StdioProxy`), à côté de `ProxyStats` : `mode` (`observe` ou `synced`), le nombre de périmètres, de jeux et de jeux dérivés connus (`derived`), l'âge de la dernière synchronisation réussie (`last_sync_age`, nul sans aucune), `failing` tant que les interrogations échouent, et `annotating`, vrai quand le périmètre connu vient d'une [diffusion vérifiée](#une-diffusion-signée-et-datée), jamais sans secret.
+
+Les périmètres eux-mêmes se lisent dans `QuarantineSync.known` : pour chaque quarantaine (`QuarantineScope`), son incident, son mode, son heure d'activation, ses jeux, et sa zone, ses jeux dérivés avec leur profondeur (`derived`), si une borne de l'API en a écarté (`derived_truncated`) et l'heure de son calcul (`zone_computed_at`, nulle tant que l'API ne l'a pas donnée). Une zone absente et une zone calculée vide se distinguent par cette heure.
 
 ```text
 INFO answerlineage_proxy Quarantaine : mode observer jusqu'à la première synchronisation avec l'API, interrogée toutes les 10 s.
 INFO answerlineage_proxy Quarantaine : seule une diffusion signée par l'API, et datée de moins de 5 min, est adoptée.
 WARNING answerlineage_proxy Quarantaine : synchronisation en échec (ConnectError) ; mode observer, aucun périmètre connu.
 INFO answerlineage_proxy Quarantaine : API de nouveau joignable.
-INFO answerlineage_proxy Quarantaine synchronisée : 1 périmètre(s) en quarantaine, 2 jeu(x) de données.
+INFO answerlineage_proxy Quarantaine synchronisée : 1 périmètre(s) en quarantaine, 2 jeu(x) de données, 2 jeu(x) dérivé(s).
 WARNING answerlineage_proxy Quarantaine : synchronisation en échec (réponse écartée, signature_expired) ; le dernier état connu est gardé (1 périmètre(s), synchronisé il y a 12 s), 1 h au plus.
 ```
 
@@ -657,7 +662,7 @@ Au démarrage, le proxy le dit : `Quarantaine en mode avertir : le résultat d'u
 
 #### La zone, et les appels retenus
 
-La zone est faite des jeux de données des périmètres en quarantaine active, indexés par espace de noms, puis par nom, avec les incidents qui les y mettent : un instantané immuable, calculé quand la synchronisation adopte une nouvelle version, hors du chemin des appels. Chaque jeu y porte une profondeur : 0 pour un jeu d'un périmètre, de 1 à 3 pour une vue ou une table dérivée. La diffusion ne porte pas encore de jeux dérivés : la zone est aujourd'hui celle des seuls périmètres, et un jeu dérivé, le jour où la diffusion en portera, sera nommé « (dérivée) » dans l'avertissement.
+La zone est faite des jeux de données des périmètres en quarantaine active, indexés par espace de noms, puis par nom, avec les incidents qui les y mettent : un instantané immuable, calculé quand la synchronisation adopte une nouvelle version, hors du chemin des appels. Chaque jeu y porte une profondeur : 0 pour un jeu d'un périmètre, de 1 à 3 pour une vue ou une table dérivée, que la diffusion porte avec chaque quarantaine dont les workers ont calculé la [zone](incidents.md#la-zone--vues-et-tables-dérivées). Un jeu que deux quarantaines mettent dans la zone garde sa plus faible profondeur. Une lecture d'un jeu dérivé est annotée comme celle du périmètre, et le jeu est nommé « (dérivée) » dans l'avertissement. Tant que la zone d'une quarantaine n'est pas calculée, seuls les jeux de son périmètre en font partie.
 
 À l'arrivée d'une requête, le proxy cherche dans la zone si l'appel d'outil, lu sans ambiguïté, est retenu :
 
@@ -689,7 +694,7 @@ L'avertissement est une information, pas un ordre. Une lecture certaine :
 ```text
 [AnswerLineage] Avertissement sur la qualité des données : ce résultat lit des données qu'un incident déclare fausses.
 Incident : 974e7c80-6643-4065-a541-e4c029abbdab, en quarantaine depuis le 2026-11-16 08:55 UTC.
-Périmètre lu : bigquery ventes.suivi.commandes.
+Périmètre lu : bigquery ventes.suivi.commandes ; bigquery ventes.vues.commandes_du_jour (dérivée).
 Une réponse fondée sur ce résultat peut être fausse tant que la quarantaine n'est pas levée.
 ```
 
@@ -1208,14 +1213,14 @@ Un `RunEvent` OpenLineage par appel d'outil, une fois l'échange terminé : `COM
 - La diffusion est signée sous un secret symétrique : qui le lit sur l'hôte de l'API ou d'un proxy signe comme l'API, et une API compromise signe ce qu'elle pousse. La signature date la réponse sans la lier à la requête : une diffusion captée se rejoue pendant les 5 minutes de la tolérance, et qui coupe le chemin fait garder le dernier état valide une heure. C'est une acceptation à signer du [modèle de menaces](securite/modele-de-menaces.md#acceptations) (`proxy/perimetre-usurpe`).
 - Sans secret, le proxy se fie au TLS de l'adresse réglée et apprend le périmètre sans le vérifier : il n'annote alors aucun résultat.
 - Une horloge décalée de plus de 5 minutes, sur l'API ou sur un proxy, fait écarter chaque diffusion : le proxy revient en mode observer au bout d'une heure, sans plus rien annoter, et le journal dit `signature_expired` ou `signature_from_future`.
-- La zone d'une quarantaine est faite des seuls jeux de son périmètre : une vue ou une table bâtie sur eux n'est pas encore annotée, la diffusion ne portant pas encore les jeux dérivés connus du graphe.
 - Un hôte qui ne donne au modèle que `structuredContent` ne lui montre pas l'avertissement : l'événement dit que le résultat a été annoté, pas ce que l'hôte en a montré. Un client qui relit `content[0]` comme le JSON de `structuredContent` lit l'avertissement à sa place.
 - Le mode stdio n'annote pas : un serveur lancé en stdio voit ses lectures en quarantaine relayées sans avertissement.
 - Un outil sans règle de lecture ni SQL déclaré n'est jamais retenu : ses lectures d'un jeu en quarantaine passent sans avertissement.
 - Les premiers appels d'un outil SQL retenu après un démarrage, ou après une analyse abandonnée à son budget, peuvent être annotés comme incertains : l'analyseur de quarantaine démarre ou redémarre. Le préchauffage, dès qu'une zone vise un outil SQL, le limite.
 - Un nom de table ne s'apparie au nom d'un jeu de la zone que s'il lui est égal : un émetteur qui écrit le même jeu avec une autre casse, ou autrement qualifié, n'est pas reconnu, comme dans la propagation.
 - Une réponse compressée, liée par une empreinte ou une signature, une réponse JSON-RPC dont la place du bloc n'est pas dans ses 16 premiers Kio, ou un flux SSE dont la réponse s'étend sur plusieurs lignes `data:`, ne sont pas annotés ; l'événement dit pourquoi.
-- Une liste de périmètres de plus de 2 Mio est écartée : cent quarantaines de vingt jeux aux noms de plusieurs centaines de caractères. Le proxy garde alors son dernier état, puis revient en mode observer au bout d'une heure, et le journal dit `too_large`.
+- Une liste de périmètres de plus de 4 Mio est écartée : aux bornes de l'API, cela demande des noms proches de leur longueur maximale, écrits en caractères de plusieurs octets. Le proxy garde alors son dernier état, puis revient en mode observer au bout d'une heure, et le journal dit `too_large`.
+- La zone ne distingue pas une vue d'une table, et ne filtre pas les écritures par leur heure : une table dérivée bâtie avant l'incident, encore saine, en fait partie ([la zone](incidents.md#la-zone--vues-et-tables-dérivées)). Une vue que le graphe apprend entre dans la zone au calcul suivant des workers, 5 minutes au plus, puis à la synchronisation suivante du proxy.
 - L'état de la synchronisation ne se lit qu'au journal et dans le processus (`quarantine_status()`) : ni relevé, ni route.
 - Le seuil de 5 ms au p99 ne se vérifie qu'au banc de chaque nuit ; l'intégration continue, sur une machine partagée, n'en garde qu'un seuil tolérant.
 - Deux proxys réglés par erreur sur le même identifiant d'instance se confondent : l'API fusionne leurs relevés d'une même fenêtre au plus grand.

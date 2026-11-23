@@ -17,7 +17,12 @@ tient elle-même les états et les transitions.
   (``webhooks.py``) ; une demande qui ne change rien n'annonce rien.
 - **Diffuser.** Les proxys lisent les périmètres en quarantaine active, d'une
   lecture bornée, avec leur empreinte : une version qui ne change que si la
-  liste change.
+  liste change. Chaque quarantaine y porte sa zone, les jeux dérivés de son
+  périmètre que les workers ont calculés (``answerlineage_workers.quarantine_zone``),
+  absente tant qu'elle n'est pas calculée. 500 jeux dérivés au plus pour toutes
+  (``MAX_DIFFUSED_DERIVED``), les quarantaines les plus anciennes d'abord : une
+  zone que cette borne coupe se dit tronquée, dans la diffusion comme sur
+  l'incident (``DIFFUSED``).
 """
 
 from __future__ import annotations
@@ -34,8 +39,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from answerlineage_api.incidents.models import (
     MAX_DATASETS,
+    MAX_DIFFUSED_DERIVED,
     ActiveQuarantine,
     ActiveQuarantines,
+    DerivedDataset,
     Quarantine,
     QuarantineChange,
     QuarantinedDataset,
@@ -78,13 +85,42 @@ _LIFT = text(
     RETURNING {_COLUMNS}
     """  # noqa: S608 — seules des colonnes constantes sont interpolées.
 )
+# Les jeux dérivés que reçoit chaque quarantaine active qui a une zone : les siens, sous
+# la borne de toutes, les quarantaines les plus anciennes d'abord, dans l'ordre de la
+# diffusion. Le paramètre ``:diffused`` est cette borne.
+DIFFUSED = """
+    SELECT q.id AS quarantine_id,
+           LEAST(z.derived, GREATEST(0, :diffused - (sum(z.derived) OVER w - z.derived)))
+               AS budget
+    FROM incident_quarantine q JOIN incident_quarantine_zone z ON z.quarantine_id = q.id
+    WHERE q.state = 'active'
+    WINDOW w AS (ORDER BY q.activated_at, q.incident_id ROWS UNBOUNDED PRECEDING)
+"""
+# Chaque quarantaine active, sa zone et ses jeux dérivés diffusés, une ligne par jeu, ou
+# une seule sans jeu ; d'une seule lecture, pour que la zone et ses jeux s'accordent.
 _ACTIVE_LIST = text(
-    """
-    SELECT incident_id, mode, activated_at FROM incident_quarantine
-    WHERE state = 'active'
-    ORDER BY activated_at, incident_id
+    f"""
+    WITH budgets AS ({DIFFUSED})
+    SELECT q.incident_id, q.mode, q.activated_at, z.computed_at AS zone_computed_at,
+           z.truncated OR b.budget < z.derived AS derived_truncated,
+           d.namespace, d.name, d.depth
+    FROM (
+        SELECT id, incident_id, mode, activated_at FROM incident_quarantine
+        WHERE state = 'active'
+        ORDER BY activated_at, incident_id
+        LIMIT :quarantines
+    ) AS q
+    LEFT JOIN incident_quarantine_zone z ON z.quarantine_id = q.id
+    LEFT JOIN budgets b ON b.quarantine_id = q.id
+    LEFT JOIN LATERAL (
+        SELECT namespace, name, depth FROM incident_quarantine_derived
+        WHERE quarantine_id = q.id
+        ORDER BY depth, namespace COLLATE "C", name COLLATE "C"
+        LIMIT coalesce(b.budget, 0)
+    ) AS d ON true
+    ORDER BY q.activated_at, q.incident_id, d.depth, d.namespace COLLATE "C", d.name COLLATE "C"
     LIMIT :limit
-    """
+    """  # noqa: S608 — seul un fragment constant est interpolé.
 )
 _PERIMETERS = text(
     """
@@ -191,9 +227,21 @@ class Diffusion:
 
 
 async def active_quarantines(reader: Reader) -> Diffusion:
-    """Les quarantaines actives, chacune avec le périmètre de son incident, et leur version."""
-    found = await reader.fetch(_ACTIVE_LIST, {}, limit=MAX_ACTIVE_QUARANTINES)
-    ids = [row.incident_id for row in found.rows]
+    """Les quarantaines actives, chacune avec le périmètre de son incident et sa zone, et leur
+    version."""
+    found = await reader.fetch(
+        _ACTIVE_LIST,
+        {"quarantines": MAX_ACTIVE_QUARANTINES, "diffused": MAX_DIFFUSED_DERIVED},
+        limit=MAX_ACTIVE_QUARANTINES + MAX_DIFFUSED_DERIVED,
+    )
+    active: dict[UUID, Row[Any]] = {}
+    derived: dict[UUID, list[DerivedDataset]] = {}
+    for row in found.rows:
+        active.setdefault(row.incident_id, row)
+        listed = derived.setdefault(row.incident_id, [])
+        if row.name is not None:
+            listed.append(DerivedDataset(namespace=row.namespace, name=row.name, depth=row.depth))
+    ids = list(active)
     datasets: dict[UUID, list[QuarantinedDataset]] = {incident_id: [] for incident_id in ids}
     if ids:
         perimeters = await reader.fetch(_PERIMETERS, {"ids": ids}, limit=len(ids) * MAX_DATASETS)
@@ -202,12 +250,28 @@ async def active_quarantines(reader: Reader) -> Diffusion:
                 QuarantinedDataset(namespace=row.namespace, name=row.name)
             )
     quarantines = [
-        ActiveQuarantine(
-            incident_id=row.incident_id,
-            mode=row.mode,
-            activated_at=in_utc(row.activated_at),
-            datasets=datasets[row.incident_id],
-        )
-        for row in found.rows
+        _active(row, datasets[incident_id], derived[incident_id])
+        for incident_id, row in active.items()
     ]
     return Diffusion(ActiveQuarantines(version=version_of(quarantines), quarantines=quarantines))
+
+
+def _active(
+    row: Row[Any], datasets: list[QuarantinedDataset], derived: list[DerivedDataset]
+) -> ActiveQuarantine:
+    """Une quarantaine active ; sa zone, quand les workers l'ont calculée."""
+    quarantine = ActiveQuarantine(
+        incident_id=row.incident_id,
+        mode=row.mode,
+        activated_at=in_utc(row.activated_at),
+        datasets=datasets,
+    )
+    if row.zone_computed_at is None:
+        return quarantine
+    return quarantine.model_copy(
+        update={
+            "derived": derived,
+            "derived_truncated": row.derived_truncated,
+            "zone_computed_at": in_utc(row.zone_computed_at),
+        }
+    )

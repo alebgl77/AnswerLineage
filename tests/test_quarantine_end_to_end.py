@@ -14,6 +14,9 @@ périmètre.
   secret, écarte chaque réponse et reste en mode observer.
 - L'API injoignable au démarrage, chaque proxy démarre, relaie, et est en mode
   observer ; l'API revenue, il se synchronise.
+- Une vue que le graphe connaît, apprise par l'ingestion d'un job qui lit la table
+  en quarantaine, entre dans la zone que le worker calcule ; le proxy l'apprend
+  avec le périmètre, à sa profondeur, et l'oublie à la levée.
 """
 
 from __future__ import annotations
@@ -27,11 +30,14 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
 import httpx
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from answerlineage_api.app import create_app
@@ -40,8 +46,10 @@ from answerlineage_proxy import cli
 from answerlineage_proxy.app import McpProxy
 from answerlineage_proxy.config import ProxySettings
 from answerlineage_proxy.credentials import ENV_CLIENT_SECRET
-from answerlineage_proxy.quarantine import QuarantineScope
+from answerlineage_proxy.quarantine import DerivedDataset, QuarantineScope
 from answerlineage_proxy.quarantine_signature import ENV_SECRET as ENV_QUARANTINE_SECRET
+from answerlineage_workers.queue import run_worker
+from api.tests.events import PRODUCER, SCHEMA_URL
 from api.tests.issuer import EMITTER_CLIENT, EMITTER_SECRET, LocalIssuer, serving_issuer
 from proxy.tests.conftest import FakeMcpServer, exchange, running, stdio_server, tool_call
 from proxy.tests.stdio_server import RESULT_TEXT
@@ -295,3 +303,92 @@ async def test_an_api_down_at_startup_leaves_each_proxy_relaying_in_observe_mode
                 assert proxy.quarantine_status().mode == "synced"
                 relayed = await exchange("POST", proxy_url + "/mcp", content=tool_call())
                 assert relayed.status == 200
+
+
+def job(reads: str, writes: str) -> dict[str, Any]:
+    """Un job de transformation, émis en OpenLineage : il lit une table et en écrit une autre."""
+    return {
+        "eventType": "COMPLETE",
+        "eventTime": "2026-11-16T07:00:00Z",
+        "producer": PRODUCER,
+        "schemaURL": SCHEMA_URL,
+        "run": {"runId": str(uuid4()), "facets": {}},
+        "job": {"namespace": "dbt://entrepot", "name": writes},
+        "inputs": [{"namespace": "bigquery", "name": reads}],
+        "outputs": [{"namespace": "bigquery", "name": writes}],
+    }
+
+
+async def written(engine: AsyncEngine, count: int) -> None:
+    """Attend que le worker ait projeté ces écritures dans le graphe."""
+    for _ in range(3000):
+        async with engine.connect() as conn:
+            if (await conn.execute(text("SELECT count(*) FROM write_edge"))).scalar_one() >= count:
+                return
+        await asyncio.sleep(0.01)
+    raise AssertionError("les écritures n'ont pas été projetées à temps")
+
+
+def zone(proxy: McpProxy) -> frozenset[DerivedDataset] | None:
+    scopes = perimeter(proxy)
+    return None if not scopes or scopes[0].zone_computed_at is None else scopes[0].derived
+
+
+async def test_a_view_known_to_the_graph_is_learned_by_a_proxy_with_the_perimeter(
+    engine: AsyncEngine,
+) -> None:
+    daily, revenue = "ventes.vues.commandes_du_jour", "finance.marts.chiffre_affaires"
+    stop = asyncio.Event()
+    worker = asyncio.ensure_future(
+        run_worker(engine, stop, idle_delay=0.01, zone_check_every=timedelta(seconds=0.1))
+    )
+    try:
+        async with (
+            serving_issuer() as (issuer, _),
+            running(
+                create_app(
+                    engine,
+                    authentication=issuer.authentication(),
+                    quarantine_signing=QuarantineSigning.create(SHARED),
+                )
+            ) as api_url,
+            http_proxy(api_url, issuer) as (proxy, _),
+            httpx.AsyncClient(
+                base_url=api_url, trust_env=False, headers=issuer.headers()
+            ) as client,
+        ):
+            # Le graphe apprend, par l'ingestion, une vue de la table et une table de la vue.
+            for event in (job(DATASETS[0]["name"], daily), job(daily, revenue)):
+                assert (await client.post("/api/v1/lineage", json=event)).status_code == 201
+            await written(engine, 2)
+
+            declared = await client.post("/api/v1/incidents", json=DECLARATION)
+            incident_id = declared.json()["id"]
+            activated = await client.post(
+                f"/api/v1/incidents/{incident_id}/quarantine", json={"mode": "warn"}
+            )
+            assert activated.status_code == 200
+            since = time.monotonic()
+
+            delay = await waited(lambda: bool(zone(proxy)), since)
+            assert delay < CRITERION_S
+            assert zone(proxy) == frozenset(
+                {DerivedDataset("bigquery", daily, 1), DerivedDataset("bigquery", revenue, 2)}
+            )
+            status = proxy.quarantine_status()
+            assert (status.scopes, status.datasets, status.derived, status.annotating) == (
+                1,
+                2,
+                2,
+                True,
+            )
+            read = (await client.get(f"/api/v1/incidents/{incident_id}")).json()
+            assert read["quarantine"]["zone"]["derived"] == 2
+
+            assert (
+                await client.post(f"/api/v1/incidents/{incident_id}/quarantine/lift")
+            ).status_code == 200
+            await waited(lambda: perimeter(proxy) == (), time.monotonic())
+    finally:
+        stop.set()
+        await asyncio.wait_for(worker, timeout=30)

@@ -151,7 +151,7 @@ description = "Le secret HMAC que l'API et les proxys partagent : qui le détien
 [[asset]]
 id = "perimetres-en-quarantaine"
 name = "Périmètres en quarantaine"
-description = "Les jeux de données qu'un incident met en quarantaine, que chaque proxy apprend de l'API : en mode avertir, le résultat d'une lecture de ces jeux reçoit un avertissement, en HTTP."
+description = "Les jeux de données qu'un incident met en quarantaine, et sa zone, les vues et les tables dérivées de ces jeux que le graphe connaît, que chaque proxy apprend de l'API : en mode avertir, le résultat d'une lecture de ces jeux reçoit un avertissement, en HTTP."
 
 [[asset]]
 id = "avertissements"
@@ -512,7 +512,7 @@ name = "Une API compromise ou usurpée pousse aux proxys un faux périmètre en 
 category = "spoofing"
 boundary = "api-proxy"
 assets = ["perimetres-en-quarantaine", "continuite-des-agents"]
-description = "Qui compromet l'API, ou se place sur le chemin qui y mène, répond aux proxys qui l'interrogent : il fait croire à une quarantaine qui n'existe pas, en tait une active, en prolonge une levée en rejouant une réponse ancienne, ou sert une réponse faite pour épuiser le proxy. En mode avertir, le proxy HTTP annote le résultat des lectures du périmètre : un faux périmètre fait annoter à tort, un périmètre tu fait taire un avertissement."
+description = "Qui compromet l'API, ou se place sur le chemin qui y mène, répond aux proxys qui l'interrogent : il fait croire à une quarantaine qui n'existe pas, en tait une active, en prolonge une levée en rejouant une réponse ancienne, ou sert une réponse faite pour épuiser le proxy. En mode avertir, le proxy HTTP annote le résultat des lectures du périmètre et de sa zone : un faux périmètre fait annoter à tort, un périmètre tu fait taire un avertissement."
 
 [[threat.mitigation]]
 description = "Seule l'adresse que règle l'exploitant est jointe : TLS vérifié, aucune redirection suivie, aucun mandataire lu de l'environnement."
@@ -523,6 +523,11 @@ test = "proxy/tests/test_quarantine.py::test_a_redirect_of_the_api_is_not_follow
 description = "Une réponse est hostile : lue bornée et sans décompression, contrôlée en entier (JSON strict, identifiants de la forme de l'ingestion, nombre de quarantaines et de jeux bornés), écartée en entier sans être journalisée."
 code = "proxy/src/answerlineage_proxy/quarantine.py::parse"
 test = "proxy/tests/test_quarantine.py::test_a_hostile_response_is_refused_with_a_code_never_with_its_content"
+
+[[threat.mitigation]]
+description = "La zone est lue comme le reste : ses trois champs ensemble, son heure en RFC 3339 en UTC relue strictement, des profondeurs de 1 à 3, 50 jeux dérivés par quarantaine et 500 pour toutes, aucun en double ni du périmètre ; une seule faute écarte la réponse entière."
+code = "proxy/src/answerlineage_proxy/quarantine.py::parse"
+test = "proxy/tests/test_quarantine.py::test_a_zone_time_not_written_as_the_api_writes_it_refuses_the_response"
 
 [[threat.mitigation]]
 description = "Une réponse écartée ou une panne gardent le dernier état connu, une heure au plus ; au-delà, le proxy revient en mode observer."
@@ -1722,6 +1727,11 @@ description = "Une analyse attend que la file ait rendu au graphe tout ce qu'une
 code = "workers/src/answerlineage_workers/incidents.py::process_analysis"
 test = "workers/tests/test_rebuild.py::test_an_analysis_waits_until_the_rebuild_has_given_the_graph_back"
 
+[[threat.mitigation]]
+description = "La zone d'une quarantaine n'est ni calculée ni recalculée pendant une reconstruction, ni tant que la file n'a pas rendu le graphe : les proxys gardent la zone d'avant."
+code = "workers/src/answerlineage_workers/quarantine_zone.py::process_zone"
+test = "workers/tests/test_quarantine_zone.py::test_no_zone_is_computed_while_the_graph_is_rebuilt"
+
 [threat.acceptance]
 reason = "La reconstruction ne bloque pas les lectures de l'API, pour qu'elle reste disponible : un événement est à tout instant dans la file ou dans le graphe, et la couverture du lignage compte comme trous les appels d'outil encore en file."
 consequence = "Pendant une reconstruction, une lecture voit un graphe partiel : une réponse dont l'événement d'agent attend encore dans la file manque sans que la couverture le dise."
@@ -2012,6 +2022,38 @@ test = "workers/tests/test_proposals.py::test_a_proposal_without_a_new_failure_f
 [threat.acceptance]
 reason = "Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements, et les workers ne savent pas quel client a envoyé un échec : une borne par émetteur se contournerait en changeant d'espace de noms ; seule la borne globale des propositions ouvertes tient la table et la liste."
 consequence = "Un client émetteur hostile, ou qui en a volé le secret, peut remplir les 100 propositions ouvertes et faire refuser les signaux des vrais tests en échec, jusqu'à ce que des propositions soient décidées ou expirent ; le refus se compte, se dit au journal, et doctor signale les propositions qui attendent."
+
+[[threat]]
+id = "workers/zone-faussee"
+name = "Un émetteur fausse la zone d'une quarantaine : il y fait entrer des jeux qui n'en dérivent pas, ou en chasse ceux qui en dérivent"
+category = "tampering"
+boundary = "emetteur-ingestion"
+assets = ["perimetres-en-quarantaine", "lignage", "disponibilite"]
+description = "La zone d'une quarantaine suit les écritures du graphe, que déclarent les émetteurs. L'ingestion n'admet que les clients émetteurs, mais ne les lie pas encore à l'espace de noms de leurs événements : un client émetteur hostile, ou qui en a volé le secret, déclare des runs qui lisent une table en quarantaine et écrivent n'importe quel jeu, qui entre dans la zone ; ou il en déclare assez, aux noms rangés les premiers, pour remplir les 50 places d'une zone ou les 500 de la diffusion et en chasser les vrais jeux dérivés. Une zone pleine grossit aussi la diffusion que chaque proxy lit, et le calcul que chaque worker refait."
+
+[[threat.mitigation]]
+description = "La zone est bornée, 50 jeux dérivés par quarantaine et 500 pour toutes, les quarantaines les plus anciennes d'abord ; une zone coupée se dit tronquée, dans la diffusion comme sur l'incident, et le périmètre n'est jamais coupé."
+code = "api/src/answerlineage_api/incidents/quarantine.py::active_quarantines"
+test = "api/tests/test_quarantine.py::test_the_diffusion_holds_its_bound_of_derived_datasets_the_oldest_quarantines_first"
+
+[[threat.mitigation]]
+description = "Les jeux les plus proches du périmètre passent d'abord : un émetteur ne chasse un jeu de profondeur 1 qu'avec des jeux qu'il écrit d'un run qui lit le périmètre lui-même ; la coupe ne dépend pas du plan d'exécution."
+code = "api/src/answerlineage_api/lineage/zone.py::derive"
+test = "api/tests/test_quarantine_zone.py::test_beyond_its_bound_the_zone_keeps_the_closest_then_by_name_and_says_so"
+
+[[threat.mitigation]]
+description = "Le calcul part des écritures connues, sous un délai de 30 secondes, à côté de la projection : des lectures sans nombre ne le ralentissent pas, et un calcul en échec garde la zone précédente, sans retarder les lots."
+code = "workers/src/answerlineage_workers/quarantine_zone.py::process_zone"
+test = "workers/tests/test_quarantine_zone.py::test_a_failure_keeps_the_previous_zone_and_says_only_its_class"
+
+[[threat.mitigation]]
+description = "La diffusion la plus grosse que l'API rend, aux noms les plus longs qu'elle admet en ASCII, tient dans les bornes du proxy, qui la lit hors du chemin des appels."
+code = "proxy/src/answerlineage_proxy/quarantine.py::parse"
+test = "tests/test_contract_quarantine.py::test_a_response_of_the_api_at_its_bounds_is_read_whole_by_the_proxy"
+
+[threat.acceptance]
+reason = "La zone se déduit des écritures que les émetteurs déclarent, et un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements. Le graphe ne distingue pas une vue d'une table, ni une écriture d'avant l'incident d'une autre : la zone prend toute écriture connue, sans filtre de temps, et accepte l'excès plutôt que l'oubli. Ses bornes la tiennent, au prix d'une troncature qu'un émetteur peut provoquer."
+consequence = "Une table dérivée bâtie avant l'incident, encore saine, est dans la zone, et ses lectures sont annotées ; un client émetteur hostile, ou qui en a volé le secret, y fait entrer des jeux qui ne dérivent pas du périmètre, ou en chasse de vrais jeux dérivés en la remplissant, et la troncature se voit sur l'incident et dans la diffusion. En mode avertir, des avertissements en trop ou manquants sur les lectures de jeux dérivés, jamais sur celles du périmètre lui-même : jamais un appel bloqué, ni un contenu divulgué."
 
 [[threat]]
 id = "workers/remontee-manquee"

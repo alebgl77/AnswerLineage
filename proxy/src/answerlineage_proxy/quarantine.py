@@ -3,7 +3,10 @@
 Un responsable de données met un incident en quarantaine par l'API ; chaque
 proxy apprend le périmètre des quarantaines actives en interrogeant l'API qu'il
 connaît déjà pour sa boîte d'envoi (``GET /api/v1/quarantine``), à intervalle
-réglable : 10 s par défaut, 30 s au plus. Le relais HTTP en tire, à chaque
+réglable : 10 s par défaut, 30 s au plus. Il apprend aussi, quand les workers
+l'ont calculée, la zone de chaque quarantaine : les vues et les tables dérivées
+du périmètre que le graphe connaît, chacune avec sa profondeur, de 1 à 3, et
+l'heure de son calcul (``QuarantineScope``). Le relais HTTP en tire, à chaque
 version, la zone dont il avertit les lectures (``annotation.py``) : ce module
 lui dit quand le périmètre change (``watch``).
 
@@ -21,14 +24,14 @@ Les invariants de la capture tiennent :
   démarrée sans attendre la première réponse : ni le démarrage ni un appel
   relayé n'attendent l'API. La lecture de la réponse se fait dans un fil, après
   un premier passage qui borne ce que l'analyseur JSON aura à lire ;
-- **la réponse est hostile.** Elle est lue au plus sur 2 Mio, sans
+- **la réponse est hostile.** Elle est lue au plus sur 4 Mio, sans
   décompression ; elle doit être du JSON strict, sans clé répétée ni
-  échappement ; les identifiants d'incident ont la forme d'un UUID, l'heure
-  d'activation celle d'une heure RFC 3339 en UTC, les noms de jeux de données
-  celle que l'ingestion admet (``names.py``), et le nombre de quarantaines et de
-  jeux est borné. Une réponse qui s'en écarte est écartée en
-  entier : le proxy garde son dernier état, et le journal ne dit que le code du
-  motif, jamais la réponse ;
+  échappement ; les identifiants d'incident ont la forme d'un UUID, les heures
+  celle du RFC 3339 en UTC, les noms de jeux de données celle que
+  l'ingestion admet (``names.py``), les profondeurs vont de 1 à 3, et le nombre
+  de quarantaines, de jeux et de jeux dérivés est borné. Une réponse qui s'en
+  écarte est écartée en entier : le proxy garde son dernier état, et le journal
+  ne dit que le code du motif, jamais la réponse ;
 - **une panne garde le dernier état connu**, une heure au plus après la
   dernière synchronisation réussie (``STALE_AFTER``) : assez pour traverser un
   redémarrage ou une bascule de l'API sans perdre une quarantaine en cours,
@@ -99,11 +102,19 @@ REQUEST_TIMEOUT: Final = 10.0
 # Une panne garde le dernier état connu une heure après la dernière synchronisation.
 STALE_AFTER: Final = timedelta(hours=1)
 # Bornes de la réponse : celles de l'API (cent quarantaines actives, vingt jeux par
-# incident), la taille lue, et les éléments JSON qu'elle peut compter.
+# incident ; une zone de cinquante jeux dérivés au plus, à trois écritures du périmètre
+# au plus, et cinq cents pour toutes), la taille lue, et les éléments JSON qu'elle peut
+# compter. Une réponse aux bornes de l'API, aux noms les plus longs qu'elle admet en
+# ASCII, pèse 3,8 Mio et compte 15 005 éléments (``tests/test_contract_quarantine.py``) :
+# la borne des éléments laisse place aux champs qu'une API plus récente ajouterait, et
+# qu'un proxy plus ancien ignore.
 MAX_QUARANTINES: Final = 100
 MAX_DATASETS: Final = 20
-MAX_RESPONSE_BYTES: Final = 2 * 1024 * 1024
-MAX_TOKENS: Final = 20_000
+MAX_DEPTH: Final = 3
+MAX_DERIVED: Final = 50
+MAX_DERIVED_TOTAL: Final = 500
+MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
+MAX_TOKENS: Final = 40_000
 # Les modes que ce proxy connaît. Une quarantaine d'un autre mode, que l'API
 # connaîtrait après une mise à jour, est comptée et laissée de côté.
 MODES: Final = ("warn",)
@@ -115,6 +126,8 @@ _MODE: Final = re.compile(r"[a-z][a-z_]{0,31}")
 _INSTANT: Final = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z"
 )
+# Les champs de la zone, présents ensemble quand les workers l'ont calculée, absents sinon.
+_ZONE: Final = ("derived", "derived_truncated", "zone_computed_at")
 # Un élément JSON : une chaîne, un délimiteur ouvrant, ou une valeur littérale.
 _TOKEN: Final = re.compile(rb'"[^"]*"|[{\[]|[^\s"{}\[\],:]+')
 _CLIENT_LOGGERS: Final = ("httpx", "httpcore")
@@ -158,8 +171,19 @@ class QuarantineSettings:
 
 
 @dataclass(frozen=True)
+class DerivedDataset:
+    """Un jeu dérivé du périmètre : espace de noms et nom sous leur forme NFC, et les
+    écritures qui le séparent du périmètre, de 1 à ``MAX_DEPTH``."""
+
+    namespace: str
+    name: str
+    depth: int
+
+
+@dataclass(frozen=True)
 class QuarantineScope:
-    """Le périmètre d'une quarantaine active : son incident, son mode, ses jeux de données."""
+    """Une quarantaine active : son incident, son mode, son heure d'activation, ses jeux de
+    données, et sa zone quand l'API la donne."""
 
     incident_id: str
     mode: str
@@ -167,6 +191,12 @@ class QuarantineScope:
     datasets: frozenset[tuple[str, str]]
     # L'heure de l'activation, en UTC : l'avertissement d'une lecture la cite.
     activated_at: datetime
+    # La zone : les jeux dérivés du périmètre, un par nom, jamais un jeu du périmètre.
+    derived: frozenset[DerivedDataset] = frozenset()
+    # Vrai quand une borne de l'API a écarté des jeux dérivés.
+    derived_truncated: bool = False
+    # L'heure du graphe lu qui a donné la zone ; nulle tant qu'elle n'est pas calculée.
+    zone_computed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -181,6 +211,10 @@ class KnownQuarantines:
     @property
     def datasets(self) -> int:
         return sum(len(scope.datasets) for scope in self.scopes)
+
+    @property
+    def derived(self) -> int:
+        return sum(len(scope.derived) for scope in self.scopes)
 
 
 @dataclass(frozen=True)
@@ -199,6 +233,8 @@ class QuarantineStatus:
     # Vrai quand le périmètre connu vient d'une diffusion vérifiée par sa signature : seul
     # un tel périmètre pourra agir sur les lectures. Jamais vrai sans secret.
     annotating: bool = False
+    # Les jeux dérivés connus, toutes zones confondues.
+    derived: int = 0
 
 
 def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -224,14 +260,19 @@ def _tokens_within_bounds(body: bytes) -> bool:
     return all(count <= MAX_TOKENS for count, _ in enumerate(_TOKEN.finditer(body), start=1))
 
 
-def _activation(value: object) -> datetime:
-    """L'heure d'activation, lue strictement : RFC 3339 en UTC, sinon la réponse est écartée."""
+def _instant(value: object, code: str) -> datetime:
+    """Une heure lue strictement : RFC 3339 en UTC, sinon la réponse est écartée sous ``code``."""
     if not isinstance(value, str) or not _INSTANT.fullmatch(value):
-        raise ResponseRefusedError("invalid_activation")
+        raise ResponseRefusedError(code)
     try:
         return datetime.fromisoformat(value)
     except ValueError:
-        raise ResponseRefusedError("invalid_activation") from None
+        raise ResponseRefusedError(code) from None
+
+
+def _activation(value: object) -> datetime:
+    """L'heure d'activation, lue strictement : RFC 3339 en UTC, sinon la réponse est écartée."""
+    return _instant(value, "invalid_activation")
 
 
 def _dataset(value: object) -> tuple[str, str]:
@@ -247,8 +288,53 @@ def _dataset(value: object) -> tuple[str, str]:
     return normalize_name(namespace), normalize_name(name)
 
 
+def _derived(value: object, perimeter: frozenset[tuple[str, str]]) -> frozenset[DerivedDataset]:
+    """Les jeux dérivés d'une zone : bornés, de profondeur admise, chacun une fois, hors du
+    périmètre."""
+    if not isinstance(value, list) or len(value) > MAX_DERIVED:
+        raise ResponseRefusedError("invalid_derived")
+    seen = set(perimeter)
+    derived: set[DerivedDataset] = set()
+    for item in value:
+        depth = item.get("depth") if isinstance(item, dict) else None
+        if type(depth) is not int or not 1 <= depth <= MAX_DEPTH:
+            raise ResponseRefusedError("invalid_derived")
+        namespace, name = _dataset(item)
+        if (namespace, name) in seen:
+            raise ResponseRefusedError("duplicate_derived")
+        seen.add((namespace, name))
+        derived.add(DerivedDataset(namespace, name, depth))
+    return frozenset(derived)
+
+
+def _scope(
+    item: dict[str, Any],
+    incident_id: str,
+    mode: str,
+    datasets: frozenset[tuple[str, str]],
+    activated_at: datetime,
+) -> QuarantineScope:
+    """Une quarantaine et sa zone ; les champs de la zone vont ensemble, ou manquent tous."""
+    present = [key in item for key in _ZONE]
+    if not any(present):
+        return QuarantineScope(incident_id, mode, datasets, activated_at)
+    truncated = item.get("derived_truncated")
+    if not all(present) or not isinstance(truncated, bool):
+        raise ResponseRefusedError("invalid_zone")
+    return QuarantineScope(
+        incident_id,
+        mode,
+        datasets,
+        activated_at,
+        derived=_derived(item["derived"], datasets),
+        derived_truncated=truncated,
+        zone_computed_at=_instant(item["zone_computed_at"], "invalid_zone"),
+    )
+
+
 def parse(body: bytes) -> KnownQuarantines:
-    """Les périmètres d'une réponse de l'API, contrôlés ; ``ResponseRefusedError`` sinon.
+    """Les périmètres d'une réponse de l'API et leurs zones, contrôlés ; ``ResponseRefusedError``
+    sinon.
 
     Tout ou rien : une seule faute écarte la réponse entière. Les champs que le
     proxy ne lit pas sont ignorés ; un mode qu'il ne connaît pas fait laisser de
@@ -279,6 +365,7 @@ def parse(body: bytes) -> KnownQuarantines:
     scopes: list[QuarantineScope] = []
     seen: set[str] = set()
     unsupported = 0
+    derived = 0
     for item in listed:
         if not isinstance(item, dict):
             raise ResponseRefusedError("invalid_quarantine")
@@ -298,10 +385,14 @@ def parse(body: bytes) -> KnownQuarantines:
         if not isinstance(datasets, list) or not 1 <= len(datasets) <= MAX_DATASETS:
             raise ResponseRefusedError("invalid_datasets")
         names = frozenset(_dataset(dataset) for dataset in datasets)
+        scope = _scope(item, incident_id, mode, names, activated_at)
+        derived += len(scope.derived)
+        if derived > MAX_DERIVED_TOTAL:
+            raise ResponseRefusedError("too_many_derived")
         if mode not in MODES:
             unsupported += 1
             continue
-        scopes.append(QuarantineScope(incident_id, mode, names, activated_at))
+        scopes.append(scope)
     return KnownQuarantines(version, tuple(scopes), unsupported)
 
 
@@ -384,6 +475,7 @@ class QuarantineSync:
             last_sync_age=None if self._synced_at is None else self._clock() - self._synced_at,
             failing=self._failing,
             annotating=self.annotating,
+            derived=0 if known is None else known.derived,
         )
 
     async def start(self) -> None:
@@ -536,9 +628,11 @@ class QuarantineSync:
             self._changed()
         if changed or recovered:
             logger.info(
-                "Quarantaine synchronisée : %d périmètre(s) en quarantaine, %d jeu(x) de données.",
+                "Quarantaine synchronisée : %d périmètre(s) en quarantaine, %d jeu(x) de données,"
+                " %d jeu(x) dérivé(s).",
                 len(known.scopes),
                 known.datasets,
+                known.derived,
             )
         if changed and known.unsupported:
             logger.warning(

@@ -982,7 +982,14 @@ class McpProxy(CallCapture[ProxySettings]):
             return None
         known = sync.known
         if known is not None and known is not self._zone_of:
-            self._zone, self._zone_of = Zone.of(known.scopes), known
+            # Les jeux dérivés de chaque quarantaine, que la diffusion porte avec son périmètre.
+            derived = {
+                scope.incident_id: [
+                    (item.namespace, item.name, item.depth) for item in scope.derived
+                ]
+                for scope in known.scopes
+            }
+            self._zone, self._zone_of = Zone.of(known.scopes, derived), known
         return self._zone
 
     def _zone_changed(self) -> None:

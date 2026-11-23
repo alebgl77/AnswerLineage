@@ -45,7 +45,15 @@ from answerlineage_proxy.rules import DeclaredDataset, ReadRule
 from answerlineage_proxy.sink import MemorySink
 from answerlineage_proxy.sql import Dialect, SqlAnalysis, analyze_sql
 from proxy.tests.conftest import Exchange, exchange, running, tool_call, until
-from proxy.tests.test_quarantine import API, INCIDENT, FakeApi, body, document, scope
+from proxy.tests.test_quarantine import (
+    API,
+    INCIDENT,
+    FakeApi,
+    body,
+    document,
+    scope,
+    zoned,
+)
 from proxy.tests.test_quarantine import Reply as ApiReply
 from proxy.tests.test_quarantine_signature import WallClock, signed_answer
 
@@ -255,6 +263,40 @@ async def test_a_sql_read_of_the_zone_carries_the_incident_the_perimeter_and_the
     assert described["resultFingerprint"] == expected.fingerprint()
     assert [item["name"] for item in event["inputs"]] == [ORDERS["name"]]
     assert bench.proxy.stats.retained_calls == bench.proxy.stats.annotated_results == 1
+
+
+# Critère 3 : une lecture d'une vue dérivée du périmètre est annotée « (dérivée) ».
+
+DAILY = {"namespace": "bigquery", "name": "ventes.vues.commandes_du_jour", "depth": 1}
+
+
+async def test_a_sql_read_of_a_derived_view_is_annotated_as_derived() -> None:
+    sync = FixedQuarantine(zoned(scope(datasets=[ORDERS]), [DAILY]))
+    async with warned(sync, analyzer=TimedAnalyzer(0.005)) as bench:
+        view, event = await bench.call(query="SELECT montant FROM ventes.vues.commandes_du_jour")
+        both, _ = await bench.call(
+            query=(
+                "SELECT c.montant FROM ventes.suivi.commandes AS c"
+                " JOIN ventes.vues.commandes_du_jour AS j ON j.id = c.id"
+            )
+        )
+    assert "Périmètre lu : bigquery ventes.vues.commandes_du_jour (dérivée)." in warning(view)
+    assert INCIDENT in warning(view)
+    assert facet(event)["quarantine"]["decision"] == "certain"
+    # Le périmètre d'abord, puis les jeux dérivés, chacun marqué.
+    assert (
+        "Périmètre lu : bigquery ventes.suivi.commandes ;"
+        " bigquery ventes.vues.commandes_du_jour (dérivée)." in warning(both)
+    )
+
+
+async def test_a_zone_not_yet_computed_retains_only_the_perimeter() -> None:
+    async with warned(analyzer=TimedAnalyzer(0.005)) as bench:
+        response, event = await bench.call(
+            query="SELECT montant FROM ventes.vues.commandes_du_jour"
+        )
+    assert content(response) == json.loads(RESULT)["result"]["content"]
+    assert facet(event)["quarantine"]["decision"] == "outside"
 
 
 async def test_with_the_real_analyzer_warmed_a_read_of_the_zone_is_certain() -> None:
