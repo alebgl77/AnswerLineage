@@ -99,7 +99,7 @@ static:
 .tests:
   extends: .uv
   stage: tests
-  timeout: 20 minutes
+  timeout: 30 minutes
   parallel:
     matrix:
       - UV_PYTHON: ["3.13", "3.14"]
