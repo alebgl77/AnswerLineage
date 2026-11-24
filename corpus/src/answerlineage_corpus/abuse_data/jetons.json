@@ -1,0 +1,141 @@
+{
+  "title": "Jetons : appeler l'API sans jeton, avec un jeton forgé, ou avec un rôle qui n'ouvre pas la route",
+  "cases": [
+    {
+      "name": "sans-jeton-ingestion",
+      "title": "Un lot envoyé sans en-tête Authorization",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"recipe": "forger-jeton", "forge": "absent"},
+      "expect": {"verdict": "refuse", "status": 401, "code": "missing_token"}
+    },
+    {
+      "name": "sans-jeton-lecture",
+      "title": "Une propagation demandée sans en-tête Authorization",
+      "surface": "lecture",
+      "base": "lecture/propagation",
+      "alter": {"recipe": "forger-jeton", "forge": "absent"},
+      "expect": {"verdict": "refuse", "status": 401, "code": "missing_token"}
+    },
+    {
+      "name": "alg-none",
+      "title": "Un jeton sans signature (alg: none), dont le sujet porte une marque",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"recipe": "forger-jeton", "forge": "alg-none", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 401, "code": "invalid_token"}
+    },
+    {
+      "name": "hs256-cle-publique",
+      "title": "Un jeton HS256 signé avec la clé publique de l'émetteur : la confusion d'algorithme",
+      "surface": "ingestion",
+      "base": "ingestion/evenement-seul",
+      "alter": {"recipe": "forger-jeton", "forge": "hs256-cle-publique", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 401, "code": "invalid_token"}
+    },
+    {
+      "name": "emetteur-etranger",
+      "title": "Un jeton signé par l'émetteur, au nom d'un autre émetteur (iss)",
+      "surface": "lecture",
+      "base": "lecture/graphe",
+      "alter": {"recipe": "forger-jeton", "forge": "emetteur-etranger", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 401, "code": "invalid_token"}
+    },
+    {
+      "name": "audience-etrangere",
+      "title": "Un jeton signé par l'émetteur pour une autre API (aud)",
+      "surface": "lecture",
+      "base": "lecture/incidents",
+      "alter": {"recipe": "forger-jeton", "forge": "audience-etrangere", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 401, "code": "invalid_token"}
+    },
+    {
+      "name": "expire",
+      "title": "Un jeton juste, expiré depuis une heure",
+      "surface": "ingestion",
+      "base": "ingestion/releve",
+      "alter": {"recipe": "forger-jeton", "forge": "expire", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 401, "code": "expired_token"}
+    },
+    {
+      "name": "pas-encore-valide",
+      "title": "Un jeton juste, valide seulement dans dix minutes (nbf)",
+      "surface": "lecture",
+      "base": "lecture/reponses-d-un-message",
+      "alter": {"recipe": "forger-jeton", "forge": "pas-encore-valide", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 401, "code": "invalid_token"}
+    },
+    {
+      "name": "kid-inconnu",
+      "title": "Un jeton signé d'une clé que l'émetteur ne publie pas",
+      "surface": "lecture",
+      "base": "lecture/rebut",
+      "alter": {"recipe": "forger-jeton", "forge": "kid-inconnu", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 401, "code": "invalid_token"}
+    },
+    {
+      "name": "signature-alteree",
+      "title": "Un jeton juste dont la signature est altérée d'un bit",
+      "surface": "ingestion",
+      "base": "ingestion/declaration-d-incident",
+      "alter": {"recipe": "forger-jeton", "forge": "signature-alteree", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 401, "code": "invalid_token"}
+    },
+    {
+      "name": "demesure",
+      "title": "Un jeton juste de plus de 16 Kio",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"recipe": "forger-jeton", "forge": "demesure", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 401, "code": "invalid_token"}
+    },
+    {
+      "name": "lecteur-ingere",
+      "title": "Une personne qui n'a que le rôle de lecteur envoie un lot d'événements",
+      "surface": "ingestion",
+      "base": "ingestion/appel-outil",
+      "alter": {"recipe": "forger-jeton", "forge": "lecteur-seul", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "insufficient_role"}
+    },
+    {
+      "name": "lecteur-rejoue",
+      "title": "Une personne qui n'a que le rôle de lecteur rejoue la file de rebut",
+      "surface": "ingestion",
+      "base": "ingestion/rejeu-du-rebut",
+      "alter": {"recipe": "forger-jeton", "forge": "lecteur-seul", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "insufficient_role"}
+    },
+    {
+      "name": "lecteur-confirme-une-proposition",
+      "title": "Une personne qui n'a que le rôle de lecteur confirme un incident proposé, pour lancer analyse et annonce",
+      "surface": "ingestion",
+      "base": "ingestion/confirmation-d-une-proposition",
+      "alter": {"recipe": "forger-jeton", "forge": "lecteur-seul", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "insufficient_role"}
+    },
+    {
+      "name": "lecteur-revele",
+      "title": "Une personne qui n'a que le rôle de lecteur révèle un destinataire parmi des identités candidates",
+      "surface": "ingestion",
+      "base": "ingestion/revelation-d-un-destinataire",
+      "alter": {"recipe": "forger-jeton", "forge": "lecteur-seul", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "insufficient_role"}
+    },
+    {
+      "name": "lecteur-valide-un-rappel",
+      "title": "Une personne qui n'a que le rôle de lecteur valide la liste de rappel d'un incident",
+      "surface": "ingestion",
+      "base": "ingestion/decision-de-rappel",
+      "alter": {"recipe": "forger-jeton", "forge": "lecteur-seul", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "insufficient_role"}
+    },
+    {
+      "name": "lecteur-lit-les-doublons",
+      "title": "Une personne qui n'a que le rôle de lecteur lit les doublons par émetteur",
+      "surface": "lecture",
+      "base": "lecture/doublons",
+      "alter": {"recipe": "forger-jeton", "forge": "lecteur-seul", "subject": "canari7c1d"},
+      "expect": {"verdict": "refuse", "status": 403, "code": "insufficient_role"}
+    }
+  ]
+}

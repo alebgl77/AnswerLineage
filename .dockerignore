@@ -1,0 +1,22 @@
+# Seuls les sources et les fichiers de verrouillage entrent dans l'image.
+.git
+.github
+.venv
+.venv-*
+**/node_modules
+**/dist
+# Résultats de scripts/image.sh, dont l'archive de l'image elle-même.
+build
+**/__pycache__
+**/*.py[cod]
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.coverage
+coverage.json
+htmlcov
+# Aucun fichier d'environnement : il peut porter un secret.
+**/.env*
+docs
+tests
+**/tests

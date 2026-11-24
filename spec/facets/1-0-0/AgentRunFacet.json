@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-0-0/AgentRunFacet.json",
+  "type": "object",
+  "$defs": {
+    "AgentRunFacet": {
+      "description": "Décrit l'agent qui exécute le run. Facette de run, posée sur le run de l'agent. Aucun champ n'est obligatoire.",
+      "allOf": [
+        {
+          "$ref": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunFacet"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "agentId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Identifiant de l'agent."
+            },
+            "framework": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Framework dans lequel l'agent est écrit."
+            },
+            "agentVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Version de l'agent."
+            },
+            "owner": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Responsable de l'agent : un nom d'équipe ou un pseudonyme."
+            },
+            "taskClass": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Classe de tâche déclarée par l'agent."
+            }
+          }
+        }
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "answerlineage_agent": {
+      "$ref": "#/$defs/AgentRunFacet"
+    }
+  }
+}

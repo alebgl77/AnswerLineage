@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check format format-check lint typecheck test
+.PHONY: help setup check policy contract openapi format format-check lint typecheck packages test coverage-gate measure abuse bench secrets image ui e2e demo
 
 help: ## Liste les cibles
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -8,7 +8,18 @@ setup: ## Installe l'environnement (uv) et les hooks pre-commit
 	uv sync --all-packages --locked
 	uv run pre-commit install
 
-check: format-check lint typecheck test ## Porte de toute story : format, lint, typage strict, tests
+check: policy contract format-check lint typecheck packages test coverage-gate ## Porte de toute contribution : politique, contrat de l'API, format, lint, typage strict, paquets, tests, couverture
+
+policy: ## Politique du dépôt (actions et images épinglées, permissions minimales, agents de code, modèle de menaces)
+	uv run python -m scripts.check_policy
+	uv run python -m scripts.check_threat_model
+
+contract: ## Compatibilité de l'API, des schémas de facettes, de l'extension A2A et du format des webhooks avec ceux publiés sur la branche cible
+	uv run python -m scripts.check_openapi_compat
+	uv run python -m scripts.check_facets_compat
+
+openapi: ## Met à jour la spécification OpenAPI publiée
+	uv run python -m answerlineage_api.openapi > spec/openapi/answerlineage-v1.json
 
 format: ## Reformate le code
 	uv run ruff format .
@@ -23,5 +34,45 @@ lint:
 typecheck:
 	uv run mypy
 
+packages: ## Construit les paquets publiables et éprouve la publication d'une version, sans rien publier
+	rm -rf build/dist
+	uv build --all-packages --no-sources --out-dir build/dist
+	uv run python -m scripts.check_release rehearse build/dist
+	uv run python -m scripts.release_notes > build/release-notes.md
+	@echo "Notes de la prochaine version (build/release-notes.md) :"
+	@cat build/release-notes.md
+
 test: ## Lance les tests avec la couverture de branches
-	uv run pytest --cov --cov-report=term-missing
+	uv run pytest $(PYTEST_ARGS) --cov --cov-report=term-missing --cov-report=json
+
+coverage-gate: ## Vérifie le seuil de couverture par composant (après make test)
+	uv run python -m scripts.coverage_gate
+
+measure: ## Mesure le moteur d'impact sur le corpus de vérité, imprime le tableau (Docker requis ; REPORT=… : JSON)
+	uv run pytest -q -s "tests/test_truth_corpus_impact.py::test_the_impact_engine_passes_its_quality_gate_on_the_truth_corpus" $(if $(REPORT),--truth-report="$(REPORT)")
+
+abuse: ## Rejoue le corpus d'abus seul : chaque cas d'attaque doit être bloqué (Docker requis)
+	uv run answerlineage-corpus check
+	uv run pytest tests/test_abuse_corpus.py tests/test_abuse_explorer.py
+
+bench: ## Banc de latence du proxy : 100 000 appels, p99 de la latence ajoutée au plus 5 ms
+	uv run python -m scripts.bench_proxy $(BENCH_ARGS)
+
+secrets: ## Détection de secrets sur tout l'historique (gitleaks, Docker requis)
+	scripts/gitleaks.sh selftest
+	scripts/gitleaks.sh scan
+
+image: ## Construit l'image, produit son SBOM, éprouve sa signature, relève les vulnérabilités connues et les analyse : hautes et critiques bloquantes (Docker requis)
+	scripts/image.sh
+	python3 -m scripts.check_release vulnerabilities build/image/known-vulnerabilities.json
+
+ui: ## Construit l'explorateur dans ui/dist (Node requis)
+	npm ci --prefix ui --ignore-scripts --no-audit --no-fund
+	npm run --prefix ui typecheck
+	npm run --prefix ui build
+
+e2e: ## Tests de bout en bout de l'explorateur dans Chromium (après make ui)
+	uv run pytest -m e2e
+
+demo: ## Lance la démonstration : l'explorateur sur http://127.0.0.1:8000/ (Docker requis)
+	docker compose up --build

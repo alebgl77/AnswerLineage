@@ -1,0 +1,496 @@
+"""Routes des incidents : déclarer, lire un incident, lister les incidents, mettre un
+incident en quarantaine et la lever, diffuser les périmètres en quarantaine, lire
+les incidents proposés par des tests de qualité en échec, les confirmer ou les
+écarter.
+
+La déclaration lit son corps borné, comme l'ingestion, et le valide champ par
+champ ; l'incident et sa demande d'analyse s'enregistrent dans une seule
+transaction. Les lectures s'exécutent sous le délai maximal des lectures du
+graphe (``reading``).
+
+La quarantaine s'active et se lève par deux actions explicites, idempotentes
+(``quarantine.py``). La levée est une action, ``POST …/quarantine/lift``, et non
+un ``DELETE`` : la quarantaine levée reste, pour l'histoire de l'incident, et
+une levée pourra porter un corps (son motif, d'une liste fermée), ce que
+``DELETE`` ne promet pas. Les proxys lisent les périmètres en quarantaine
+active par ``GET /api/v1/quarantine``, sous un ETag qui leur évite de
+retélécharger une liste qui n'a pas changé ; avec un secret partagé avec eux,
+chaque réponse, ``200`` comme ``304``, est signée et datée (``signature.py``).
+
+Comme toute route de l'API, chacune exige un jeton OIDC et un rôle que la
+matrice des droits lui accorde (``auth/matrix.py``).
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Any
+from uuid import UUID
+
+from fastapi import APIRouter, Header, Path, Query, Request, Response
+from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from answerlineage_api.incidents import proposals, quarantine, signature, store
+from answerlineage_api.incidents.models import (
+    MAX_CONFIRMATION_BYTES,
+    MAX_DECLARATION_BYTES,
+    MAX_QUARANTINE_BYTES,
+    ActiveQuarantines,
+    IncidentDetail,
+    IncidentList,
+    IncidentProposalDetail,
+    IncidentProposalList,
+    ProposalDecision,
+    QuarantineChange,
+    validate_confirmation,
+    validate_declaration,
+    validate_quarantine,
+)
+from answerlineage_api.incidents.models import Incident as IncidentModel
+from answerlineage_api.incidents.store import INCIDENT_CURSOR_PATTERN, IncidentCursor
+from answerlineage_api.ingest.models import FieldError
+from answerlineage_api.ingest.routes import REFUSED_400, REFUSED_413, REFUSED_415, read_json
+from answerlineage_api.lineage.paging import CURSOR_PATTERN, Cursor, CursorError
+from answerlineage_api.lineage.reading import TIMED_OUT, reading
+from answerlineage_api.responses import RequestRefused, RequestRejected, refused
+from answerlineage_api.store.schema import INCIDENT_WINDOW_DAYS, ProposalState
+
+router = APIRouter(prefix="/api/v1", tags=["incidents"])
+
+_INVALID: dict[int | str, dict[str, Any]] = {
+    422: {"model": RequestRejected, "description": "Un paramètre est invalide."}
+}
+_UUID = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
+
+def _rejected(path: str, kind: str, message: str) -> JSONResponse:
+    """Un paramètre bien formé mais inutilisable : son chemin et le motif, jamais sa valeur."""
+    rejected = RequestRejected(errors=[FieldError(path=path, type=kind, message=message)])
+    return JSONResponse(status_code=422, content=rejected.model_dump())
+
+
+def _cursor_refused() -> JSONResponse:
+    return _rejected("/query/cursor", "cursor_invalid", "Ce curseur ne désigne aucune page.")
+
+
+@router.post(
+    "/incidents",
+    status_code=201,
+    response_model=IncidentModel,
+    summary="Déclare un incident de données et lance son analyse d'impact",
+    responses={
+        400: {"model": RequestRefused, "description": REFUSED_400},
+        413: {"model": RequestRefused, "description": REFUSED_413},
+        415: {"model": RequestRefused, "description": REFUSED_415},
+        422: {"model": RequestRejected, "description": "La déclaration est invalide."},
+    },
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/IncidentDeclaration"}}
+            },
+        }
+    },
+)
+async def declare(request: Request) -> JSONResponse:
+    """L'incident est créé à l'état « qualified », avec une demande d'analyse que les workers
+    réclament. Le corps est lu borné, compressé ou non (``gzip``)."""
+    body, refusal = await read_json(request, max_bytes=MAX_DECLARATION_BYTES)
+    if refusal is not None:
+        return refusal
+    declaration, errors = validate_declaration(body)
+    if declaration is None:
+        return JSONResponse(status_code=422, content=RequestRejected(errors=errors).model_dump())
+    engine: AsyncEngine = request.app.state.engine
+    async with engine.begin() as conn:
+        incident = await store.declare(conn, declaration)
+    return JSONResponse(status_code=201, content=incident.model_dump(mode="json", by_alias=True))
+
+
+IncidentId = Annotated[
+    str, Path(pattern=_UUID, description="Identifiant de l'incident, tel que l'API le donne.")
+]
+AnswerLimit = Annotated[
+    int, Query(ge=1, le=200, description="Nombre maximal de réponses touchées renvoyées.")
+]
+AnswerCursor = Annotated[
+    str | None,
+    Query(
+        alias="cursor",
+        pattern=CURSOR_PATTERN,
+        description=(
+            "Curseur opaque de la page suivante des réponses touchées, tel que l'API le donne"
+            " dans « result.next_cursor »."
+        ),
+    ),
+]
+
+
+@router.get(
+    "/incidents/{incident_id}",
+    response_model=IncidentDetail,
+    summary="Donne un incident, l'état de son analyse et les réponses touchées",
+    responses={
+        404: {"model": RequestRefused, "description": "Aucun incident ne porte cet identifiant."},
+        **_INVALID,
+        **TIMED_OUT,
+    },
+)
+async def incident(
+    request: Request,
+    incident_id: IncidentId,
+    limit: AnswerLimit = 200,
+    cursor_value: AnswerCursor = None,
+) -> IncidentDetail | JSONResponse:
+    """Le périmètre, la fenêtre, la gravité, l'état de l'analyse et, quand elle est faite, une
+    page des réponses touchées avec leurs destinataires, la couverture et ses trous."""
+    cursor = None
+    if cursor_value is not None:
+        try:
+            cursor = Cursor.decode(cursor_value)
+        except CursorError:
+            return _cursor_refused()
+    async with reading(request) as reader:
+        found = await store.incident(reader, UUID(incident_id), limit=limit, cursor=cursor)
+    return found if found is not None else refused(404, "unknown_incident")
+
+
+IncidentLimit = Annotated[
+    int, Query(ge=1, le=100, description="Nombre maximal d'incidents renvoyés.")
+]
+IncidentCursorParam = Annotated[
+    str | None,
+    Query(
+        alias="cursor",
+        pattern=INCIDENT_CURSOR_PATTERN,
+        description=(
+            "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor »."
+        ),
+    ),
+]
+
+
+@router.get(
+    "/incidents",
+    response_model=IncidentList,
+    summary="Liste les incidents déclarés, les plus récents d'abord",
+    responses={**_INVALID, **TIMED_OUT},
+)
+async def incidents(
+    request: Request, limit: IncidentLimit = 20, cursor_value: IncidentCursorParam = None
+) -> IncidentList | JSONResponse:
+    """Chaque incident avec son périmètre, sa fenêtre, sa gravité et l'état de son analyse."""
+    cursor = None
+    if cursor_value is not None:
+        try:
+            cursor = IncidentCursor.decode(cursor_value)
+        except CursorError:
+            return _cursor_refused()
+    async with reading(request) as reader:
+        return await store.incidents(reader, limit=limit, cursor=cursor)
+
+
+_UNKNOWN_INCIDENT: dict[int | str, dict[str, Any]] = {
+    404: {"model": RequestRefused, "description": "Aucun incident ne porte cet identifiant."}
+}
+
+
+def _changed(change: QuarantineChange) -> JSONResponse:
+    return JSONResponse(status_code=200, content=change.model_dump(mode="json"))
+
+
+@router.post(
+    "/incidents/{incident_id}/quarantine",
+    response_model=QuarantineChange,
+    summary="Met un incident en quarantaine : les proxys reçoivent son périmètre",
+    responses={
+        400: {"model": RequestRefused, "description": REFUSED_400},
+        409: {
+            "model": RequestRefused,
+            "description": (
+                "La borne des quarantaines actives est atteinte (« too_many_quarantines ») :"
+                " en lever une d'abord."
+            ),
+        },
+        413: {"model": RequestRefused, "description": REFUSED_413},
+        415: {"model": RequestRefused, "description": REFUSED_415},
+        422: {"model": RequestRejected, "description": "La demande est invalide."},
+        **_UNKNOWN_INCIDENT,
+    },
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/QuarantineRequest"}}
+            },
+        }
+    },
+)
+async def activate_quarantine(request: Request, incident_id: IncidentId) -> JSONResponse:
+    """Le périmètre de la quarantaine est celui de l'incident. Idempotent : un incident déjà
+    en quarantaine la garde telle quelle (``changed`` faux), sans nouvelle annonce. Les
+    heures sont posées par la base ; l'activation s'annonce par webhook dans sa transaction."""
+    body, refusal = await read_json(request, max_bytes=MAX_QUARANTINE_BYTES)
+    if refusal is not None:
+        return refusal
+    asked, errors = validate_quarantine(body)
+    if asked is None:
+        return JSONResponse(status_code=422, content=RequestRejected(errors=errors).model_dump())
+    engine: AsyncEngine = request.app.state.engine
+    try:
+        async with engine.begin() as conn:
+            change = await quarantine.activate(conn, UUID(incident_id), asked.mode)
+    except quarantine.QuarantineLimitError:
+        return refused(409, "too_many_quarantines")
+    return _changed(change) if change is not None else refused(404, "unknown_incident")
+
+
+@router.post(
+    "/incidents/{incident_id}/quarantine/lift",
+    response_model=QuarantineChange,
+    summary="Lève la quarantaine d'un incident : les proxys ne reçoivent plus son périmètre",
+    responses={
+        409: {
+            "model": RequestRefused,
+            "description": (
+                "L'incident n'a jamais été mis en quarantaine (« not_quarantined ») : il n'y a"
+                " rien à lever."
+            ),
+        },
+        **_INVALID,
+        **_UNKNOWN_INCIDENT,
+    },
+)
+async def lift_quarantine(request: Request, incident_id: IncidentId) -> JSONResponse:
+    """Idempotent : une quarantaine déjà levée est rendue telle quelle (``changed`` faux),
+    sans nouvelle annonce. La levée est définitive ; activer de nouveau ouvre une nouvelle
+    quarantaine. Elle s'annonce par webhook dans sa transaction."""
+    engine: AsyncEngine = request.app.state.engine
+    try:
+        async with engine.begin() as conn:
+            change = await quarantine.lift(conn, UUID(incident_id))
+    except quarantine.NotQuarantinedError:
+        return refused(409, "not_quarantined")
+    return _changed(change) if change is not None else refused(404, "unknown_incident")
+
+
+ProposalId = Annotated[
+    str, Path(pattern=_UUID, description="Identifiant de la proposition, tel que l'API le donne.")
+]
+ProposalLimit = Annotated[
+    int, Query(ge=1, le=100, description="Nombre maximal de propositions renvoyées.")
+]
+ProposalCursorParam = Annotated[
+    str | None,
+    Query(
+        alias="cursor",
+        pattern=proposals.PROPOSAL_CURSOR_PATTERN,
+        description=(
+            "Curseur opaque de la page suivante, tel que l'API le donne dans « next_cursor »."
+        ),
+    ),
+]
+ProposalStateParam = Annotated[
+    ProposalState | None,
+    Query(description="Seulement les propositions dans cet état ; toutes par défaut."),
+]
+_UNKNOWN_PROPOSAL: dict[int | str, dict[str, Any]] = {
+    404: {"model": RequestRefused, "description": "Aucune proposition ne porte cet identifiant."}
+}
+
+
+@router.get(
+    "/incident-proposals",
+    response_model=IncidentProposalList,
+    summary="Liste les incidents proposés par des tests de qualité en échec, les plus récents"
+    " d'abord",
+    responses={**_INVALID, **TIMED_OUT},
+)
+async def incident_proposals(
+    request: Request,
+    state: ProposalStateParam = None,
+    limit: ProposalLimit = 20,
+    cursor_value: ProposalCursorParam = None,
+) -> IncidentProposalList | JSONResponse:
+    """Chaque proposition avec son jeu, ses colonnes en échec, les classes et la gravité de
+    ses assertions, ses heures et sa fenêtre déduite. Une proposition attend un humain :
+    rien n'en part avant sa confirmation."""
+    cursor = None
+    if cursor_value is not None:
+        try:
+            cursor = proposals.ProposalCursor.decode(cursor_value)
+        except CursorError:
+            return _cursor_refused()
+    async with reading(request) as reader:
+        return await proposals.proposals(reader, state=state, limit=limit, cursor=cursor)
+
+
+@router.get(
+    "/incident-proposals/{proposal_id}",
+    response_model=IncidentProposalDetail,
+    summary="Donne un incident proposé par un test de qualité en échec",
+    responses={**_UNKNOWN_PROPOSAL, **_INVALID, **TIMED_OUT},
+)
+async def incident_proposal(
+    request: Request, proposal_id: ProposalId
+) -> IncidentProposalDetail | JSONResponse:
+    """La proposition, ses heures, sa fenêtre déduite et le nombre de runs de test en échec
+    qui s'y rattachent."""
+    async with reading(request) as reader:
+        found = await proposals.proposal(reader, UUID(proposal_id))
+    return found if found is not None else refused(404, "unknown_proposal")
+
+
+def _decided(decision: ProposalDecision) -> JSONResponse:
+    return JSONResponse(status_code=200, content=decision.model_dump(mode="json", by_alias=True))
+
+
+@router.post(
+    "/incident-proposals/{proposal_id}/confirm",
+    response_model=ProposalDecision,
+    summary="Confirme un incident proposé : il est déclaré, son analyse demandée et annoncée",
+    responses={
+        400: {"model": RequestRefused, "description": REFUSED_400},
+        409: {
+            "model": RequestRefused,
+            "description": (
+                "La proposition est déjà écartée (« proposal_dismissed ») ou expirée"
+                " (« proposal_expired ») : elle ne se confirme plus."
+            ),
+        },
+        413: {"model": RequestRefused, "description": REFUSED_413},
+        415: {"model": RequestRefused, "description": REFUSED_415},
+        422: {"model": RequestRejected, "description": "La confirmation est invalide."},
+        **_UNKNOWN_PROPOSAL,
+    },
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ProposalConfirmation"}
+                }
+            },
+        }
+    },
+)
+async def confirm_proposal(request: Request, proposal_id: ProposalId) -> JSONResponse:
+    """L'incident est déclaré sur la table de la proposition, avec la gravité donnée et la
+    fenêtre donnée ou déduite, à l'état « qualified » ; son analyse est demandée et sa
+    déclaration annoncée par webhook, dans la transaction qui confirme. Idempotent : une
+    proposition déjà confirmée est rendue telle quelle (``changed`` faux), sans nouvel
+    incident ni nouvelle annonce."""
+    body, refusal = await read_json(request, max_bytes=MAX_CONFIRMATION_BYTES)
+    if refusal is not None:
+        return refusal
+    asked, errors = validate_confirmation(body)
+    if asked is None:
+        return JSONResponse(status_code=422, content=RequestRejected(errors=errors).model_dump())
+    engine: AsyncEngine = request.app.state.engine
+    try:
+        async with engine.begin() as conn:
+            decision = await proposals.confirm(conn, UUID(proposal_id), asked)
+    except proposals.ProposalDecidedError as decided:
+        return refused(409, decided.code)
+    except proposals.DerivedWindowTooLongError:
+        return _rejected(
+            "/window",
+            "window_too_long",
+            f"La fenêtre déduite dure plus de {INCIDENT_WINDOW_DAYS} jours : donner la fenêtre"
+            " de l'incident.",
+        )
+    return _decided(decision) if decision is not None else refused(404, "unknown_proposal")
+
+
+@router.post(
+    "/incident-proposals/{proposal_id}/dismiss",
+    response_model=ProposalDecision,
+    summary="Écarte un incident proposé : rien n'est déclaré ni annoncé",
+    responses={
+        409: {
+            "model": RequestRefused,
+            "description": (
+                "La proposition est déjà confirmée (« proposal_confirmed ») ou expirée"
+                " (« proposal_expired ») : elle ne s'écarte plus."
+            ),
+        },
+        **_INVALID,
+        **_UNKNOWN_PROPOSAL,
+    },
+)
+async def dismiss_proposal(request: Request, proposal_id: ProposalId) -> JSONResponse:
+    """La proposition passe écartée, définitivement ; rien n'est annoncé. Pendant un jour, les
+    échecs suivants du même jeu s'y rattachent sans rien proposer. Idempotent : une
+    proposition déjà écartée est rendue telle quelle (``changed`` faux)."""
+    engine: AsyncEngine = request.app.state.engine
+    try:
+        async with engine.begin() as conn:
+            decision = await proposals.dismiss(conn, UUID(proposal_id))
+    except proposals.ProposalDecidedError as decided:
+        return refused(409, decided.code)
+    return _decided(decision) if decision is not None else refused(404, "unknown_proposal")
+
+
+IfNoneMatch = Annotated[
+    str | None,
+    Header(
+        description=(
+            "La version déjà reçue, entre guillemets, telle que l'ETag la donne. Une valeur de"
+            f" plus de {quarantine.MAX_IF_NONE_MATCH} caractères n'est pas lue."
+        )
+    ),
+]
+
+
+def _signed(charge: str) -> dict[str, dict[str, Any]]:
+    """L'en-tête de signature d'une réponse de la diffusion, documenté avec sa charge."""
+    return {
+        signature.HEADER: {
+            "description": (
+                "Avec un secret partagé avec les proxys : t=<heure de signature>,v1=<signature>,"
+                " une signature v1 par secret pendant une rotation. HMAC-SHA-256, en hexadécimal,"
+                " de « answerlineage/quarantine/v1 », d'un octet nul, de t, d'un point, puis de"
+                f" {charge} (spec/quarantine/v1). Absent sans secret."
+            ),
+            "schema": {"type": "string"},
+        }
+    }
+
+
+@router.get(
+    "/quarantine",
+    response_model=ActiveQuarantines,
+    summary="Donne les périmètres en quarantaine active, tels que les proxys les reçoivent",
+    responses={
+        200: {"headers": _signed("son corps, tel qu'il part")},
+        304: {
+            "description": (
+                "La version donnée dans If-None-Match est la version courante : rien n'a changé."
+            ),
+            "headers": _signed("la version courante, celle donnée dans If-None-Match"),
+        },
+        **TIMED_OUT,
+    },
+)
+async def active_quarantines(request: Request, if_none_match: IfNoneMatch = None) -> Response:
+    """Chaque quarantaine active, avec son mode et le périmètre de son incident, et la version
+    de la liste, qui est aussi l'ETag de la réponse. Une lecture bornée : l'activation tient
+    les quarantaines actives sous leur borne. Avec un secret, chaque réponse est signée et
+    datée : un proxy qui le connaît n'adopte qu'une diffusion de l'API, et récente."""
+    signing: signature.QuarantineSigning | None = request.app.state.quarantine_signing
+    async with reading(request) as reader:
+        diffusion = await quarantine.active_quarantines(reader)
+    headers = {"etag": diffusion.etag, "cache-control": "no-cache"}
+    if diffusion.matches(if_none_match):
+        if signing is not None:
+            # Un 304 n'a pas de corps : la charge est la version, que le proxy tient déjà.
+            headers[signature.HEADER] = signing.header(diffusion.quarantines.version.encode())
+        return Response(status_code=304, headers=headers)
+    response = JSONResponse(
+        status_code=200, content=diffusion.quarantines.model_dump(mode="json"), headers=headers
+    )
+    if signing is not None:
+        # La charge est le corps tel qu'il part, octet pour octet.
+        response.headers[signature.HEADER] = signing.header(bytes(response.body))
+    return response

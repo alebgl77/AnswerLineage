@@ -1,0 +1,236 @@
+"""Propager : d'un jeu de données faux aux réponses et aux destinataires touchés.
+
+Une réponse est touchée quand un run de son arbre a lu le jeu de données
+pendant la fenêtre : son propre run, un appel d'outil, un sous-agent. C'est
+l'heure de la lecture qui compte, pas celle de la réponse. Une lecture garde la
+première et la dernière heure d'événement reçues : elle est retenue quand cet
+intervalle recoupe la fenêtre. Un événement rejoué avec une heure antérieure
+élargit l'intervalle sans faire sortir la lecture de la fenêtre. La propagation
+s'arrête à la réponse : elle ne suit pas encore ce qu'un run touché a écrit.
+
+Avec ``known_at``, la propagation porte sur le graphe tel qu'il était connu à
+cette date : les lignes enregistrées après en sont exclues.
+
+Chaque étape a sa borne, et un résultat qui en dépasse une le dit
+(``truncated``) : ses décomptes sont alors des minimums. Pour un rappel, taire
+une réponse touchée est le pire défaut ; les bornes sont donc posées pour que
+ce qui mène aux réponses passe d'abord :
+
+- les lectures de la fenêtre ont leur propre borne, et une lecture qui ne mène
+  à rien (ni réponse, ni run parent) n'y compte pas ;
+- la remontée aux runs parents a la sienne : les lecteurs ne l'épuisent jamais
+  avant elle. Elle va d'abord aux runs les plus proches des lectures, puis, à
+  distance égale, aux premiers identifiants (``trees.py``) : la coupe ne dépend
+  pas du plan d'exécution.
+
+Le résultat dit aussi ce que la propagation n'a pas pu voir : la couverture du
+lignage sur la fenêtre de l'incident et ses trous connus (``coverage.py``).
+
+``touched_runs`` est le cœur de la propagation : les runs dont les réponses sont
+touchées. La route d'impact en tire une page de réponses ; l'analyse d'un
+incident déclaré, faite par les workers, en garde toutes les réponses.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from uuid import UUID
+
+from sqlalchemy import TextClause, text
+
+from answerlineage_api.lineage import coverage, trees
+from answerlineage_api.lineage.models import (
+    DatasetName,
+    ImpactCounts,
+    ImpactResult,
+    Window,
+)
+from answerlineage_api.lineage.overview import ANSWER_COLUMNS, view_of
+from answerlineage_api.lineage.paging import AFTER_CURSOR, ANSWER_ORDER, Cursor
+from answerlineage_api.lineage.reading import Reader, known
+
+# Lectures du jeu de données pendant la fenêtre, les plus récentes d'abord.
+MAX_READS = 20_000
+# Runs qui ont délégué ces lectures, à toute profondeur.
+MAX_RUNS = 20_000
+# Réponses comptées, et liens de diffusion vers leurs destinataires.
+MAX_ANSWERS = 100_000
+MAX_LINKS = 200_000
+
+_DATASET = text(
+    f"""
+    SELECT id, kind FROM dataset d
+    WHERE namespace = :namespace AND name = :name AND {known("d")}
+    LIMIT :limit
+    """  # noqa: S608 — seul un fragment constant est interpolé.
+)
+
+# Les lectures dont l'intervalle [première, dernière heure] recoupe la fenêtre,
+# en deux parts disjointes qui suivent chacune un index : celles qui commencent
+# dans la fenêtre, puis celles, étalées, qui commencent avant et finissent dans
+# la fenêtre ou après. Une lecture faite par un run sans parent ni réponse ne
+# touche aucune réponse.
+_READERS = text(
+    f"""
+    SELECT e.run_id, r.parent_run_id
+    FROM (
+        SELECT e.id, e.run_id, e.event_time FROM read_edge e
+        WHERE e.dataset_id = :dataset_id AND e.event_time >= :start AND e.event_time < :end
+          AND {known("e")}
+        UNION ALL
+        SELECT e.id, e.run_id, e.event_time FROM read_edge e
+        WHERE e.dataset_id = :dataset_id AND e.last_event_time > e.event_time
+          AND e.last_event_time >= :start AND e.event_time < :start
+          AND {known("e")}
+    ) AS e
+    JOIN run r ON r.run_id = e.run_id
+    WHERE r.parent_run_id IS NOT NULL
+       OR EXISTS (SELECT 1 FROM answer a WHERE a.run_id = e.run_id AND {known("a")})
+    ORDER BY e.event_time DESC, e.id DESC
+    LIMIT :limit
+    """  # noqa: S608 — seuls des fragments constants sont interpolés.
+)
+
+# Chaque décompte lit au plus une ligne de plus que sa borne. Au-delà, il compte
+# les premières réponses par run et empreinte, et leurs premiers liens par
+# diffusion et pseudonyme : deux lectures du même graphe comptent les mêmes.
+_COUNTS = text(
+    f"""
+    WITH touched AS (
+        SELECT a.id, a.run_id, a.fingerprint FROM answer a
+        WHERE a.run_id = ANY(:run_ids) AND {known("a")}
+        ORDER BY a.run_id, a.fingerprint
+        LIMIT :answers_limit
+    ), links AS (
+        SELECT l.recipient_id
+        FROM touched t
+        JOIN delivery d ON d.answer_id = t.id AND {known("d")}
+        JOIN delivery_recipient l ON l.delivery_id = d.id AND {known("l")}
+        JOIN recipient c ON c.id = l.recipient_id
+        ORDER BY t.run_id, t.fingerprint, d.channel, d.message_ref, c.pseudonym
+        LIMIT :links_limit
+    )
+    SELECT (SELECT count(*) FROM touched) AS answers,
+           (SELECT count(*) FROM links) AS links,
+           (SELECT count(DISTINCT recipient_id) FROM links) AS recipients
+    """  # noqa: S608 — seuls des fragments constants sont interpolés.
+)
+
+
+def _answers(cursor: Cursor | None) -> TextClause:
+    after = "" if cursor is None else f"AND {AFTER_CURSOR}"
+    return text(
+        f"""
+        SELECT {ANSWER_COLUMNS}
+        FROM answer a
+        JOIN run r ON r.run_id = a.run_id
+        LEFT JOIN agent g ON g.id = r.agent_id
+        WHERE a.run_id = ANY(:run_ids) AND {known("a")}
+        {after}
+        ORDER BY {ANSWER_ORDER}
+        LIMIT :limit
+        """  # noqa: S608 — seuls des fragments constants sont interpolés.
+    )
+
+
+@dataclass(frozen=True)
+class Touched:
+    """Les runs dont une réponse est touchée : les lecteurs et leurs runs parents."""
+
+    kind: str
+    run_ids: list[UUID]
+    # Vrai quand les lectures ou la remontée aux runs parents dépassent leur borne.
+    truncated: bool
+
+
+async def touched_runs(
+    reader: Reader,
+    *,
+    namespace: str,
+    name: str,
+    start: datetime,
+    end: datetime,
+    known_at: datetime | None = None,
+) -> Touched | None:
+    """Les runs touchés par ce jeu de données pendant la fenêtre ; ``None`` s'il est inconnu.
+
+    Avec ``known_at``, sur le graphe tel qu'il était connu à cette date.
+    """
+    as_of = {"known_at": known_at}
+    found = await reader.fetch(_DATASET, {"namespace": namespace, "name": name, **as_of}, limit=1)
+    if not found.rows:
+        return None
+    dataset = found.rows[0]
+
+    readers = await reader.fetch(
+        _READERS,
+        {"dataset_id": dataset.id, "start": start, "end": end, **as_of},
+        limit=MAX_READS,
+    )
+    reader_ids = list(dict.fromkeys(row.run_id for row in readers.rows))
+    parents = [row.parent_run_id for row in readers.rows if row.parent_run_id is not None]
+    ancestors, cut = await trees.ancestors(reader, parents, limit=MAX_RUNS, known_at=known_at)
+    return Touched(
+        kind=dataset.kind,
+        run_ids=list(dict.fromkeys([*reader_ids, *ancestors])),
+        truncated=readers.truncated or cut,
+    )
+
+
+async def propagate(
+    reader: Reader,
+    *,
+    namespace: str,
+    name: str,
+    start: datetime,
+    end: datetime,
+    limit: int,
+    cursor: Cursor | None,
+    now: datetime | None = None,
+    known_at: datetime | None = None,
+) -> ImpactResult | None:
+    """Réponses et destinataires touchés ; ``None`` quand le jeu de données est inconnu.
+
+    Le résultat porte la couverture du lignage sur la fenêtre, et ses trous
+    connus : ce que la propagation n'a pas pu voir. ``now`` borne la partie de
+    la fenêtre qui peut être mesurée ; par défaut, l'heure courante. Avec
+    ``known_at``, la propagation porte sur le graphe tel qu'il était connu à
+    cette date ; la couverture, elle, est celle d'aujourd'hui.
+    """
+    touched = await touched_runs(
+        reader, namespace=namespace, name=name, start=start, end=end, known_at=known_at
+    )
+    if touched is None:
+        return None
+    as_of = {"known_at": known_at}
+    run_ids = touched.run_ids
+
+    counts = (
+        await reader.execute(
+            _COUNTS,
+            {
+                "run_ids": run_ids,
+                "answers_limit": MAX_ANSWERS + 1,
+                "links_limit": MAX_LINKS + 1,
+                **as_of,
+            },
+        )
+    ).one()
+    truncated = touched.truncated or counts.answers > MAX_ANSWERS or counts.links > MAX_LINKS
+
+    params = {"run_ids": run_ids, **as_of} | ({} if cursor is None else cursor.parameters())
+    picked = await reader.fetch(_answers(cursor), params, limit=limit)
+    return ImpactResult(
+        dataset=DatasetName(namespace=namespace, name=name, kind=touched.kind),
+        window=Window(start=start, end=end),
+        counts=ImpactCounts(
+            answers=counts.answers, recipients=counts.recipients, lower_bound=truncated
+        ),
+        coverage=await coverage.over_period(
+            reader, start=start, end=end, now=now or datetime.now(UTC)
+        ),
+        graph=await view_of(reader, picked.rows, more=picked.truncated, known_at=known_at),
+        truncated=truncated,
+        known_at=known_at,
+    )

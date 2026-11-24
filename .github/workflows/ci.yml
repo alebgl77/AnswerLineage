@@ -1,0 +1,300 @@
+name: ci
+
+on:
+  pull_request:
+    # Poser ou retirer un label relance la revue de la configuration d'agents.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+
+# Jeton en lecture seule : aucun job de ce pipeline n'écrit dans le dépôt.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.32"
+
+jobs:
+  static:
+    name: Hygiène et analyse statique
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Le contrat de l'API se compare à celui de la branche cible ; les notes
+          # de version partent de la dernière étiquette.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Installe l'environnement verrouillé
+        run: uv sync --all-packages --locked
+      - name: Politique du dépôt
+        run: make policy
+      - name: Compatibilité de l'API avec le contrat publié
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: make contract
+      - name: Format
+        run: make format-check
+      - name: Lint
+        run: make lint
+      - name: Typage strict
+        run: make typecheck
+      # Ce que la publication d'une version contrôle avant de rien publier,
+      # avec l'étiquette fictive de la version déclarée.
+      - name: Paquets publiables, étiquette fictive et notes de version, sans rien publier
+        run: make packages
+
+  tests:
+    name: Tests (Python ${{ matrix.python }}, PostgreSQL ${{ matrix.postgres }})
+    runs-on: ubuntu-24.04
+    # La suite prend de 14 à 20 minutes selon le runner : de la marge, sans laisser
+    # un test bloqué retenir le pipeline.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+        postgres: ["17", "18"]
+        # Chaque version de PostgreSQL est une image épinglée par son empreinte.
+        include:
+          - postgres: "17"
+            postgres_image: public.ecr.aws/docker/library/postgres:17.11@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
+          - postgres: "18"
+            postgres_image: public.ecr.aws/docker/library/postgres:18.6@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
+          # La réémission vers un vrai Marquez, dans une seule case : l'image est lourde.
+          - python: "3.13"
+            postgres: "18"
+            catalog: "1"
+    env:
+      # Les tests d'intégration démarrent ce PostgreSQL avec Testcontainers.
+      ANSWERLINEAGE_TEST_POSTGRES_IMAGE: ${{ matrix.postgres_image }}
+      ANSWERLINEAGE_TEST_CATALOG: ${{ matrix.catalog }}
+      # Le conteneur qui nettoie après Testcontainers, épinglé lui aussi.
+      RYUK_CONTAINER_IMAGE: testcontainers/ryuk:0.8.1@sha256:bf3f74a47dee0acda89aba4b2fc9c7fdcf994a084db02a2d06566f07baae022e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ matrix.python }}
+      - name: Installe l'environnement verrouillé
+        run: uv sync --all-packages --locked
+      - name: Tests et couverture de branches
+        # Les tests dans le navigateur ont leurs propres jobs : explorer et demo.
+        run: make test PYTEST_ARGS='-m "not e2e and not demo"'
+      - name: Porte de couverture (85 % par composant)
+        run: make coverage-gate
+
+  secrets:
+    name: Détection de secrets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Tout l'historique : un secret retiré depuis reste un secret publié.
+          fetch-depth: 0
+      - name: Vérifie que le détecteur bloque un secret
+        run: scripts/gitleaks.sh selftest
+      - name: Analyse de tout l'historique
+        run: scripts/gitleaks.sh scan
+
+  # Les mêmes sous-commandes de scripts/image.sh que la publication d'une
+  # version (release.yml), qui ne s'essaie qu'à la première étiquette.
+  image:
+    name: Image, SBOM, vulnérabilités et signature
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      IMAGE_VERSION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Vérifie les exceptions déclarées (motif, date de revue)
+        run: python3 -m scripts.check_vulnerabilities exceptions
+      - name: Construit l'image
+        run: scripts/image.sh build
+      - name: Inventorie ses composants (Syft, SBOM CycloneDX)
+        id: sbom
+        run: scripts/image.sh sbom
+      - name: Vérifie que l'analyse bloque une vulnérabilité critique connue
+        run: scripts/image.sh selftest
+      # Registre éphémère, clés jetables, aucun journal public : la signature de
+      # la publication s'éprouve sans rien publier.
+      - name: Vérifie qu'une image signée se vérifie et qu'une image modifiée ne passe pas
+        run: scripts/image.sh signtest
+      # Le relevé que la publication joint à la version, produit avant le verdict
+      # de l'analyse : il existe même quand l'image est bloquée, et un changement
+      # de son format casse ici plutôt qu'à la publication.
+      - name: Relève les vulnérabilités connues de l'image, des paquets Python et de l'explorateur
+        id: known
+        run: scripts/image.sh vulnerabilities
+      - name: Analyse ses vulnérabilités (Grype), hautes et critiques bloquantes
+        run: scripts/image.sh scan
+      - name: Exige le relevé, sans vulnérabilité bloquante, comme la publication
+        run: python3 -m scripts.check_release vulnerabilities build/image/known-vulnerabilities.json
+      - name: Garde le SBOM
+        if: ${{ always() && steps.sbom.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-answerlineage
+          path: build/image/sbom.cdx.json
+          if-no-files-found: error
+      - name: Garde le relevé des vulnérabilités connues
+        if: ${{ always() && steps.known.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: known-vulnerabilities
+          path: |
+            build/image/known-vulnerabilities.json
+            build/image/known-vulnerabilities.md
+          if-no-files-found: error
+
+  codeql:
+    name: Analyse de sécurité du code (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Dépôt des résultats dans l'onglet Sécurité.
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, actions]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: /language:${{ matrix.language }}
+
+  agent-config:
+    name: Revue de la configuration d'agents
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # La comparaison avec la branche cible demande son historique.
+          fetch-depth: 0
+      - name: Exige l'approbation d'un mainteneur si un fichier protégé change
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: python3 -m scripts.check_agent_config
+
+  devcontainer:
+    name: Conteneur de développement
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Le registre public limite parfois le débit des tirages anonymes : la
+      # construction est retentée avant d'être tenue pour un échec.
+      - name: Construit le conteneur
+        run: scripts/retry.sh docker build --tag answerlineage-dev .devcontainer
+      - name: Vérifie qu'il installe et contrôle le projet
+        run: |
+          docker run --rm --volume "$PWD:/src:ro" answerlineage-dev sh -c \
+            'cp -r /src /tmp/projet && cd /tmp/projet && make setup && uv run pytest -m "not integration" -q'
+
+  explorer:
+    name: Explorateur
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Installe l'environnement verrouillé
+        run: uv sync --all-packages --locked
+      - name: Construit l'explorateur, après contrôle de ses types
+        run: make ui
+      - name: Installe Chromium
+        run: uv run playwright install --with-deps chromium
+      - name: Tests de bout en bout dans le navigateur
+        run: make e2e
+
+  # Chaque étape est une sous-commande de scripts/check_demo.sh, qui les
+  # enchaîne toutes sur le poste.
+  demo:
+    name: Démonstration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Installe l'environnement verrouillé
+        run: uv sync --all-packages --locked
+      - name: Installe Chromium
+        run: uv run playwright install --with-deps chromium
+      # Les blocs bash de docs/demarrage.md, dans l'ordre, depuis le départ : le
+      # premier lignage dans le budget de cinq minutes, une commande qui échoue
+      # nommée. Le guide arrête la démonstration et efface ses données.
+      - name: Joue le guide de démarrage, chronométré
+        run: scripts/check_demo.sh guide
+      - name: Lance la démonstration et mesure le premier graphe
+        run: scripts/check_demo.sh up
+      - name: Vérifie qu'elle n'écoute que sur la boucle locale et ne journalise aucune adresse
+        run: scripts/check_demo.sh checks
+      - name: Joue les parcours Remonter et Propager dans Chromium
+        run: scripts/check_demo.sh browser
+      - name: L'arrête, la relance sans renvoyer l'entreprise et retrouve ses données
+        run: scripts/check_demo.sh restart
+      - name: Arrête la démonstration et efface ses données
+        if: ${{ always() }}
+        run: scripts/check_demo.sh down
+
+  # Seul contrôle à exiger dans la protection de la branche principale : il
+  # échoue dès qu'une étape bloquante échoue, est annulée ou est sautée.
+  ci-ok:
+    name: ci-ok
+    if: ${{ always() }}
+    needs: [static, tests, secrets, image, codeql, agent-config, devcontainer, explorer, demo]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Vérifie que toutes les étapes bloquantes sont vertes
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "Étape bloquante non verte : $result"
+              exit 1
+            fi
+          done
+          echo "Toutes les étapes bloquantes sont vertes."

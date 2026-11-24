@@ -1,0 +1,82 @@
+"""Chaque route répond conformément à la spécification OpenAPI publiée."""
+
+from __future__ import annotations
+
+import asyncio
+import secrets
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+import schemathesis
+from hypothesis import HealthCheck, settings
+from schemathesis.checks import (
+    content_type_conformance,
+    not_a_server_error,
+    response_schema_conformance,
+    status_code_conformance,
+)
+from sqlalchemy.engine import URL
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
+
+from answerlineage_api.app import create_app
+from answerlineage_api.openapi import render
+from answerlineage_api.pseudonyms.vault import LocalVault, PseudonymKey
+from api.tests.issuer import authentication, signed_in
+
+PUBLISHED = Path(__file__).resolve().parents[2] / "spec" / "openapi" / "answerlineage-v1.json"
+# « Conformément à son schéma » : jamais d'erreur du serveur, statut documenté,
+# type de contenu documenté, corps conforme au schéma.
+CONFORMANCE: list[Any] = [
+    not_a_server_error,
+    status_code_conformance,
+    content_type_conformance,
+    response_schema_conformance,
+]
+
+
+def test_published_contract_is_the_one_the_application_serves() -> None:
+    """Le fichier publié se met à jour avec ``make openapi``."""
+    assert PUBLISHED.read_text(encoding="utf-8") == render()
+
+
+@pytest.fixture
+def api_schema(database: URL) -> Iterator[Any]:
+    # Une connexion par requête : chaque appel généré tourne dans sa propre boucle.
+    engine = create_async_engine(database, poolclass=NullPool, hide_parameters=True)
+    try:
+        # Le client de test se présente sous le nom « testserver ». Le coffre à clés est réglé,
+        # comme en production, d'une clé tirée pour le test.
+        app = create_app(
+            engine,
+            allowed_hosts=["testserver"],
+            authentication=authentication(),
+            pseudonym_vault=LocalVault([PseudonymKey(secrets.token_bytes(32))]),
+        )
+        loaded = schemathesis.openapi.from_asgi("/api/v1/openapi.json", app)
+        # Le jeton d'un appelant qui a tous les rôles est posé par le test : aucun autre
+        # en-tête d'autorisation n'est généré.
+        loaded.config.generation.update(with_security_parameters=False)
+        yield loaded
+    finally:
+        asyncio.run(engine.dispose())
+
+
+schema = schemathesis.pytest.from_fixture("api_schema")
+
+
+@pytest.mark.integration
+@schema.parametrize()
+@settings(
+    max_examples=40,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
+)
+def test_every_route_answers_as_its_schema_says(case: Any) -> None:
+    """Avec le jeton d'un appelant qui a tous les rôles : chaque route répond comme son
+    schéma le dit, et une requête que la route accepterait n'est jamais refusée pour l'accès."""
+    answered = case.call_and_validate(checks=CONFORMANCE, headers=signed_in())
+    if case.meta is not None and not case.meta.generation.mode.is_negative:
+        assert answered.status_code not in (401, 403), case.operation.label

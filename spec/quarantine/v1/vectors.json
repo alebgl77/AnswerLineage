@@ -1,0 +1,349 @@
+{
+  "description": "Vecteurs de la signature de la diffusion des périmètres en quarantaine d'AnswerLineage, version 1. En-tête de la réponse de GET /api/v1/quarantine : AnswerLineage-Signature: t=<heure de signature>,v1=<signature>[,v1=<signature>]. Signature : HMAC-SHA-256, en hexadécimal minuscule, sous le secret partagé encodé en UTF-8, du message fait de l'étiquette (label), d'un octet nul, de l'heure de signature (secondes depuis 1970, en décimal ASCII, sans zéro en tête), d'un point, puis de la charge (payload). La charge d'un 200 est le corps tel qu'il est reçu, octet pour octet ; celle d'un 304 est la version que le proxy tient, celle qu'il a envoyée dans If-None-Match, en ASCII. Une diffusion est valide quand l'une de ses signatures v1 est juste sous le secret du proxy, puis que l'heure de signature est à tolerance_seconds au plus de l'horloge du proxy (now), avant comme après. « signing » : ce que l'API produit sous les secrets nommés, dans leur ordre. « verification » : ce que le proxy décide avec le secret nommé ; « error » est le code du refus.",
+  "header": "AnswerLineage-Signature",
+  "algorithm": "HMAC-SHA-256",
+  "label": "answerlineage/quarantine/v1",
+  "tolerance_seconds": 300,
+  "secrets": {
+    "current": "partage-courant-des-quarantaines-v1-0123456789",
+    "previous": "partage-precedent-des-quarantaines-v1-9876543210"
+  },
+  "signing": [
+    {
+      "name": "une quarantaine active : 200, signé sur le corps",
+      "status": 200,
+      "secrets": [
+        "current"
+      ],
+      "timestamp": 1794819310,
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369"
+    },
+    {
+      "name": "rien n'a changé : 304, signé sur la version tenue",
+      "status": 304,
+      "secrets": [
+        "current"
+      ],
+      "timestamp": 1794819320,
+      "payload": "bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c",
+      "header": "t=1794819320,v1=783a8d5150f95201962c3ca594fb2484a28e7beb8e183df7c09a5bdc8c5729df"
+    },
+    {
+      "name": "la quarantaine levée : 200, la liste vide",
+      "status": 200,
+      "secrets": [
+        "current"
+      ],
+      "timestamp": 1794925820,
+      "payload": "{\"version\":\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\",\"quarantines\":[]}",
+      "header": "t=1794925820,v1=ffaf15285aa795aeb0f5aebbfbf3e821e68782120eeb4b5cd4052d767f68b3d5"
+    },
+    {
+      "name": "pendant une rotation : 200 signé sous le secret, puis sous le précédent",
+      "status": 200,
+      "secrets": [
+        "current",
+        "previous"
+      ],
+      "timestamp": 1794819310,
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369,v1=ca32794ce2c5357e42c81b80d86ba577b45d355c5dddf85e09473ac0f420c1d3"
+    },
+    {
+      "name": "pendant une rotation : 304 signé sous le secret, puis sous le précédent",
+      "status": 304,
+      "secrets": [
+        "current",
+        "previous"
+      ],
+      "timestamp": 1794819320,
+      "payload": "bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c",
+      "header": "t=1794819320,v1=783a8d5150f95201962c3ca594fb2484a28e7beb8e183df7c09a5bdc8c5729df,v1=af4373a9bf67e0550517bbf41985a327f6daac247f11d052b73501d925907dac"
+    }
+  ],
+  "verification": [
+    {
+      "name": "200 valide",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": true
+    },
+    {
+      "name": "304 valide, sur la version tenue",
+      "secret": "current",
+      "status": 304,
+      "header": "t=1794819320,v1=783a8d5150f95201962c3ca594fb2484a28e7beb8e183df7c09a5bdc8c5729df",
+      "payload": "bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c",
+      "now": 1794819320,
+      "valid": true
+    },
+    {
+      "name": "reçue à la fin de la tolérance",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819610,
+      "valid": true
+    },
+    {
+      "name": "horloge du proxy en retard de la tolérance",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819010,
+      "valid": true
+    },
+    {
+      "name": "rotation : le proxy ne connaît encore que le secret précédent",
+      "secret": "previous",
+      "status": 200,
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369,v1=ca32794ce2c5357e42c81b80d86ba577b45d355c5dddf85e09473ac0f420c1d3",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": true
+    },
+    {
+      "name": "rotation : le proxy connaît déjà le nouveau secret",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369,v1=ca32794ce2c5357e42c81b80d86ba577b45d355c5dddf85e09473ac0f420c1d3",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": true
+    },
+    {
+      "name": "rotation : un 304 vérifié sous le secret précédent",
+      "secret": "previous",
+      "status": 304,
+      "header": "t=1794819320,v1=783a8d5150f95201962c3ca594fb2484a28e7beb8e183df7c09a5bdc8c5729df,v1=af4373a9bf67e0550517bbf41985a327f6daac247f11d052b73501d925907dac",
+      "payload": "bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c",
+      "now": 1794819320,
+      "valid": true
+    },
+    {
+      "name": "un schéma de signature inconnu est ignoré",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310,v2=schema-a-venir,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": true
+    },
+    {
+      "name": "non signée : aucun en-tête",
+      "secret": "current",
+      "status": 200,
+      "header": null,
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "unsigned"
+    },
+    {
+      "name": "304 non signé",
+      "secret": "current",
+      "status": 304,
+      "header": null,
+      "payload": "bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c",
+      "now": 1794819320,
+      "valid": false,
+      "error": "unsigned"
+    },
+    {
+      "name": "en-tête vide",
+      "secret": "current",
+      "status": 200,
+      "header": "",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "malformed_signature"
+    },
+    {
+      "name": "sans horodatage",
+      "secret": "current",
+      "status": 200,
+      "header": "v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "malformed_signature"
+    },
+    {
+      "name": "deux horodatages",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310,t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "malformed_signature"
+    },
+    {
+      "name": "horodatage qui n'est pas un nombre",
+      "secret": "current",
+      "status": 200,
+      "header": "t=hier,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "malformed_signature"
+    },
+    {
+      "name": "horodatage écrit avec un zéro en tête",
+      "secret": "current",
+      "status": 200,
+      "header": "t=01794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "malformed_signature"
+    },
+    {
+      "name": "sans signature v1",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "malformed_signature"
+    },
+    {
+      "name": "signature en majuscules",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310,v1=AF95E461978721608F0A4D807E0E080AFBFB17033C6D2AF8FED3CB46905B6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "malformed_signature"
+    },
+    {
+      "name": "signature tronquée",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b636",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "malformed_signature"
+    },
+    {
+      "name": "espace après une virgule",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310, v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "malformed_signature"
+    },
+    {
+      "name": "plus de huit signatures",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "malformed_signature"
+    },
+    {
+      "name": "corps altéré : la liste vide sous la signature de la quarantaine active",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\",\"quarantines\":[]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "signature_mismatch"
+    },
+    {
+      "name": "signée sous un secret que le proxy ne connaît pas",
+      "secret": "previous",
+      "status": 200,
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "signature_mismatch"
+    },
+    {
+      "name": "horodatage changé après la signature",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819370,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819370,
+      "valid": false,
+      "error": "signature_mismatch"
+    },
+    {
+      "name": "304 signé sur une autre version que celle que le proxy tient",
+      "secret": "current",
+      "status": 304,
+      "header": "t=1794819320,v1=783a8d5150f95201962c3ca594fb2484a28e7beb8e183df7c09a5bdc8c5729df",
+      "payload": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "now": 1794819320,
+      "valid": false,
+      "error": "signature_mismatch"
+    },
+    {
+      "name": "la signature d'un corps présentée pour un 304",
+      "secret": "current",
+      "status": 304,
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c",
+      "now": 1794819310,
+      "valid": false,
+      "error": "signature_mismatch"
+    },
+    {
+      "name": "signée comme un webhook, sans l'étiquette du domaine",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310,v1=af37da08e0d97f880106abb8748d79c34ea63a9e537b97e38340cb9032786994",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819310,
+      "valid": false,
+      "error": "signature_mismatch"
+    },
+    {
+      "name": "rejouée hors de la tolérance",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819611,
+      "valid": false,
+      "error": "signature_expired"
+    },
+    {
+      "name": "304 rejoué hors de la tolérance : un état levé n'est pas prolongé",
+      "secret": "current",
+      "status": 304,
+      "header": "t=1794819320,v1=783a8d5150f95201962c3ca594fb2484a28e7beb8e183df7c09a5bdc8c5729df",
+      "payload": "bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c",
+      "now": 1794925820,
+      "valid": false,
+      "error": "signature_expired"
+    },
+    {
+      "name": "venue du futur, au-delà de la tolérance",
+      "secret": "current",
+      "status": 200,
+      "header": "t=1794819310,v1=af95e461978721608f0a4d807e0e080afbfb17033c6d2af8fed3cb46905b6369",
+      "payload": "{\"version\":\"bbac2b0bf195621e1335137b0bfe215bb5b8c2dd86ce87b9c837addcfdfd886c\",\"quarantines\":[{\"incident_id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"mode\":\"warn\",\"activated_at\":\"2026-11-16T08:55:01.204517Z\",\"datasets\":[{\"namespace\":\"bigquery\",\"name\":\"finance.ref.taux_change\"},{\"namespace\":\"bigquery\",\"name\":\"ventes.suivi.commandes\"}]}]}",
+      "now": 1794819009,
+      "valid": false,
+      "error": "signature_from_future"
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "title": "SQL pathologique : la lecture reste « non résolue », l'appel passe sans attendre l'analyse",
+  "cases": [
+    {
+      "name": "requete-trop-grande",
+      "title": "Une requête au-delà de la taille analysée",
+      "surface": "proxy",
+      "base": "proxy/appel-sql",
+      "alter": {"recipe": "repeter", "field": "/body/params/arguments/query", "motif": " OR devise = 'canari7c1d'", "count": 4500},
+      "expect": {"verdict": "neutralise", "code": "unresolved", "reason": "too_large"}
+    },
+    {
+      "name": "parentheses-imbriquees",
+      "title": "Trois mille parenthèses imbriquées autour de la requête",
+      "surface": "proxy",
+      "base": "proxy/appel-sql",
+      "alter": {"recipe": "imbriquer", "field": "/body/params/arguments/query", "open": "(", "close": ")", "depth": 3000},
+      "expect": {"verdict": "neutralise", "code": "unresolved", "reason": "too_deep"}
+    },
+    {
+      "name": "budget-epuise",
+      "title": "Une requête de 96 Ko dont l'analyse demanderait une vingtaine de secondes",
+      "surface": "proxy",
+      "base": "proxy/appel-sql",
+      "alter": {"recipe": "repeter", "field": "/body/params/arguments/query", "motif": " OR taux = 1", "count": 8000},
+      "expect": {"verdict": "neutralise", "code": "unresolved", "reason": "budget_exceeded"}
+    },
+    {
+      "name": "sql-dynamique",
+      "title": "Du SQL dynamique, dont la table lue n'est connue qu'à l'exécution",
+      "surface": "proxy",
+      "base": "proxy/appel-sql",
+      "alter": {"field": "/body/params/arguments/query", "value": "EXECUTE IMMEDIATE CONCAT('SELECT * FROM paie.', 'canari7c1d')"},
+      "expect": {"verdict": "neutralise", "code": "unresolved", "reason": "unsupported_statement"}
+    },
+    {
+      "name": "fonction-de-table",
+      "title": "Une fonction de table, qui peut lire n'importe quelle source distante",
+      "surface": "proxy",
+      "base": "proxy/appel-sql",
+      "alter": {"field": "/body/params/arguments/query", "value": "SELECT * FROM EXTERNAL_QUERY('canari7c1d.eu.connexion', 'SELECT * FROM paie.salaires')"},
+      "expect": {"verdict": "neutralise", "code": "unresolved", "reason": "table_function"}
+    },
+    {
+      "name": "table-hostile",
+      "title": "Un nom de table fait d'une instruction SQL",
+      "surface": "proxy",
+      "base": "proxy/appel-sql",
+      "alter": {"field": "/body/params/arguments/query", "value": "SELECT * FROM finance.ref.`canari7c1d; DROP TABLE comptes`"},
+      "expect": {"verdict": "neutralise", "code": "unresolved", "reason": "unsupported_identifier"}
+    },
+    {
+      "name": "colonne-hostile",
+      "title": "Un nom de colonne fait d'une balise",
+      "surface": "proxy",
+      "base": "proxy/appel-sql",
+      "alter": {"field": "/body/params/arguments/query", "value": "SELECT t.`<script>canari7c1d</script>` FROM finance.ref.taux_change AS t"},
+      "expect": {"verdict": "neutralise", "code": "unresolved", "reason": "unsupported_identifier"}
+    },
+    {
+      "name": "corps-trop-grand",
+      "title": "Un corps au-delà de la taille lue : la requête SQL n'est pas lue, l'appel reste décrit",
+      "surface": "proxy",
+      "base": "proxy/appel-sql",
+      "alter": {"recipe": "gonfler", "bytes": 1100000},
+      "expect": {"verdict": "neutralise", "code": "unresolved", "reason": "request_too_large"}
+    }
+  ]
+}

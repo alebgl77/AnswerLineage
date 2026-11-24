@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/facets/1-1-0/DeliveryOutputDatasetFacet.json",
+  "type": "object",
+  "$defs": {
+    "DeliveryOutputDatasetFacet": {
+      "description": "Diffusion d'une réponse d'agent. Facette de jeu de données de sortie, à placer dans outputFacets : la sortie est la réponse, décrite par son empreinte. Elle ne porte pas la réponse. La version 1-1-0 écrit la forme du pseudonyme d'un destinataire, que l'ingestion exige.",
+      "allOf": [
+        {
+          "$ref": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/OutputDatasetFacet"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "fingerprint": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "description": "Empreinte de la réponse. Jamais le contenu."
+            },
+            "channel": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Canal par lequel la réponse a été diffusée."
+            },
+            "messageRef": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "Référence du message diffusé sur le canal."
+            },
+            "recipients": {
+              "type": "array",
+              "maxItems": 10000,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255,
+                "description": "Pseudonyme d'un destinataire : « hmac-sha256: » suivi de HMAC-SHA-256, sous la clé de pseudonymisation du locataire, de l'étiquette answerlineage/pseudonym/recipient/v1, d'un octet nul et de l'identité mise en minuscules puis normalisée en NFC, en hexadécimal minuscule. Jamais l'identité.",
+                "pattern": "^hmac-sha256:[0-9a-f]{64}$"
+              },
+              "description": "Destinataires pseudonymisés, sans table de correspondance."
+            }
+          },
+          "required": [
+            "fingerprint",
+            "channel",
+            "messageRef"
+          ]
+        }
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "answerlineage_delivery": {
+      "$ref": "#/$defs/DeliveryOutputDatasetFacet"
+    }
+  }
+}

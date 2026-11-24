@@ -1,0 +1,284 @@
+{
+  "description": "Vecteurs de la signature des webhooks d'AnswerLineage, version 1. En-tête : AnswerLineage-Signature: t=<heure d'émission>,v1=<signature>[,v1=<signature>]. Signature : HMAC-SHA-256, en hexadécimal minuscule, sous le secret partagé encodé en UTF-8, de l'heure d'émission (secondes depuis 1970, en décimal ASCII), d'un point, puis du corps tel qu'il est reçu, octet pour octet. Un message est valide quand l'une de ses signatures v1 est juste sous l'un des secrets du récepteur, puis que l'heure d'émission est à tolerance_seconds au plus de l'horloge du récepteur (now), avant comme après. « signing » : ce que l'émetteur produit sous les secrets nommés, dans leur ordre. « verification » : ce que le récepteur décide avec les secrets nommés ; « error » est le code du refus.",
+  "header": "AnswerLineage-Signature",
+  "algorithm": "HMAC-SHA-256",
+  "tolerance_seconds": 300,
+  "secrets": {
+    "current": "partage-courant-des-vecteurs-v1-0123456789",
+    "previous": "partage-precedent-des-vecteurs-v1-9876543210"
+  },
+  "signing": [
+    {
+      "name": "incident déclaré",
+      "secrets": [
+        "current"
+      ],
+      "timestamp": 1794819197,
+      "body": "{\"delivery_id\":\"5b0f3c1e-2d4a-4f6b-8c9d-0e1f2a3b4c5d\",\"emitted_at\":\"2026-11-16T08:53:17Z\",\"incident\":{\"analysis\":{\"counts\":null,\"error\":null,\"state\":\"pending\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.793908Z\",\"type\":\"incident.declared\",\"version\":1}",
+      "header": "t=1794819197,v1=7a905849f30f553f2ed41e22ab7243e26f84ca174864f5cceb11ea9bcd145458"
+    },
+    {
+      "name": "analyse faite",
+      "secrets": [
+        "current"
+      ],
+      "timestamp": 1794819198,
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843"
+    },
+    {
+      "name": "analyse en échec",
+      "secrets": [
+        "current"
+      ],
+      "timestamp": 1794819199,
+      "body": "{\"delivery_id\":\"c4d6e8f0-a1b3-4c5d-8e7f-90a1b2c3d4e5\",\"emitted_at\":\"2026-11-16T08:53:19Z\",\"incident\":{\"analysis\":{\"counts\":null,\"error\":\"query_timeout\",\"state\":\"failed\"},\"id\":\"3d1f5b52-8c1e-4f0e-a0a6-6a8e1f0c2b77\",\"quarantine\":null,\"severity\":\"critical\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T09:12:41.005120Z\",\"type\":\"incident.analysis_failed\",\"version\":1}",
+      "header": "t=1794819199,v1=f802cff78e519032fd00630db8a925f9d5e9bfc8739832ab69cf658d6d50ba0d"
+    },
+    {
+      "name": "quarantaine activée",
+      "secrets": [
+        "current"
+      ],
+      "timestamp": 1794819302,
+      "body": "{\"delivery_id\":\"1f7a9c3e-5b2d-4e8f-a6c4-0d2e4f6a8b1c\",\"emitted_at\":\"2026-11-16T08:55:02Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":{\"mode\":\"warn\",\"state\":\"active\"},\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:55:01.204517Z\",\"type\":\"incident.quarantined\",\"version\":1}",
+      "header": "t=1794819302,v1=2bf59d4b7b6c1f1d50e1616fe5fbc3f4eb9c153ce3aa8a51ed97ea7a99ddb4ce"
+    },
+    {
+      "name": "quarantaine levée",
+      "secrets": [
+        "current"
+      ],
+      "timestamp": 1794925812,
+      "body": "{\"delivery_id\":\"6d4b2f80-9e1c-4a3b-8f5d-7c2e1a0b9d43\",\"emitted_at\":\"2026-11-17T14:30:12Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":{\"mode\":\"warn\",\"state\":\"lifted\"},\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-17T14:30:11.517203Z\",\"type\":\"incident.quarantine_lifted\",\"version\":1}",
+      "header": "t=1794925812,v1=74a1e80aa14035dff3293095c5b0d46085a0e7a227ca523500f9eae99b09c094"
+    },
+    {
+      "name": "pendant une rotation : signé sous le secret, puis sous le précédent",
+      "secrets": [
+        "current",
+        "previous"
+      ],
+      "timestamp": 1794819198,
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843,v1=302fb91fefe5f4ee8b9d70ddb6287ce9335fd340d9f3c484879fda0fa39465fc"
+    }
+  ],
+  "verification": [
+    {
+      "name": "valide",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": true
+    },
+    {
+      "name": "valide, reçue à la fin de la tolérance",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819498,
+      "valid": true
+    },
+    {
+      "name": "valide, horloge du récepteur en retard de la tolérance",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794818898,
+      "valid": true
+    },
+    {
+      "name": "rotation : le récepteur ne connaît encore que le secret précédent",
+      "secrets": [
+        "previous"
+      ],
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843,v1=302fb91fefe5f4ee8b9d70ddb6287ce9335fd340d9f3c484879fda0fa39465fc",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": true
+    },
+    {
+      "name": "rotation : le récepteur connaît les deux secrets, le message n'est signé que sous le nouveau",
+      "secrets": [
+        "previous",
+        "current"
+      ],
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": true
+    },
+    {
+      "name": "un schéma de signature inconnu est ignoré",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198,v0=0000000000000000000000000000000000000000000000000000000000000000,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": true
+    },
+    {
+      "name": "rejouée hors de la tolérance",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819499,
+      "valid": false,
+      "error": "timestamp_outside_tolerance"
+    },
+    {
+      "name": "venue du futur, au-delà de la tolérance",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794818897,
+      "valid": false,
+      "error": "timestamp_outside_tolerance"
+    },
+    {
+      "name": "corps altéré",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":0,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": false,
+      "error": "signature_mismatch"
+    },
+    {
+      "name": "signature fausse : signée sous un secret que le récepteur ne connaît pas",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198,v1=e36b2c4c34523f03faed1930a4f209c2b4235449dfdfab948c2869eca8e51821",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": false,
+      "error": "signature_mismatch"
+    },
+    {
+      "name": "horodatage changé après la signature",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819258,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819258,
+      "valid": false,
+      "error": "signature_mismatch"
+    },
+    {
+      "name": "rotation finie : le secret précédent n'est plus accepté",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198,v1=302fb91fefe5f4ee8b9d70ddb6287ce9335fd340d9f3c484879fda0fa39465fc",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": false,
+      "error": "signature_mismatch"
+    },
+    {
+      "name": "en-tête vide",
+      "secrets": [
+        "current"
+      ],
+      "header": "",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": false,
+      "error": "malformed_header"
+    },
+    {
+      "name": "sans horodatage",
+      "secrets": [
+        "current"
+      ],
+      "header": "v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": false,
+      "error": "malformed_header"
+    },
+    {
+      "name": "deux horodatages",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198,t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": false,
+      "error": "malformed_header"
+    },
+    {
+      "name": "horodatage qui n'est pas un nombre",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=maintenant,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": false,
+      "error": "malformed_header"
+    },
+    {
+      "name": "sans signature v1",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": false,
+      "error": "malformed_header"
+    },
+    {
+      "name": "signature en majuscules",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198,v1=F05DFDDDF18743D47E37E5AC8804C0EAECB832237433E93A6E334E73F0E8E843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": false,
+      "error": "malformed_header"
+    },
+    {
+      "name": "signature tronquée",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198,v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e84",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": false,
+      "error": "malformed_header"
+    },
+    {
+      "name": "espace après une virgule",
+      "secrets": [
+        "current"
+      ],
+      "header": "t=1794819198, v1=f05dfdddf18743d47e37e5ac8804c0eaecb832237433e93a6e334e73f0e8e843",
+      "body": "{\"delivery_id\":\"8e2a4c6b-1f3d-4a5e-9b7c-2d4f6a8c0e12\",\"emitted_at\":\"2026-11-16T08:53:18Z\",\"incident\":{\"analysis\":{\"counts\":{\"answers\":16,\"lower_bound\":false,\"recipients\":13},\"error\":null,\"state\":\"done\"},\"id\":\"974e7c80-6643-4065-a541-e4c029abbdab\",\"quarantine\":null,\"severity\":\"high\",\"state\":\"qualified\"},\"occurred_at\":\"2026-11-16T08:53:16.849328Z\",\"type\":\"incident.analysed\",\"version\":1}",
+      "now": 1794819198,
+      "valid": false,
+      "error": "malformed_header"
+    }
+  ]
+}

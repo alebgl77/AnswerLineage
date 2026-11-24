@@ -1,0 +1,297 @@
+{
+  "title": "Une réponse à beaucoup de destinataires contre plusieurs réponses à peu",
+  "level": "table",
+  "agents": {
+    "commercial": {
+      "namespace": "agent://ventes",
+      "name": "assistant-commercial"
+    },
+    "support": {
+      "namespace": "agent://support",
+      "name": "assistant-support"
+    },
+    "direction": {
+      "namespace": "agent://direction",
+      "name": "synthese-hebdomadaire"
+    }
+  },
+  "tools": {
+    "sql": {
+      "server": "entrepot",
+      "name": "execute_sql"
+    },
+    "tickets": {
+      "server": "support",
+      "name": "lister_tickets"
+    }
+  },
+  "datasets": {
+    "effectifs": {
+      "namespace": "bigquery",
+      "name": "rh.pilotage.effectifs"
+    },
+    "commandes": {
+      "namespace": "bigquery",
+      "name": "ventes.suivi.commandes"
+    },
+    "tickets": {
+      "namespace": "postgres://support:5432",
+      "name": "support.public.tickets"
+    }
+  },
+  "runs": [
+    {
+      "id": "synthese-diffusee",
+      "agent": "direction",
+      "start": "2026-10-31T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-31T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "effectifs"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "synthese-diffusee",
+        "at": "2026-10-31T09:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "comite-01",
+          "comite-02",
+          "comite-03",
+          "comite-04",
+          "comite-05",
+          "comite-06",
+          "comite-07",
+          "comite-08",
+          "comite-09",
+          "comite-10"
+        ]
+      }
+    },
+    {
+      "id": "commande-1",
+      "agent": "commercial",
+      "start": "2026-10-31T09:01:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-31T09:01:05Z",
+          "reads": [
+            {
+              "dataset": "commandes"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "commande-1",
+        "at": "2026-10-31T09:01:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "commande-2",
+      "agent": "commercial",
+      "start": "2026-10-31T09:02:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-31T09:02:05Z",
+          "reads": [
+            {
+              "dataset": "commandes"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "commande-2",
+        "at": "2026-10-31T09:02:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "commande-3",
+      "agent": "commercial",
+      "start": "2026-10-31T09:03:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-31T09:03:05Z",
+          "reads": [
+            {
+              "dataset": "commandes"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "commande-3",
+        "at": "2026-10-31T09:03:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "ticket-1",
+      "agent": "support",
+      "start": "2026-10-31T09:11:00Z",
+      "calls": [
+        {
+          "tool": "tickets",
+          "at": "2026-10-31T09:11:05Z",
+          "reads": [
+            {
+              "dataset": "tickets"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "ticket-1",
+        "at": "2026-10-31T09:11:30Z",
+        "channel": "teams",
+        "recipients": []
+      }
+    },
+    {
+      "id": "ticket-2",
+      "agent": "support",
+      "start": "2026-10-31T09:12:00Z",
+      "calls": [
+        {
+          "tool": "tickets",
+          "at": "2026-10-31T09:12:05Z",
+          "reads": [
+            {
+              "dataset": "tickets"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "ticket-2",
+        "at": "2026-10-31T09:12:30Z",
+        "channel": "teams",
+        "recipients": []
+      }
+    },
+    {
+      "id": "ticket-3",
+      "agent": "support",
+      "start": "2026-10-31T09:13:00Z",
+      "calls": [
+        {
+          "tool": "tickets",
+          "at": "2026-10-31T09:13:05Z",
+          "reads": [
+            {
+              "dataset": "tickets"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "ticket-3",
+        "at": "2026-10-31T09:13:30Z",
+        "channel": "teams",
+        "recipients": []
+      }
+    },
+    {
+      "id": "ticket-4",
+      "agent": "support",
+      "start": "2026-10-31T09:14:00Z",
+      "calls": [
+        {
+          "tool": "tickets",
+          "at": "2026-10-31T09:14:05Z",
+          "reads": [
+            {
+              "dataset": "tickets"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "ticket-4",
+        "at": "2026-10-31T09:14:30Z",
+        "channel": "teams",
+        "recipients": []
+      }
+    },
+    {
+      "id": "ticket-5",
+      "agent": "support",
+      "start": "2026-10-31T09:15:00Z",
+      "calls": [
+        {
+          "tool": "tickets",
+          "at": "2026-10-31T09:15:05Z",
+          "reads": [
+            {
+              "dataset": "tickets"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "ticket-5",
+        "at": "2026-10-31T09:15:30Z",
+        "channel": "teams",
+        "recipients": []
+      }
+    }
+  ],
+  "incident": {
+    "dataset": "commandes",
+    "from": "2026-10-31T06:00:00Z",
+    "to": "2026-10-31T12:00:00Z"
+  },
+  "truth": {
+    "touched": [
+      {
+        "answer": "commande-1",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "commande-2",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "commande-3",
+        "confidence": "certaine"
+      }
+    ],
+    "discarded": [],
+    "untouched": [
+      "synthese-diffusee",
+      "ticket-1",
+      "ticket-2",
+      "ticket-3",
+      "ticket-4",
+      "ticket-5"
+    ],
+    "exposure": {
+      "at": "2026-11-01T12:00:00Z",
+      "datasets": [
+        "effectifs",
+        "commandes",
+        "tickets"
+      ]
+    }
+  }
+}

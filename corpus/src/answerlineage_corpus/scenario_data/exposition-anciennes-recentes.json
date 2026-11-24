@@ -1,0 +1,349 @@
+{
+  "title": "Beaucoup de réponses anciennes contre peu de réponses récentes",
+  "level": "table",
+  "agents": {
+    "tresorerie": {
+      "namespace": "agent://finance",
+      "name": "analyste-tresorerie"
+    },
+    "commercial": {
+      "namespace": "agent://ventes",
+      "name": "assistant-commercial"
+    },
+    "stocks": {
+      "namespace": "agent://logistique",
+      "name": "planificateur-stocks"
+    }
+  },
+  "tools": {
+    "sql": {
+      "server": "entrepot",
+      "name": "execute_sql"
+    }
+  },
+  "datasets": {
+    "factures": {
+      "namespace": "bigquery",
+      "name": "finance.compta.factures"
+    },
+    "commandes": {
+      "namespace": "bigquery",
+      "name": "ventes.suivi.commandes"
+    },
+    "stocks": {
+      "namespace": "bigquery",
+      "name": "logistique.flux.stocks"
+    },
+    "encaissements": {
+      "namespace": "bigquery",
+      "name": "finance.compta.encaissements"
+    }
+  },
+  "runs": [
+    {
+      "id": "ancienne-1",
+      "agent": "tresorerie",
+      "start": "2026-08-03T09:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-08-03T09:00:05Z",
+          "reads": [
+            {
+              "dataset": "factures"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "ancienne-1",
+        "at": "2026-08-03T09:00:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "ancienne-2",
+      "agent": "tresorerie",
+      "start": "2026-08-03T09:01:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-08-03T09:01:05Z",
+          "reads": [
+            {
+              "dataset": "factures"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "ancienne-2",
+        "at": "2026-08-03T09:01:30Z",
+        "channel": "email",
+        "recipients": [
+          "d2"
+        ]
+      }
+    },
+    {
+      "id": "ancienne-3",
+      "agent": "tresorerie",
+      "start": "2026-08-03T09:02:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-08-03T09:02:05Z",
+          "reads": [
+            {
+              "dataset": "factures"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "ancienne-3",
+        "at": "2026-08-03T09:02:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "ancienne-4",
+      "agent": "tresorerie",
+      "start": "2026-08-03T09:03:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-08-03T09:03:05Z",
+          "reads": [
+            {
+              "dataset": "factures"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "ancienne-4",
+        "at": "2026-08-03T09:03:30Z",
+        "channel": "email",
+        "recipients": [
+          "d2"
+        ]
+      }
+    },
+    {
+      "id": "ancienne-5",
+      "agent": "tresorerie",
+      "start": "2026-08-03T09:04:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-08-03T09:04:05Z",
+          "reads": [
+            {
+              "dataset": "factures"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "ancienne-5",
+        "at": "2026-08-03T09:04:30Z",
+        "channel": "email",
+        "recipients": [
+          "d1"
+        ]
+      }
+    },
+    {
+      "id": "ancienne-6",
+      "agent": "tresorerie",
+      "start": "2026-08-03T09:05:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-08-03T09:05:05Z",
+          "reads": [
+            {
+              "dataset": "factures"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "ancienne-6",
+        "at": "2026-08-03T09:05:30Z",
+        "channel": "email",
+        "recipients": [
+          "d2"
+        ]
+      }
+    },
+    {
+      "id": "il-y-a-un-mois-1",
+      "agent": "stocks",
+      "start": "2026-10-01T12:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-01T12:00:05Z",
+          "reads": [
+            {
+              "dataset": "stocks"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "il-y-a-un-mois-1",
+        "at": "2026-10-01T12:00:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d3"
+        ]
+      }
+    },
+    {
+      "id": "il-y-a-un-mois-2",
+      "agent": "stocks",
+      "start": "2026-10-01T12:01:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-01T12:01:05Z",
+          "reads": [
+            {
+              "dataset": "stocks"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "il-y-a-un-mois-2",
+        "at": "2026-10-01T12:01:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d3"
+        ]
+      }
+    },
+    {
+      "id": "il-y-a-un-mois-3",
+      "agent": "stocks",
+      "start": "2026-10-01T12:02:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-01T12:02:05Z",
+          "reads": [
+            {
+              "dataset": "stocks"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "il-y-a-un-mois-3",
+        "at": "2026-10-01T12:02:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d3"
+        ]
+      }
+    },
+    {
+      "id": "hier",
+      "agent": "commercial",
+      "start": "2026-10-31T12:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-31T12:00:05Z",
+          "reads": [
+            {
+              "dataset": "commandes"
+            }
+          ]
+        }
+      ],
+      "answer": {
+        "id": "hier",
+        "at": "2026-10-31T12:00:30Z",
+        "channel": "slack",
+        "recipients": [
+          "d4"
+        ]
+      }
+    },
+    {
+      "id": "sans-reponse",
+      "agent": "tresorerie",
+      "start": "2026-10-31T14:00:00Z",
+      "calls": [
+        {
+          "tool": "sql",
+          "at": "2026-10-31T14:00:05Z",
+          "reads": [
+            {
+              "dataset": "encaissements"
+            }
+          ]
+        }
+      ],
+      "failed": true
+    }
+  ],
+  "incident": {
+    "dataset": "factures",
+    "from": "2026-08-03T06:00:00Z",
+    "to": "2026-08-04T06:00:00Z"
+  },
+  "truth": {
+    "touched": [
+      {
+        "answer": "ancienne-1",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "ancienne-2",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "ancienne-3",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "ancienne-4",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "ancienne-5",
+        "confidence": "certaine"
+      },
+      {
+        "answer": "ancienne-6",
+        "confidence": "certaine"
+      }
+    ],
+    "discarded": [],
+    "untouched": [
+      "il-y-a-un-mois-1",
+      "il-y-a-un-mois-2",
+      "il-y-a-un-mois-3",
+      "hier"
+    ],
+    "exposure": {
+      "at": "2026-11-01T12:00:00Z",
+      "datasets": [
+        "stocks",
+        "commandes",
+        "factures"
+      ]
+    }
+  }
+}

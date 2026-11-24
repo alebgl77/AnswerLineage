@@ -4,28 +4,69 @@ version = "0.0.0"
 description = "Lignage et rappel des réponses d'agents"
 readme = "README.md"
 requires-python = ">=3.13"
+license = "Apache-2.0"
 dependencies = []
+
+# Chaque paquet publié porte cette adresse des sources, et l'image publiée en
+# tire son nom (scripts/check_release.py).
+[project.urls]
+Source = "https://github.com/alebgl77/AnswerLineage"
 
 [dependency-groups]
 dev = [
+    # Les adaptateurs s'éprouvent avec les vrais types du SDK, installé en extra.
+    "answerlineage-adapters[claude-agent-sdk]",
+    "anyio>=4.9",
+    "httpx>=0.28",
+    "jsonschema[format-nongpl]>=4.25",
+    "mcp>=1.20",
     "mypy>=1.18",
+    "playwright>=1.55",
     "pre-commit>=4.3",
-    "pytest>=8.4",
     "pytest-cov>=7.0",
+    "pytest>=8.4",
+    "pyyaml>=6.0",
     "ruff>=0.14",
+    "schemathesis>=4.0",
+    "testcontainers[postgres]>=4.10",
+    "types-jsonschema>=4.25",
+    "types-pyyaml>=6.0",
 ]
 
 [tool.uv]
 package = false
-# Délai de carence : aucune version publiée depuis moins de 7 jours (PRD, section 13).
+# Délai de carence : une version publiée depuis moins de 7 jours n'est pas adoptée.
 exclude-newer = "7 days"
 
+[tool.uv.sources]
+answerlineage-adapters = { workspace = true }
+
 [tool.uv.workspace]
-members = ["proxy", "adapters", "collector", "api", "workers", "mcp-server"]
+members = [
+    "adapters",
+    "api",
+    "cli",
+    "conformance",
+    "corpus",
+    "emitter",
+    "proxy",
+    "workers",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+src = [
+    "adapters/src",
+    "api/src",
+    "cli/src",
+    "conformance/src",
+    "corpus/src",
+    "emitter/src",
+    "proxy/src",
+    "workers/src",
+    ".",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "S", "C4", "SIM", "PTH", "RUF"]
@@ -38,32 +79,93 @@ select = ["E", "F", "W", "I", "B", "UP", "N", "S", "C4", "SIM", "PTH", "RUF"]
 python_version = "3.13"
 strict = true
 warn_unreachable = true
-files = [
-    "proxy/src",
+# Chaque composant est une base de paquets : ses sources s'importent sous leur
+# nom de distribution, ses tests sous <composant>.tests.
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = [
     "adapters/src",
-    "collector/src",
     "api/src",
+    "cli/src",
+    "conformance/src",
+    "corpus/src",
+    "emitter/src",
+    "proxy/src",
     "workers/src",
-    "mcp-server/src",
-    "tests",
+    ".",
 ]
+files = [
+    "adapters",
+    "api",
+    "cli",
+    "conformance",
+    "corpus",
+    "emitter",
+    "proxy",
+    "workers",
+    "scripts",
+    "tests",
+    "conftest.py",
+]
+
+[[tool.mypy.overrides]]
+module = ["testcontainers.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config", "-ra"]
-testpaths = ["tests", "proxy", "adapters", "collector", "api", "workers", "mcp-server"]
+pythonpath = ["."]
+testpaths = [
+    "tests",
+    "adapters",
+    "api",
+    "cli",
+    "conformance",
+    "corpus",
+    "emitter",
+    "proxy",
+    "workers",
+]
 xfail_strict = true
+markers = [
+    "integration: test sur un PostgreSQL réel, démarré par Testcontainers (Docker requis)",
+    "e2e: test de bout en bout dans un navigateur (explorateur construit et Chromium requis)",
+    "demo: parcours dans un navigateur contre la démonstration lancée (ANSWERLINEAGE_DEMO_URL)",
+]
 
 [tool.coverage.run]
 branch = true
+# SQLAlchemy asynchrone tourne dans des greenlets : sans ce réglage, le code
+# repris après un appel à la base n'est pas suivi.
+concurrency = ["greenlet", "thread"]
 source = [
-    "answerlineage_proxy",
-    "answerlineage_adapters",
-    "answerlineage_collector",
-    "answerlineage_api",
-    "answerlineage_workers",
-    "answerlineage_mcp_server",
+    "scripts",
+    "adapters/src",
+    "api/src",
+    "cli/src",
+    "conformance/src",
+    "corpus/src",
+    "emitter/src",
+    "proxy/src",
+    "workers/src",
 ]
 
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
+
+# Porte de couverture : chaque chemin suivi tient le seuil, en couverture de
+# branches comme en couverture combinée des lignes et des branches.
+[tool.answerlineage.coverage_gate]
+minimum = 85
+paths = [
+    "scripts",
+    "adapters/src",
+    "api/src",
+    "cli/src",
+    "conformance/src",
+    "corpus/src",
+    "emitter/src",
+    "proxy/src",
+    "workers/src",
+]

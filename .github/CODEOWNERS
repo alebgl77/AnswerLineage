@@ -1,0 +1,38 @@
+# Configuration d'agents de code et garde-fous du pipeline : toute modification
+# demande la revue du mainteneur. Le contrôle de politique vérifie que chaque
+# chemin protégé figure ici.
+
+# Configuration d'agents de code
+/.claude/                         @alebgl77
+/.mcp.json                        @alebgl77
+/CLAUDE.md                        @alebgl77
+/AGENTS.md                        @alebgl77
+/GEMINI.md                        @alebgl77
+/.cursor/                         @alebgl77
+/.cursorrules                     @alebgl77
+/.codex/                          @alebgl77
+/.gemini/                         @alebgl77
+/.github/copilot-instructions.md  @alebgl77
+
+# Garde-fous de l'atelier et du pipeline
+/.devcontainer/                   @alebgl77
+/.github/workflows/               @alebgl77
+/.github/actions/                 @alebgl77
+/.github/CODEOWNERS               @alebgl77
+/.gitlab-ci.yml                   @alebgl77
+/.gitlab/                         @alebgl77
+/CODEOWNERS                       @alebgl77
+/docs/CODEOWNERS                  @alebgl77
+/.pre-commit-config.yaml          @alebgl77
+/renovate.json                    @alebgl77
+/scripts/                         @alebgl77
+/.gitleaks.toml                   @alebgl77
+/.gitleaksignore                  @alebgl77
+/vulnerability-exceptions.toml    @alebgl77
+
+# Exceptions du corpus d'abus : les cas d'attaque que le produit ne bloque pas encore
+/corpus/src/answerlineage_corpus/abuse_open.json  @alebgl77
+
+# Modèle de menaces : ses parades, ses risques acceptés et leurs signatures. Seul
+# un propriétaire de ce fichier signe une acceptation (scripts/check_threat_model.py).
+/docs/securite/modele-de-menaces.toml  @alebgl77

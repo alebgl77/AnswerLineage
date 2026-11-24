@@ -3,7 +3,38 @@ name = "answerlineage-proxy"
 version = "0.0.0"
 description = "Proxy MCP d'AnswerLineage : relaie les appels d'outils et émet les événements de lignage."
 requires-python = ">=3.13"
-dependencies = []
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Natural Language :: French",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "answerlineage-emitter==0.0.0",
+    "httpx>=0.28",
+    "pyyaml>=6.0",
+    "sqlglot>=27.0",
+    "uvicorn>=0.38",
+]
+
+[project.scripts]
+answerlineage-proxy = "answerlineage_proxy.cli:main"
+
+[project.urls]
+Source = "https://github.com/alebgl77/AnswerLineage"
+Documentation = "https://github.com/alebgl77/AnswerLineage/tree/main/docs"
+Issues = "https://github.com/alebgl77/AnswerLineage/issues"
+
+[tool.uv.sources]
+answerlineage-emitter = { workspace = true }
 
 [build-system]
 requires = ["hatchling>=1.27"]

@@ -1,0 +1,14 @@
+[
+  {
+    "case": "emetteur/evenement-au-nom-du-proxy",
+    "reason": "Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements : tout client qui a le rôle d'émetteur envoie un événement au nom du proxy, et la lecture inventée entre dans le graphe."
+  },
+  {
+    "case": "emetteur/doublons-au-nom-d-un-autre",
+    "reason": "Un émetteur authentifié n'est pas encore lié à l'espace de noms de ses événements : un rejeu est compté au nom de l'émetteur que l'événement déclare, pas du client qui l'envoie."
+  },
+  {
+    "case": "emetteur/releve-au-nom-d-un-autre",
+    "reason": "Un relevé de couverture n'est pas lié à son émetteur plus qu'un événement : tout client qui a le rôle d'émetteur en publie un au nom d'un autre, gonfle les appels vus d'une fenêtre, et la fusion au plus grand ne le défait pas."
+  }
+]

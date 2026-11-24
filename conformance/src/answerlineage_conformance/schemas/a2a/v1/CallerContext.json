@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/alebgl77/AnswerLineage/main/spec/a2a/v1/CallerContext.json",
+  "$ref": "#/$defs/CallerContext",
+  "$defs": {
+    "CallerContext": {
+      "description": "Ce que l'agent appelant envoie, sous la clé de l'URI de l'extension dans message.metadata : le contexte de trace W3C de l'appel et l'identifiant du run de l'appel, qui en dérive (answerlineage/run-id/v1). Rien d'autre : l'objet est fermé.",
+      "type": "object",
+      "properties": {
+        "traceparent": {
+          "type": "string",
+          "minLength": 55,
+          "maxLength": 55,
+          "pattern": "^00-(?!0{32})[0-9a-f]{32}-(?!0{16})[0-9a-f]{16}-[0-9a-f]{2}$",
+          "description": "Contexte de trace W3C de l'appel, version 00 : trace-id et parent-id en hexadécimal minuscule, jamais nuls."
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 36,
+          "maxLength": 36,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "Identifiant du run de l'appel : l'UUID que la dérivation answerlineage/run-id/v1 donne pour le trace-id et le parent-id de traceparent, en minuscules."
+        }
+      },
+      "required": [
+        "traceparent",
+        "runId"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,552 @@
+"""Réglages du proxy MCP."""
+
+from __future__ import annotations
+
+import math
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import PurePosixPath
+from typing import Literal, Protocol, cast
+
+import httpx
+
+from answerlineage_emitter.config import ConfigurationError
+from answerlineage_emitter.fingerprint import read_key
+from answerlineage_proxy.fingerprint import FingerprintKey
+from answerlineage_proxy.guard import LOOPBACK_HOSTS, RequestGuard
+from answerlineage_proxy.names import INSTANCE_MAX, name_fault, normalize_name
+from answerlineage_proxy.rules import ReadRule, ReadRulesError, load_read_rules, rules_for
+from answerlineage_proxy.sql import DIALECTS, Dialect
+
+ENV_UPSTREAM = "ANSWERLINEAGE_PROXY_UPSTREAM"
+ENV_SERVER_NAME = "ANSWERLINEAGE_PROXY_SERVER_NAME"
+ENV_HOST = "ANSWERLINEAGE_PROXY_HOST"
+ENV_PORT = "ANSWERLINEAGE_PROXY_PORT"
+ENV_ALLOWED_HOSTS = "ANSWERLINEAGE_PROXY_ALLOWED_HOSTS"
+ENV_ALLOWED_ORIGINS = "ANSWERLINEAGE_PROXY_ALLOWED_ORIGINS"
+ENV_SQL_BUDGET_MS = "ANSWERLINEAGE_PROXY_SQL_BUDGET_MS"
+ENV_SQL_QUEUE_SIZE = "ANSWERLINEAGE_PROXY_SQL_QUEUE_SIZE"
+ENV_SQL_CACHE_SIZE = "ANSWERLINEAGE_PROXY_SQL_CACHE_SIZE"
+# Clé d'empreinte : jamais sur la ligne de commande, que la liste des processus montre.
+ENV_FINGERPRINT_KEY = "ANSWERLINEAGE_PROXY_FINGERPRINT_KEY"
+ENV_FINGERPRINT_KEY_FILE = "ANSWERLINEAGE_PROXY_FINGERPRINT_KEY_FILE"
+# Fichier des règles de lecture des outils non SQL.
+ENV_READ_RULES_FILE = "ANSWERLINEAGE_PROXY_READ_RULES_FILE"
+# Identifiant d'instance des relevés de couverture.
+ENV_INSTANCE_ID = "ANSWERLINEAGE_PROXY_INSTANCE_ID"
+# Port d'administration (santé) et délais de l'arrêt gracieux.
+ENV_ADMIN_PORT = "ANSWERLINEAGE_PROXY_ADMIN_PORT"
+ENV_SHUTDOWN_DELAY = "ANSWERLINEAGE_PROXY_SHUTDOWN_DELAY_SECONDS"
+ENV_SHUTDOWN_GRACE = "ANSWERLINEAGE_PROXY_SHUTDOWN_GRACE_SECONDS"
+# Attente au plus de la décision sur l'appel d'un outil visé par une quarantaine, en HTTP.
+ENV_QUARANTINE_DECISION_MS = "ANSWERLINEAGE_PROXY_QUARANTINE_DECISION_MS"
+
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8717
+DEFAULT_MAX_INSPECTED_BYTES = 1024 * 1024
+# Analyse du SQL : temps de calcul accordé à une requête, analyses en attente,
+# résultats gardés en cache.
+DEFAULT_SQL_BUDGET_MS = 50
+DEFAULT_SQL_QUEUE_SIZE = 32
+DEFAULT_SQL_CACHE_SIZE = 1024
+# Le port d'administration n'écoute que sur la boucle locale.
+ADMIN_HOST = "127.0.0.1"
+# Arrêt gracieux, en secondes : le proxy, non prêt, sert encore pendant le délai de
+# retrait, puis laisse aux appels en cours le délai de grâce. Avec le vidage de la boîte
+# d'envoi (5 s par défaut), l'arrêt tient en 25 s, sous les 30 s qu'un orchestrateur
+# accorde d'ordinaire avant de tuer le processus.
+DEFAULT_SHUTDOWN_DELAY = 5.0
+DEFAULT_SHUTDOWN_GRACE = 15
+# Ce que la réponse d'un appel retenu par une quarantaine attend au plus sa décision, en
+# millisecondes, compté depuis l'arrivée de la requête : de 0 (n'attendre jamais) à 50.
+DEFAULT_QUARANTINE_DECISION_MS = 50
+QUARANTINE_DECISION_LIMITS = (0, 50)
+_SHUTDOWN_LIMITS = {
+    "shutdown_delay": (0, 300),
+    "shutdown_grace": (0, 3600),
+}
+# Bornes des réglages d'analyse : (minimum, maximum).
+_SQL_LIMITS = {
+    "sql_budget_ms": (1, 60_000),
+    "sql_queue_size": (1, 10_000),
+    "sql_cache_size": (0, 1_000_000),
+}
+
+_SERVER_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+_TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+_ARGUMENT_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+_NAMESPACE = re.compile(r"[A-Za-z0-9_.:/@-]{1,255}")
+
+# Le mode passerelle refusé pour un serveur MCP dont les jetons sont liés à son URL : un
+# texte fixe, qui ne cite ni l'adresse du serveur ni rien de ses métadonnées.
+_GATEWAY_REFUSED = "Le mode passerelle (--no-preserve-host) est refusé"
+_GATEWAY_WHY = (
+    "un client qui joint le proxy à sa propre URL obtient un jeton pour une autre audience, que "
+    "le serveur refuse, et le proxy ne termine pas OAuth pour en obtenir un autre. Placer le "
+    "proxy en mode transparent, sous l'URL du serveur MCP."
+)
+GATEWAY_REFUSED_BY_DECLARATION = (
+    f"{_GATEWAY_REFUSED} : les jetons de ce serveur MCP sont déclarés liés à son URL "
+    f"(--audience-bound-tokens) ; {_GATEWAY_WHY}"
+)
+GATEWAY_REFUSED_BY_METADATA = (
+    f"{_GATEWAY_REFUSED} : le serveur MCP publie des métadonnées de ressource protégée OAuth "
+    f"(RFC 9728), ses jetons sont donc liés à son URL ; {_GATEWAY_WHY}"
+)
+
+Mode = Literal["transparent", "gateway"]
+
+
+# Un réglage du proxy absent ou invalide. L'erreur est celle de tout émetteur : un réglage
+# que refusent la boîte d'envoi ou le jeton du proxy arrête le proxy de la même façon.
+ProxyConfigurationError = ConfigurationError
+
+
+class CaptureSettings(Protocol):
+    """Réglages de la capture, communs aux transports HTTP et stdio."""
+
+    @property
+    def server_name(self) -> str:
+        """Nom logique du serveur : il nomme les jobs, sous ``mcp://<nom>``."""
+
+    @property
+    def max_inspected_bytes(self) -> int:
+        """Taille de message au-delà de laquelle seul son début est lu."""
+
+    @property
+    def sql_tools(self) -> Mapping[str, SqlTool]:
+        """Outils dont la requête SQL est analysée, par nom d'outil."""
+
+    @property
+    def sql_budget_ms(self) -> int:
+        """Budget de calcul de l'analyse d'une requête SQL."""
+
+    @property
+    def sql_queue_size(self) -> int:
+        """Analyses du SQL en attente, au plus."""
+
+    @property
+    def sql_cache_size(self) -> int:
+        """Résultats d'analyse gardés en cache."""
+
+    @property
+    def fingerprint_key(self) -> FingerprintKey | None:
+        """Clé d'empreinte du locataire ; sans clé, aucune empreinte."""
+
+    @property
+    def read_rules(self) -> Mapping[str, ReadRule]:
+        """Règles de lecture qui valent pour ce serveur, par outil."""
+
+    @property
+    def instance_id(self) -> str | None:
+        """Identifiant d'instance des relevés de couverture ; sans lui, tiré au démarrage."""
+
+
+def _check_server_name(name: str, hint: str) -> None:
+    if not _SERVER_NAME.fullmatch(name):
+        raise ProxyConfigurationError(
+            "Le nom du serveur accepte 1 à 128 lettres, chiffres, points, tirets et "
+            f"soulignés ; {hint}"
+        )
+
+
+def _check_capture(settings: CaptureSettings) -> None:
+    """Contrôles communs aux deux transports : taille lue, outils, analyse du SQL."""
+    if settings.max_inspected_bytes < 0:
+        raise ProxyConfigurationError("La taille maximale lue ne peut pas être négative.")
+    if not all(_TOOL_NAME.fullmatch(tool) for tool in [*settings.sql_tools, *settings.read_rules]):
+        raise ProxyConfigurationError("Un nom d'outil SQL est invalide.")
+    for name, (minimum, maximum) in _SQL_LIMITS.items():
+        if not minimum <= getattr(settings, name) <= maximum:
+            raise ProxyConfigurationError(f"{name} doit être compris entre {minimum} et {maximum}.")
+    if settings.instance_id is not None:
+        fault = name_fault(settings.instance_id, max_length=INSTANCE_MAX)
+        if fault is not None:
+            # Le motif est un texte fixe : il ne cite jamais la valeur reçue.
+            raise ProxyConfigurationError(
+                f"L'identifiant d'instance est invalide : {fault.message} ({fault.code})."
+            )
+
+
+def _check_lifecycle(settings: ProxySettings) -> None:
+    """Le port d'administration et les délais de l'arrêt gracieux."""
+    if settings.admin_port is not None:
+        if not 0 <= settings.admin_port <= 65535:
+            raise ProxyConfigurationError(
+                "Le port d'administration doit être compris entre 0 et 65535."
+            )
+        if settings.admin_port != 0 and settings.admin_port == settings.port:
+            raise ProxyConfigurationError(
+                "Le port d'administration doit différer du port des appels."
+            )
+    for name, (minimum, maximum) in _SHUTDOWN_LIMITS.items():
+        value = getattr(settings, name)
+        if not (math.isfinite(value) and minimum <= value <= maximum):
+            raise ProxyConfigurationError(
+                f"{name} doit être compris entre {minimum} et {maximum} secondes."
+            )
+
+
+def instance(value: str | None) -> str | None:
+    """L'identifiant d'instance sous sa forme normalisée NFC ; ``None`` sans réglage."""
+    return None if value is None else normalize_name(value)
+
+
+def listed(value: str | None) -> tuple[str, ...]:
+    """Lit une liste séparée par des virgules, telle qu'une variable d'environnement la porte."""
+    return tuple(item.strip() for item in (value or "").split(",") if item.strip())
+
+
+def fingerprint_key(
+    environment: Mapping[str, str], key_file: str | None = None
+) -> FingerprintKey | None:
+    """Lit la clé d'empreinte : dans un fichier (``key_file``, sinon la variable
+    ``ANSWERLINEAGE_PROXY_FINGERPRINT_KEY_FILE``) ou dans la variable
+    ``ANSWERLINEAGE_PROXY_FINGERPRINT_KEY``, en hexadécimal. ``None`` sans clé.
+
+    Aucun message d'erreur ne cite la clé, ni le chemin du fichier, qui pourrait
+    être une clé passée par erreur.
+    """
+    return read_key(
+        environment,
+        key_file,
+        variable=ENV_FINGERPRINT_KEY,
+        file_variable=ENV_FINGERPRINT_KEY_FILE,
+    )
+
+
+def read_rules(
+    environment: Mapping[str, str], rules_file: str | None = None
+) -> tuple[ReadRule, ...]:
+    """Lit les règles de lecture : dans ``rules_file``, sinon dans le fichier que nomme
+    ``ANSWERLINEAGE_PROXY_READ_RULES_FILE``. Aucune règle sans fichier.
+
+    Une règle invalide empêche le démarrage : le message nomme la règle, le champ et
+    sa position, jamais une valeur du fichier.
+    """
+    path = rules_file or environment.get(ENV_READ_RULES_FILE) or None
+    if path is None:
+        return ()
+    try:
+        return load_read_rules(path)
+    except ReadRulesError as error:
+        raise ProxyConfigurationError(f"Règles de lecture invalides : {error}.") from None
+
+
+def integer(environment: Mapping[str, str], name: str, default: int) -> int:
+    """Lit un entier dans une variable d'environnement, ``default`` si elle est absente."""
+    try:
+        return int(environment.get(name, default))
+    except ValueError as error:
+        raise ProxyConfigurationError(f"{name} doit être un entier.") from error
+
+
+def seconds(environment: Mapping[str, str], name: str, default: float) -> float:
+    """Lit une durée en secondes dans une variable d'environnement, ``default`` sans elle."""
+    try:
+        return float(environment.get(name, default))
+    except ValueError as error:
+        raise ProxyConfigurationError(f"{name} doit être un nombre de secondes.") from error
+
+
+def optional_port(environment: Mapping[str, str], name: str) -> int | None:
+    """Lit un port dans une variable d'environnement ; ``None`` sans elle."""
+    value = environment.get(name)
+    return None if not value else integer(environment, name, 0)
+
+
+@dataclass(frozen=True)
+class SqlTool:
+    """Outil MCP dont un argument porte une requête SQL."""
+
+    # Nom de l'argument de l'outil qui contient la requête.
+    argument: str
+    dialect: Dialect
+    # Espace de noms OpenLineage des tables lues, par exemple ``bigquery``.
+    namespace: str
+    default_catalog: str | None = None
+    default_db: str | None = None
+    # La requête relayée commence par un commentaire qui porte l'identifiant de run
+    # (``--sql-run-comment``) : le proxy sort de la stricte transparence pour cet outil.
+    run_comment: bool = False
+
+    def __post_init__(self) -> None:
+        if not _ARGUMENT_NAME.fullmatch(self.argument):
+            raise ProxyConfigurationError("Le nom de l'argument SQL est invalide.")
+        if self.dialect not in DIALECTS:
+            raise ProxyConfigurationError(
+                f"Le dialecte SQL doit être l'un de : {', '.join(DIALECTS)}."
+            )
+        if not _NAMESPACE.fullmatch(self.namespace):
+            raise ProxyConfigurationError("L'espace de noms des tables est invalide.")
+
+    @classmethod
+    def parse(cls, value: str) -> tuple[str, SqlTool]:
+        """Lit ``outil=argument:dialecte[:espace-de-noms]``."""
+        tool, separator, rule = value.partition("=")
+        parts = rule.split(":", 2)
+        if not separator or len(parts) < 2 or not _TOOL_NAME.fullmatch(tool):
+            raise ProxyConfigurationError(
+                "Un outil SQL se décrit par outil=argument:dialecte[:espace-de-noms]."
+            )
+        argument, dialect = parts[0], parts[1]
+        namespace = parts[2] if len(parts) == 3 else dialect
+        return tool, cls(argument=argument, dialect=cast(Dialect, dialect), namespace=namespace)
+
+
+@dataclass(frozen=True)
+class ProxySettings:
+    """Réglages d'un proxy placé devant un serveur MCP."""
+
+    # Adresse du serveur MCP, derrière le proxy.
+    upstream: httpx.URL
+    # Nom logique du serveur : il nomme les jobs, sous ``mcp://<nom>``.
+    server_name: str
+    host: str = DEFAULT_HOST
+    port: int = DEFAULT_PORT
+    # Mode transparent : les clients joignent le proxy à l'URL du serveur MCP, et le serveur
+    # reçoit l'en-tête Host qu'ils envoient. Sinon, mode passerelle : ils le joignent à sa
+    # propre URL, et Host devient celui du serveur.
+    preserve_host: bool = True
+    # L'exploitant déclare les jetons du serveur MCP liés à son URL : le mode passerelle
+    # est alors refusé sans rien lire du serveur.
+    audience_bound_tokens: bool = False
+    # Au-delà, le corps est relayé sans être lu.
+    max_inspected_bytes: int = DEFAULT_MAX_INSPECTED_BYTES
+    connect_timeout: float = 10.0
+    # Outils dont la requête SQL est analysée, par nom d'outil.
+    sql_tools: Mapping[str, SqlTool] = field(default_factory=dict)
+    # Noms d'hôte acceptés dans l'en-tête Host, en plus de la boucle locale et
+    # du serveur MCP. « * » accepte tout hôte et toute origine.
+    allowed_hosts: tuple[str, ...] = ()
+    # Origines acceptées dans l'en-tête Origin, en plus de celles des hôtes acceptés.
+    allowed_origins: tuple[str, ...] = ()
+    # Analyse du SQL, hors du chemin de l'appel : budget de calcul par requête, en
+    # millisecondes, nombre d'analyses en attente et nombre de résultats en cache.
+    sql_budget_ms: int = DEFAULT_SQL_BUDGET_MS
+    sql_queue_size: int = DEFAULT_SQL_QUEUE_SIZE
+    sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE
+    # Clé d'empreinte du locataire. Sans clé, aucune empreinte n'est émise.
+    fingerprint_key: FingerprintKey | None = field(default=None, repr=False)
+    # Règles de lecture qui valent pour ce serveur, par outil. Un outil SQL garde
+    # l'analyse de sa requête.
+    read_rules: Mapping[str, ReadRule] = field(default_factory=dict)
+    # Identifiant d'instance des relevés de couverture, sous sa forme NFC. Sans lui, le
+    # proxy en tire un au démarrage.
+    instance_id: str | None = None
+    # Port d'administration, sur la boucle locale : la santé du proxy (vivant, prêt). Sans
+    # lui, aucune sonde n'est servie ; 0 en tire un.
+    admin_port: int | None = None
+    # Arrêt gracieux, en secondes : délai de retrait, pendant lequel le proxy, non prêt,
+    # sert encore ; délai de grâce, laissé aux appels en cours une fois l'écoute fermée.
+    shutdown_delay: float = DEFAULT_SHUTDOWN_DELAY
+    shutdown_grace: int = DEFAULT_SHUTDOWN_GRACE
+    # Pendant une quarantaine en mode avertir, ce que la réponse d'un appel retenu attend au
+    # plus sa décision, en millisecondes, depuis l'arrivée de la requête.
+    quarantine_decision_ms: int = DEFAULT_QUARANTINE_DECISION_MS
+
+    def __post_init__(self) -> None:
+        lowest, highest = QUARANTINE_DECISION_LIMITS
+        if not lowest <= self.quarantine_decision_ms <= highest:
+            raise ProxyConfigurationError(
+                f"L'attente de la décision de quarantaine va de {lowest} à {highest} millisecondes."
+            )
+        if self.upstream.scheme not in ("http", "https") or not self.upstream.host:
+            raise ProxyConfigurationError(
+                "L'adresse du serveur MCP doit être une URL http ou https complète."
+            )
+        if self.upstream.userinfo:
+            raise ProxyConfigurationError(
+                "L'adresse du serveur MCP ne doit contenir aucun identifiant."
+            )
+        if self.upstream.query or self.upstream.fragment:
+            raise ProxyConfigurationError(
+                "L'adresse du serveur MCP ne doit porter ni paramètres ni fragment."
+            )
+        _check_server_name(
+            self.server_name,
+            f"sans --server-name ni {ENV_SERVER_NAME}, il est tiré de l'hôte du serveur MCP.",
+        )
+        if not 0 <= self.port <= 65535:
+            raise ProxyConfigurationError("Le port doit être compris entre 0 et 65535.")
+        _check_lifecycle(self)
+        _check_capture(self)
+        if not self.preserve_host and self.audience_bound_tokens:
+            raise ProxyConfigurationError(GATEWAY_REFUSED_BY_DECLARATION)
+        try:
+            RequestGuard.create([self.upstream_host])
+        except ValueError as error:
+            raise ProxyConfigurationError(
+                "L'hôte du serveur MCP doit être un nom d'hôte ou une adresse IP, "
+                "tel qu'un client l'écrit dans l'en-tête Host."
+            ) from error
+        try:
+            RequestGuard.create(self.allowed_hosts, self.allowed_origins)
+        except ValueError as error:
+            raise ProxyConfigurationError(str(error)) from error
+
+    @property
+    def mode(self) -> Mode:
+        """Transparent, quand les clients joignent le proxy à l'URL du serveur MCP ; passerelle,
+        quand ils le joignent à la sienne."""
+        return "transparent" if self.preserve_host else "gateway"
+
+    @property
+    def upstream_host(self) -> str:
+        """L'hôte du serveur MCP tel qu'un client l'écrit dans l'en-tête Host.
+
+        Une adresse IPv6 s'y écrit entre crochets, un nom accentué en punycode.
+        """
+        host = self.upstream.raw_host.decode("ascii", errors="replace")
+        return f"[{host}]" if ":" in host else host
+
+    def guard(self) -> RequestGuard:
+        """Contrôle des requêtes : la boucle locale, le serveur MCP et les hôtes ajoutés."""
+        return RequestGuard.create(
+            [*LOOPBACK_HOSTS, self.upstream_host, *self.allowed_hosts], self.allowed_origins
+        )
+
+    @classmethod
+    def create(
+        cls,
+        upstream: str,
+        server_name: str | None = None,
+        *,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        preserve_host: bool = True,
+        audience_bound_tokens: bool = False,
+        max_inspected_bytes: int = DEFAULT_MAX_INSPECTED_BYTES,
+        sql_tools: Mapping[str, SqlTool] | None = None,
+        allowed_hosts: Sequence[str] = (),
+        allowed_origins: Sequence[str] = (),
+        sql_budget_ms: int = DEFAULT_SQL_BUDGET_MS,
+        sql_queue_size: int = DEFAULT_SQL_QUEUE_SIZE,
+        sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE,
+        fingerprint_key: FingerprintKey | None = None,
+        read_rules: Sequence[ReadRule] = (),
+        instance_id: str | None = None,
+        admin_port: int | None = None,
+        shutdown_delay: float = DEFAULT_SHUTDOWN_DELAY,
+        shutdown_grace: int = DEFAULT_SHUTDOWN_GRACE,
+        quarantine_decision_ms: int = DEFAULT_QUARANTINE_DECISION_MS,
+    ) -> ProxySettings:
+        try:
+            url = httpx.URL(upstream)
+        except (httpx.InvalidURL, TypeError) as error:
+            raise ProxyConfigurationError("L'adresse du serveur MCP est illisible.") from error
+        name = server_name if server_name is not None else url.host
+        return cls(
+            upstream=url,
+            server_name=name,
+            host=host,
+            port=port,
+            preserve_host=preserve_host,
+            audience_bound_tokens=audience_bound_tokens,
+            max_inspected_bytes=max_inspected_bytes,
+            sql_tools=dict(sql_tools or {}),
+            allowed_hosts=tuple(allowed_hosts),
+            allowed_origins=tuple(allowed_origins),
+            sql_budget_ms=sql_budget_ms,
+            sql_queue_size=sql_queue_size,
+            sql_cache_size=sql_cache_size,
+            fingerprint_key=fingerprint_key,
+            read_rules=rules_for(tuple(read_rules), name),
+            instance_id=instance(instance_id),
+            admin_port=admin_port,
+            shutdown_delay=shutdown_delay,
+            shutdown_grace=shutdown_grace,
+            quarantine_decision_ms=quarantine_decision_ms,
+        )
+
+    @classmethod
+    def from_environment(cls, environment: Mapping[str, str]) -> ProxySettings:
+        upstream = environment.get(ENV_UPSTREAM)
+        if not upstream:
+            raise ProxyConfigurationError(
+                f"La variable {ENV_UPSTREAM} doit contenir l'adresse du serveur MCP."
+            )
+        try:
+            port = int(environment.get(ENV_PORT, DEFAULT_PORT))
+        except ValueError as error:
+            raise ProxyConfigurationError(f"{ENV_PORT} doit être un entier.") from error
+        return cls.create(
+            upstream,
+            environment.get(ENV_SERVER_NAME) or None,
+            host=environment.get(ENV_HOST, DEFAULT_HOST),
+            port=port,
+            allowed_hosts=listed(environment.get(ENV_ALLOWED_HOSTS)),
+            allowed_origins=listed(environment.get(ENV_ALLOWED_ORIGINS)),
+            sql_budget_ms=integer(environment, ENV_SQL_BUDGET_MS, DEFAULT_SQL_BUDGET_MS),
+            sql_queue_size=integer(environment, ENV_SQL_QUEUE_SIZE, DEFAULT_SQL_QUEUE_SIZE),
+            sql_cache_size=integer(environment, ENV_SQL_CACHE_SIZE, DEFAULT_SQL_CACHE_SIZE),
+            fingerprint_key=fingerprint_key(environment),
+            read_rules=read_rules(environment),
+            instance_id=environment.get(ENV_INSTANCE_ID) or None,
+            admin_port=optional_port(environment, ENV_ADMIN_PORT),
+            shutdown_delay=seconds(environment, ENV_SHUTDOWN_DELAY, DEFAULT_SHUTDOWN_DELAY),
+            shutdown_grace=integer(environment, ENV_SHUTDOWN_GRACE, DEFAULT_SHUTDOWN_GRACE),
+            quarantine_decision_ms=integer(
+                environment, ENV_QUARANTINE_DECISION_MS, DEFAULT_QUARANTINE_DECISION_MS
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class StdioSettings:
+    """Réglages d'un proxy qui lance un serveur MCP en stdio et relaie ses flux."""
+
+    # Commande du serveur MCP : le programme, puis ses arguments, lancés sans shell.
+    # Elle n'apparaît dans aucun journal, aucun événement ni aucun message d'erreur.
+    command: tuple[str, ...] = field(repr=False)
+    server_name: str
+    max_inspected_bytes: int = DEFAULT_MAX_INSPECTED_BYTES
+    sql_tools: Mapping[str, SqlTool] = field(default_factory=dict)
+    sql_budget_ms: int = DEFAULT_SQL_BUDGET_MS
+    sql_queue_size: int = DEFAULT_SQL_QUEUE_SIZE
+    sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE
+    fingerprint_key: FingerprintKey | None = field(default=None, repr=False)
+    read_rules: Mapping[str, ReadRule] = field(default_factory=dict)
+    instance_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.command or not self.command[0]:
+            raise ProxyConfigurationError("Indiquer la commande du serveur MCP après « -- ».")
+        _check_server_name(
+            self.server_name,
+            f"sans --server-name ni {ENV_SERVER_NAME}, il est tiré du nom du programme lancé.",
+        )
+        _check_capture(self)
+
+    @classmethod
+    def create(
+        cls,
+        command: Sequence[str],
+        server_name: str | None = None,
+        *,
+        max_inspected_bytes: int = DEFAULT_MAX_INSPECTED_BYTES,
+        sql_tools: Mapping[str, SqlTool] | None = None,
+        sql_budget_ms: int = DEFAULT_SQL_BUDGET_MS,
+        sql_queue_size: int = DEFAULT_SQL_QUEUE_SIZE,
+        sql_cache_size: int = DEFAULT_SQL_CACHE_SIZE,
+        fingerprint_key: FingerprintKey | None = None,
+        read_rules: Sequence[ReadRule] = (),
+        instance_id: str | None = None,
+    ) -> StdioSettings:
+        """Sans nom de serveur, celui du programme lancé, sans son chemin."""
+        name = server_name
+        if name is None:
+            name = PurePosixPath(command[0]).name if command else ""
+        return cls(
+            command=tuple(command),
+            server_name=name,
+            max_inspected_bytes=max_inspected_bytes,
+            sql_tools=dict(sql_tools or {}),
+            sql_budget_ms=sql_budget_ms,
+            sql_queue_size=sql_queue_size,
+            sql_cache_size=sql_cache_size,
+            fingerprint_key=fingerprint_key,
+            read_rules=rules_for(tuple(read_rules), name),
+            instance_id=instance(instance_id),
+        )
